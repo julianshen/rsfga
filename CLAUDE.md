@@ -1,22 +1,141 @@
-# CLAUDE.md - Senior Architect's Guide for RSFGA
+# CLAUDE.md - AI Assistant Guide for RSFGA
 
-**Purpose**: This document defines the architectural guardrails, invariants, and decision frameworks for working on RSFGA. It is written from a senior architect's perspective to ensure architectural integrity throughout the project lifecycle.
+This file provides guidance for AI assistants (like Claude) working on the RSFGA project.
 
-**Audience**: AI assistants, senior engineers, and architects contributing to RSFGA
+---
+
+## Project Overview
+
+**RSFGA** is a high-performance Rust implementation of OpenFGA, an authorization/permission engine inspired by Google Zanzibar. The project aims for 100% API compatibility with OpenFGA while achieving 2-5x performance improvements.
 
 **Current Phase**: Architecture & Design ✅ Complete | Implementation ⏸️ Awaiting Approval
 
 ---
 
-## Architectural Philosophy
+## Key Principles
 
-RSFGA is not just a Rust rewrite of OpenFGA. It is a rethinking of authorization engine architecture with three core pillars:
+### 1. **Architecture-First Approach**
+- All major changes require architecture review
+- Document decisions in ADRs (Architecture Decision Records)
+- Update design documents before implementing
+- Get explicit approval before starting implementation
 
-1. **Correctness as Invariant**: Authorization bugs have severe security implications. A slow authorization system is better than an incorrect one.
+### 2. **OpenFGA Compatibility**
+- Must maintain 100% API compatibility
+- Follow OpenFGA's data models and behavior
+- Pass OpenFGA's official test suite
+- Any deviation requires explicit justification
 
-2. **Compatibility as Contract**: 100% OpenFGA API compatibility is a business requirement, not a technical nice-to-have. Breaking compatibility invalidates the project's value proposition.
+### 3. **Performance Focus**
+- Every optimization must be benchmarked
+- Document performance targets and actual results
+- Profile before optimizing
+- Validate all performance claims through testing
 
-3. **Performance through Architecture**: Performance comes from architectural decisions (async, lock-free, parallelism), not micro-optimizations. Measure everything, assume nothing.
+### 4. **Safety and Correctness**
+- Authorization is security-critical
+- Correctness > Performance
+- Comprehensive testing required
+- Security review for critical paths
+
+---
+
+## Project Structure
+
+```
+rsfga/
+├── README.md                          # Project overview
+├── CLAUDE.md                          # This file (AI assistant guide)
+├── docs/
+│   └── design/
+│       ├── ARCHITECTURE.md            # System architecture (READ FIRST)
+│       ├── ROADMAP.md                 # Implementation roadmap
+│       ├── ARCHITECTURE_DECISIONS.md  # Key decisions (16 ADRs)
+│       ├── RISKS.md                   # Risk register
+│       ├── API_SPECIFICATION.md       # Complete API spec
+│       ├── DATA_MODELS.md             # Data structures & schemas
+│       ├── EDGE_ARCHITECTURE_NATS.md  # Edge deployment (Phase 3)
+│       └── C4_DIAGRAMS.md             # Architecture diagrams
+└── (implementation to be added)
+```
+
+---
+
+## Before Making Changes
+
+### ✅ Checklist for AI Assistants
+
+1. **Read the Design Docs**
+   - [ ] Read [ARCHITECTURE.md](docs/design/ARCHITECTURE.md) for system overview
+   - [ ] Check [ROADMAP.md](docs/design/ROADMAP.md) for current milestone
+   - [ ] Review relevant ADRs in [ARCHITECTURE_DECISIONS.md](docs/design/ARCHITECTURE_DECISIONS.md)
+   - [ ] Check [RISKS.md](docs/design/RISKS.md) for related risks
+
+2. **Understand the Context**
+   - [ ] What phase are we in? (Design vs Implementation)
+   - [ ] What milestone is active?
+   - [ ] Are there blocking dependencies?
+
+3. **Get Approval for Major Changes**
+   - [ ] Discuss approach with user
+   - [ ] Document decision if architectural
+   - [ ] Update relevant design docs
+   - [ ] Only then proceed with implementation
+
+4. **Follow Conventions**
+   - [ ] Rust style: `cargo fmt`, `cargo clippy`
+   - [ ] Naming: Follow OpenFGA conventions
+   - [ ] Testing: Unit + integration tests
+   - [ ] Documentation: Doc comments for public items
+
+---
+
+## Architecture Quick Reference
+
+### System Layers (Bottom-Up)
+
+1. **Storage Layer** (`rsfga-storage/`)
+   - Abstraction: `DataStore` trait
+   - Implementations: PostgreSQL, MySQL, In-Memory
+   - Future: SQLite, Valkey/Redis
+
+2. **Domain Layer** (`rsfga-domain/`)
+   - Authorization model parser (DSL → AST)
+   - Graph resolver (async, parallel)
+   - Type system and validation
+   - Check cache (DashMap + Moka)
+
+3. **Server Layer** (`rsfga-server/`)
+   - Request handlers (Check, Batch, Write, Read)
+   - Business logic
+   - Request validation
+
+4. **API Layer** (`rsfga-api/`)
+   - HTTP REST (Axum)
+   - gRPC (Tonic)
+   - Middleware (auth, metrics, tracing)
+
+### Key Technologies
+
+| Component | Technology | Why |
+|-----------|------------|-----|
+| Async Runtime | Tokio | Industry standard, excellent I/O parallelism |
+| HTTP | Axum | Fast, ergonomic, Tower ecosystem |
+| gRPC | Tonic | Pure Rust, performant |
+| Database | SQLx | Async, compile-time query checking |
+| Concurrency | DashMap | Lock-free, 10-100x faster than Mutex |
+| Cache | Moka | TTL support, async-friendly |
+| Observability | tracing + metrics | Industry standard |
+
+### Performance Targets
+
+| Operation | OpenFGA | RSFGA Target | Strategy |
+|-----------|---------|--------------|----------|
+| Check | 483 req/s | 1000+ req/s | Async graph, lock-free cache |
+| Batch | 23 checks/s | 500+ checks/s | Parallel + dedup |
+| Write | 59 req/s | 150+ req/s | Async invalidation |
+
+**Note**: All targets require validation through benchmarking (60% confidence).
 
 ---
 
@@ -94,20 +213,6 @@ RSFGA is not just a Rust rewrite of OpenFGA. It is a rethinking of authorization
 
 ---
 
-## Architectural Constraints (Non-Negotiable)
-
-See [ARCHITECTURE.md - Constraints](docs/design/ARCHITECTURE.md#constraints) for full list.
-
-**Quick Reference**:
-- **C1**: 100% API compatibility (see I2)
-- **C8**: Correctness > Performance (see I1)
-- **C5**: Rust stable only (no nightly)
-- **C11**: Graph depth limit = 25 (matches OpenFGA)
-
-**Before violating a constraint**: Must create ADR with explicit justification and get architect approval.
-
----
-
 ## Decision Framework
 
 When making architectural decisions, follow this framework:
@@ -156,340 +261,6 @@ When making architectural decisions, follow this framework:
 - Quantitative alternative comparison
 - Validation criteria
 - Risk links
-
----
-
-## Quality Gates (Do Not Merge Without)
-
-### For All Code Changes
-
-1. ✅ Passes `cargo clippy` (no warnings)
-2. ✅ Passes `cargo fmt` (formatted)
-3. ✅ Unit tests pass (>90% coverage target)
-4. ✅ No new security vulnerabilities (`cargo audit`)
-
-### For Authorization Logic Changes
-
-5. ✅ Property-based tests added
-6. ✅ OpenFGA compatibility tests pass
-7. ✅ Manual security review completed
-8. ✅ Graph traversal invariants documented
-
-### For Performance Optimizations
-
-9. ✅ Benchmark before/after included
-10. ✅ Profiling data shows bottleneck
-11. ✅ Validation criteria in ADR
-12. ✅ No correctness trade-offs (see I1)
-
-### For New Dependencies
-
-13. ✅ License compatible (Apache/MIT/BSD)
-14. ✅ Actively maintained (commits in last 6 months)
-15. ✅ No known CVEs
-16. ✅ Justification in ADR-016
-
----
-
-## Critical Code Paths (Extra Scrutiny Required)
-
-These components are architecturally critical. Changes require senior review:
-
-### 1. Graph Resolver (`rsfga-domain/src/resolver/`)
-
-**Why Critical**: Determines authorization outcomes
-**Invariants**:
-- Cycle detection MUST prevent infinite loops
-- Depth limiting MUST prevent DoS
-- Correctness MUST be preserved during parallelization
-
-**Quality Requirements**:
-- >95% test coverage
-- Property-based tests for all relation types
-- Fuzz testing for edge cases
-
-**Related**: I1, I4, R-003, R-010
-
----
-
-### 2. Type System (`rsfga-domain/src/model/`)
-
-**Why Critical**: Validates authorization models, prevents invalid tuples
-**Invariants**:
-- Parser MUST reject invalid DSL (no silent failures)
-- Validation MUST catch type mismatches
-- Model evolution MUST be backwards compatible
-
-**Quality Requirements**:
-- 100% OpenFGA DSL feature parity
-- Comprehensive parser error handling
-- Model compatibility tests
-
-**Related**: I2, R-001
-
----
-
-### 3. Storage Abstraction (`rsfga-storage/src/traits.rs`)
-
-**Why Critical**: All tuple operations flow through here
-**Invariants**:
-- Atomicity MUST be preserved for write operations
-- Read consistency MUST be documented (strong vs eventual)
-- Transaction semantics MUST match OpenFGA
-
-**Quality Requirements**:
-- Backend-agnostic tests
-- Transaction rollback testing
-- Concurrent access testing
-
-**Related**: C6, R-004
-
----
-
-### 4. Cache Invalidation (`rsfga-domain/src/cache/`)
-
-**Why Critical**: Stale cache = incorrect authorization
-**Invariants**:
-- Invalidation MUST eventually complete
-- Staleness window MUST be bounded
-- Strong consistency mode MUST bypass cache
-
-**Quality Requirements**:
-- Document consistency guarantees
-- Measure actual staleness in production
-- Provide opt-out (strong consistency mode)
-
-**Related**: I1, A9, R-005
-
----
-
-## Common Architectural Anti-Patterns to Avoid
-
-### AP1: Premature Optimization
-
-**Pattern**: Optimizing before profiling/benchmarking
-**Why Bad**: Wastes effort, adds complexity without proof of benefit
-**Instead**: Profile → Benchmark → Optimize → Validate
-
-**Example**:
-- ❌ BAD: "Let's use unsafe Rust for this cache lookup to avoid bounds checks"
-- ✅ GOOD: "Profile shows cache lookup is 2% of latency, not worth optimizing"
-
----
-
-### AP2: Abstraction for Abstraction's Sake
-
-**Pattern**: Creating generic abstractions "for future flexibility"
-**Why Bad**: YAGNI (You Aren't Gonna Need It), adds maintenance burden
-**Instead**: Solve current problem simply, refactor when second use case appears
-
-**Example**:
-- ❌ BAD: Generic graph traversal engine that supports multiple graph types
-- ✅ GOOD: Authorization graph traversal specific to OpenFGA model
-
----
-
-### AP3: Micro-Optimizations Before Macro-Architecture
-
-**Pattern**: Optimizing low-level details before architectural decisions
-**Why Bad**: Architecture has 10-100x impact, micro-opts have 1-10% impact
-**Instead**: Get architecture right (async, lock-free, parallel) first
-
-**Example**:
-- ❌ BAD: Optimize HashMap hashing function
-- ✅ GOOD: Use lock-free DashMap instead of Mutex<HashMap>
-
----
-
-### AP4: Ignoring Operational Concerns
-
-**Pattern**: "Works on my machine" without considering deployment
-**Why Bad**: Production failures, operational burden, user frustration
-**Instead**: Design for observability, failure modes, and operations from day 1
-
-**Example**:
-- ❌ BAD: No metrics, no traces, crashes on DB connection loss
-- ✅ GOOD: Metrics, traces, graceful degradation, health checks
-
----
-
-### AP5: Compatibility as Nice-to-Have
-
-**Pattern**: "We'll fix compatibility later" or "Our API is better"
-**Why Bad**: Violates I2 invariant, invalidates project value
-**Instead**: Compatibility is requirement #1, design within those constraints
-
-**Example**:
-- ❌ BAD: "Let's add this required field, it's more correct"
-- ✅ GOOD: "Optional field to maintain compatibility, document migration path"
-
----
-
-## When to Escalate to Architect
-
-Escalate (create GitHub issue, mention in PR) if:
-
-1. ❓ **Constraint Violation**: Change would violate C1-C12
-2. ❓ **Invariant Trade-off**: Considering trading correctness for performance
-3. ❓ **Novel Risk**: Identified new high/critical risk
-4. ❓ **Assumption Invalidated**: Testing shows assumption A1-A10 is false
-5. ❓ **Architectural Change**: Modifying system layers or component responsibilities
-6. ❓ **Performance Mystery**: Optimization attempts failing or making things worse
-7. ❓ **Security Concern**: Potential vulnerability in authorization logic
-
----
-
-## Key Resources (Read Before Contributing)
-
-### Must Read (in order):
-1. **[ARCHITECTURE.md](docs/design/ARCHITECTURE.md)** - System design, assumptions, constraints, non-goals
-2. **[ARCHITECTURE_DECISIONS.md](docs/design/ARCHITECTURE_DECISIONS.md)** - ADRs with context and validation criteria
-3. **[RISKS.md](docs/design/RISKS.md)** - Risk register with mitigation strategies
-4. **[ROADMAP.md](docs/design/ROADMAP.md)** - Implementation phases and milestones
-
-### Reference:
-5. **[API_SPECIFICATION.md](docs/design/API_SPECIFICATION.md)** - Complete API spec
-6. **[DATA_MODELS.md](docs/design/DATA_MODELS.md)** - Data structures
-7. **[C4_DIAGRAMS.md](docs/design/C4_DIAGRAMS.md)** - Architecture diagrams
-8. **[EDGE_ARCHITECTURE_NATS.md](docs/design/EDGE_ARCHITECTURE_NATS.md)** - Phase 3 edge design
-
-### External:
-9. **[OpenFGA Docs](https://openfga.dev/docs)** - What we're compatible with
-10. **[Zanzibar Paper](https://research.google/pubs/pub48190/)** - Foundational model
-
----
-
-## Status & Next Steps
-
-**Current Phase**: Architecture & Design ✅ Complete
-
-**Completed**:
-- ✅ Comprehensive architecture with assumptions/constraints/non-goals
-- ✅ 16 ADRs with validation criteria and risk links
-- ✅ Risk register with 17 identified risks
-- ✅ Complete API specification
-- ✅ Data models and schemas
-- ✅ C4 diagrams
-- ✅ NATS edge architecture
-
-**Next**: **STOP.** Awaiting user approval to begin implementation (Milestone 1.1)
-
-**DO NOT**:
-- ❌ Start implementing without explicit approval
-- ❌ Create Rust project structure
-- ❌ Write code beyond design documents
-
-**DO**:
-- ✅ Refine design documents based on feedback
-- ✅ Answer architecture questions
-- ✅ Update ADRs/risks based on new information
-
----
-
-**Remember**: Architecture is about making the right trade-offs and documenting them so future contributors understand the "why" behind decisions. When in doubt, ask questions before proceeding.
-
----
-
-*Last Updated: 2024-01-03*
-*Phase: Architecture & Design ✅ Complete | Implementation ⏸️ Awaiting Approval*
-*Document Owner: Chief Architect*
-
----
-
-## Project Structure
-
-```
-rsfga/
-├── README.md                          # Project overview
-├── CLAUDE.md                          # This file (AI assistant guide)
-├── docs/
-│   └── design/
-│       ├── ARCHITECTURE.md            # System architecture (READ FIRST)
-│       ├── ROADMAP.md                 # Implementation roadmap
-│       ├── ARCHITECTURE_DECISIONS.md  # Key decisions (16 ADRs)
-│       ├── API_SPECIFICATION.md       # Complete API spec
-│       ├── DATA_MODELS.md             # Data structures & schemas
-│       ├── EDGE_ARCHITECTURE_NATS.md  # Edge deployment (Phase 3)
-│       └── C4_DIAGRAMS.md             # Architecture diagrams
-└── (implementation to be added)
-```
-
----
-
-## Before Making Changes
-
-### ✅ Checklist for AI Assistants
-
-1. **Read the Design Docs**
-   - [ ] Read [ARCHITECTURE.md](docs/design/ARCHITECTURE.md) for system overview
-   - [ ] Check [ROADMAP.md](docs/design/ROADMAP.md) for current milestone
-   - [ ] Review relevant ADRs in [ARCHITECTURE_DECISIONS.md](docs/design/ARCHITECTURE_DECISIONS.md)
-
-2. **Understand the Context**
-   - [ ] What phase are we in? (Design vs Implementation)
-   - [ ] What milestone is active?
-   - [ ] Are there blocking dependencies?
-
-3. **Get Approval for Major Changes**
-   - [ ] Discuss approach with user
-   - [ ] Document decision if architectural
-   - [ ] Update relevant design docs
-   - [ ] Only then proceed with implementation
-
-4. **Follow Conventions**
-   - [ ] Rust style: `cargo fmt`, `cargo clippy`
-   - [ ] Naming: Follow OpenFGA conventions
-   - [ ] Testing: Unit + integration tests
-   - [ ] Documentation: Doc comments for public items
-
----
-
-## Architecture Quick Reference
-
-### System Layers (Bottom-Up)
-
-1. **Storage Layer** (`rsfga-storage/`)
-   - Abstraction: `DataStore` trait
-   - Implementations: PostgreSQL, MySQL, In-Memory
-   - Future: SQLite, Valkey/Redis
-
-2. **Domain Layer** (`rsfga-domain/`)
-   - Authorization model parser (DSL → AST)
-   - Graph resolver (async, parallel)
-   - Type system and validation
-   - Check cache (DashMap + Moka)
-
-3. **Server Layer** (`rsfga-server/`)
-   - Request handlers (Check, Batch, Write, Read)
-   - Business logic
-   - Request validation
-
-4. **API Layer** (`rsfga-api/`)
-   - HTTP REST (Axum)
-   - gRPC (Tonic)
-   - Middleware (auth, metrics, tracing)
-
-### Key Technologies
-
-| Component | Technology | Why |
-|-----------|------------|-----|
-| Async Runtime | Tokio | Industry standard, excellent I/O parallelism |
-| HTTP | Axum | Fast, ergonomic, Tower ecosystem |
-| gRPC | Tonic | Pure Rust, performant |
-| Database | SQLx | Async, compile-time query checking |
-| Concurrency | DashMap | Lock-free, 10-100x faster than Mutex |
-| Cache | Moka | TTL support, async-friendly |
-| Observability | tracing + metrics | Industry standard |
-
-### Performance Targets
-
-| Operation | OpenFGA | RSFGA Target | Strategy |
-|-----------|---------|--------------|----------|
-| Check | 483 req/s | 1000+ req/s | Async graph, lock-free cache |
-| Batch | 23 checks/s | 500+ checks/s | Parallel + dedup |
-| Write | 59 req/s | 150+ req/s | Async invalidation |
-
-**Note**: All targets require validation through benchmarking.
 
 ---
 
@@ -800,6 +571,7 @@ pub async fn check(&self, user: &str, relation: &str, object: &str) -> Result<bo
 - [ARCHITECTURE.md](docs/design/ARCHITECTURE.md) - System architecture
 - [ROADMAP.md](docs/design/ROADMAP.md) - Implementation plan
 - [ARCHITECTURE_DECISIONS.md](docs/design/ARCHITECTURE_DECISIONS.md) - Key decisions
+- [RISKS.md](docs/design/RISKS.md) - Risk register
 - [API_SPECIFICATION.md](docs/design/API_SPECIFICATION.md) - API reference
 - [DATA_MODELS.md](docs/design/DATA_MODELS.md) - Data structures
 
@@ -877,6 +649,8 @@ cargo run --bin rsfga-server
 - ✅ C4 Diagrams
 - ✅ Edge Architecture (NATS)
 - ✅ Implementation Roadmap
+- ✅ Risk Register
+- ✅ Senior Architect Documentation
 
 **Next**: Awaiting user approval to begin MVP implementation (Milestone 1.1)
 
@@ -888,10 +662,11 @@ cargo run --bin rsfga-server
 
 ## Version History
 
-- **2024-01-03**: Initial CLAUDE.md created
-  - Architecture & design phase complete
-  - All design documents finalized
-  - Awaiting implementation approval
+- **2024-01-03**: CLAUDE.md recreated
+  - Streamlined structure
+  - Senior architect perspective maintained
+  - Clear invariants and decision framework
+  - Comprehensive quality gates
 
 ---
 
