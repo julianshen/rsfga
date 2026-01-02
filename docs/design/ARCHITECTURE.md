@@ -18,7 +18,169 @@ RSFGA is a high-performance Rust implementation of OpenFGA, an authorization/per
 | Write        | 59 req/s         | 150+ req/s   | Batch processing, async invalidation |
 | List-Objects | 52 req/s         | 100+ req/s   | Optimized query planning |
 
-**Note**: All performance targets require validation through benchmarking.
+**Performance Confidence**: These targets are based on architectural analysis and similar system benchmarks. Confidence level: ~60%. **Requires validation in Milestone 1.7 benchmarking.**
+
+---
+
+## Assumptions
+
+These are fundamental assumptions that underpin the architecture. If any prove false, significant redesign may be required.
+
+### Technical Assumptions
+
+1. **A1**: Tokio async runtime overhead is <10% for I/O-bound operations
+   - **Validation**: Benchmark in Milestone 1.7
+   - **If False**: Consider sync Rust or hybrid approach
+   - **Risk**: R-008
+
+2. **A2**: DashMap provides >5x speedup over Mutex<HashMap> at 100+ concurrent threads
+   - **Validation**: Microbenchmark in Milestone 1.7
+   - **If False**: Evaluate Moka or custom lock-free structure
+   - **Risk**: R-009
+
+3. **A3**: PostgreSQL can sustain >150 write req/s with proper indexing
+   - **Validation**: Load testing in Milestone 1.7
+   - **If False**: Implement write buffering or consider write-optimized storage
+   - **Risk**: R-004
+
+4. **A4**: Graph traversal depth rarely exceeds 10 levels in production models
+   - **Validation**: Analyze real-world OpenFGA models
+   - **If False**: Optimize for deeper graphs or increase depth limit
+   - **Impact**: Performance targets may not be achievable
+
+5. **A5**: Most batch check requests have high deduplication potential (>30% duplicates)
+   - **Validation**: Analyze production traffic patterns
+   - **If False**: Deduplication overhead may exceed benefits
+   - **Risk**: R-005
+
+6. **A6**: Authorization model changes are infrequent (<1 per hour)
+   - **Validation**: Monitor production deployments
+   - **If False**: Model cache invalidation becomes bottleneck
+   - **Impact**: May need model versioning strategy
+
+### Operational Assumptions
+
+7. **A7**: Deployments have access to PostgreSQL 14+ with 4+ CPU cores
+   - **Validation**: Document minimum requirements
+   - **If False**: Performance targets unachievable
+
+8. **A8**: Network latency between edge and regional nodes <50ms p99
+   - **Validation**: Phase 3 network testing
+   - **If False**: Edge architecture requires redesign
+   - **Risk**: R-006
+
+9. **A9**: Users can tolerate 1-10ms cache staleness window
+   - **Validation**: User research and security review
+   - **If False**: Implement synchronous cache invalidation
+   - **Risk**: R-005
+
+10. **A10**: NATS can sustain >100K msg/s for edge synchronization
+    - **Validation**: Phase 3 prototyping
+    - **If False**: Revert to Kafka
+    - **Risk**: R-014
+
+---
+
+## Constraints
+
+These are hard constraints that cannot be violated.
+
+### Business Constraints
+
+1. **C1**: **100% OpenFGA API compatibility required** - No breaking changes allowed
+   - **Validation**: Automated compatibility test suite in CI
+   - **Related**: R-001
+
+2. **C2**: **Apache 2.0 license only** - All dependencies must be compatible
+   - **Validation**: `cargo deny` in CI
+   - **Related**: ADR-016
+
+3. **C3**: **No GPL/AGPL dependencies** - License contamination risk
+   - **Validation**: Automated license checking
+
+### Technical Constraints
+
+4. **C4**: **Single-region deployment must work** - Edge/multi-region is optional (Phase 3)
+   - **Why**: Users must be able to run without complex infrastructure
+
+5. **C5**: **Rust stable channel only** - No nightly features
+   - **Why**: Stability and enterprise adoption
+   - **Related**: ADR-015
+
+6. **C6**: **Must support PostgreSQL 14+, MySQL 8+** - Common enterprise databases
+   - **Why**: Minimize adoption friction
+
+7. **C7**: **Memory usage <2x of tuple storage size** - Memory efficiency required
+   - **Why**: Cost considerations for large deployments
+   - **Risk**: R-011
+
+8. **C8**: **Check operation correctness > performance** - Never trade correctness for speed
+   - **Why**: Authorization bugs have severe security implications
+   - **Related**: R-003
+
+### Scalability Constraints
+
+9. **C9**: **MVP must support ≥10K tuples per store** - Minimum viable scale
+   - **Validation**: Load testing
+   - **Stretch Goal**: 1M+ tuples
+
+10. **C10**: **MVP must support ≥100 concurrent requests** - Minimum viable concurrency
+    - **Validation**: Load testing
+    - **Stretch Goal**: 1000+ concurrent
+
+11. **C11**: **Authorization model depth limit: 25 levels** - Matches OpenFGA
+    - **Why**: Prevent infinite recursion and DoS
+    - **Related**: R-010
+
+12. **C12**: **Cache memory budget: <500MB per node** - Resource efficiency
+    - **Why**: Enable deployment on modest hardware
+
+---
+
+## Non-Goals
+
+These are explicitly out of scope. Requests for these features should be declined.
+
+### Phase 1 (MVP) Non-Goals
+
+1. **NG1**: ❌ **CEL condition evaluation** - Deferred to post-MVP
+   - **Rationale**: Complex feature, low usage in practice
+   - **Future**: May add in Phase 1.5 if user demand exists
+
+2. **NG2**: ❌ **gRPC streaming for batch-check** - Deferred (ADR-006)
+   - **Rationale**: Adds complexity, users haven't requested it
+   - **Future**: Easy to add later without breaking changes
+
+3. **NG3**: ❌ **Multi-tenancy isolation** - Single logical store per database
+   - **Rationale**: Users can run multiple instances
+   - **Future**: May add tenant isolation in Phase 2
+
+4. **NG4**: ❌ **Built-in UI/dashboard** - API-only
+   - **Rationale**: Out of scope for authorization engine
+   - **Alternative**: Community can build on top of API
+
+5. **NG5**: ❌ **Automatic model migration** - Manual migration required
+   - **Rationale**: Authorization model changes are sensitive
+   - **Alternative**: Provide migration validation tools
+
+### Permanent Non-Goals
+
+6. **NG6**: ❌ **Support for non-Zanzibar authorization models** - OpenFGA compatibility only
+   - **Rationale**: Dilutes focus, breaks compatibility
+
+7. **NG7**: ❌ **SQL query interface to tuples** - API-only access
+   - **Rationale**: Abstraction violation, security risk
+
+8. **NG8**: ❌ **Built-in authentication** - Authorization only
+   - **Rationale**: Different concern, integrates with external auth
+
+9. **NG9**: ❌ **Embedded/WASM deployment** - Server deployment only
+   - **Rationale**: Async I/O doesn't fit embedded use case
+
+10. **NG10**: ❌ **Breaking API changes for performance** - Compatibility first
+    - **Rationale**: C1 constraint
+
+---
 
 ## Three-Phase Implementation Strategy
 
