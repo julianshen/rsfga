@@ -171,15 +171,15 @@ To avoid confusion, we use these terms consistently:
 
 #### Section 2: Tuple Read Operations
 
-- [ ] Test: POST /stores/{store_id}/read reads tuples by filter
-- [ ] Test: Read with user filter returns matching tuples
-- [ ] Test: Read with relation filter returns matching tuples
-- [ ] Test: Read with object filter returns matching tuples
-- [ ] Test: Read with multiple filters combines them (AND logic)
-- [ ] Test: Read with empty filter returns all tuples
-- [ ] Test: Read respects page_size parameter
-- [ ] Test: Read continuation_token enables pagination
-- [ ] Test: Read returns empty array when no matches
+- [x] Test: POST /stores/{store_id}/read reads tuples by filter
+- [x] Test: Read with user filter returns matching tuples
+- [x] Test: Read with relation filter returns matching tuples
+- [x] Test: Read with object filter returns matching tuples
+- [x] Test: Read with multiple filters combines them (AND logic)
+- [x] Test: Read with empty filter returns all tuples
+- [x] Test: Read respects page_size parameter
+- [x] Test: Read continuation_token enables pagination
+- [x] Test: Read returns empty array when no matches
 
 #### Section 3: Tuple Edge Cases
 
