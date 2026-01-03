@@ -456,21 +456,21 @@ fn test_can_generate_authorization_models_with_computed_relations() -> Result<()
 }
 
 /// Represents an OpenFGA authorization model
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct AuthorizationModel {
     schema_version: String,
     type_definitions: Vec<TypeDefinition>,
 }
 
 /// Represents a type definition in an authorization model
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TypeDefinition {
     name: String,
     relations: std::collections::HashMap<String, RelationDefinition>,
 }
 
 /// Represents a relation definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct RelationDefinition {
     is_direct: bool,
     allowed_types: Vec<String>,
@@ -479,7 +479,7 @@ struct RelationDefinition {
 }
 
 /// Represents the operation used in computed relations
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum RelationOperation {
     Union,        // OR semantics (viewer or editor)
     Intersection, // AND semantics (owner and admin)
