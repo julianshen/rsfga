@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -9,7 +10,7 @@ use std::collections::BTreeMap;
 struct CapturedHttpExchange {
     request: HttpRequest,
     response: HttpResponse,
-    timestamp: String,
+    timestamp: DateTime<Utc>,
 }
 
 /// HTTP request details
@@ -36,7 +37,7 @@ struct CapturedGrpcExchange {
     method: String,
     request: GrpcRequest,
     response: GrpcResponse,
-    timestamp: String,
+    timestamp: DateTime<Utc>,
 }
 
 /// gRPC request details
@@ -82,10 +83,13 @@ async fn test_can_capture_http_request_response_pairs() -> Result<()> {
         "Response should have a body"
     );
 
-    // Verify timestamp
-    assert!(
-        !exchange.timestamp.is_empty(),
-        "Timestamp should not be empty"
+    // Verify timestamp is a valid DateTime
+    let expected_timestamp = DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    assert_eq!(
+        exchange.timestamp, expected_timestamp,
+        "Timestamp should match expected value"
     );
 
     Ok(())
@@ -326,7 +330,9 @@ fn create_sample_http_exchange() -> CapturedHttpExchange {
             headers: response_headers,
             body: Some(r#"{"id": "store123", "name": "test-store"}"#.to_string()),
         },
-        timestamp: "2024-01-01T00:00:00Z".to_string(),
+        timestamp: DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
     }
 }
 
@@ -350,7 +356,9 @@ fn create_sample_grpc_exchange() -> CapturedGrpcExchange {
             metadata: response_metadata,
             message: r#"{"allowed": true}"#.to_string(),
         },
-        timestamp: "2024-01-01T00:00:00Z".to_string(),
+        timestamp: DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
     }
 }
 
