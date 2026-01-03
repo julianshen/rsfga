@@ -57,7 +57,7 @@ To avoid confusion, we use these terms consistently:
 #### Section 1: OpenFGA Test Environment
 
 - [x] Test: Can start OpenFGA via Docker Compose
-- [ ] Test: Can connect to OpenFGA HTTP API (health check)
+- [x] Test: Can connect to OpenFGA HTTP API (health check)
 - [ ] Test: Can connect to OpenFGA gRPC API
 - [ ] Test: Can create a store via API
 - [ ] Test: Can clean up test stores after tests

@@ -46,7 +46,8 @@ fn start_docker_compose() -> Result<()> {
     }
 
     // Wait for services to be healthy
-    thread::sleep(Duration::from_secs(10));
+    // OpenFGA needs time to initialize and run migrations
+    thread::sleep(Duration::from_secs(20));
 
     Ok(())
 }
@@ -95,4 +96,31 @@ async fn check_openfga_running() -> Result<bool> {
     let is_running = stdout.contains("openfga");
 
     Ok(is_running)
+}
+
+/// Test: Can connect to OpenFGA HTTP API (health check)
+#[tokio::test]
+async fn test_can_connect_to_openfga_http_api() -> Result<()> {
+    // Arrange: Start OpenFGA
+    stop_docker_compose()?;
+    start_docker_compose()?;
+
+    // Act: Connect to HTTP health check endpoint
+    let client = reqwest::Client::new();
+    let response = client
+        .get("http://localhost:18080/healthz")
+        .send()
+        .await?;
+
+    // Assert: Health check returns 200 OK
+    assert!(
+        response.status().is_success(),
+        "Health check should return 2xx status, got: {}",
+        response.status()
+    );
+
+    // Cleanup
+    stop_docker_compose()?;
+
+    Ok(())
 }

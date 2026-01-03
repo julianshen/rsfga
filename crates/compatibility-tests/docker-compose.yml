@@ -16,12 +16,25 @@ services:
     networks:
       - openfga-network
 
+  openfga-migrate:
+    image: openfga/openfga:latest
+    container_name: openfga-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - migrate
+      - --datastore-engine=postgres
+      - --datastore-uri=postgres://openfga:openfga@postgres:5432/openfga?sslmode=disable
+    networks:
+      - openfga-network
+
   openfga:
     image: openfga/openfga:latest
     container_name: openfga
     depends_on:
-      postgres:
-        condition: service_healthy
+      openfga-migrate:
+        condition: service_completed_successfully
     environment:
       OPENFGA_DATASTORE_ENGINE: postgres
       OPENFGA_DATASTORE_URI: postgres://openfga:openfga@postgres:5432/openfga?sslmode=disable
