@@ -5,6 +5,7 @@ use std::time::Duration;
 use tonic::transport::Channel;
 use tonic_health::pb::health_client::HealthClient;
 use tonic_health::pb::HealthCheckRequest;
+use uuid::Uuid;
 
 /// Test: Can start OpenFGA via Docker Compose
 #[tokio::test]
@@ -153,6 +154,55 @@ async fn test_can_connect_to_openfga_grpc_api() -> Result<()> {
         1, // 1 = SERVING in gRPC health check protocol
         "gRPC health check should return SERVING status (1), got: {}",
         response.get_ref().status
+    );
+
+    // Cleanup
+    stop_docker_compose()?;
+
+    Ok(())
+}
+
+/// Test: Can create a store via API
+#[tokio::test]
+async fn test_can_create_store_via_api() -> Result<()> {
+    // Arrange: Start OpenFGA
+    stop_docker_compose()?;
+    start_docker_compose()?;
+
+    // Act: Create a store via HTTP API
+    let client = reqwest::Client::new();
+    let store_name = format!("test-store-{}", Uuid::new_v4());
+
+    let create_request = serde_json::json!({
+        "name": store_name
+    });
+
+    let response = client
+        .post("http://localhost:18080/stores")
+        .json(&create_request)
+        .send()
+        .await?;
+
+    // Assert: Store creation returns 201 Created
+    assert!(
+        response.status().is_success(),
+        "Store creation should return 2xx status, got: {}",
+        response.status()
+    );
+
+    let response_body: serde_json::Value = response.json().await?;
+
+    // Verify response contains store ID
+    assert!(
+        response_body.get("id").is_some(),
+        "Response should contain store 'id' field"
+    );
+
+    // Verify response contains the name we provided
+    assert_eq!(
+        response_body.get("name").and_then(|v| v.as_str()),
+        Some(store_name.as_str()),
+        "Response should contain the store name we provided"
     );
 
     // Cleanup
