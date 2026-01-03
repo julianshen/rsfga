@@ -5,6 +5,7 @@ members = [
     "crates/rsfga-server",
     "crates/rsfga-domain",
     "crates/rsfga-storage",
+    "crates/compatibility-tests",
 ]
 
 [workspace.package]
