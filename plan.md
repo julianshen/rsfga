@@ -158,16 +158,16 @@ To avoid confusion, we use these terms consistently:
 
 #### Section 1: Tuple Write Operations
 
-- [ ] Test: POST /stores/{store_id}/write writes single tuple
-- [ ] Test: Write returns empty response on success
-- [ ] Test: Can write multiple tuples in single request
-- [ ] Test: Writes are idempotent (writing same tuple twice succeeds)
-- [ ] Test: Can delete tuple using Write API (deletes field)
-- [ ] Test: Writing tuple without store returns 404
-- [ ] Test: Writing tuple with invalid format returns 400
-- [ ] Test: Writing tuple with non-existent type returns error
-- [ ] Test: Writing tuple with non-existent relation returns error
-- [ ] Test: Conditional writes work (condition field)
+- [x] Test: POST /stores/{store_id}/write writes single tuple
+- [x] Test: Write returns empty response on success
+- [x] Test: Can write multiple tuples in single request
+- [x] Test: Writes are idempotent (writing same tuple twice succeeds)
+- [x] Test: Can delete tuple using Write API (deletes field)
+- [x] Test: Writing tuple without store returns 404
+- [x] Test: Writing tuple with invalid format returns 400
+- [x] Test: Writing tuple with non-existent type returns error
+- [x] Test: Writing tuple with non-existent relation returns error
+- [x] Test: Conditional writes work (condition field)
 
 #### Section 2: Tuple Read Operations
 
