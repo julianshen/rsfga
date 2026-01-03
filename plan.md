@@ -58,7 +58,7 @@ To avoid confusion, we use these terms consistently:
 
 - [x] Test: Can start OpenFGA via Docker Compose
 - [x] Test: Can connect to OpenFGA HTTP API (health check)
-- [ ] Test: Can connect to OpenFGA gRPC API
+- [x] Test: Can connect to OpenFGA gRPC API
 - [ ] Test: Can create a store via API
 - [ ] Test: Can clean up test stores after tests
 - [ ] Test: Test environment teardown is idempotent
