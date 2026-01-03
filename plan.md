@@ -1,0 +1,730 @@
+# RSFGA Implementation Plan
+
+**Test-Driven Development Plan following Kent Beck's TDD methodology**
+
+This document outlines the complete implementation plan for RSFGA, broken down into specific testable increments. Each test represents a small, verifiable step towards the complete system.
+
+---
+
+## How to Use This Plan
+
+1. User says **"go"**
+2. Find the next unchecked test `[ ]`
+3. Write the test (Red phase - watch it fail)
+4. Implement minimum code to pass (Green phase)
+5. Refactor if needed (keep tests green)
+6. Mark test `[x]` and commit with `[BEHAVIORAL]` or `[STRUCTURAL]` prefix
+7. Repeat
+
+**Branch naming**: `feature/milestone-X.Y-description`
+**PR after**: Each milestone completion
+
+---
+
+## Phase 1: MVP - OpenFGA Compatible Core
+
+**Goal**: 100% API compatible drop-in replacement with 2x performance
+
+---
+
+### Milestone 1.1: Project Foundation (Weeks 1-2)
+
+**Branch**: `feature/milestone-1.1-project-foundation`
+
+**Objective**: Set up workspace, CI/CD, and verify basic compilation
+
+#### Tests
+
+- [ ] Test: Workspace compiles without errors
+- [ ] Test: Workspace structure has all required crates
+- [ ] Test: CI pipeline runs successfully on push
+- [ ] Test: Cargo clippy passes with zero warnings
+- [ ] Test: Cargo fmt check passes
+- [ ] Test: Cargo audit passes (no vulnerabilities)
+- [ ] Test: All crates have proper lib.rs with module exports
+- [ ] Test: Development dependencies (proptest, mockall) are available
+- [ ] Test: Benchmark harness compiles (criterion)
+- [ ] Test: Can import core dependencies (tokio, serde, etc.)
+
+**Validation Criteria**:
+- [ ] All 4 crates compile successfully
+- [ ] CI pipeline green
+- [ ] Zero clippy warnings
+- [ ] Code formatted correctly
+- [ ] No security vulnerabilities
+
+**Deliverables**:
+- Cargo workspace with 4 crates: rsfga-api, rsfga-server, rsfga-domain, rsfga-storage
+- GitHub Actions CI pipeline
+- Pre-commit hooks for fmt/clippy
+- README.md with quick start
+
+---
+
+### Milestone 1.2: Type System & Model Parser (Weeks 3-4)
+
+**Branch**: `feature/milestone-1.2-type-system`
+
+**Objective**: Parse OpenFGA authorization models and validate them
+
+#### Phase 1.2.1: Core Type Definitions
+
+- [ ] Test: Can create a User type with validation
+- [ ] Test: User type rejects empty string
+- [ ] Test: User type rejects invalid format (missing "user:" prefix)
+- [ ] Test: Can create Object type with type:id format
+- [ ] Test: Can create Relation type
+- [ ] Test: Can create Tuple struct with user, relation, object
+- [ ] Test: Tuple validates all fields are non-empty
+- [ ] Test: Can create Store with unique ID
+- [ ] Test: Can create AuthorizationModel with schema version
+
+#### Phase 1.2.2: DSL Parser
+
+- [ ] Test: Parser recognizes "type" keyword
+- [ ] Test: Parser parses simple type definition
+- [ ] Test: Parser parses type with single relation
+- [ ] Test: Parser parses type with multiple relations
+- [ ] Test: Parser handles "define" keyword for relations
+- [ ] Test: Parser parses direct relation assignment
+- [ ] Test: Parser parses "this" keyword
+- [ ] Test: Parser parses union relation (relation1 or relation2)
+- [ ] Test: Parser parses intersection relation (relation1 and relation2)
+- [ ] Test: Parser parses exclusion relation (relation1 but not relation2)
+- [ ] Test: Parser parses computed relation (relation from parent)
+- [ ] Test: Parser rejects invalid syntax with clear error
+- [ ] Test: Parser handles whitespace correctly
+- [ ] Test: Parser handles comments
+
+**Example DSL to parse**:
+```
+type user
+
+type document
+  relations
+    define owner: [user]
+    define editor: [user] or owner
+    define viewer: [user] or editor
+```
+
+#### Phase 1.2.3: Model Validation
+
+- [ ] Test: Validator accepts valid model
+- [ ] Test: Validator rejects cyclic relation definitions
+- [ ] Test: Validator rejects undefined relation references
+- [ ] Test: Validator rejects undefined type references
+- [ ] Test: Validator checks relation type constraints
+- [ ] Test: Validator ensures all relations have definitions
+
+**Validation Criteria**:
+- [ ] >90% test coverage on parser
+- [ ] Parser handles all OpenFGA relation types
+- [ ] Validation catches all invalid models
+- [ ] Property-based tests for parser robustness
+
+**Deliverables**:
+- Complete type system (rsfga-domain/src/model/)
+- DSL parser (rsfga-domain/src/parser/)
+- Model validator (rsfga-domain/src/validation/)
+- 50+ unit tests
+
+---
+
+### Milestone 1.3: Storage Layer (Weeks 5-6)
+
+**Branch**: `feature/milestone-1.3-storage-layer`
+
+**Objective**: Abstract storage interface with PostgreSQL and in-memory implementations
+
+#### Phase 1.3.1: Storage Trait
+
+- [ ] Test: DataStore trait compiles
+- [ ] Test: DataStore trait is Send + Sync
+- [ ] Test: Can define write_tuple method signature
+- [ ] Test: Can define read_tuples method signature
+- [ ] Test: Can define delete_tuple method signature
+- [ ] Test: Can define transaction support methods
+
+#### Phase 1.3.2: In-Memory Storage
+
+- [ ] Test: InMemoryStore can be created
+- [ ] Test: Can write a single tuple
+- [ ] Test: Can read back written tuple
+- [ ] Test: Read returns empty vec when no tuples match
+- [ ] Test: Can write multiple tuples
+- [ ] Test: Can filter tuples by user
+- [ ] Test: Can filter tuples by object
+- [ ] Test: Can filter tuples by relation
+- [ ] Test: Can delete tuple
+- [ ] Test: Delete is idempotent (deleting non-existent tuple is ok)
+- [ ] Test: Concurrent writes don't lose data
+- [ ] Test: Concurrent reads while writing return consistent data
+
+#### Phase 1.3.3: PostgreSQL Storage
+
+- [ ] Test: Can connect to PostgreSQL
+- [ ] Test: Can create tables with migrations
+- [ ] Test: Can write tuple to database
+- [ ] Test: Can read tuple from database
+- [ ] Test: Can delete tuple from database
+- [ ] Test: Transactions rollback on error
+- [ ] Test: Transactions commit on success
+- [ ] Test: Connection pool limits work correctly
+- [ ] Test: Database errors are properly wrapped in StorageError
+- [ ] Test: Concurrent writes use correct isolation level
+- [ ] Test: Indexes are created for common query patterns
+- [ ] Test: Can paginate large result sets
+
+**Schema**:
+```sql
+CREATE TABLE tuples (
+    store_id UUID NOT NULL,
+    object_type VARCHAR(255) NOT NULL,
+    object_id VARCHAR(255) NOT NULL,
+    relation VARCHAR(255) NOT NULL,
+    user_type VARCHAR(255) NOT NULL,
+    user_id VARCHAR(255) NOT NULL,
+    user_relation VARCHAR(255),
+    created_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (store_id, object_type, object_id, relation, user_type, user_id, COALESCE(user_relation, ''))
+);
+
+CREATE INDEX idx_tuples_object ON tuples(store_id, object_type, object_id);
+CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
+```
+
+#### Phase 1.3.4: Storage Integration Tests
+
+- [ ] Test: Same behavior across InMemory and PostgreSQL stores
+- [ ] Test: Can swap storage implementations
+- [ ] Test: Large dataset performance (10k+ tuples)
+- [ ] Test: Storage survives application restart (PostgreSQL)
+
+**Validation Criteria**:
+- [ ] Both implementations pass identical test suite
+- [ ] >90% test coverage
+- [ ] Integration tests use testcontainers
+- [ ] Query performance <5ms p95
+
+**Deliverables**:
+- DataStore trait (rsfga-storage/src/traits.rs)
+- InMemoryStore implementation
+- PostgresStore implementation
+- Database migrations
+- 40+ unit + integration tests
+
+---
+
+### Milestone 1.4: Graph Resolver (Weeks 7-8)
+
+**Branch**: `feature/milestone-1.4-graph-resolver`
+
+**Objective**: Implement async graph traversal with cycle detection and depth limiting
+
+#### Phase 1.4.1: Direct Tuple Resolution
+
+- [ ] Test: Check returns true for direct tuple assignment
+- [ ] Test: Check returns false when no tuple exists
+- [ ] Test: Check handles multiple stores independently
+- [ ] Test: Check validates input parameters
+- [ ] Test: Check rejects invalid user format
+- [ ] Test: Check rejects invalid object format
+
+#### Phase 1.4.2: Computed Relations
+
+- [ ] Test: Can resolve "this" relation
+- [ ] Test: Can resolve relation from parent object
+- [ ] Test: Resolves nested parent relationships
+- [ ] Test: Handles missing parent gracefully
+
+#### Phase 1.4.3: Union Relations (A or B)
+
+- [ ] Test: Returns true if ANY union branch is true
+- [ ] Test: Returns false if ALL union branches are false
+- [ ] Test: Short-circuits on first true branch (performance)
+- [ ] Test: Executes union branches in parallel
+- [ ] Test: Handles errors in union branches
+
+#### Phase 1.4.4: Intersection Relations (A and B)
+
+- [ ] Test: Returns true only if ALL intersection branches are true
+- [ ] Test: Returns false if ANY intersection branch is false
+- [ ] Test: Short-circuits on first false branch
+- [ ] Test: Executes intersection branches in parallel
+
+#### Phase 1.4.5: Exclusion Relations (A but not B)
+
+- [ ] Test: Returns true if A is true and B is false
+- [ ] Test: Returns false if A is false
+- [ ] Test: Returns false if B is true
+
+#### Phase 1.4.6: Safety Mechanisms
+
+- [ ] Test: Depth limit prevents stack overflow
+- [ ] Test: Depth limit matches OpenFGA (25)
+- [ ] Test: Returns DepthLimitExceeded error when limit hit
+- [ ] Test: Cycle detection prevents infinite loops
+- [ ] Test: Cycle detection doesn't false-positive on valid DAGs
+- [ ] Test: Timeout prevents hanging on pathological graphs
+- [ ] Test: Timeout is configurable
+- [ ] Test: Returns timeout error with context
+
+#### Phase 1.4.7: Property-Based Tests
+
+- [ ] Test: Property: Resolver never panics on any input
+- [ ] Test: Property: Resolver always terminates (no infinite loops)
+- [ ] Test: Property: Resolver returns correct result for known graphs
+- [ ] Test: Property: Adding a tuple never makes check false→true incorrectly
+- [ ] Test: Property: Deleting a tuple never makes check true→false incorrectly
+
+**Validation Criteria**:
+- [ ] >95% test coverage (security-critical code)
+- [ ] Property-based tests cover all relation types
+- [ ] Fuzz testing for edge cases
+- [ ] Manual security review completed
+
+**Deliverables**:
+- GraphResolver (rsfga-domain/src/resolver/)
+- Cycle detection
+- Depth limiting
+- Parallel traversal
+- 60+ unit tests
+- 10+ property-based tests
+
+---
+
+### Milestone 1.5: Check Cache (Week 9)
+
+**Branch**: `feature/milestone-1.5-check-cache`
+
+**Objective**: Lock-free caching with TTL and async invalidation
+
+#### Phase 1.5.1: Cache Structure
+
+- [ ] Test: Can create cache with DashMap
+- [ ] Test: Can insert check result into cache
+- [ ] Test: Can retrieve cached check result
+- [ ] Test: Cache miss returns None
+- [ ] Test: Cache key includes store, user, relation, object
+- [ ] Test: Different stores have separate cache entries
+
+#### Phase 1.5.2: TTL and Eviction
+
+- [ ] Test: Cached entry expires after TTL
+- [ ] Test: TTL is configurable
+- [ ] Test: Can manually invalidate cache entry
+- [ ] Test: Can invalidate all entries for a store
+- [ ] Test: Can invalidate entries matching pattern
+- [ ] Test: Eviction doesn't block reads
+
+#### Phase 1.5.3: Cache Invalidation
+
+- [ ] Test: Writing tuple invalidates affected cache entries
+- [ ] Test: Deleting tuple invalidates affected cache entries
+- [ ] Test: Invalidation is async (doesn't block write response)
+- [ ] Test: Invalidation completes eventually
+- [ ] Test: Invalidation handles errors gracefully
+- [ ] Test: Can measure staleness window (<100ms p99)
+
+#### Phase 1.5.4: Concurrent Access
+
+- [ ] Test: Concurrent reads don't block each other
+- [ ] Test: Concurrent writes don't lose data
+- [ ] Test: Read during write returns valid result
+- [ ] Test: Cache scales to 1000+ concurrent operations
+- [ ] Test: No deadlocks under high contention
+
+**Validation Criteria**:
+- [ ] Lock-free reads verified
+- [ ] Staleness window <100ms p99
+- [ ] >90% test coverage
+- [ ] Benchmark shows >5x speedup vs Mutex<HashMap>
+
+**Deliverables**:
+- CheckCache (rsfga-domain/src/cache/)
+- DashMap + Moka integration
+- Async invalidation
+- 30+ tests
+
+---
+
+### Milestone 1.6: Batch Check Handler (Week 10)
+
+**Branch**: `feature/milestone-1.6-batch-handler`
+
+**Objective**: Parallel batch checking with three-stage deduplication
+
+#### Phase 1.6.1: Batch Request Parsing
+
+- [ ] Test: Can parse batch check request
+- [ ] Test: Validates each check in batch
+- [ ] Test: Rejects empty batch
+- [ ] Test: Accepts batch with single check
+- [ ] Test: Accepts batch with 100+ checks
+
+#### Phase 1.6.2: Intra-Batch Deduplication
+
+- [ ] Test: Identifies duplicate checks in batch
+- [ ] Test: Executes unique checks only once
+- [ ] Test: Maps results back to original positions
+- [ ] Test: Preserves request order in response
+
+#### Phase 1.6.3: Singleflight (Cross-Request Dedup)
+
+- [ ] Test: Concurrent requests for same check share result
+- [ ] Test: Singleflight groups expire after completion
+- [ ] Test: Errors don't poison singleflight group
+- [ ] Test: Singleflight handles timeouts correctly
+
+#### Phase 1.6.4: Parallel Execution
+
+- [ ] Test: Unique checks execute in parallel
+- [ ] Test: Batch processes faster than sequential checks
+- [ ] Test: Respects concurrency limits
+- [ ] Test: Handles partial failures gracefully
+
+#### Phase 1.6.5: Performance
+
+- [ ] Test: Batch of 100 identical checks executes ~1 check
+- [ ] Test: Batch throughput >500 checks/s (target)
+- [ ] Test: Memory usage scales linearly with unique checks
+
+**Validation Criteria**:
+- [ ] Batch throughput >500 checks/s
+- [ ] Deduplication effectiveness >90% on typical workloads
+- [ ] >90% test coverage
+
+**Deliverables**:
+- BatchCheckHandler (rsfga-server/src/handlers/batch.rs)
+- Three-stage deduplication
+- Singleflight implementation
+- 25+ tests
+
+---
+
+### Milestone 1.7: API Layer (Week 11)
+
+**Branch**: `feature/milestone-1.7-api-layer`
+
+**Objective**: HTTP REST and gRPC APIs with OpenFGA compatibility
+
+#### Phase 1.7.1: Protobuf Definitions
+
+- [ ] Test: Protobuf files compile
+- [ ] Test: Generated Rust code is identical to OpenFGA types
+- [ ] Test: Can serialize/deserialize Check request
+- [ ] Test: Can serialize/deserialize Check response
+- [ ] Test: Can serialize/deserialize all request types
+
+#### Phase 1.7.2: HTTP REST API
+
+- [ ] Test: Server starts on configured port
+- [ ] Test: POST /stores/{store_id}/check returns 200
+- [ ] Test: Check endpoint validates request body
+- [ ] Test: Check endpoint returns correct response format
+- [ ] Test: POST /stores/{store_id}/expand returns 200
+- [ ] Test: POST /stores/{store_id}/write returns 200
+- [ ] Test: POST /stores/{store_id}/read returns 200
+- [ ] Test: Invalid JSON returns 400
+- [ ] Test: Non-existent store returns 404
+- [ ] Test: Server errors return 500 with details
+
+#### Phase 1.7.3: gRPC API
+
+- [ ] Test: gRPC server starts
+- [ ] Test: Check RPC works correctly
+- [ ] Test: BatchCheck RPC works correctly
+- [ ] Test: Write RPC works correctly
+- [ ] Test: Read RPC works correctly
+- [ ] Test: gRPC errors map correctly to status codes
+
+#### Phase 1.7.4: Middleware
+
+- [ ] Test: Request logging works
+- [ ] Test: Metrics are collected (request count, duration)
+- [ ] Test: Tracing spans are created
+- [ ] Test: CORS headers are set correctly
+- [ ] Test: Request ID is generated and propagated
+
+#### Phase 1.7.5: OpenFGA Compatibility
+
+- [ ] Test: All OpenFGA API endpoints present
+- [ ] Test: Request/response schemas match exactly
+- [ ] Test: Error codes match OpenFGA
+- [ ] Test: Run OpenFGA compatibility test suite (100% pass)
+
+**Validation Criteria**:
+- [ ] 100% OpenFGA API compatibility
+- [ ] OpenFGA test suite passes 100%
+- [ ] API documentation generated
+- [ ] >90% test coverage
+
+**Deliverables**:
+- HTTP REST API (rsfga-api/src/http/)
+- gRPC API (rsfga-api/src/grpc/)
+- Middleware (auth, metrics, tracing)
+- OpenFGA compatibility verified
+- 50+ integration tests
+
+---
+
+### Milestone 1.8: Testing & Benchmarking (Week 12)
+
+**Branch**: `feature/milestone-1.8-testing-benchmarking`
+
+**Objective**: Comprehensive testing and performance validation
+
+#### Phase 1.8.1: Test Coverage
+
+- [ ] Test: Overall coverage >90%
+- [ ] Test: Domain layer coverage >95%
+- [ ] Test: Graph resolver coverage >95%
+- [ ] Test: All public APIs have tests
+- [ ] Test: All error paths have tests
+
+#### Phase 1.8.2: Integration Tests
+
+- [ ] Test: End-to-end authorization flow works
+- [ ] Test: Multiple concurrent clients work correctly
+- [ ] Test: Database connection loss is handled
+- [ ] Test: Server restart preserves data (PostgreSQL)
+- [ ] Test: Large authorization models work (1000+ types)
+- [ ] Test: Deep hierarchies work (depth 20+)
+
+#### Phase 1.8.3: Performance Benchmarks
+
+- [ ] Test: Benchmark check operation throughput
+- [ ] Test: Benchmark batch check throughput
+- [ ] Test: Benchmark write operation throughput
+- [ ] Test: Benchmark cache hit ratio
+- [ ] Test: Benchmark memory usage
+- [ ] Test: Benchmark startup time
+- [ ] Test: Compare against OpenFGA baseline
+
+**Baseline Comparison**:
+```
+OpenFGA Baseline:
+- Check: 483 req/s
+- Batch: 23 checks/s
+- Write: 59 req/s
+- Check p95: 22ms
+
+RSFGA Target (60% confidence):
+- Check: 1000+ req/s (2x improvement)
+- Batch: 500+ checks/s (20x improvement)
+- Write: 150+ req/s (2.5x improvement)
+- Check p95: <20ms
+```
+
+#### Phase 1.8.4: Stress Testing
+
+- [ ] Test: Server handles 1000 concurrent connections
+- [ ] Test: No memory leaks under sustained load
+- [ ] Test: Graceful degradation under overload
+- [ ] Test: Recovery after database failure
+
+#### Phase 1.8.5: Security Testing
+
+- [ ] Test: SQL injection attempts fail
+- [ ] Test: Input validation prevents XSS
+- [ ] Test: Rate limiting works
+- [ ] Test: Authentication required for sensitive endpoints
+- [ ] Test: Authorization model cannot be bypassed
+
+**Validation Criteria**:
+- [ ] Check throughput >1000 req/s (validates ADR-001, ADR-002)
+- [ ] Batch throughput >500 checks/s (validates ADR-005)
+- [ ] Cache staleness <100ms p99 (validates ADR-007)
+- [ ] No critical security vulnerabilities
+- [ ] 100% OpenFGA compatibility
+
+**Deliverables**:
+- Comprehensive test suite (100+ tests)
+- Benchmark suite (criterion)
+- Load testing scripts (k6)
+- Performance report
+- Security audit report
+- Updated ADRs with validation results
+
+---
+
+### Milestone 1.9: Production Readiness (Week 13)
+
+**Branch**: `feature/milestone-1.9-production-ready`
+
+**Objective**: Observability, documentation, and deployment
+
+#### Phase 1.9.1: Observability
+
+- [ ] Test: Metrics endpoint exposes Prometheus metrics
+- [ ] Test: Tracing spans are exported to Jaeger
+- [ ] Test: Structured logs are JSON formatted
+- [ ] Test: Health check endpoint returns 200
+- [ ] Test: Readiness check validates dependencies
+
+**Key Metrics**:
+- Request rate (requests/sec)
+- Request duration (p50, p95, p99)
+- Error rate
+- Cache hit ratio
+- Database connection pool usage
+- Active connections
+
+#### Phase 1.9.2: Configuration
+
+- [ ] Test: Can load config from YAML file
+- [ ] Test: Can override config with env vars
+- [ ] Test: Config validation catches errors
+- [ ] Test: Invalid config returns clear error
+- [ ] Test: Config hot-reload works (if supported)
+
+#### Phase 1.9.3: Documentation
+
+- [ ] Test: API documentation is generated
+- [ ] Test: README has quick start guide
+- [ ] Test: Architecture docs are up to date
+- [ ] Test: All ADRs have validation results
+- [ ] Test: Migration guide from OpenFGA exists
+
+#### Phase 1.9.4: Deployment
+
+- [ ] Test: Docker image builds successfully
+- [ ] Test: Docker image runs correctly
+- [ ] Test: Kubernetes manifests are valid
+- [ ] Test: Helm chart installs successfully
+- [ ] Test: Database migrations run automatically
+
+**Validation Criteria**:
+- [ ] Complete observability stack
+- [ ] Production-grade configuration
+- [ ] Comprehensive documentation
+- [ ] One-command deployment
+
+**Deliverables**:
+- Prometheus metrics
+- OpenTelemetry tracing
+- Structured logging
+- Configuration management
+- Docker image
+- Kubernetes/Helm charts
+- Complete documentation
+
+---
+
+## Phase 1 Summary
+
+**When Phase 1 is complete, RSFGA will have:**
+
+✅ 100% OpenFGA API compatibility
+✅ PostgreSQL and in-memory storage backends
+✅ Async graph resolution with parallel traversal
+✅ Lock-free caching with TTL
+✅ Batch checking with deduplication
+✅ REST and gRPC APIs
+✅ >90% test coverage
+✅ 2x performance improvement (validated)
+✅ Production-ready observability
+✅ Complete documentation
+
+**Performance Validation Status**: ⏸️ Awaiting M1.8 benchmarking
+
+**OpenFGA Compatibility**: ✅ Verified in M1.7
+
+**Next**: Phase 2 - Precomputation Engine (Optional)
+
+---
+
+## Phase 2: Precomputation Engine (Future)
+
+**Goal**: Sub-millisecond check latency through on-write precomputation
+
+**Status**: 📋 Proposed (awaits Phase 1 completion)
+
+**Key Features**:
+- Valkey/Redis for precomputed results
+- Change impact analysis
+- Selective precomputation (hot paths)
+- TTL-based eviction
+
+**Target Performance**:
+- Check: <1ms p99 (vs ~20ms graph traversal)
+- Write: 100-200ms p95 (acceptable trade-off)
+
+See [ARCHITECTURE_DECISIONS.md - ADR-013](docs/design/ARCHITECTURE_DECISIONS.md#adr-013-precomputation-architecture-phase-2) for details.
+
+---
+
+## Phase 3: Distributed Edge (Future)
+
+**Goal**: Global <10ms check latency through edge deployment
+
+**Status**: 📋 Proposed (awaits Phase 2 completion)
+
+**Key Features**:
+- NATS JetStream for sync
+- Product-based data partitioning
+- Edge, Regional, Central topology
+- Automatic fallback
+
+**Target Performance**:
+- Edge: <10ms p95 globally
+- Cluster: 100K+ req/s
+
+See [EDGE_ARCHITECTURE_NATS.md](docs/design/EDGE_ARCHITECTURE_NATS.md) for details.
+
+---
+
+## Risk Mitigation Tracking
+
+As we implement, track risk mitigation:
+
+**Critical Risks**:
+- [ ] R-001: API Compatibility verified in M1.7
+- [ ] R-002: Performance claims validated in M1.8
+- [ ] R-003: Security review completed in M1.4
+
+**High Risks**:
+- [ ] R-004: Database performance monitored in M1.3
+- [ ] R-005: Cache consistency measured in M1.5
+- [ ] R-007: Dependencies audited in M1.1
+
+See [RISKS.md](docs/design/RISKS.md) for complete list.
+
+---
+
+## Validation Gates
+
+Before marking Phase 1 complete:
+
+**Functional**:
+- [ ] All Phase 1 tests passing (500+ tests)
+- [ ] OpenFGA compatibility suite 100% pass
+- [ ] Zero critical bugs
+
+**Performance**:
+- [ ] Check: >1000 req/s
+- [ ] Batch: >500 checks/s
+- [ ] Write: >150 req/s
+- [ ] All within error budget
+
+**Quality**:
+- [ ] >90% test coverage
+- [ ] Zero clippy warnings
+- [ ] Zero security vulnerabilities
+- [ ] All ADRs validated
+
+**Production**:
+- [ ] Complete documentation
+- [ ] Deployment automation
+- [ ] Observability stack
+- [ ] Runbook for operations
+
+---
+
+## Current Status
+
+**Phase**: Architecture & Design ✅ Complete
+**Next Milestone**: 1.1 - Project Foundation
+**Status**: ⏸️ Awaiting user approval to begin implementation
+
+**Ready to start? Say "go" and let's begin with Milestone 1.1!**
