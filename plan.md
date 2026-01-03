@@ -61,7 +61,7 @@ To avoid confusion, we use these terms consistently:
 - [x] Test: Can connect to OpenFGA gRPC API
 - [x] Test: Can create a store via API
 - [x] Test: Can clean up test stores after tests
-- [ ] Test: Test environment teardown is idempotent
+- [x] Test: Test environment teardown is idempotent
 
 #### Section 2: Test Data Generators
 

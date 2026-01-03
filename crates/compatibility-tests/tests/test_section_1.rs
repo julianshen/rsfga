@@ -79,25 +79,49 @@ fn stop_docker_compose() -> Result<()> {
         );
     }
 
+    // Wait for containers to actually stop (idempotent - safe to call multiple times)
+    // Docker-compose down is asynchronous, so we need to wait for containers to be gone
+    for _ in 0..10 {
+        let check_output = Command::new("docker-compose")
+            .args(&[
+                "-f",
+                &compose_file,
+                "ps",
+                "-q",  // Quiet mode - only IDs
+            ])
+            .output()?;
+
+        let stdout = String::from_utf8_lossy(&check_output.stdout);
+        if stdout.trim().is_empty() {
+            // No containers from our compose project - we're done
+            return Ok(());
+        }
+
+        // Containers still stopping, wait a bit
+        thread::sleep(Duration::from_secs(1));
+    }
+
     Ok(())
 }
 
 /// Check if OpenFGA is running by checking container status
 async fn check_openfga_running() -> Result<bool> {
-    let output = Command::new("docker")
+    // Get path to compatibility-tests crate root
+    let crate_root = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR not set");
+    let compose_file = format!("{}/docker-compose.yml", crate_root);
+
+    let output = Command::new("docker-compose")
         .args(&[
+            "-f",
+            &compose_file,
             "ps",
-            "--filter",
-            "name=openfga",
-            "--filter",
-            "status=running",
-            "--format",
-            "{{.Names}}",
+            "-q",  // Quiet mode - only IDs
         ])
         .output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let is_running = stdout.contains("openfga");
+    let is_running = !stdout.trim().is_empty();
 
     Ok(is_running)
 }
@@ -265,6 +289,31 @@ async fn test_can_clean_up_test_stores() -> Result<()> {
     );
 
     // Cleanup
+    stop_docker_compose()?;
+
+    Ok(())
+}
+
+/// Test: Test environment teardown is idempotent
+#[tokio::test]
+async fn test_environment_teardown_is_idempotent() -> Result<()> {
+    // Arrange: Start OpenFGA
+    stop_docker_compose()?; // Clean state first
+    start_docker_compose()?;
+
+    // Act: Stop docker-compose multiple times
+    stop_docker_compose()?; // First stop - should succeed
+    stop_docker_compose()?; // Second stop - should also succeed (idempotent)
+    stop_docker_compose()?; // Third stop - should still succeed
+
+    // Assert: Verify environment is actually stopped
+    let is_running = check_openfga_running().await?;
+    assert!(
+        !is_running,
+        "OpenFGA should not be running after teardown"
+    );
+
+    // Final cleanup (just to be thorough)
     stop_docker_compose()?;
 
     Ok(())
