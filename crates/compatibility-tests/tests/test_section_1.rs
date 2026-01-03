@@ -210,3 +210,62 @@ async fn test_can_create_store_via_api() -> Result<()> {
 
     Ok(())
 }
+
+/// Test: Can clean up test stores after tests
+#[tokio::test]
+async fn test_can_clean_up_test_stores() -> Result<()> {
+    // Arrange: Start OpenFGA and create a test store
+    stop_docker_compose()?;
+    start_docker_compose()?;
+
+    let client = reqwest::Client::new();
+    let store_name = format!("test-store-{}", Uuid::new_v4());
+
+    let create_request = serde_json::json!({
+        "name": store_name
+    });
+
+    let create_response = client
+        .post("http://localhost:18080/stores")
+        .json(&create_request)
+        .send()
+        .await?;
+
+    assert!(create_response.status().is_success());
+    let store_data: serde_json::Value = create_response.json().await?;
+    let store_id = store_data
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Store ID not found in response"))?;
+
+    // Act: Delete the store
+    let delete_response = client
+        .delete(format!("http://localhost:18080/stores/{}", store_id))
+        .send()
+        .await?;
+
+    // Assert: Deletion returns success (204 No Content)
+    assert!(
+        delete_response.status().is_success(),
+        "Store deletion should return 2xx status, got: {}",
+        delete_response.status()
+    );
+
+    // Verify: Store no longer exists (GET should return 404)
+    let get_response = client
+        .get(format!("http://localhost:18080/stores/{}", store_id))
+        .send()
+        .await?;
+
+    assert_eq!(
+        get_response.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "Deleted store should return 404, got: {}",
+        get_response.status()
+    );
+
+    // Cleanup
+    stop_docker_compose()?;
+
+    Ok(())
+}
