@@ -64,10 +64,7 @@ async fn test_can_capture_http_request_response_pairs() -> Result<()> {
     // Act: Verify we can capture all details
     // Assert: Verify exchange structure
     assert_eq!(exchange.request.method, "POST", "Method should be POST");
-    assert_eq!(
-        exchange.request.path, "/stores",
-        "Path should be /stores"
-    );
+    assert_eq!(exchange.request.path, "/stores", "Path should be /stores");
     assert!(
         exchange.request.body.is_some(),
         "Request should have a body"
@@ -115,10 +112,7 @@ async fn test_can_capture_grpc_request_response_pairs() -> Result<()> {
     );
 
     // Verify response captured
-    assert_eq!(
-        exchange.response.status_code, 0,
-        "gRPC OK status is 0"
-    );
+    assert_eq!(exchange.response.status_code, 0, "gRPC OK status is 0");
     assert!(
         !exchange.response.message.is_empty(),
         "Response message should not be empty"
@@ -139,7 +133,10 @@ async fn test_can_serialize_captured_data_to_json() -> Result<()> {
     let grpc_json = serde_json::to_string_pretty(&grpc_exchange)?;
 
     // Assert: Verify JSON is valid and contains expected fields
-    assert!(http_json.contains("\"method\""), "JSON should contain method");
+    assert!(
+        http_json.contains("\"method\""),
+        "JSON should contain method"
+    );
     assert!(http_json.contains("\"path\""), "JSON should contain path");
     assert!(
         http_json.contains("\"status_code\""),
@@ -150,7 +147,10 @@ async fn test_can_serialize_captured_data_to_json() -> Result<()> {
         grpc_json.contains("\"service\""),
         "JSON should contain service"
     );
-    assert!(grpc_json.contains("\"method\""), "JSON should contain method");
+    assert!(
+        grpc_json.contains("\"method\""),
+        "JSON should contain method"
+    );
 
     // Verify we can deserialize back
     let http_roundtrip: CapturedHttpExchange = serde_json::from_str(&http_json)?;
@@ -210,7 +210,10 @@ async fn test_can_compare_two_responses_for_equality() -> Result<()> {
     response3.status_code = 404;
 
     // Assert: Should not be equal
-    assert_ne!(response1, response3, "Different responses should not be equal");
+    assert_ne!(
+        response1, response3,
+        "Different responses should not be equal"
+    );
 
     Ok(())
 }
@@ -228,10 +231,7 @@ async fn test_can_detect_breaking_changes_in_response_format() -> Result<()> {
     let is_compatible_with_breaking_payload = detect_breaking_changes(original, breaking)?;
 
     // Assert: Adding fields is compatible, changing field names is breaking
-    assert!(
-        is_compatible,
-        "Adding new fields should be compatible"
-    );
+    assert!(is_compatible, "Adding new fields should be compatible");
     assert!(
         !is_compatible_with_breaking_payload,
         "Changing field names should be breaking"
@@ -289,7 +289,8 @@ async fn test_can_detect_breaking_changes_in_arrays() -> Result<()> {
     let original = r#"{"stores": [{"id": "store1", "name": "Store 1"}]}"#;
 
     // Compatible: Same array structure
-    let compatible = r#"{"stores": [{"id": "store1", "name": "Store 1"}, {"id": "store2", "name": "Store 2"}]}"#;
+    let compatible =
+        r#"{"stores": [{"id": "store1", "name": "Store 1"}, {"id": "store2", "name": "Store 2"}]}"#;
 
     // Breaking: Array element type changed
     let breaking = r#"{"stores": [{"id": 123, "name": "Store 1"}]}"#;
