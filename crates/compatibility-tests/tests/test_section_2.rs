@@ -165,3 +165,117 @@ fn is_valid_object_format(identifier: &str) -> bool {
 
     true
 }
+
+/// Test: Can generate valid Relation names
+#[test]
+fn test_can_generate_valid_relation_names() -> Result<()> {
+    // Arrange: Common relation names
+    let relation_names = vec!["viewer", "editor", "owner", "admin", "member", "can_view", "can_edit"];
+
+    // Act & Assert: Verify each relation name is valid
+    for relation_name in relation_names {
+        assert!(
+            is_valid_relation_name(relation_name),
+            "Relation name should be valid: {}",
+            relation_name
+        );
+
+        // Relations should be lowercase alphanumeric with underscores
+        assert!(
+            relation_name.chars().all(|c| c.is_lowercase() || c.is_numeric() || c == '_'),
+            "Relation should be lowercase alphanumeric with underscores: {}",
+            relation_name
+        );
+    }
+
+    Ok(())
+}
+
+/// Check if a string is a valid relation name
+fn is_valid_relation_name(name: &str) -> bool {
+    // Valid relation names:
+    // - Must not be empty
+    // - Should be alphanumeric with underscores
+    // - Typically lowercase (OpenFGA convention)
+    // - No spaces
+
+    if name.is_empty() {
+        return false;
+    }
+
+    if name.contains(' ') {
+        return false;
+    }
+
+    // Check all characters are alphanumeric or underscore
+    name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Test: Can generate valid Tuples
+#[test]
+fn test_can_generate_valid_tuples() -> Result<()> {
+    // Arrange: Set up test data
+    let test_cases = vec![
+        ("alice", "viewer", "document", "readme"),
+        ("bob", "editor", "folder", "planning"),
+        ("charlie", "owner", "organization", "acme"),
+    ];
+
+    // Act: Generate tuples
+    for (user_id, relation, object_type, object_id) in test_cases {
+        let tuple = generate_tuple(user_id, relation, object_type, object_id);
+
+        // Assert: Verify tuple structure
+        assert_eq!(
+            tuple.user,
+            generate_user_identifier(user_id),
+            "Tuple user should match"
+        );
+        assert_eq!(
+            tuple.relation,
+            relation,
+            "Tuple relation should match"
+        );
+        assert_eq!(
+            tuple.object,
+            generate_object_identifier(object_type, object_id),
+            "Tuple object should match"
+        );
+
+        // Verify all components are valid
+        assert!(
+            is_valid_user_format(&tuple.user),
+            "Tuple user should be valid: {}",
+            tuple.user
+        );
+        assert!(
+            is_valid_relation_name(&tuple.relation),
+            "Tuple relation should be valid: {}",
+            tuple.relation
+        );
+        assert!(
+            is_valid_object_format(&tuple.object),
+            "Tuple object should be valid: {}",
+            tuple.object
+        );
+    }
+
+    Ok(())
+}
+
+/// Represents a relationship tuple in OpenFGA
+#[derive(Debug, Clone, PartialEq)]
+struct Tuple {
+    user: String,
+    relation: String,
+    object: String,
+}
+
+/// Generate a tuple (user, relation, object)
+fn generate_tuple(user_id: &str, relation: &str, object_type: &str, object_id: &str) -> Tuple {
+    Tuple {
+        user: generate_user_identifier(user_id),
+        relation: relation.to_string(),
+        object: generate_object_identifier(object_type, object_id),
+    }
+}

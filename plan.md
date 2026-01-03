@@ -67,8 +67,8 @@ To avoid confusion, we use these terms consistently:
 
 - [x] Test: Can generate valid User identifiers
 - [x] Test: Can generate valid Object identifiers (type:id format)
-- [ ] Test: Can generate valid Relation names
-- [ ] Test: Can generate valid Tuples
+- [x] Test: Can generate valid Relation names
+- [x] Test: Can generate valid Tuples
 - [ ] Test: Can generate authorization models with direct relations
 - [ ] Test: Can generate authorization models with computed relations
 - [ ] Test: Can generate authorization models with union relations
