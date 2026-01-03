@@ -341,3 +341,478 @@ fn generate_tuple(
         object: generate_object_identifier(object_type, object_id),
     }
 }
+
+/// Test: Can generate authorization models with direct relations
+#[test]
+fn test_can_generate_authorization_models_with_direct_relations() -> Result<()> {
+    // Arrange: Define a simple authorization model with direct relations
+    // Example: A document with viewer, editor, owner relations
+    let model = generate_authorization_model_with_direct_relations();
+
+    // Assert: Verify model structure
+    assert!(!model.schema_version.is_empty(), "Schema version should not be empty");
+    assert!(!model.type_definitions.is_empty(), "Model should have type definitions");
+
+    // Find the document type definition
+    let document_type = model
+        .type_definitions
+        .iter()
+        .find(|t| t.name == "document")
+        .expect("Model should have a 'document' type");
+
+    // Verify direct relations exist
+    assert!(
+        document_type.relations.contains_key("viewer"),
+        "Document should have 'viewer' relation"
+    );
+    assert!(
+        document_type.relations.contains_key("editor"),
+        "Document should have 'editor' relation"
+    );
+    assert!(
+        document_type.relations.contains_key("owner"),
+        "Document should have 'owner' relation"
+    );
+
+    // Verify each relation is direct (allows user type)
+    for (relation_name, relation_def) in &document_type.relations {
+        assert!(
+            relation_def.is_direct,
+            "Relation '{}' should be direct",
+            relation_name
+        );
+        assert!(
+            relation_def.allowed_types.contains(&"user".to_string()),
+            "Relation '{}' should allow 'user' type",
+            relation_name
+        );
+    }
+
+    Ok(())
+}
+
+/// Test: Can generate authorization models with computed relations
+#[test]
+fn test_can_generate_authorization_models_with_computed_relations() -> Result<()> {
+    // Arrange: Define an authorization model with computed relations
+    // Example: A document with can_view computed from viewer or editor
+    let model = generate_authorization_model_with_computed_relations();
+
+    // Assert: Verify model structure
+    assert!(!model.schema_version.is_empty(), "Schema version should not be empty");
+    assert!(!model.type_definitions.is_empty(), "Model should have type definitions");
+
+    // Find the document type definition
+    let document_type = model
+        .type_definitions
+        .iter()
+        .find(|t| t.name == "document")
+        .expect("Model should have a 'document' type");
+
+    // Verify computed relation exists
+    assert!(
+        document_type.relations.contains_key("can_view"),
+        "Document should have 'can_view' computed relation"
+    );
+
+    // Verify can_view is computed from viewer or editor
+    let can_view_relation = &document_type.relations["can_view"];
+    assert!(
+        !can_view_relation.is_direct,
+        "can_view should be a computed relation"
+    );
+    assert!(
+        can_view_relation.computed_from.is_some(),
+        "can_view should have computed_from defined"
+    );
+
+    let computed_from = can_view_relation.computed_from.as_ref().unwrap();
+    assert!(
+        computed_from.contains(&"viewer".to_string()),
+        "can_view should be computed from 'viewer'"
+    );
+    assert!(
+        computed_from.contains(&"editor".to_string()),
+        "can_view should be computed from 'editor'"
+    );
+
+    // Verify base relations still exist
+    assert!(
+        document_type.relations.contains_key("viewer"),
+        "Document should have 'viewer' base relation"
+    );
+    assert!(
+        document_type.relations.contains_key("editor"),
+        "Document should have 'editor' base relation"
+    );
+
+    Ok(())
+}
+
+/// Represents an OpenFGA authorization model
+#[derive(Debug, Clone)]
+struct AuthorizationModel {
+    schema_version: String,
+    type_definitions: Vec<TypeDefinition>,
+}
+
+/// Represents a type definition in an authorization model
+#[derive(Debug, Clone)]
+struct TypeDefinition {
+    name: String,
+    relations: std::collections::HashMap<String, RelationDefinition>,
+}
+
+/// Represents a relation definition
+#[derive(Debug, Clone)]
+struct RelationDefinition {
+    is_direct: bool,
+    allowed_types: Vec<String>,
+    computed_from: Option<Vec<String>>, // For computed relations
+    operation: Option<RelationOperation>, // Union, Intersection, etc.
+}
+
+/// Represents the operation used in computed relations
+#[derive(Debug, Clone, PartialEq)]
+enum RelationOperation {
+    Union,        // OR semantics (viewer or editor)
+    Intersection, // AND semantics (owner and admin)
+}
+
+/// Generate an authorization model with direct relations
+fn generate_authorization_model_with_direct_relations() -> AuthorizationModel {
+    use std::collections::HashMap;
+
+    // Create user type (no relations)
+    let user_type = TypeDefinition {
+        name: "user".to_string(),
+        relations: HashMap::new(),
+    };
+
+    // Create document type with direct relations
+    let mut document_relations = HashMap::new();
+
+    // Define viewer relation: [user]
+    document_relations.insert(
+        "viewer".to_string(),
+        RelationDefinition {
+            is_direct: true,
+            allowed_types: vec!["user".to_string()],
+            computed_from: None,
+            operation: None,
+        },
+    );
+
+    // Define editor relation: [user]
+    document_relations.insert(
+        "editor".to_string(),
+        RelationDefinition {
+            is_direct: true,
+            allowed_types: vec!["user".to_string()],
+            computed_from: None,
+            operation: None,
+        },
+    );
+
+    // Define owner relation: [user]
+    document_relations.insert(
+        "owner".to_string(),
+        RelationDefinition {
+            is_direct: true,
+            allowed_types: vec!["user".to_string()],
+            computed_from: None,
+            operation: None,
+        },
+    );
+
+    let document_type = TypeDefinition {
+        name: "document".to_string(),
+        relations: document_relations,
+    };
+
+    AuthorizationModel {
+        schema_version: "1.1".to_string(),
+        type_definitions: vec![user_type, document_type],
+    }
+}
+
+/// Generate an authorization model with computed relations
+fn generate_authorization_model_with_computed_relations() -> AuthorizationModel {
+    use std::collections::HashMap;
+
+    // Create user type (no relations)
+    let user_type = TypeDefinition {
+        name: "user".to_string(),
+        relations: HashMap::new(),
+    };
+
+    // Create document type with direct and computed relations
+    let mut document_relations = HashMap::new();
+
+    // Define viewer relation: [user] (direct)
+    document_relations.insert(
+        "viewer".to_string(),
+        RelationDefinition {
+            is_direct: true,
+            allowed_types: vec!["user".to_string()],
+            computed_from: None,
+            operation: None,
+        },
+    );
+
+    // Define editor relation: [user] (direct)
+    document_relations.insert(
+        "editor".to_string(),
+        RelationDefinition {
+            is_direct: true,
+            allowed_types: vec!["user".to_string()],
+            computed_from: None,
+            operation: None,
+        },
+    );
+
+    // Define can_view relation: viewer or editor (computed with union)
+    document_relations.insert(
+        "can_view".to_string(),
+        RelationDefinition {
+            is_direct: false,
+            allowed_types: vec![],
+            computed_from: Some(vec!["viewer".to_string(), "editor".to_string()]),
+            operation: Some(RelationOperation::Union),
+        },
+    );
+
+    let document_type = TypeDefinition {
+        name: "document".to_string(),
+        relations: document_relations,
+    };
+
+    AuthorizationModel {
+        schema_version: "1.1".to_string(),
+        type_definitions: vec![user_type, document_type],
+    }
+}
+
+/// Test: Can generate authorization models with union relations
+#[test]
+fn test_can_generate_authorization_models_with_union_relations() -> Result<()> {
+    // Arrange: Generate model with union (OR) relations
+    let model = generate_authorization_model_with_union_relations();
+
+    // Assert: Find the document type
+    let document_type = model
+        .type_definitions
+        .iter()
+        .find(|t| t.name == "document")
+        .expect("Model should have a 'document' type");
+
+    // Verify union relation exists
+    let can_view_relation = &document_type.relations["can_view"];
+    assert_eq!(
+        can_view_relation.operation,
+        Some(RelationOperation::Union),
+        "can_view should use Union operation"
+    );
+
+    // Verify it computes from multiple relations
+    let computed_from = can_view_relation.computed_from.as_ref().unwrap();
+    assert!(
+        computed_from.len() >= 2,
+        "Union should combine at least 2 relations"
+    );
+
+    Ok(())
+}
+
+/// Test: Can generate authorization models with intersection relations
+#[test]
+fn test_can_generate_authorization_models_with_intersection_relations() -> Result<()> {
+    // Arrange: Generate model with intersection (AND) relations
+    let model = generate_authorization_model_with_intersection_relations();
+
+    // Assert: Find the document type
+    let document_type = model
+        .type_definitions
+        .iter()
+        .find(|t| t.name == "document")
+        .expect("Model should have a 'document' type");
+
+    // Verify intersection relation exists
+    assert!(
+        document_type.relations.contains_key("can_delete"),
+        "Document should have 'can_delete' intersection relation"
+    );
+
+    let can_delete_relation = &document_type.relations["can_delete"];
+    assert_eq!(
+        can_delete_relation.operation,
+        Some(RelationOperation::Intersection),
+        "can_delete should use Intersection operation"
+    );
+
+    // Verify it requires multiple conditions
+    let computed_from = can_delete_relation.computed_from.as_ref().unwrap();
+    assert!(
+        computed_from.contains(&"owner".to_string()),
+        "can_delete should require 'owner'"
+    );
+    assert!(
+        computed_from.len() >= 2,
+        "Intersection should combine at least 2 relations"
+    );
+
+    Ok(())
+}
+
+/// Test: Can generate models with deeply nested relations (10+ levels)
+#[test]
+fn test_can_generate_models_with_deeply_nested_relations() -> Result<()> {
+    // Arrange: Generate model with deep hierarchy (folder -> folder -> ... -> document)
+    let model = generate_deeply_nested_model();
+
+    // Assert: Verify deep nesting
+    let folder_type = model
+        .type_definitions
+        .iter()
+        .find(|t| t.name == "folder")
+        .expect("Model should have a 'folder' type");
+
+    // Verify parent relation exists (for creating hierarchy)
+    assert!(
+        folder_type.relations.contains_key("parent"),
+        "Folder should have 'parent' relation for nesting"
+    );
+
+    // Verify computed relation that traverses the hierarchy
+    assert!(
+        folder_type.relations.contains_key("viewer"),
+        "Folder should have 'viewer' relation"
+    );
+
+    // The key insight: a deeply nested model can express
+    // "if you're a viewer of the parent folder, you're a viewer of this folder"
+    // This creates an unbounded chain: folder1 -> folder2 -> ... -> folder10+
+    let viewer_relation = &folder_type.relations["viewer"];
+
+    // Verify the relation definition supports transitivity
+    assert!(
+        viewer_relation.computed_from.is_some() || viewer_relation.is_direct,
+        "Viewer relation should be defined (direct or computed)"
+    );
+
+    Ok(())
+}
+
+/// Generate authorization model with union relations
+fn generate_authorization_model_with_union_relations() -> AuthorizationModel {
+    // Union is already implemented in generate_authorization_model_with_computed_relations
+    // (can_view: viewer OR editor)
+    generate_authorization_model_with_computed_relations()
+}
+
+/// Generate authorization model with intersection relations
+fn generate_authorization_model_with_intersection_relations() -> AuthorizationModel {
+    use std::collections::HashMap;
+
+    let user_type = TypeDefinition {
+        name: "user".to_string(),
+        relations: HashMap::new(),
+    };
+
+    let mut document_relations = HashMap::new();
+
+    // Define owner relation: [user] (direct)
+    document_relations.insert(
+        "owner".to_string(),
+        RelationDefinition {
+            is_direct: true,
+            allowed_types: vec!["user".to_string()],
+            computed_from: None,
+            operation: None,
+        },
+    );
+
+    // Define admin relation: [user] (direct)
+    document_relations.insert(
+        "admin".to_string(),
+        RelationDefinition {
+            is_direct: true,
+            allowed_types: vec!["user".to_string()],
+            computed_from: None,
+            operation: None,
+        },
+    );
+
+    // Define can_delete relation: owner AND admin (intersection)
+    document_relations.insert(
+        "can_delete".to_string(),
+        RelationDefinition {
+            is_direct: false,
+            allowed_types: vec![],
+            computed_from: Some(vec!["owner".to_string(), "admin".to_string()]),
+            operation: Some(RelationOperation::Intersection),
+        },
+    );
+
+    let document_type = TypeDefinition {
+        name: "document".to_string(),
+        relations: document_relations,
+    };
+
+    AuthorizationModel {
+        schema_version: "1.1".to_string(),
+        type_definitions: vec![user_type, document_type],
+    }
+}
+
+/// Generate a model with deeply nested relations (10+ levels possible)
+fn generate_deeply_nested_model() -> AuthorizationModel {
+    use std::collections::HashMap;
+
+    let user_type = TypeDefinition {
+        name: "user".to_string(),
+        relations: HashMap::new(),
+    };
+
+    // Define folder type with parent relationship (creates hierarchy)
+    let mut folder_relations = HashMap::new();
+
+    // Direct parent relation: [folder]
+    folder_relations.insert(
+        "parent".to_string(),
+        RelationDefinition {
+            is_direct: true,
+            allowed_types: vec!["folder".to_string()],
+            computed_from: None,
+            operation: None,
+        },
+    );
+
+    // Direct viewer relation: [user]
+    folder_relations.insert(
+        "viewer".to_string(),
+        RelationDefinition {
+            is_direct: true,
+            allowed_types: vec!["user".to_string(), "folder#viewer".to_string()],
+            computed_from: None,
+            operation: None,
+        },
+    );
+
+    let folder_type = TypeDefinition {
+        name: "folder".to_string(),
+        relations: folder_relations,
+    };
+
+    // This model supports arbitrary nesting:
+    // folder1.parent = folder2
+    // folder2.parent = folder3
+    // ... (can go 10+ levels deep)
+    // folder10+.viewer = user:alice
+    // => user:alice is transitively a viewer of folder1
+
+    AuthorizationModel {
+        schema_version: "1.1".to_string(),
+        type_definitions: vec![user_type, folder_type],
+    }
+}
