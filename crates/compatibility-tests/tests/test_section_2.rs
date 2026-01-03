@@ -179,13 +179,6 @@ fn test_can_generate_valid_relation_names() -> Result<()> {
             "Relation name should be valid: {}",
             relation_name
         );
-
-        // Relations should be lowercase alphanumeric with underscores
-        assert!(
-            relation_name.chars().all(|c| c.is_lowercase() || c.is_numeric() || c == '_'),
-            "Relation should be lowercase alphanumeric with underscores: {}",
-            relation_name
-        );
     }
 
     Ok(())
@@ -196,7 +189,7 @@ fn is_valid_relation_name(name: &str) -> bool {
     // Valid relation names:
     // - Must not be empty
     // - Should be alphanumeric with underscores
-    // - Typically lowercase (OpenFGA convention)
+    // - Must be lowercase (OpenFGA convention)
     // - No spaces
 
     if name.is_empty() {
@@ -207,8 +200,8 @@ fn is_valid_relation_name(name: &str) -> bool {
         return false;
     }
 
-    // Check all characters are alphanumeric or underscore
-    name.chars().all(|c| c.is_alphanumeric() || c == '_')
+    // Check all characters are lowercase alphanumeric or underscore
+    name.chars().all(|c| c.is_lowercase() || c.is_numeric() || c == '_')
 }
 
 /// Test: Can generate valid Tuples
@@ -264,7 +257,7 @@ fn test_can_generate_valid_tuples() -> Result<()> {
 }
 
 /// Represents a relationship tuple in OpenFGA
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Tuple {
     user: String,
     relation: String,
