@@ -65,7 +65,7 @@ To avoid confusion, we use these terms consistently:
 
 #### Section 2: Test Data Generators
 
-- [ ] Test: Can generate valid User identifiers
+- [x] Test: Can generate valid User identifiers
 - [ ] Test: Can generate valid Object identifiers (type:id format)
 - [ ] Test: Can generate valid Relation names
 - [ ] Test: Can generate valid Tuples
