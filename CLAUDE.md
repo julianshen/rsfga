@@ -356,26 +356,40 @@ git commit -m "[BEHAVIORAL] Add workspace structure"
 git push origin feature/milestone-1.1-project-foundation
 ```
 
-### Pull Request After Each Milestone
+### Pull Request Strategy - Small, Reviewable PRs
 
-After completing a milestone (see [ROADMAP.md](docs/design/ROADMAP.md)):
+**Golden Rule**: Create PRs per section or small group of related sections (5-15 tests max)
+
+After completing a **section** or logical group of tests:
 
 1. **Ensure all quality gates pass** (tests, clippy, fmt, audit)
-2. **Ensure milestone validation criteria met** (check ROADMAP.md)
-3. **Push your feature branch** to the remote repository
-4. **Create a Pull Request (PR)** for review
-5. **PR Title Format**: `[Milestone X.Y] Brief description`
-6. **PR Description** should include:
-   - Summary of changes
-   - List of completed deliverables from ROADMAP.md
-   - ADRs added/updated
-   - Risks identified/mitigated
-   - Performance benchmark results (if applicable)
-   - Breaking changes (if any)
-7. **Wait for review and approval** before merging
-8. **Squash merge** to main
-9. **Delete the feature branch** after merge
-10. **Start next milestone** on a new feature branch
+2. **Push your feature branch** to the remote repository
+3. **Create a Pull Request (PR)** for review
+4. **PR Title Format**: `[Milestone X.Y] Section N: Brief description`
+   - Example: `[Milestone 1.2] Section 1: Core Type Definitions`
+   - Example: `[Milestone 1.4] Sections 1-2: Direct & Computed Relations`
+5. **PR Description** should include:
+   - Summary of changes (what was implemented)
+   - List of completed tests from plan.md (mark them [x])
+   - Why decisions (if architectural choices made)
+   - Test coverage metrics
+   - Any dependencies or blockers for next section
+6. **Wait for review and approval** before merging
+7. **Merge to main** (prefer squash merge for clean history)
+8. **Continue on same branch** for next section in milestone
+9. **Delete branch only** when entire milestone is complete
+
+**PR Size Guidelines**:
+- ✅ **Good**: 5-15 tests, <500 lines changed, 1 focused area
+- ⚠️ **Too Large**: 30+ tests, >1000 lines, multiple unrelated changes
+- ❌ **Way Too Large**: Entire milestone in one PR
+
+**Benefits of Small PRs**:
+- Faster review cycles (minutes to hours, not days)
+- Easier to spot issues
+- Less risk of conflicts
+- Simpler to revert if needed
+- Better feedback loop
 
 ---
 
@@ -854,24 +868,29 @@ Ok(results.iter().all(|r| r.as_ref().map_or(false, |&b| b)))
 │    git checkout -b feature/milestone-X.Y-name       │
 │ 2. Review relevant ADRs and risks                   │
 │                                                     │
-│ TDD CYCLE (repeat for each deliverable):            │
+│ SECTION CYCLE (repeat for each section):            │
 │ 3. User says "go"                                   │
-│ 4. Check ROADMAP.md for next deliverable            │
+│ 4. Check plan.md for next test in section           │
 │ 5. Write failing test (Red)                         │
 │ 6. Write minimum code to pass (Green)               │
 │ 7. Refactor if needed (keep green)                  │
 │ 8. Run quality gates (test, clippy, fmt, audit)     │
-│ 9. Commit with [BEHAVIORAL] or [STRUCTURAL] prefix  │
-│ 10. Repeat until milestone complete                 │
+│ 9. Mark test [x] in plan.md                         │
+│ 10. Commit with [BEHAVIORAL] or [STRUCTURAL] prefix │
+│ 11. Repeat until section complete (5-15 tests)      │
+│                                                     │
+│ SECTION END (Create PR):                            │
+│ 12. Push feature branch                             │
+│ 13. Create PR: [Milestone X.Y] Section N: Title     │
+│ 14. Wait for review and approval                    │
+│ 15. Merge to main (squash merge)                    │
+│ 16. Continue on same branch for next section        │
 │                                                     │
 │ MILESTONE END:                                      │
-│ 11. Verify milestone validation criteria met        │
-│ 12. Push feature branch                             │
-│ 13. Create Pull Request for review                  │
-│ 14. Update ADRs if architectural changes             │
-│ 15. Address review feedback                         │
-│ 16. Merge to main after approval                    │
-│ 17. Start next milestone on new branch              │
+│ 17. Verify all milestone validation criteria met    │
+│ 18. Update ADRs if architectural changes             │
+│ 19. Delete feature branch                           │
+│ 20. Start next milestone on new branch              │
 └─────────────────────────────────────────────────────┘
 ```
 
