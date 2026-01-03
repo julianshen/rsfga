@@ -7,6 +7,9 @@ use tonic_health::pb::health_client::HealthClient;
 use tonic_health::pb::HealthCheckRequest;
 use uuid::Uuid;
 
+/// gRPC health check status codes
+const GRPC_HEALTH_STATUS_SERVING: i32 = 1;
+
 /// Test: Can start OpenFGA via Docker Compose
 #[tokio::test]
 async fn test_can_start_openfga_via_docker_compose() -> Result<()> {
@@ -17,7 +20,7 @@ async fn test_can_start_openfga_via_docker_compose() -> Result<()> {
     start_docker_compose()?;
 
     // Assert: Verify OpenFGA is running
-    let is_running = check_openfga_running().await?;
+    let is_running = check_openfga_running()?;
     assert!(is_running, "OpenFGA should be running after docker-compose up");
 
     // Cleanup
@@ -105,7 +108,7 @@ fn stop_docker_compose() -> Result<()> {
 }
 
 /// Check if OpenFGA is running by checking container status
-async fn check_openfga_running() -> Result<bool> {
+fn check_openfga_running() -> Result<bool> {
     // Get path to compatibility-tests crate root
     let crate_root = std::env::var("CARGO_MANIFEST_DIR")
         .expect("CARGO_MANIFEST_DIR not set");
@@ -175,8 +178,8 @@ async fn test_can_connect_to_openfga_grpc_api() -> Result<()> {
     // Assert: Health check returns SERVING status
     assert_eq!(
         response.get_ref().status,
-        1, // 1 = SERVING in gRPC health check protocol
-        "gRPC health check should return SERVING status (1), got: {}",
+        GRPC_HEALTH_STATUS_SERVING,
+        "gRPC health check should return SERVING status, got: {}",
         response.get_ref().status
     );
 
@@ -307,7 +310,7 @@ async fn test_environment_teardown_is_idempotent() -> Result<()> {
     stop_docker_compose()?; // Third stop - should still succeed
 
     // Assert: Verify environment is actually stopped
-    let is_running = check_openfga_running().await?;
+    let is_running = check_openfga_running()?;
     assert!(
         !is_running,
         "OpenFGA should not be running after teardown"

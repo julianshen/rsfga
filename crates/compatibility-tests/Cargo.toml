@@ -15,7 +15,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 bollard = { workspace = true }
 tonic = { workspace = true }
-tonic-health = "0.11"
+tonic-health = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
