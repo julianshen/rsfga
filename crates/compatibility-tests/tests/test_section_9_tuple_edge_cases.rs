@@ -1,134 +1,9 @@
+mod common;
+
 use anyhow::Result;
+use common::{create_test_store, create_userset_model, create_wildcard_model, get_openfga_url};
 use reqwest::StatusCode;
 use serde_json::json;
-use uuid::Uuid;
-
-/// Helper function to get OpenFGA URL
-fn get_openfga_url() -> String {
-    std::env::var("OPENFGA_URL").unwrap_or_else(|_| "http://localhost:18080".to_string())
-}
-
-/// Helper function to create a test store
-async fn create_test_store() -> Result<String> {
-    let client = reqwest::Client::new();
-    let store_name = format!("test-store-{}", Uuid::new_v4());
-
-    let response = client
-        .post(format!("{}/stores", get_openfga_url()))
-        .json(&json!({ "name": store_name }))
-        .send()
-        .await?;
-
-    let store: serde_json::Value = response.json().await?;
-    Ok(store
-        .get("id")
-        .and_then(|v| v.as_str())
-        .expect("Created store should have an ID")
-        .to_string())
-}
-
-/// Helper function to create authorization model with wildcard support
-async fn create_wildcard_model(store_id: &str) -> Result<String> {
-    let client = reqwest::Client::new();
-
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            {
-                "type": "user"
-            },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": {
-                        "this": {}
-                    }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [
-                                {
-                                    "type": "user"
-                                },
-                                {
-                                    "type": "user",
-                                    "wildcard": {}
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    let response_body: serde_json::Value = response.json().await?;
-    Ok(response_body
-        .get("authorization_model_id")
-        .and_then(|v| v.as_str())
-        .expect("Created authorization model should have an ID")
-        .to_string())
-}
-
-/// Helper function to create model with userset relations
-async fn create_userset_model(store_id: &str) -> Result<String> {
-    let client = reqwest::Client::new();
-
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            {
-                "type": "user"
-            },
-            {
-                "type": "folder",
-                "relations": {
-                    "viewer": {
-                        "this": {}
-                    }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [
-                                {"type": "user"},
-                                {"type": "folder", "relation": "viewer"}
-                            ]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    let response_body: serde_json::Value = response.json().await?;
-    Ok(response_body
-        .get("authorization_model_id")
-        .and_then(|v| v.as_str())
-        .expect("Created authorization model should have an ID")
-        .to_string())
-}
 
 /// Test: Writing tuple with user wildcard (user:*)
 #[tokio::test]
@@ -242,9 +117,9 @@ async fn test_read_tuple_with_userset() -> Result<()> {
     Ok(())
 }
 
-/// Test: Tuple with contextual tuples in condition
+/// Test: Writing tuple with condition
 #[tokio::test]
-async fn test_tuple_with_contextual_tuples() -> Result<()> {
+async fn test_write_tuple_with_condition() -> Result<()> {
     // Arrange: Create store with conditional model
     let store_id = create_test_store().await?;
 
@@ -342,7 +217,7 @@ async fn test_tuple_with_contextual_tuples() -> Result<()> {
     Ok(())
 }
 
-/// Test: Very long user/object IDs (1000+ characters)
+/// Test: Very long user/object IDs (near OpenFGA limits: user ≤512, object ≤256 bytes)
 #[tokio::test]
 async fn test_very_long_identifiers() -> Result<()> {
     // Arrange: Create store and simple model
@@ -427,10 +302,10 @@ async fn test_special_characters_in_identifiers() -> Result<()> {
             .send()
             .await?;
 
-        // Assert: Most special characters should be accepted
+        // Assert: Common special characters should be accepted
         assert!(
-            response.status().is_success() || response.status() == StatusCode::BAD_REQUEST,
-            "Write with special chars ({}, {}) should succeed or return 400, got: {}",
+            response.status().is_success(),
+            "Write with special chars ({}, {}) should succeed, got: {}",
             user,
             object,
             response.status()
@@ -480,43 +355,48 @@ async fn test_unicode_in_identifiers() -> Result<()> {
 
         // Assert: Unicode should be accepted (UTF-8 support)
         assert!(
-            response.status().is_success() || response.status() == StatusCode::BAD_REQUEST,
-            "Write with Unicode ({}, {}) should succeed or return 400, got: {}",
+            response.status().is_success(),
+            "Write with Unicode ({}, {}) should succeed, got: {}",
             user,
             object,
             response.status()
         );
 
-        // If successful, try to read it back
-        if response.status().is_success() {
-            let read_request = json!({
-                "tuple_key": {
-                    "user": user,
-                    "object": object
-                }
-            });
-
-            let read_response = client
-                .post(format!("{}/stores/{}/read", get_openfga_url(), store_id))
-                .json(&read_request)
-                .send()
-                .await?;
-
-            if read_response.status().is_success() {
-                let read_body: serde_json::Value = read_response.json().await?;
-                let tuples = read_body.get("tuples").and_then(|v| v.as_array());
-
-                if let Some(tuples) = tuples {
-                    assert_eq!(
-                        tuples.len(),
-                        1,
-                        "Should read back the Unicode tuple for {}, {}",
-                        user,
-                        object
-                    );
-                }
+        // Try to read it back to verify Unicode round-trip
+        let read_request = json!({
+            "tuple_key": {
+                "user": user,
+                "object": object
             }
-        }
+        });
+
+        let read_response = client
+            .post(format!("{}/stores/{}/read", get_openfga_url(), store_id))
+            .json(&read_request)
+            .send()
+            .await?;
+
+        assert!(
+            read_response.status().is_success(),
+            "Read should succeed for Unicode tuple ({}, {}), got: {}",
+            user,
+            object,
+            read_response.status()
+        );
+
+        let read_body: serde_json::Value = read_response.json().await?;
+        let tuples = read_body
+            .get("tuples")
+            .and_then(|v| v.as_array())
+            .expect("tuples field should be an array");
+
+        assert_eq!(
+            tuples.len(),
+            1,
+            "Should read back the Unicode tuple for {}, {}",
+            user,
+            object
+        );
     }
 
     Ok(())

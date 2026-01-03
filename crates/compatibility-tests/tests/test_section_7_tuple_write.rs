@@ -1,83 +1,10 @@
+mod common;
+
 use anyhow::Result;
+use common::{create_test_model, create_test_store, get_openfga_url};
 use reqwest::StatusCode;
 use serde_json::json;
 use uuid::Uuid;
-
-/// Helper function to get OpenFGA URL
-fn get_openfga_url() -> String {
-    std::env::var("OPENFGA_URL").unwrap_or_else(|_| "http://localhost:18080".to_string())
-}
-
-/// Helper function to create a test store
-async fn create_test_store() -> Result<String> {
-    let client = reqwest::Client::new();
-    let store_name = format!("test-store-{}", Uuid::new_v4());
-
-    let response = client
-        .post(format!("{}/stores", get_openfga_url()))
-        .json(&json!({ "name": store_name }))
-        .send()
-        .await?;
-
-    let store: serde_json::Value = response.json().await?;
-    Ok(store
-        .get("id")
-        .and_then(|v| v.as_str())
-        .expect("Created store should have an ID")
-        .to_string())
-}
-
-/// Helper function to create a simple authorization model
-async fn create_test_model(store_id: &str) -> Result<String> {
-    let client = reqwest::Client::new();
-
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            {
-                "type": "user"
-            },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": {
-                        "this": {}
-                    },
-                    "editor": {
-                        "this": {}
-                    }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{"type": "user"}]
-                        },
-                        "editor": {
-                            "directly_related_user_types": [{"type": "user"}]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    let response_body: serde_json::Value = response.json().await?;
-    Ok(response_body
-        .get("authorization_model_id")
-        .and_then(|v| v.as_str())
-        .expect("Created authorization model should have an ID")
-        .to_string())
-}
 
 /// Test: POST /stores/{store_id}/write writes single tuple
 #[tokio::test]
@@ -152,6 +79,10 @@ async fn test_write_returns_empty_response() -> Result<()> {
     assert!(
         response_body.is_object(),
         "Response should be an object"
+    );
+    assert!(
+        response_body.as_object().map_or(false, |o| o.is_empty()),
+        "Response should be an empty object {{}}"
     );
 
     Ok(())
@@ -289,11 +220,16 @@ async fn test_can_delete_tuple() -> Result<()> {
         }
     });
 
-    client
+    let write_response = client
         .post(format!("{}/stores/{}/write", get_openfga_url(), store_id))
         .json(&write_request)
         .send()
         .await?;
+
+    assert!(
+        write_response.status().is_success(),
+        "Setup: writing initial tuple should succeed"
+    );
 
     // Act: Delete the tuple
     let delete_request = json!({

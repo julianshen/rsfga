@@ -1,112 +1,8 @@
+mod common;
+
 use anyhow::Result;
+use common::{create_test_model, create_test_store, get_openfga_url, write_tuples};
 use serde_json::json;
-use uuid::Uuid;
-
-/// Helper function to get OpenFGA URL
-fn get_openfga_url() -> String {
-    std::env::var("OPENFGA_URL").unwrap_or_else(|_| "http://localhost:18080".to_string())
-}
-
-/// Helper function to create a test store
-async fn create_test_store() -> Result<String> {
-    let client = reqwest::Client::new();
-    let store_name = format!("test-store-{}", Uuid::new_v4());
-
-    let response = client
-        .post(format!("{}/stores", get_openfga_url()))
-        .json(&json!({ "name": store_name }))
-        .send()
-        .await?;
-
-    let store: serde_json::Value = response.json().await?;
-    Ok(store
-        .get("id")
-        .and_then(|v| v.as_str())
-        .expect("Created store should have an ID")
-        .to_string())
-}
-
-/// Helper function to create a simple authorization model
-async fn create_test_model(store_id: &str) -> Result<String> {
-    let client = reqwest::Client::new();
-
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            {
-                "type": "user"
-            },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": {
-                        "this": {}
-                    },
-                    "editor": {
-                        "this": {}
-                    }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{"type": "user"}]
-                        },
-                        "editor": {
-                            "directly_related_user_types": [{"type": "user"}]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    let response_body: serde_json::Value = response.json().await?;
-    Ok(response_body
-        .get("authorization_model_id")
-        .and_then(|v| v.as_str())
-        .expect("Created authorization model should have an ID")
-        .to_string())
-}
-
-/// Helper function to write tuples
-async fn write_tuples(store_id: &str, tuples: Vec<(&str, &str, &str)>) -> Result<()> {
-    let client = reqwest::Client::new();
-
-    let tuple_keys: Vec<serde_json::Value> = tuples
-        .into_iter()
-        .map(|(user, relation, object)| {
-            json!({
-                "user": user,
-                "relation": relation,
-                "object": object
-            })
-        })
-        .collect();
-
-    let write_request = json!({
-        "writes": {
-            "tuple_keys": tuple_keys
-        }
-    });
-
-    client
-        .post(format!("{}/stores/{}/write", get_openfga_url(), store_id))
-        .json(&write_request)
-        .send()
-        .await?;
-
-    Ok(())
-}
 
 /// Test: POST /stores/{store_id}/read reads tuples by filter
 #[tokio::test]
@@ -595,55 +491,34 @@ async fn test_read_continuation_token() -> Result<()> {
         second_tuples.len()
     );
 
-    // Verify no overlap between pages
-    let first_keys: Vec<String> = first_tuples
-        .iter()
-        .map(|t| {
-            format!(
-                "{}#{}#{}",
-                t.get("key")
-                    .and_then(|k| k.get("user"))
-                    .and_then(|v| v.as_str())
-                    .unwrap(),
-                t.get("key")
-                    .and_then(|k| k.get("relation"))
-                    .and_then(|v| v.as_str())
-                    .unwrap(),
-                t.get("key")
-                    .and_then(|k| k.get("object"))
-                    .and_then(|v| v.as_str())
-                    .unwrap()
-            )
-        })
-        .collect();
+    // Verify no overlap between pages using HashSet for efficiency
+    use std::collections::HashSet;
 
-    let second_keys: Vec<String> = second_tuples
-        .iter()
-        .map(|t| {
-            format!(
-                "{}#{}#{}",
-                t.get("key")
-                    .and_then(|k| k.get("user"))
-                    .and_then(|v| v.as_str())
-                    .unwrap(),
-                t.get("key")
-                    .and_then(|k| k.get("relation"))
-                    .and_then(|v| v.as_str())
-                    .unwrap(),
-                t.get("key")
-                    .and_then(|k| k.get("object"))
-                    .and_then(|v| v.as_str())
-                    .unwrap()
-            )
-        })
-        .collect();
+    let extract_key = |t: &serde_json::Value| -> String {
+        format!(
+            "{}#{}#{}",
+            t.get("key")
+                .and_then(|k| k.get("user"))
+                .and_then(|v| v.as_str())
+                .expect("Tuple should have user"),
+            t.get("key")
+                .and_then(|k| k.get("relation"))
+                .and_then(|v| v.as_str())
+                .expect("Tuple should have relation"),
+            t.get("key")
+                .and_then(|k| k.get("object"))
+                .and_then(|v| v.as_str())
+                .expect("Tuple should have object")
+        )
+    };
 
-    for key in &second_keys {
-        assert!(
-            !first_keys.contains(key),
-            "Second page should not contain tuples from first page"
-        );
-    }
+    let first_keys: HashSet<String> = first_tuples.iter().map(extract_key).collect();
+    let second_keys: HashSet<String> = second_tuples.iter().map(extract_key).collect();
+
+    assert!(
+        first_keys.is_disjoint(&second_keys),
+        "First and second pages should not have overlapping tuples"
+    );
 
     Ok(())
 }
