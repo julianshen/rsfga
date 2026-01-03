@@ -77,12 +77,12 @@ To avoid confusion, we use these terms consistently:
 
 #### Section 3: Response Capture Framework
 
-- [ ] Test: Can capture HTTP request/response pairs
-- [ ] Test: Can capture gRPC request/response pairs
-- [ ] Test: Can serialize captured data to JSON
-- [ ] Test: Can load captured test cases from disk
-- [ ] Test: Can compare two responses for equality
-- [ ] Test: Can detect breaking changes in response format
+- [x] Test: Can capture HTTP request/response pairs
+- [x] Test: Can capture gRPC request/response pairs
+- [x] Test: Can serialize captured data to JSON
+- [x] Test: Can load captured test cases from disk
+- [x] Test: Can compare two responses for equality
+- [x] Test: Can detect breaking changes in response format
 
 **Validation Criteria**:
 - [ ] OpenFGA running in Docker
