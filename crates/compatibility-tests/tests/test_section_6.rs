@@ -65,7 +65,7 @@ async fn create_test_model(store_id: &str) -> Result<String> {
     Ok(response_body
         .get("authorization_model_id")
         .and_then(|v| v.as_str())
-        .unwrap()
+        .expect("Created authorization model should have an ID")
         .to_string())
 }
 
@@ -115,9 +115,9 @@ async fn test_get_authorization_model_retrieves_model() -> Result<()> {
     Ok(())
 }
 
-/// Test: GET returns 404 for non-existent model
+/// Test: GET returns error for non-existent model
 #[tokio::test]
-async fn test_get_nonexistent_model_returns_404() -> Result<()> {
+async fn test_get_nonexistent_model_returns_error() -> Result<()> {
     // Arrange: Create a store
     let store_id = create_test_store().await?;
     let non_existent_id = Uuid::new_v4().to_string();

@@ -20,7 +20,11 @@ async fn create_test_store() -> Result<String> {
         .await?;
 
     let store: serde_json::Value = response.json().await?;
-    Ok(store.get("id").and_then(|v| v.as_str()).unwrap().to_string())
+    Ok(store
+        .get("id")
+        .and_then(|v| v.as_str())
+        .expect("Created store should have an ID")
+        .to_string())
 }
 
 /// Test: POST /stores/{store_id}/authorization-models creates model
@@ -458,9 +462,14 @@ async fn test_duplicate_type_definitions_return_error() -> Result<()> {
     let client = reqwest::Client::new();
 
     // Model with duplicate type definitions
+    // Both types have valid metadata to ensure we're testing duplicate detection,
+    // not metadata validation
     let model = json!({
         "schema_version": "1.1",
         "type_definitions": [
+            {
+                "type": "user"
+            },
             {
                 "type": "document",
                 "relations": {
@@ -468,7 +477,13 @@ async fn test_duplicate_type_definitions_return_error() -> Result<()> {
                         "this": {}
                     }
                 },
-                "metadata": null
+                "metadata": {
+                    "relations": {
+                        "viewer": {
+                            "directly_related_user_types": [{"type": "user"}]
+                        }
+                    }
+                }
             },
             {
                 "type": "document",  // Duplicate!
@@ -477,7 +492,13 @@ async fn test_duplicate_type_definitions_return_error() -> Result<()> {
                         "this": {}
                     }
                 },
-                "metadata": null
+                "metadata": {
+                    "relations": {
+                        "owner": {
+                            "directly_related_user_types": [{"type": "user"}]
+                        }
+                    }
+                }
             }
         ]
     });
