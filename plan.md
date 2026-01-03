@@ -56,12 +56,12 @@ To avoid confusion, we use these terms consistently:
 
 #### Section 1: OpenFGA Test Environment
 
-- [ ] Test: Can start OpenFGA via Docker Compose
-- [ ] Test: Can connect to OpenFGA HTTP API (health check)
-- [ ] Test: Can connect to OpenFGA gRPC API
-- [ ] Test: Can create a store via API
-- [ ] Test: Can clean up test stores after tests
-- [ ] Test: Test environment teardown is idempotent
+- [x] Test: Can start OpenFGA via Docker Compose
+- [x] Test: Can connect to OpenFGA HTTP API (health check)
+- [x] Test: Can connect to OpenFGA gRPC API
+- [x] Test: Can create a store via API
+- [x] Test: Can clean up test stores after tests
+- [x] Test: Test environment teardown is idempotent
 
 #### Section 2: Test Data Generators
 
