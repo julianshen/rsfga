@@ -183,12 +183,12 @@ To avoid confusion, we use these terms consistently:
 
 #### Section 3: Tuple Edge Cases
 
-- [ ] Test: Writing tuple with user wildcard (user:*)
-- [ ] Test: Reading tuple with userset relation
-- [ ] Test: Tuple with contextual tuples in condition
-- [ ] Test: Very long user/object IDs (1000+ characters)
-- [ ] Test: Special characters in user/object IDs
-- [ ] Test: Unicode characters in identifiers
+- [x] Test: Writing tuple with user wildcard (user:*)
+- [x] Test: Reading tuple with userset relation
+- [x] Test: Tuple with contextual tuples in condition
+- [x] Test: Very long user/object IDs (1000+ characters)
+- [x] Test: Special characters in user/object IDs
+- [x] Test: Unicode characters in identifiers
 
 **Validation Criteria**:
 - [ ] All tuple write operations captured
