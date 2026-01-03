@@ -1,0 +1,100 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rsfga-api",
+    "crates/rsfga-server",
+    "crates/rsfga-domain",
+    "crates/rsfga-storage",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["RSFGA Contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/your-org/rsfga"
+homepage = "https://github.com/your-org/rsfga"
+keywords = ["authorization", "permissions", "zanzibar", "openfga"]
+categories = ["authentication", "web-programming"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+tokio-util = "0.7"
+tokio-stream = "0.1"
+
+# HTTP server
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace", "cors", "compression-gzip"] }
+hyper = "1.1"
+
+# gRPC
+tonic = "0.11"
+tonic-build = "0.11"
+prost = "0.12"
+prost-types = "0.12"
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "mysql"] }
+deadpool-postgres = "0.13"
+
+# Concurrency
+dashmap = "5.5"
+parking_lot = "0.12"
+arc-swap = "1.6"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Parsing
+nom = "7.1"
+
+# Caching
+moka = { version = "0.12", features = ["future"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+metrics = "0.22"
+metrics-exporter-prometheus = "0.13"
+opentelemetry = "0.21"
+opentelemetry-jaeger = "0.20"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Utilities
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+bytes = "1.5"
+
+# CLI (for server binary)
+clap = { version = "4.4", features = ["derive", "env"] }
+
+# Configuration
+config = "0.14"
+
+# Testing
+proptest = "1.4"
+mockall = "0.12"
+testcontainers = "0.15"
+
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.bench]
+inherits = "release"

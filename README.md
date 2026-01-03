@@ -1,128 +1,162 @@
-# RSFGA - Rust OpenFGA Implementation
+# RSFGA - High-Performance Rust Implementation of OpenFGA
 
-A high-performance Rust implementation of [OpenFGA](https://openfga.dev), an authorization/permission engine inspired by Google Zanzibar.
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 
-## Overview
+**RSFGA** is a high-performance, 100% API-compatible Rust implementation of [OpenFGA](https://openfga.dev/), an authorization/permission engine inspired by Google Zanzibar.
 
-RSFGA aims to provide:
-- ✅ **100% API Compatibility** with OpenFGA
-- ⚡ **2-5x Performance Improvement** through Rust's zero-cost abstractions
-- 🚀 **Advanced Optimizations**: Precomputation engine, distributed edge architecture
-- 🔒 **Production-Ready**: Comprehensive observability, security, testing
+## Status
 
-### Performance Goals
+**Current Phase**: Phase 0 - Building OpenFGA Compatibility Test Suite ⏳
 
-| Operation    | OpenFGA Baseline | RSFGA Target | Strategy |
-|--------------|------------------|--------------|----------|
-| Check        | 483 req/s        | 1000+ req/s  | Async graph traversal, lock-free caching |
-| Batch-Check  | 23 checks/s      | 500+ checks/s| Parallel execution, cross-request dedup |
-| Write        | 59 req/s         | 150+ req/s   | Batch processing, async invalidation |
+This project is in active development. We are currently building a comprehensive compatibility test suite to validate OpenFGA's behavior before implementing RSFGA. See [ROADMAP.md](docs/design/ROADMAP.md) for details.
 
-> **Note**: All performance targets require validation through benchmarking.
+## Goals
 
-## Project Status
+- ✅ **100% API Compatibility**: Drop-in replacement for OpenFGA
+- ✅ **High Performance**: 2-5x performance improvement over OpenFGA (target, unvalidated)
+- ✅ **Production Ready**: Comprehensive observability, testing, and reliability
+- ✅ **Distributed Ready**: Designed for edge deployment (Phase 3)
 
-🔬 **Current Phase**: Research & Design Complete
+## Architecture
 
-📋 **Next Steps**: Begin MVP implementation (Milestone 1.1)
+RSFGA is built on a 5-layer architecture optimized for performance and correctness:
+
+```
+API Layer (HTTP REST, gRPC)
+    ↓
+Server Layer (Request Handlers)
+    ↓
+Domain Layer (Graph Resolver, Type System, Cache)
+    ↓
+Storage Abstraction (DataStore trait)
+    ↓
+Storage Backends (PostgreSQL, MySQL, In-Memory)
+```
+
+**Key Technologies**:
+- **Async Runtime**: Tokio (work-stealing, I/O parallelism)
+- **HTTP**: Axum (fast, ergonomic)
+- **gRPC**: Tonic (pure Rust, performant)
+- **Database**: SQLx (async, compile-time query checking)
+- **Concurrency**: DashMap (lock-free cache)
+- **Observability**: tracing + metrics + OpenTelemetry
+
+For detailed architecture, see [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md).
+
+## Project Structure
+
+```
+rsfga/
+├── crates/
+│   ├── rsfga-api/          # HTTP & gRPC API layer
+│   ├── rsfga-server/       # Request handlers & business logic
+│   ├── rsfga-domain/       # Graph resolver, type system, cache
+│   └── rsfga-storage/      # Storage abstraction & backends
+├── tests/
+│   └── compatibility/      # OpenFGA compatibility test suite (Phase 0)
+├── docs/
+│   └── design/             # Architecture & design documents
+├── CLAUDE.md               # AI assistant guide (TDD methodology)
+└── plan.md                 # Detailed implementation plan (500+ tests)
+```
+
+## Quick Start
+
+**Prerequisites**:
+- Rust 1.75+ ([Install Rust](https://rustup.rs/))
+- Docker (for OpenFGA compatibility tests)
+
+**Clone and Build**:
+```bash
+git clone https://github.com/your-org/rsfga.git
+cd rsfga
+cargo build
+```
+
+**Run Tests** (Phase 0+):
+```bash
+# Unit tests
+cargo test
+
+# Compatibility tests (Phase 0)
+cd tests/compatibility
+docker-compose up -d
+cargo test --test compatibility
+```
+
+## Roadmap
+
+### Phase 0: OpenFGA Compatibility Test Suite (Current - 7 weeks)
+Build comprehensive test suite (~150 tests) that validates OpenFGA behavior across all APIs.
+
+**Why Phase 0?** OpenFGA doesn't provide a compatibility test suite. We must build our own validation framework before implementing RSFGA to ensure 100% API compatibility.
+
+**Milestones**:
+- 0.1: Test Harness Foundation (Docker, generators, capture framework)
+- 0.2: Store & Model API Tests
+- 0.3: Tuple API Tests
+- 0.4: Check API Tests (core authorization)
+- 0.5: Expand & ListObjects API Tests
+- 0.6: Error Handling & Edge Cases
+- 0.7: gRPC API Compatibility
+
+### Phase 1: MVP - OpenFGA Compatible Core (12 weeks)
+100% API-compatible drop-in replacement with 2x performance improvement.
+
+**Milestones**:
+- 1.1: Project Foundation
+- 1.2: Type System & Parser
+- 1.3: Storage Layer
+- 1.4: Graph Resolver
+- 1.5: Batch Check Handler
+- 1.6: API Layer
+- 1.7: Testing & Benchmarking
+
+### Phase 2: Precomputation Engine (Future - 6 weeks)
+Precompute check results on writes for <1ms p99 latency.
+
+### Phase 3: Distributed Edge (Future - 10 weeks)
+NATS-based edge deployment for <10ms global latency.
+
+See [ROADMAP.md](docs/design/ROADMAP.md) for detailed milestones and tasks.
 
 ## Documentation
 
 ### Design Documents
+- [ARCHITECTURE.md](docs/design/ARCHITECTURE.md) - System architecture & design
+- [ROADMAP.md](docs/design/ROADMAP.md) - Implementation roadmap with Phase 0-3
+- [ARCHITECTURE_DECISIONS.md](docs/design/ARCHITECTURE_DECISIONS.md) - 16 ADRs documenting key decisions
+- [RISKS.md](docs/design/RISKS.md) - Risk register with mitigation strategies
+- [API_SPECIFICATION.md](docs/design/API_SPECIFICATION.md) - Complete API reference
+- [DATA_MODELS.md](docs/design/DATA_MODELS.md) - Data structures & schemas
 
-- **[ARCHITECTURE.md](./docs/design/ARCHITECTURE.md)** - Comprehensive architecture design
-  - System layers and components
-  - Technology stack and dependencies
-  - Performance optimization strategies
-  - Phase 2 & 3 advanced features (precomputation, edge)
+### Development Guides
+- [CLAUDE.md](CLAUDE.md) - AI assistant guide (TDD methodology, invariants, workflow)
+- [plan.md](plan.md) - Detailed implementation plan with 500+ testable increments
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Contribution guidelines & workflow
 
-- **[ROADMAP.md](./docs/design/ROADMAP.md)** - Detailed implementation roadmap
-  - Phase 1 (MVP): 8-12 weeks, 7 milestones
-  - Phase 2 (Precomputation): 6-8 weeks
-  - Phase 3 (Distributed Edge): 10-12 weeks
-  - Task breakdown, deliverables, testing strategy
+## Performance Targets
 
-- **[ARCHITECTURE_DECISIONS.md](./docs/design/ARCHITECTURE_DECISIONS.md)** - Key architectural decisions (ADRs)
-  - ADR-001: Tokio async runtime
-  - ADR-002: Lock-free caching with DashMap
-  - ADR-003: Parallel graph traversal
-  - ADR-005: Three-stage batch deduplication
-  - ... and more
+| Operation | OpenFGA | RSFGA Target | Strategy |
+|-----------|---------|--------------|----------|
+| Check | 483 req/s | 1000+ req/s | Async graph, lock-free cache |
+| Batch Check | 23 checks/s | 500+ checks/s | Parallel + dedup |
+| Write | 59 req/s | 150+ req/s | Async invalidation |
 
-## Key Features
+**Note**: All targets are unvalidated (60% confidence) until benchmarked in Phase 1. Performance baselines will be established in Phase 0.
 
-### Phase 1: MVP (Weeks 1-12)
+## Critical Architectural Invariants
 
-Core OpenFGA-compatible implementation:
+**I1: Correctness Over Performance** - Never trade authorization correctness for performance
 
-- ✅ Full HTTP & gRPC APIs
-- ✅ Authorization model parser (OpenFGA DSL)
-- ✅ Graph resolver with all relation types
-- ✅ Storage backends: PostgreSQL, MySQL, in-memory
-- ✅ Async graph traversal with Tokio
-- ✅ Lock-free caching with DashMap
-- ✅ Batch check with deduplication
-- ✅ Comprehensive observability (metrics, tracing, logs)
+**I2: 100% OpenFGA API Compatibility** - All endpoints, formats, and behaviors must be identical
 
-### Phase 2: Precomputed Checks (Weeks 13-20)
+**I3: Performance Claims Require Validation** - All targets unvalidated until benchmarked
 
-Performance optimization through precomputation:
+**I4: Security-Critical Code Path Protection** - Graph resolver requires rigorous testing and security review
 
-- ⚡ On-write precomputation engine
-- ⚡ Valkey/Redis result storage
-- ⚡ Sub-millisecond check operations
-- ⚡ Incremental invalidation
-- ⚡ Target: <1ms p99 latency for cached checks
-
-### Phase 3: Distributed Edge (Weeks 21-32)
-
-Global scalability with edge deployment:
-
-- 🌍 Product-based data partitioning
-- 🌍 Multi-region edge nodes
-- 🌍 Selective replication via Kafka CDC
-- 🌍 <10ms global latency
-- 🌍 100K+ req/s cluster throughput
-
-## Architecture Highlights
-
-### System Layers
-
-```
-┌─────────────────────────────────────┐
-│   API Layer (HTTP/gRPC)             │
-├─────────────────────────────────────┤
-│   Server Layer (Handlers)           │
-├─────────────────────────────────────┤
-│   Domain Layer (Resolver, Parser)   │
-├─────────────────────────────────────┤
-│   Storage Abstraction               │
-├─────────────────────────────────────┤
-│   Storage Backends (PG, MySQL, Mem) │
-└─────────────────────────────────────┘
-```
-
-### Core Innovations
-
-**1. Async Graph Traversal**
-```rust
-// Parallel resolution of union relations
-futures::future::select_ok(
-    union_branches.map(|branch| resolve(branch))
-).await // Race to first success
-```
-
-**2. Three-Stage Deduplication**
-```
-Batch Request → Intra-batch Dedup → Singleflight → Cache Lookup → Parallel Execute
-```
-
-**3. Lock-Free Caching**
-```rust
-// DashMap instead of Arc<Mutex<HashMap>>
-cache: Arc<DashMap<CacheKey, bool>>
-// 10-100x faster under contention
-```
+See [CLAUDE.md](CLAUDE.md) for detailed invariants and quality gates.
 
 ## Technology Stack
 
@@ -137,219 +171,51 @@ cache: Arc<DashMap<CacheKey, bool>>
 | **Parsing** | nom | Parser combinator for DSL |
 | **Observability** | tracing + metrics | Logging, metrics, distributed tracing |
 
-## Research Summary
-
-Based on comprehensive research of OpenFGA's architecture and performance:
-
-### Key Findings
-
-**Bottlenecks Identified**:
-1. **Batch-check**: Only 23 checks/s (vs 483 req/s for single checks)
-   - Synchronous blocking until all checks complete
-   - No cross-request deduplication
-   - Sequential processing
-
-2. **Cache invalidation**: 1-second async timeout creates consistency windows
-
-3. **Single-node graph resolution**: No parallelism across cluster
-
-4. **GC pauses**: Go runtime introduces unpredictable latency
-
-**Optimization Opportunities**:
-1. Async graph traversal → 2-3x faster graph resolution
-2. Lock-free caching → 10-100x faster cache access
-3. Parallel batch execution → 20-50x batch throughput
-4. Precomputation → <1ms check latency
-5. Edge architecture → <10ms global latency
-
-See [Architecture Review](https://github.com/julianshen/openfga/blob/main/ARCHITECTURE_REVIEW.md) and [Batch Check Analysis](https://github.com/julianshen/openfga/blob/main/BATCH_CHECK_ANALYSIS.md) for details.
-
-## Quick Start (Future)
-
-Once MVP is complete:
-
-### Docker
-
-```bash
-docker run -d \
-  -p 8080:8080 \
-  -p 8081:8081 \
-  -e DATASTORE_ENGINE=postgres \
-  -e DATASTORE_URI=postgresql://user:pass@db:5432/rsfga \
-  rsfga/rsfga:latest
-```
-
-### Kubernetes
-
-```bash
-helm install rsfga rsfga/rsfga \
-  --set datastore.engine=postgres \
-  --set datastore.uri=postgresql://...
-```
-
-### Rust Library
-
-```rust
-use rsfga::{Server, Config, PostgresDataStore};
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let store = PostgresDataStore::new("postgresql://...").await?;
-    let config = Config::default();
-    let server = Server::new(store, config);
-
-    server.serve("0.0.0.0:8080").await?;
-    Ok(())
-}
-```
-
-## Development Setup
-
-### Prerequisites
-
-- Rust 1.75+ (install via [rustup](https://rustup.rs))
-- PostgreSQL 14+ (for integration tests)
-- Docker (for testcontainers)
-
-### Getting Started
-
-```bash
-# Clone repository
-git clone https://github.com/yourusername/rsfga.git
-cd rsfga
-
-# Install tools
-cargo install cargo-watch cargo-criterion sqlx-cli
-
-# Set up database
-createdb rsfga_test
-sqlx migrate run
-
-# Run tests
-cargo test
-
-# Run benchmarks
-cargo bench
-
-# Start development server
-cargo run --bin rsfga-server
-```
-
-## Benchmarking
-
-Compare against OpenFGA baseline:
-
-```bash
-# Start RSFGA server
-cargo run --release --bin rsfga-server
-
-# Run k6 load tests (same as OpenFGA benchmarks)
-k6 run tests/k6/check_load_test.js
-k6 run tests/k6/batch_check_load_test.js
-k6 run tests/k6/write_load_test.js
-
-# Generate comparison report
-./scripts/compare_benchmarks.sh
-```
-
-## Migration from OpenFGA
-
-### Export Data
-
-```bash
-# Export tuples from OpenFGA
-openfga export --store-id=<store-id> > data.json
-```
-
-### Import to RSFGA
-
-```bash
-# Import into RSFGA
-rsfga import --store-id=<store-id> < data.json
-```
-
-### Gradual Rollout
-
-1. **Shadow Mode**: Mirror OpenFGA data, compare results
-2. **Canary**: Route 1% traffic to RSFGA
-3. **Full Migration**: Route 100% traffic
-4. **Decommission**: Remove OpenFGA after stability period
-
-See Migration Guide (to be written) for details.
-
 ## Contributing
 
-Contributions are welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
+- Development workflow (TDD, branch naming, PR process)
+- Code quality standards
+- Testing requirements
+- Commit message conventions
 
-### Development Workflow
-
-1. Create feature branch from `main`
-2. Implement changes with tests
-3. Run `cargo test`, `cargo fmt`, `cargo clippy`
-4. Submit PR with description of changes
-5. Ensure CI passes (tests, benchmarks, compatibility)
-
-### Areas for Contribution
-
-- **Core**: Graph resolver, storage backends, API handlers
-- **Performance**: Optimization, profiling, benchmarking
-- **Testing**: Compatibility tests, integration tests, load tests
-- **Documentation**: Guides, examples, API docs
-- **Tools**: CLI, migration tools, deployment automation
+**Quick Start for Contributors**:
+1. Read [CLAUDE.md](CLAUDE.md) for development philosophy
+2. Review [plan.md](plan.md) for current tasks
+3. Follow TDD methodology (Red → Green → Refactor)
+4. Create PRs per section (5-15 tests, <500 lines)
 
 ## License
 
-Apache 2.0 (same as OpenFGA)
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+
+## Acknowledgments
+
+- [OpenFGA](https://openfga.dev/) for the original implementation and inspiration
+- [Google Zanzibar](https://research.google/pubs/pub48190/) for the foundational concepts
+- The Rust community for excellent async ecosystem
+
+## Contact
+
+- Issues: [GitHub Issues](https://github.com/your-org/rsfga/issues)
+- Discussions: [GitHub Discussions](https://github.com/your-org/rsfga/discussions)
 
 ## References
 
 ### OpenFGA Resources
-
 - [OpenFGA Official Website](https://www.openfga.dev/)
 - [OpenFGA GitHub Repository](https://github.com/openfga/openfga)
 - [OpenFGA Documentation](https://openfga.dev/docs)
 - [OpenFGA Playground](https://play.openfga.dev/)
 
-### Research Documents
-
-- [Architecture Review](https://github.com/julianshen/openfga/blob/main/ARCHITECTURE_REVIEW.md)
-- [Batch Check Analysis](https://github.com/julianshen/openfga/blob/main/BATCH_CHECK_ANALYSIS.md)
-- [OpenFGA Research Docs](https://github.com/julianshen/openfga/tree/main/docs)
-
-### Papers & Articles
-
+### Research Papers
 - [Google Zanzibar Paper](https://research.google/pubs/pub48190/) - Inspiration for OpenFGA
 - [Relationship-Based Access Control](https://en.wikipedia.org/wiki/Relationship-based_access_control)
 
-## Roadmap Timeline
-
-```
-┌────────────┬────────────┬────────────┬────────────┐
-│  Weeks 1-4 │ Weeks 5-8  │ Weeks 9-12 │ Weeks 13+  │
-├────────────┼────────────┼────────────┼────────────┤
-│ Foundation │  Storage   │  API &     │Precompute  │
-│Type System │  Graph     │  Testing   │Edge Deploy │
-│            │  Resolver  │  Benchmark │            │
-└────────────┴────────────┴────────────┴────────────┘
-              MVP Complete ↑           Phase 2/3 →
-```
-
-See [ROADMAP.md](./docs/design/ROADMAP.md) for detailed breakdown.
-
-## Contact
-
-- **Issues**: [GitHub Issues](https://github.com/yourusername/rsfga/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/rsfga/discussions)
-- **Email**: your.email@example.com (for security issues)
-
-## Acknowledgments
-
-- **OpenFGA Team**: For creating the original implementation and excellent documentation
-- **Google Zanzibar**: For pioneering the authorization model
-- **Rust Community**: For the amazing ecosystem and tools
-
 ---
 
-**Status**: 🔬 Research & Design Complete | 🚧 Implementation Starting Soon
+**Status**: Architecture & Design ✅ Complete | Phase 0 ⏳ In Progress
+
+**Next Milestone**: 0.1 - Test Harness Foundation
 
 Built with ❤️ in Rust
