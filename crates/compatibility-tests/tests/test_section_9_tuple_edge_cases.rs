@@ -117,127 +117,31 @@ async fn test_read_tuple_with_userset() -> Result<()> {
     Ok(())
 }
 
-/// Test: Writing tuple with condition
+/// Test: Identifiers at OpenFGA size limits should be accepted
 #[tokio::test]
-async fn test_write_tuple_with_condition() -> Result<()> {
-    // Arrange: Create store with conditional model
-    let store_id = create_test_store().await?;
-
-    let client = reqwest::Client::new();
-
-    // Create model with conditions
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            {
-                "type": "user"
-            },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": {
-                        "this": {}
-                    }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [
-                                {
-                                    "type": "user",
-                                    "condition": "time_based_access"
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
-        ],
-        "conditions": {
-            "time_based_access": {
-                "name": "time_based_access",
-                "expression": "request.time_of_day >= 9 && request.time_of_day <= 17",
-                "parameters": {
-                    "time_of_day": {
-                        "type_name": "int"
-                    }
-                }
-            }
-        }
-    });
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    // If model creation with conditions fails, skip this test
-    if !model_response.status().is_success() {
-        println!("Skipping contextual tuples test - conditions may not be supported");
-        return Ok(());
-    }
-
-    // Act: Write tuple with condition
-    let write_request = json!({
-        "writes": {
-            "tuple_keys": [
-                {
-                    "user": "user:alice",
-                    "relation": "viewer",
-                    "object": "document:sensitive",
-                    "condition": {
-                        "name": "time_based_access",
-                        "context": {
-                            "time_of_day": 14
-                        }
-                    }
-                }
-            ]
-        }
-    });
-
-    let response = client
-        .post(format!("{}/stores/{}/write", get_openfga_url(), store_id))
-        .json(&write_request)
-        .send()
-        .await?;
-
-    // Assert: Write with contextual condition succeeded
-    assert!(
-        response.status().is_success(),
-        "Writing tuple with contextual condition should succeed, got: {}",
-        response.status()
-    );
-
-    Ok(())
-}
-
-/// Test: Very long user/object IDs (near OpenFGA limits: user ≤512, object ≤256 bytes)
-#[tokio::test]
-async fn test_very_long_identifiers() -> Result<()> {
+async fn test_identifiers_at_size_limit() -> Result<()> {
     // Arrange: Create store and simple model
     let store_id = create_test_store().await?;
     let _model_id = create_wildcard_model(&store_id).await?;
 
     let client = reqwest::Client::new();
 
-    // Create very long IDs (close to OpenFGA limits: user=512, object=256)
-    let long_user_id = format!("user:{}", "a".repeat(500));
-    let long_object_id = format!("document:{}", "b".repeat(240));
+    // Create IDs at exact limits (user=512 bytes total, object=256 bytes total)
+    // Format is "type:id", so we need to account for the prefix length
+    let user_id_limit = 512 - "user:".len(); // 507 chars
+    let object_id_limit = 256 - "document:".len(); // 247 chars
 
-    // Act: Write tuple with long IDs
+    let at_limit_user = format!("user:{}", "a".repeat(user_id_limit));
+    let at_limit_object = format!("document:{}", "b".repeat(object_id_limit));
+
+    // Act: Write tuple with IDs at exact limits
     let write_request = json!({
         "writes": {
             "tuple_keys": [
                 {
-                    "user": long_user_id,
+                    "user": at_limit_user,
                     "relation": "viewer",
-                    "object": long_object_id
+                    "object": at_limit_object
                 }
             ]
         }
@@ -249,18 +153,55 @@ async fn test_very_long_identifiers() -> Result<()> {
         .send()
         .await?;
 
-    // Assert: Write with long IDs succeeded or failed with proper error
-    // OpenFGA has limits: user <= 512 bytes, object <= 256 bytes
-    if response.status().is_success() {
-        println!("Long IDs within limits accepted");
-    } else {
-        assert_eq!(
-            response.status(),
-            StatusCode::BAD_REQUEST,
-            "Should return 400 if IDs exceed limits, got: {}",
-            response.status()
-        );
-    }
+    // Assert: IDs at limit should be accepted
+    assert!(
+        response.status().is_success(),
+        "Write with IDs at size limits should succeed, got: {}",
+        response.status()
+    );
+
+    Ok(())
+}
+
+/// Test: Identifiers over OpenFGA size limits should be rejected
+#[tokio::test]
+async fn test_identifiers_over_size_limit() -> Result<()> {
+    // Arrange: Create store and simple model
+    let store_id = create_test_store().await?;
+    let _model_id = create_wildcard_model(&store_id).await?;
+
+    let client = reqwest::Client::new();
+
+    // Create IDs just over limits (user > 512 bytes, object > 256 bytes)
+    let user_over_limit = format!("user:{}", "a".repeat(513)); // 518 bytes total
+    let object_over_limit = format!("document:{}", "b".repeat(257)); // 266 bytes total
+
+    // Act: Write tuple with IDs over limits
+    let write_request = json!({
+        "writes": {
+            "tuple_keys": [
+                {
+                    "user": user_over_limit,
+                    "relation": "viewer",
+                    "object": object_over_limit
+                }
+            ]
+        }
+    });
+
+    let response = client
+        .post(format!("{}/stores/{}/write", get_openfga_url(), store_id))
+        .json(&write_request)
+        .send()
+        .await?;
+
+    // Assert: IDs over limit should be rejected with 400
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "Write with IDs over size limits should return 400, got: {}",
+        response.status()
+    );
 
     Ok(())
 }

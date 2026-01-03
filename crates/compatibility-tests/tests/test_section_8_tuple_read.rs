@@ -1,8 +1,11 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_test_model, create_test_store, get_openfga_url, write_tuples};
+use common::{
+    create_test_model, create_test_store, get_openfga_url, write_tuples, ReadResponse, TupleKey,
+};
 use serde_json::json;
+use std::collections::HashSet;
 
 /// Test: POST /stores/{store_id}/read reads tuples by filter
 #[tokio::test]
@@ -454,15 +457,10 @@ async fn test_read_continuation_token() -> Result<()> {
         .send()
         .await?;
 
-    let response_body_first: serde_json::Value = response_first.json().await?;
-    let first_tuples = response_body_first
-        .get("tuples")
-        .and_then(|v| v.as_array())
-        .expect("tuples field should be an array");
-
-    let continuation_token = response_body_first
-        .get("continuation_token")
-        .and_then(|v| v.as_str())
+    let first_page: ReadResponse = response_first.json().await?;
+    let continuation_token = first_page
+        .continuation_token
+        .as_ref()
         .expect("continuation_token should be present");
 
     // Act: Get second page using continuation_token
@@ -477,43 +475,27 @@ async fn test_read_continuation_token() -> Result<()> {
         .send()
         .await?;
 
-    let response_body_second: serde_json::Value = response_second.json().await?;
-    let second_tuples = response_body_second
-        .get("tuples")
-        .and_then(|v| v.as_array())
-        .expect("tuples field should be an array");
+    let second_page: ReadResponse = response_second.json().await?;
 
     // Assert: Second page has different tuples
     assert_eq!(
-        second_tuples.len(),
+        second_page.tuples.len(),
         3,
         "Second page should also have 3 tuples, got: {}",
-        second_tuples.len()
+        second_page.tuples.len()
     );
 
     // Verify no overlap between pages using HashSet for efficiency
-    use std::collections::HashSet;
-
-    let extract_key = |t: &serde_json::Value| -> String {
-        format!(
-            "{}#{}#{}",
-            t.get("key")
-                .and_then(|k| k.get("user"))
-                .and_then(|v| v.as_str())
-                .expect("Tuple should have user"),
-            t.get("key")
-                .and_then(|k| k.get("relation"))
-                .and_then(|v| v.as_str())
-                .expect("Tuple should have relation"),
-            t.get("key")
-                .and_then(|k| k.get("object"))
-                .and_then(|v| v.as_str())
-                .expect("Tuple should have object")
-        )
-    };
-
-    let first_keys: HashSet<String> = first_tuples.iter().map(extract_key).collect();
-    let second_keys: HashSet<String> = second_tuples.iter().map(extract_key).collect();
+    let first_keys: HashSet<TupleKey> = first_page
+        .tuples
+        .into_iter()
+        .map(|t| t.key)
+        .collect();
+    let second_keys: HashSet<TupleKey> = second_page
+        .tuples
+        .into_iter()
+        .map(|t| t.key)
+        .collect();
 
     assert!(
         first_keys.is_disjoint(&second_keys),

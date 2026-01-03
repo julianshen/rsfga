@@ -1,6 +1,45 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
+
+// ============================================================================
+// Typed API Response Structs
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct CreateStoreResponse {
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateModelResponse {
+    pub authorization_model_id: String,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct TupleKey {
+    pub user: String,
+    pub relation: String,
+    pub object: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Tuple {
+    pub key: TupleKey,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReadResponse {
+    pub tuples: Vec<Tuple>,
+    #[serde(default)]
+    pub continuation_token: Option<String>,
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
 /// Helper function to get OpenFGA URL
 pub fn get_openfga_url() -> String {
@@ -22,18 +61,40 @@ pub async fn create_test_store() -> Result<String> {
         anyhow::bail!("Failed to create store: {}", response.status());
     }
 
-    let store: serde_json::Value = response.json().await?;
-    store
-        .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("'id' field not found in create store response"))
-        .map(|s| s.to_string())
+    let store: CreateStoreResponse = response.json().await?;
+    Ok(store.id)
+}
+
+/// Private helper to create any authorization model
+async fn create_authorization_model(
+    store_id: &str,
+    model: serde_json::Value,
+) -> Result<String> {
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(format!(
+            "{}/stores/{}/authorization-models",
+            get_openfga_url(),
+            store_id
+        ))
+        .json(&model)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "Failed to create authorization model: {}",
+            response.status()
+        );
+    }
+
+    let response_body: CreateModelResponse = response.json().await?;
+    Ok(response_body.authorization_model_id)
 }
 
 /// Helper function to create a simple authorization model
 pub async fn create_test_model(store_id: &str) -> Result<String> {
-    let client = reqwest::Client::new();
-
     let model = json!({
         "schema_version": "1.1",
         "type_definitions": [
@@ -64,31 +125,7 @@ pub async fn create_test_model(store_id: &str) -> Result<String> {
         ]
     });
 
-    let response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        anyhow::bail!(
-            "Failed to create authorization model: {}",
-            response.status()
-        );
-    }
-
-    let response_body: serde_json::Value = response.json().await?;
-    response_body
-        .get("authorization_model_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!("'authorization_model_id' field not found in response")
-        })
-        .map(|s| s.to_string())
+    create_authorization_model(store_id, model).await
 }
 
 /// Helper function to write tuples
@@ -127,8 +164,6 @@ pub async fn write_tuples(store_id: &str, tuples: Vec<(&str, &str, &str)>) -> Re
 
 /// Helper function to create authorization model with wildcard support
 pub async fn create_wildcard_model(store_id: &str) -> Result<String> {
-    let client = reqwest::Client::new();
-
     let model = json!({
         "schema_version": "1.1",
         "type_definitions": [
@@ -161,37 +196,11 @@ pub async fn create_wildcard_model(store_id: &str) -> Result<String> {
         ]
     });
 
-    let response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        anyhow::bail!(
-            "Failed to create wildcard model: {}",
-            response.status()
-        );
-    }
-
-    let response_body: serde_json::Value = response.json().await?;
-    response_body
-        .get("authorization_model_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!("'authorization_model_id' field not found in response")
-        })
-        .map(|s| s.to_string())
+    create_authorization_model(store_id, model).await
 }
 
 /// Helper function to create model with userset relations
 pub async fn create_userset_model(store_id: &str) -> Result<String> {
-    let client = reqwest::Client::new();
-
     let model = json!({
         "schema_version": "1.1",
         "type_definitions": [
@@ -219,29 +228,5 @@ pub async fn create_userset_model(store_id: &str) -> Result<String> {
         ]
     });
 
-    let response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        anyhow::bail!(
-            "Failed to create userset model: {}",
-            response.status()
-        );
-    }
-
-    let response_body: serde_json::Value = response.json().await?;
-    response_body
-        .get("authorization_model_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!("'authorization_model_id' field not found in response")
-        })
-        .map(|s| s.to_string())
+    create_authorization_model(store_id, model).await
 }
