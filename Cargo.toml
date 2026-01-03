@@ -82,6 +82,8 @@ config = "0.14"
 proptest = "1.4"
 mockall = "0.12"
 testcontainers = "0.15"
+reqwest = { version = "0.11", features = ["json"] }
+bollard = "0.16"
 
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }

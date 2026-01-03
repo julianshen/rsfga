@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:14
+    container_name: openfga-postgres
+    environment:
+      POSTGRES_USER: openfga
+      POSTGRES_PASSWORD: openfga
+      POSTGRES_DB: openfga
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openfga"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - openfga-network
+
+  openfga:
+    image: openfga/openfga:latest
+    container_name: openfga
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://openfga:openfga@postgres:5432/openfga?sslmode=disable
+      OPENFGA_LOG_FORMAT: json
+      OPENFGA_LOG_LEVEL: info
+    ports:
+      - "8080:8080"  # HTTP API
+      - "8081:8081"  # gRPC API
+      - "3000:3000"  # Playground (optional)
+    command:
+      - run
+      - --datastore-engine=postgres
+      - --datastore-uri=postgres://openfga:openfga@postgres:5432/openfga?sslmode=disable
+      - --http-addr=0.0.0.0:8080
+      - --grpc-addr=0.0.0.0:8081
+      - --playground-enabled=true
+      - --playground-port=3000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - openfga-network
+
+networks:
+  openfga-network:
+    driver: bridge
