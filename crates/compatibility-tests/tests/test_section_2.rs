@@ -66,3 +66,102 @@ fn is_valid_user_format(identifier: &str) -> bool {
     // The ID part should not be empty
     !parts[1].is_empty()
 }
+
+/// Test: Can generate valid Object identifiers (type:id format)
+#[test]
+fn test_can_generate_valid_object_identifiers() -> Result<()> {
+    // Arrange: Set up test data with different object types
+    let test_cases = vec![
+        ("document", "readme"),
+        ("folder", "planning"),
+        ("organization", "acme"),
+        ("repo", "rsfga"),
+    ];
+
+    // Act: Generate object identifiers
+    for (object_type, object_id) in test_cases {
+        let object_identifier = generate_object_identifier(object_type, object_id);
+
+        // Assert: Verify format is correct (type:id)
+        assert!(
+            object_identifier.contains(':'),
+            "Object identifier should contain ':', got: {}",
+            object_identifier
+        );
+
+        let parts: Vec<&str> = object_identifier.split(':').collect();
+        assert_eq!(
+            parts.len(),
+            2,
+            "Object identifier should have exactly 2 parts, got: {}",
+            parts.len()
+        );
+        assert_eq!(
+            parts[0], object_type,
+            "Object type should match, expected: {}, got: {}",
+            object_type, parts[0]
+        );
+        assert_eq!(
+            parts[1], object_id,
+            "Object ID should match, expected: {}, got: {}",
+            object_id, parts[1]
+        );
+
+        // Verify it's a valid format for OpenFGA
+        assert!(
+            is_valid_object_format(&object_identifier),
+            "Object identifier should be valid: {}",
+            object_identifier
+        );
+    }
+
+    Ok(())
+}
+
+/// Generate an object identifier in OpenFGA format
+fn generate_object_identifier(object_type: &str, object_id: &str) -> String {
+    format!("{}:{}", object_type, object_id)
+}
+
+/// Check if a string is a valid object identifier format
+fn is_valid_object_format(identifier: &str) -> bool {
+    // Valid format: type:id
+    // - Must have exactly one colon
+    // - Both type and id must be non-empty
+    // - Must not have spaces
+    // - Type should be alphanumeric with underscores/hyphens
+    // - ID can contain alphanumeric, underscores, hyphens
+
+    if identifier.is_empty() {
+        return false;
+    }
+
+    if identifier.contains(' ') {
+        return false;
+    }
+
+    let parts: Vec<&str> = identifier.split(':').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+
+    let object_type = parts[0];
+    let object_id = parts[1];
+
+    // Type and ID must be non-empty
+    if object_type.is_empty() || object_id.is_empty() {
+        return false;
+    }
+
+    // Type should contain only alphanumeric, underscore, or hyphen
+    if !object_type.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        return false;
+    }
+
+    // ID should contain only alphanumeric, underscore, hyphen, or pipe (for namespacing)
+    if !object_id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '|') {
+        return false;
+    }
+
+    true
+}
