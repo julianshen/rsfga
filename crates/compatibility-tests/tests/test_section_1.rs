@@ -21,7 +21,10 @@ async fn test_can_start_openfga_via_docker_compose() -> Result<()> {
 
     // Assert: Verify OpenFGA is running
     let is_running = check_openfga_running()?;
-    assert!(is_running, "OpenFGA should be running after docker-compose up");
+    assert!(
+        is_running,
+        "OpenFGA should be running after docker-compose up"
+    );
 
     // Cleanup
     stop_docker_compose()?;
@@ -32,17 +35,11 @@ async fn test_can_start_openfga_via_docker_compose() -> Result<()> {
 /// Start OpenFGA using docker-compose
 fn start_docker_compose() -> Result<()> {
     // Get path to compatibility-tests crate root
-    let crate_root = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR not set");
+    let crate_root = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
     let compose_file = format!("{}/docker-compose.yml", crate_root);
 
     let output = Command::new("docker-compose")
-        .args(&[
-            "-f",
-            &compose_file,
-            "up",
-            "-d",
-        ])
+        .args(&["-f", &compose_file, "up", "-d"])
         .output()?;
 
     if !output.status.success() {
@@ -62,8 +59,7 @@ fn start_docker_compose() -> Result<()> {
 /// Stop OpenFGA using docker-compose
 fn stop_docker_compose() -> Result<()> {
     // Get path to compatibility-tests crate root
-    let crate_root = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR not set");
+    let crate_root = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
     let compose_file = format!("{}/docker-compose.yml", crate_root);
 
     let output = Command::new("docker-compose")
@@ -71,7 +67,7 @@ fn stop_docker_compose() -> Result<()> {
             "-f",
             &compose_file,
             "down",
-            "-v",  // Remove volumes
+            "-v", // Remove volumes
         ])
         .output()?;
 
@@ -90,7 +86,7 @@ fn stop_docker_compose() -> Result<()> {
                 "-f",
                 &compose_file,
                 "ps",
-                "-q",  // Quiet mode - only IDs
+                "-q", // Quiet mode - only IDs
             ])
             .output()?;
 
@@ -110,8 +106,7 @@ fn stop_docker_compose() -> Result<()> {
 /// Check if OpenFGA is running by checking container status
 fn check_openfga_running() -> Result<bool> {
     // Get path to compatibility-tests crate root
-    let crate_root = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR not set");
+    let crate_root = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
     let compose_file = format!("{}/docker-compose.yml", crate_root);
 
     let output = Command::new("docker-compose")
@@ -119,7 +114,7 @@ fn check_openfga_running() -> Result<bool> {
             "-f",
             &compose_file,
             "ps",
-            "-q",  // Quiet mode - only IDs
+            "-q", // Quiet mode - only IDs
         ])
         .output()?;
 
@@ -138,10 +133,7 @@ async fn test_can_connect_to_openfga_http_api() -> Result<()> {
 
     // Act: Connect to HTTP health check endpoint
     let client = reqwest::Client::new();
-    let response = client
-        .get("http://localhost:18080/healthz")
-        .send()
-        .await?;
+    let response = client.get("http://localhost:18080/healthz").send().await?;
 
     // Assert: Health check returns 200 OK
     assert!(
@@ -311,10 +303,7 @@ async fn test_environment_teardown_is_idempotent() -> Result<()> {
 
     // Assert: Verify environment is actually stopped
     let is_running = check_openfga_running()?;
-    assert!(
-        !is_running,
-        "OpenFGA should not be running after teardown"
-    );
+    assert!(!is_running, "OpenFGA should not be running after teardown");
 
     // Final cleanup (just to be thorough)
     stop_docker_compose()?;

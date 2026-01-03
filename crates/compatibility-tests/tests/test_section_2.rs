@@ -37,10 +37,7 @@ fn test_can_generate_valid_user_identifiers() -> Result<()> {
     );
 
     // Test negative cases - invalid formats should be rejected
-    assert!(
-        !is_valid_user_format(""),
-        "Empty string should be invalid"
-    );
+    assert!(!is_valid_user_format(""), "Empty string should be invalid");
     assert!(
         !is_valid_user_format("user"),
         "Missing colon should be invalid"
@@ -207,12 +204,18 @@ fn is_valid_object_format(identifier: &str) -> bool {
     }
 
     // Type should contain only alphanumeric, underscore, or hyphen
-    if !object_type.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if !object_type
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         return false;
     }
 
     // ID should contain only alphanumeric, underscore, hyphen, or pipe (for namespacing)
-    if !object_id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '|') {
+    if !object_id
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '|')
+    {
         return false;
     }
 
@@ -223,7 +226,9 @@ fn is_valid_object_format(identifier: &str) -> bool {
 #[test]
 fn test_can_generate_valid_relation_names() -> Result<()> {
     // Arrange: Common relation names
-    let relation_names = vec!["viewer", "editor", "owner", "admin", "member", "can_view", "can_edit"];
+    let relation_names = vec![
+        "viewer", "editor", "owner", "admin", "member", "can_view", "can_edit",
+    ];
 
     // Act & Assert: Verify each relation name is valid
     for relation_name in relation_names {
@@ -254,7 +259,8 @@ fn is_valid_relation_name(name: &str) -> bool {
     }
 
     // Check all characters are lowercase alphanumeric or underscore
-    name.chars().all(|c| c.is_lowercase() || c.is_numeric() || c == '_')
+    name.chars()
+        .all(|c| c.is_lowercase() || c.is_numeric() || c == '_')
 }
 
 /// Test: Can generate valid Tuples
@@ -273,19 +279,13 @@ fn test_can_generate_valid_tuples() -> Result<()> {
         let tuple = generate_tuple(store_id, user_id, relation, object_type, object_id);
 
         // Assert: Verify tuple structure
-        assert_eq!(
-            tuple.store_id, store_id,
-            "Tuple store_id should match"
-        );
+        assert_eq!(tuple.store_id, store_id, "Tuple store_id should match");
         assert_eq!(
             tuple.user,
             generate_user_identifier(user_id),
             "Tuple user should match"
         );
-        assert_eq!(
-            tuple.relation, relation,
-            "Tuple relation should match"
-        );
+        assert_eq!(tuple.relation, relation, "Tuple relation should match");
         assert_eq!(
             tuple.object,
             generate_object_identifier(object_type, object_id),
