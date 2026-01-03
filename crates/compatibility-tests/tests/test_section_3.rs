@@ -242,6 +242,74 @@ async fn test_can_detect_breaking_changes_in_response_format() -> Result<()> {
     Ok(())
 }
 
+/// Test: Can detect breaking changes in nested objects
+#[tokio::test]
+async fn test_can_detect_breaking_changes_in_nested_objects() -> Result<()> {
+    // Arrange: Create responses with nested type changes
+    let original = r#"{"store": {"id": "store123", "metadata": {"version": "1.0"}}}"#;
+
+    // Compatible: Adding new nested field
+    let compatible = r#"{"store": {"id": "store123", "metadata": {"version": "1.0", "created_at": "2024-01-01"}}}"#;
+
+    // Breaking: Type change in nested field (string -> number)
+    let breaking_nested_type = r#"{"store": {"id": 123, "metadata": {"version": "1.0"}}}"#;
+
+    // Breaking: Removed nested field
+    let breaking_removed_field = r#"{"store": {"id": "store123", "metadata": {}}}"#;
+
+    // Breaking: Type change in deeply nested field
+    let breaking_deep = r#"{"store": {"id": "store123", "metadata": {"version": 1.0}}}"#;
+
+    // Act & Assert: Test each scenario
+    assert!(
+        detect_breaking_changes(original, compatible)?,
+        "Adding nested field should be compatible"
+    );
+
+    assert!(
+        !detect_breaking_changes(original, breaking_nested_type)?,
+        "Type change in nested field should be breaking"
+    );
+
+    assert!(
+        !detect_breaking_changes(original, breaking_removed_field)?,
+        "Removing nested field should be breaking"
+    );
+
+    assert!(
+        !detect_breaking_changes(original, breaking_deep)?,
+        "Type change in deeply nested field should be breaking"
+    );
+
+    Ok(())
+}
+
+/// Test: Can detect breaking changes in arrays
+#[tokio::test]
+async fn test_can_detect_breaking_changes_in_arrays() -> Result<()> {
+    // Arrange: Create responses with array fields
+    let original = r#"{"stores": [{"id": "store1", "name": "Store 1"}]}"#;
+
+    // Compatible: Same array structure
+    let compatible = r#"{"stores": [{"id": "store1", "name": "Store 1"}, {"id": "store2", "name": "Store 2"}]}"#;
+
+    // Breaking: Array element type changed
+    let breaking = r#"{"stores": [{"id": 123, "name": "Store 1"}]}"#;
+
+    // Act & Assert
+    assert!(
+        detect_breaking_changes(original, compatible)?,
+        "Adding array elements should be compatible"
+    );
+
+    assert!(
+        !detect_breaking_changes(original, breaking)?,
+        "Type change in array element should be breaking"
+    );
+
+    Ok(())
+}
+
 // Helper Functions
 
 /// Create a sample HTTP exchange for testing
@@ -313,36 +381,61 @@ fn compare_http_responses(response1: &HttpResponse, response2: &HttpResponse) ->
 ///
 /// A change is breaking if:
 /// - A field is removed or renamed
-/// - A field's type changes
+/// - A field's type changes (including in nested objects)
 ///
 /// Adding new fields is NOT breaking (forward compatibility)
 fn detect_breaking_changes(original: &str, modified: &str) -> Result<bool> {
     let original_json: serde_json::Value = serde_json::from_str(original)?;
     let modified_json: serde_json::Value = serde_json::from_str(modified)?;
 
-    // Get original fields
-    let original_obj = original_json.as_object().ok_or_else(|| {
-        anyhow::anyhow!("Original JSON must be an object")
-    })?;
+    check_compatible(&original_json, &modified_json)
+}
 
-    let modified_obj = modified_json.as_object().ok_or_else(|| {
-        anyhow::anyhow!("Modified JSON must be an object")
-    })?;
+/// Recursively check if two JSON values are compatible
+///
+/// Compatibility rules:
+/// - Objects: All original fields must exist in modified with compatible types
+/// - Arrays: Element types must be compatible (checks first element)
+/// - Primitives: Must be same type
+fn check_compatible(original: &serde_json::Value, modified: &serde_json::Value) -> Result<bool> {
+    use serde_json::Value;
 
-    // Check if all original fields exist in modified
-    for (key, original_value) in original_obj {
-        if let Some(modified_value) = modified_obj.get(key) {
-            // Field exists - check if type changed
-            if std::mem::discriminant(original_value) != std::mem::discriminant(modified_value) {
-                // Type changed - breaking!
-                return Ok(false);
+    match (original, modified) {
+        // Both are objects - recursively check all fields
+        (Value::Object(orig_map), Value::Object(mod_map)) => {
+            for (key, orig_value) in orig_map {
+                if let Some(mod_value) = mod_map.get(key) {
+                    // Field exists - recursively check compatibility
+                    if !check_compatible(orig_value, mod_value)? {
+                        return Ok(false);
+                    }
+                } else {
+                    // Field removed - breaking!
+                    return Ok(false);
+                }
             }
-        } else {
-            // Field removed - breaking!
-            return Ok(false);
+            Ok(true)
         }
-    }
 
-    // All original fields present with same types - compatible!
-    Ok(true)
+        // Both are arrays - check element types recursively
+        (Value::Array(orig_arr), Value::Array(mod_arr)) => {
+            // For arrays, we check if the first element types are compatible
+            // (OpenFGA arrays are typically homogeneous)
+            if let (Some(orig_first), Some(mod_first)) = (orig_arr.first(), mod_arr.first()) {
+                check_compatible(orig_first, mod_first)
+            } else {
+                // Empty arrays or modified array is empty - compatible
+                Ok(true)
+            }
+        }
+
+        // Both are same primitive type - compatible
+        (Value::Null, Value::Null)
+        | (Value::Bool(_), Value::Bool(_))
+        | (Value::Number(_), Value::Number(_))
+        | (Value::String(_), Value::String(_)) => Ok(true),
+
+        // Different types - breaking change!
+        _ => Ok(false),
+    }
 }
