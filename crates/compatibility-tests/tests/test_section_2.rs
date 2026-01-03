@@ -353,8 +353,14 @@ fn test_can_generate_authorization_models_with_direct_relations() -> Result<()> 
     validate_authorization_model(&model)?;
 
     // Assert: Verify model structure
-    assert!(!model.schema_version.is_empty(), "Schema version should not be empty");
-    assert!(!model.type_definitions.is_empty(), "Model should have type definitions");
+    assert!(
+        !model.schema_version.is_empty(),
+        "Schema version should not be empty"
+    );
+    assert!(
+        !model.type_definitions.is_empty(),
+        "Model should have type definitions"
+    );
 
     // Find the document type definition
     let document_type = model
@@ -405,8 +411,14 @@ fn test_can_generate_authorization_models_with_computed_relations() -> Result<()
     validate_authorization_model(&model)?;
 
     // Assert: Verify model structure
-    assert!(!model.schema_version.is_empty(), "Schema version should not be empty");
-    assert!(!model.type_definitions.is_empty(), "Model should have type definitions");
+    assert!(
+        !model.schema_version.is_empty(),
+        "Schema version should not be empty"
+    );
+    assert!(
+        !model.type_definitions.is_empty(),
+        "Model should have type definitions"
+    );
 
     // Find the document type definition
     let document_type = model
@@ -474,7 +486,7 @@ struct TypeDefinition {
 struct RelationDefinition {
     is_direct: bool,
     allowed_types: Vec<String>,
-    computed_from: Option<Vec<String>>, // For computed relations
+    computed_from: Option<Vec<String>>,   // For computed relations
     operation: Option<RelationOperation>, // Union, Intersection, etc.
 }
 
