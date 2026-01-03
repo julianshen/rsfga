@@ -6,6 +6,23 @@ This document outlines the complete implementation plan for RSFGA, broken down i
 
 ---
 
+## Terminology
+
+To avoid confusion, we use these terms consistently:
+
+- **Phase** = Major implementation stage (3 total: MVP, Precomputation, Edge)
+  - Example: "Phase 1: MVP", "Phase 2: Precomputation"
+
+- **Milestone** = Time-boxed deliverable within a phase (~1-2 weeks)
+  - Example: "Milestone 1.1: Project Foundation", "Milestone 1.2: Type System"
+
+- **Section** = Logical grouping of related tests within a milestone
+  - Example: "Section 1: Core Type Definitions", "Section 2: DSL Parser"
+
+**Structure**: Phase → Milestone → Section → Individual Tests
+
+---
+
 ## How to Use This Plan
 
 1. User says **"go"**
@@ -67,7 +84,7 @@ This document outlines the complete implementation plan for RSFGA, broken down i
 
 **Objective**: Parse OpenFGA authorization models and validate them
 
-#### Phase 1.2.1: Core Type Definitions
+#### Section 1: Core Type Definitions
 
 - [ ] Test: Can create a User type with validation
 - [ ] Test: User type rejects empty string
@@ -79,7 +96,7 @@ This document outlines the complete implementation plan for RSFGA, broken down i
 - [ ] Test: Can create Store with unique ID
 - [ ] Test: Can create AuthorizationModel with schema version
 
-#### Phase 1.2.2: DSL Parser
+#### Section 2: DSL Parser
 
 - [ ] Test: Parser recognizes "type" keyword
 - [ ] Test: Parser parses simple type definition
@@ -107,7 +124,7 @@ type document
     define viewer: [user] or editor
 ```
 
-#### Phase 1.2.3: Model Validation
+#### Section 3: Model Validation
 
 - [ ] Test: Validator accepts valid model
 - [ ] Test: Validator rejects cyclic relation definitions
@@ -136,7 +153,7 @@ type document
 
 **Objective**: Abstract storage interface with PostgreSQL and in-memory implementations
 
-#### Phase 1.3.1: Storage Trait
+#### Section 1: Storage Trait
 
 - [ ] Test: DataStore trait compiles
 - [ ] Test: DataStore trait is Send + Sync
@@ -145,7 +162,7 @@ type document
 - [ ] Test: Can define delete_tuple method signature
 - [ ] Test: Can define transaction support methods
 
-#### Phase 1.3.2: In-Memory Storage
+#### Section 2: In-Memory Storage
 
 - [ ] Test: InMemoryStore can be created
 - [ ] Test: Can write a single tuple
@@ -160,7 +177,7 @@ type document
 - [ ] Test: Concurrent writes don't lose data
 - [ ] Test: Concurrent reads while writing return consistent data
 
-#### Phase 1.3.3: PostgreSQL Storage
+#### Section 3: PostgreSQL Storage
 
 - [ ] Test: Can connect to PostgreSQL
 - [ ] Test: Can create tables with migrations
@@ -193,7 +210,7 @@ CREATE INDEX idx_tuples_object ON tuples(store_id, object_type, object_id);
 CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 ```
 
-#### Phase 1.3.4: Storage Integration Tests
+#### Section 4: Storage Integration Tests
 
 - [ ] Test: Same behavior across InMemory and PostgreSQL stores
 - [ ] Test: Can swap storage implementations
@@ -221,7 +238,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 
 **Objective**: Implement async graph traversal with cycle detection and depth limiting
 
-#### Phase 1.4.1: Direct Tuple Resolution
+#### Section 1: Direct Tuple Resolution
 
 - [ ] Test: Check returns true for direct tuple assignment
 - [ ] Test: Check returns false when no tuple exists
@@ -230,14 +247,14 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: Check rejects invalid user format
 - [ ] Test: Check rejects invalid object format
 
-#### Phase 1.4.2: Computed Relations
+#### Section 2: Computed Relations
 
 - [ ] Test: Can resolve "this" relation
 - [ ] Test: Can resolve relation from parent object
 - [ ] Test: Resolves nested parent relationships
 - [ ] Test: Handles missing parent gracefully
 
-#### Phase 1.4.3: Union Relations (A or B)
+#### Section 3: Union Relations (A or B)
 
 - [ ] Test: Returns true if ANY union branch is true
 - [ ] Test: Returns false if ALL union branches are false
@@ -245,20 +262,20 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: Executes union branches in parallel
 - [ ] Test: Handles errors in union branches
 
-#### Phase 1.4.4: Intersection Relations (A and B)
+#### Section 4: Intersection Relations (A and B)
 
 - [ ] Test: Returns true only if ALL intersection branches are true
 - [ ] Test: Returns false if ANY intersection branch is false
 - [ ] Test: Short-circuits on first false branch
 - [ ] Test: Executes intersection branches in parallel
 
-#### Phase 1.4.5: Exclusion Relations (A but not B)
+#### Section 5: Exclusion Relations (A but not B)
 
 - [ ] Test: Returns true if A is true and B is false
 - [ ] Test: Returns false if A is false
 - [ ] Test: Returns false if B is true
 
-#### Phase 1.4.6: Safety Mechanisms
+#### Section 6: Safety Mechanisms
 
 - [ ] Test: Depth limit prevents stack overflow
 - [ ] Test: Depth limit matches OpenFGA (25)
@@ -269,7 +286,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: Timeout is configurable
 - [ ] Test: Returns timeout error with context
 
-#### Phase 1.4.7: Property-Based Tests
+#### Section 7: Property-Based Tests
 
 - [ ] Test: Property: Resolver never panics on any input
 - [ ] Test: Property: Resolver always terminates (no infinite loops)
@@ -299,7 +316,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 
 **Objective**: Lock-free caching with TTL and async invalidation
 
-#### Phase 1.5.1: Cache Structure
+#### Section 1: Cache Structure
 
 - [ ] Test: Can create cache with DashMap
 - [ ] Test: Can insert check result into cache
@@ -308,7 +325,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: Cache key includes store, user, relation, object
 - [ ] Test: Different stores have separate cache entries
 
-#### Phase 1.5.2: TTL and Eviction
+#### Section 2: TTL and Eviction
 
 - [ ] Test: Cached entry expires after TTL
 - [ ] Test: TTL is configurable
@@ -317,7 +334,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: Can invalidate entries matching pattern
 - [ ] Test: Eviction doesn't block reads
 
-#### Phase 1.5.3: Cache Invalidation
+#### Section 3: Cache Invalidation
 
 - [ ] Test: Writing tuple invalidates affected cache entries
 - [ ] Test: Deleting tuple invalidates affected cache entries
@@ -326,7 +343,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: Invalidation handles errors gracefully
 - [ ] Test: Can measure staleness window (<100ms p99)
 
-#### Phase 1.5.4: Concurrent Access
+#### Section 4: Concurrent Access
 
 - [ ] Test: Concurrent reads don't block each other
 - [ ] Test: Concurrent writes don't lose data
@@ -354,7 +371,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 
 **Objective**: Parallel batch checking with three-stage deduplication
 
-#### Phase 1.6.1: Batch Request Parsing
+#### Section 1: Batch Request Parsing
 
 - [ ] Test: Can parse batch check request
 - [ ] Test: Validates each check in batch
@@ -362,28 +379,28 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: Accepts batch with single check
 - [ ] Test: Accepts batch with 100+ checks
 
-#### Phase 1.6.2: Intra-Batch Deduplication
+#### Section 2: Intra-Batch Deduplication
 
 - [ ] Test: Identifies duplicate checks in batch
 - [ ] Test: Executes unique checks only once
 - [ ] Test: Maps results back to original positions
 - [ ] Test: Preserves request order in response
 
-#### Phase 1.6.3: Singleflight (Cross-Request Dedup)
+#### Section 3: Singleflight (Cross-Request Dedup)
 
 - [ ] Test: Concurrent requests for same check share result
 - [ ] Test: Singleflight groups expire after completion
 - [ ] Test: Errors don't poison singleflight group
 - [ ] Test: Singleflight handles timeouts correctly
 
-#### Phase 1.6.4: Parallel Execution
+#### Section 4: Parallel Execution
 
 - [ ] Test: Unique checks execute in parallel
 - [ ] Test: Batch processes faster than sequential checks
 - [ ] Test: Respects concurrency limits
 - [ ] Test: Handles partial failures gracefully
 
-#### Phase 1.6.5: Performance
+#### Section 5: Performance
 
 - [ ] Test: Batch of 100 identical checks executes ~1 check
 - [ ] Test: Batch throughput >500 checks/s (target)
@@ -408,7 +425,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 
 **Objective**: HTTP REST and gRPC APIs with OpenFGA compatibility
 
-#### Phase 1.7.1: Protobuf Definitions
+#### Section 1: Protobuf Definitions
 
 - [ ] Test: Protobuf files compile
 - [ ] Test: Generated Rust code is identical to OpenFGA types
@@ -416,7 +433,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: Can serialize/deserialize Check response
 - [ ] Test: Can serialize/deserialize all request types
 
-#### Phase 1.7.2: HTTP REST API
+#### Section 2: HTTP REST API
 
 - [ ] Test: Server starts on configured port
 - [ ] Test: POST /stores/{store_id}/check returns 200
@@ -429,7 +446,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: Non-existent store returns 404
 - [ ] Test: Server errors return 500 with details
 
-#### Phase 1.7.3: gRPC API
+#### Section 3: gRPC API
 
 - [ ] Test: gRPC server starts
 - [ ] Test: Check RPC works correctly
@@ -438,7 +455,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: Read RPC works correctly
 - [ ] Test: gRPC errors map correctly to status codes
 
-#### Phase 1.7.4: Middleware
+#### Section 4: Middleware
 
 - [ ] Test: Request logging works
 - [ ] Test: Metrics are collected (request count, duration)
@@ -446,7 +463,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: CORS headers are set correctly
 - [ ] Test: Request ID is generated and propagated
 
-#### Phase 1.7.5: OpenFGA Compatibility
+#### Section 5: OpenFGA Compatibility
 
 - [ ] Test: All OpenFGA API endpoints present
 - [ ] Test: Request/response schemas match exactly
@@ -474,7 +491,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 
 **Objective**: Comprehensive testing and performance validation
 
-#### Phase 1.8.1: Test Coverage
+#### Section 1: Test Coverage
 
 - [ ] Test: Overall coverage >90%
 - [ ] Test: Domain layer coverage >95%
@@ -482,7 +499,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: All public APIs have tests
 - [ ] Test: All error paths have tests
 
-#### Phase 1.8.2: Integration Tests
+#### Section 2: Integration Tests
 
 - [ ] Test: End-to-end authorization flow works
 - [ ] Test: Multiple concurrent clients work correctly
@@ -491,7 +508,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [ ] Test: Large authorization models work (1000+ types)
 - [ ] Test: Deep hierarchies work (depth 20+)
 
-#### Phase 1.8.3: Performance Benchmarks
+#### Section 3: Performance Benchmarks
 
 - [ ] Test: Benchmark check operation throughput
 - [ ] Test: Benchmark batch check throughput
@@ -516,14 +533,14 @@ RSFGA Target (60% confidence):
 - Check p95: <20ms
 ```
 
-#### Phase 1.8.4: Stress Testing
+#### Section 4: Stress Testing
 
 - [ ] Test: Server handles 1000 concurrent connections
 - [ ] Test: No memory leaks under sustained load
 - [ ] Test: Graceful degradation under overload
 - [ ] Test: Recovery after database failure
 
-#### Phase 1.8.5: Security Testing
+#### Section 5: Security Testing
 
 - [ ] Test: SQL injection attempts fail
 - [ ] Test: Input validation prevents XSS
@@ -554,7 +571,7 @@ RSFGA Target (60% confidence):
 
 **Objective**: Observability, documentation, and deployment
 
-#### Phase 1.9.1: Observability
+#### Section 1: Observability
 
 - [ ] Test: Metrics endpoint exposes Prometheus metrics
 - [ ] Test: Tracing spans are exported to Jaeger
@@ -570,7 +587,7 @@ RSFGA Target (60% confidence):
 - Database connection pool usage
 - Active connections
 
-#### Phase 1.9.2: Configuration
+#### Section 2: Configuration
 
 - [ ] Test: Can load config from YAML file
 - [ ] Test: Can override config with env vars
@@ -578,7 +595,7 @@ RSFGA Target (60% confidence):
 - [ ] Test: Invalid config returns clear error
 - [ ] Test: Config hot-reload works (if supported)
 
-#### Phase 1.9.3: Documentation
+#### Section 3: Documentation
 
 - [ ] Test: API documentation is generated
 - [ ] Test: README has quick start guide
@@ -586,7 +603,7 @@ RSFGA Target (60% confidence):
 - [ ] Test: All ADRs have validation results
 - [ ] Test: Migration guide from OpenFGA exists
 
-#### Phase 1.9.4: Deployment
+#### Section 4: Deployment
 
 - [ ] Test: Docker image builds successfully
 - [ ] Test: Docker image runs correctly
