@@ -6,6 +6,327 @@ This roadmap outlines the phased implementation of RSFGA, from MVP to distribute
 
 ---
 
+## Phase 0: OpenFGA Compatibility Test Suite
+
+**Goal**: Build comprehensive test suite that captures OpenFGA's actual behavior across all APIs
+
+**Why This Phase Exists**: OpenFGA doesn't provide a compatibility test suite. We need ground truth to validate RSFGA's 100% API compatibility claim. This phase creates the validation framework used at the end of every subsequent phase.
+
+**Success Criteria**:
+- ✅ Test harness can execute tests against both OpenFGA and RSFGA
+- ✅ ~150 compatibility tests covering all endpoints (Check, Batch, Write, Read, Expand, ListObjects, Store, Model)
+- ✅ All relation types validated (direct, union, intersection, exclusion, this, wildcards)
+- ✅ Performance baselines established for comparison
+- ✅ Error response catalog documented
+- ✅ Edge cases and limits documented
+
+**Duration Estimate**: 7 weeks
+
+**Validation**: Run suite against OpenFGA (100% pass)
+
+---
+
+### Milestone 0.1: Test Harness Foundation (Week 1)
+
+**Goal**: Infrastructure to execute tests against OpenFGA and capture expected behavior
+
+#### Tasks
+
+**0.1.1 OpenFGA Test Environment**
+- Set up Docker Compose for OpenFGA
+- Create test environment setup/teardown scripts
+- Verify HTTP and gRPC connectivity
+- Implement test store lifecycle management
+
+**0.1.2 Test Data Generators**
+- User/Object/Relation identifier generators
+- Tuple generators (all relation types)
+- Authorization model generators (direct, computed, nested)
+- Property-based test data generation
+
+**0.1.3 Response Capture Framework**
+- HTTP request/response capture utility
+- gRPC request/response capture utility
+- Serialization to JSON test fixtures
+- Response comparison and diff tooling
+
+**Validation Criteria**:
+- [ ] OpenFGA running in Docker, accessible via HTTP/gRPC
+- [ ] Test data generators produce valid, diverse inputs
+- [ ] Can capture and replay requests deterministically
+
+**Deliverables**:
+- `tests/compatibility/harness/` - test infrastructure
+- `docker-compose.openfga.yml` - OpenFGA environment
+- Test data generator library
+
+---
+
+### Milestone 0.2: Store & Model API Tests (Week 2)
+
+**Goal**: Capture Store and Authorization Model API behavior
+
+#### Tasks
+
+**0.2.1 Store CRUD Operations**
+- Test store creation (POST /stores)
+- Test store retrieval (GET /stores/{id})
+- Test store deletion (DELETE /stores/{id})
+- Test store listing with pagination
+- Error cases (404, invalid inputs)
+
+**0.2.2 Authorization Model Write**
+- Model creation with various relation types
+- Direct relations, computed relations (union/intersection/exclusion)
+- this keyword, wildcards
+- Model validation errors
+- Duplicate types, undefined relation references
+
+**0.2.3 Authorization Model Read**
+- Model retrieval by ID
+- Latest model retrieval
+- Model listing and pagination
+- Response format validation
+
+**Validation Criteria**:
+- [ ] 30+ test cases for Store API
+- [ ] 15+ test cases for Authorization Model API
+- [ ] All captured responses match OpenFGA exactly
+
+**Deliverables**:
+- Store API test suite with expected responses
+- Authorization Model API test suite
+- Error response catalog (Store/Model)
+
+---
+
+### Milestone 0.3: Tuple API Tests (Week 3)
+
+**Goal**: Validate Tuple write and read operations
+
+#### Tasks
+
+**0.3.1 Tuple Write Operations**
+- Single tuple writes
+- Batch tuple writes
+- Tuple deletions
+- Idempotency verification
+- Conditional writes
+- Validation errors (invalid format, undefined types/relations)
+
+**0.3.2 Tuple Read Operations**
+- Read with user filter
+- Read with relation filter
+- Read with object filter
+- Combined filters (AND logic)
+- Pagination (page_size, continuation_token)
+
+**0.3.3 Edge Cases**
+- Wildcard users (user:*)
+- Userset relations
+- Contextual tuples
+- Long identifiers (1000+ chars)
+- Special characters, Unicode
+
+**Validation Criteria**:
+- [ ] 25+ test cases for Tuple API
+- [ ] Pagination behavior documented
+- [ ] Edge case limits identified
+
+**Deliverables**:
+- Tuple API test suite
+- Edge case documentation
+- Identifier length/character limits
+
+---
+
+### Milestone 0.4: Check API Tests (Week 4)
+
+**Goal**: Validate Check and Batch Check (core authorization logic)
+
+#### Tasks
+
+**0.4.1 Basic Check Operations**
+- Direct relation checks
+- Computed relation resolution (union, intersection, exclusion)
+- this keyword resolution
+- Contextual tuples
+- Error cases (404, 400)
+
+**0.4.2 Complex Relation Resolution**
+- Multi-hop relations (parent → child inheritance)
+- Deeply nested relations (5+ hops)
+- Union/intersection/exclusion combinations
+- Cycle detection
+- Wildcards
+
+**0.4.3 Batch Check Operations**
+- Multiple checks in single request
+- Result ordering verification
+- Mixed allowed/denied results
+- Large batches (100+ checks)
+- Deduplication behavior
+
+**0.4.4 Performance Baselines**
+- Direct relation check latency
+- Computed relation check latency
+- Deep nested relation latency
+- Batch check throughput
+- Consistency timing (write → check)
+
+**Validation Criteria**:
+- [ ] 30+ test cases for Check API
+- [ ] All relation types tested
+- [ ] Performance baselines established
+
+**Deliverables**:
+- Check API test suite
+- Batch check test suite
+- Performance baseline document (for Phase 1 comparison)
+- Consistency guarantees documentation
+
+---
+
+### Milestone 0.5: Expand & ListObjects API Tests (Week 5)
+
+**Goal**: Validate Expand and ListObjects APIs
+
+#### Tasks
+
+**0.5.1 Expand API**
+- Relation tree generation
+- Direct vs computed relation trees
+- Union/intersection branches
+- max_depth parameter
+- Deterministic output verification
+
+**0.5.2 ListObjects API**
+- Objects accessible by user
+- Direct relation filtering
+- Computed relation filtering
+- Type filters
+- Pagination
+- Contextual tuples
+
+**0.5.3 Edge Cases**
+- Very deep trees (20+ levels)
+- Circular relation definitions
+- Large result sets (1000+ objects)
+
+**Validation Criteria**:
+- [ ] 20+ test cases for Expand/ListObjects
+- [ ] Tree format documented
+- [ ] Edge case behavior understood
+
+**Deliverables**:
+- Expand API test suite
+- ListObjects API test suite
+- Relation tree format specification
+
+---
+
+### Milestone 0.6: Error Handling & Edge Cases (Week 6)
+
+**Goal**: Systematically document all error conditions and limits
+
+#### Tasks
+
+**0.6.1 Error Response Format**
+- 400 Bad Request structure
+- 404 Not Found structure
+- 500 Internal Server Error structure
+- Error code enumeration
+- Field-level validation errors
+
+**0.6.2 Consistency & Concurrency**
+- Concurrent writes to same tuple
+- Read-after-write consistency timing
+- Check during model update
+- Stale model handling
+
+**0.6.3 Limits & Boundaries**
+- Maximum tuple size
+- Maximum tuples per write
+- Maximum checks per batch
+- Maximum model size
+- Maximum relation depth
+- Request timeout behavior
+
+**Validation Criteria**:
+- [ ] All error formats documented
+- [ ] Consistency model understood
+- [ ] All limits documented
+
+**Deliverables**:
+- Complete error response catalog
+- Consistency guarantee specification
+- Limits and boundaries document
+
+---
+
+### Milestone 0.7: gRPC API Compatibility (Week 7)
+
+**Goal**: Validate gRPC API matches REST API behavior
+
+#### Tasks
+
+**0.7.1 gRPC Service Validation**
+- Store service methods
+- Authorization Model service methods
+- Tuple service methods
+- Check service methods
+
+**0.7.2 REST/gRPC Parity**
+- Store.Create ↔ POST /stores
+- Store.Get ↔ GET /stores/{id}
+- Store.Delete ↔ DELETE /stores/{id}
+- Check ↔ POST /stores/{id}/check
+- All other endpoints verified
+
+**0.7.3 gRPC-Specific Features**
+- Streaming (if supported)
+- Metadata/headers
+- Error code mapping (gRPC ↔ HTTP)
+- Error details format
+
+**Validation Criteria**:
+- [ ] All gRPC services tested
+- [ ] REST/gRPC parity verified
+- [ ] Protobuf message examples captured
+
+**Deliverables**:
+- gRPC test suite (mirroring REST tests)
+- Protobuf message catalog
+- REST/gRPC compatibility matrix
+
+---
+
+## Phase 0 Summary
+
+**Total Test Count**: ~150 compatibility tests
+
+**Key Deliverables**:
+1. OpenFGA test harness (Docker-based)
+2. Complete REST API test suite with captured responses
+3. Complete gRPC API test suite
+4. Test data generators
+5. Performance baselines
+6. Error catalog
+7. Limits and edge case documentation
+
+**Usage in Subsequent Phases**:
+After each phase (1, 2, 3), run this test suite against RSFGA to ensure:
+- 100% compatibility maintained
+- Performance meets or exceeds baselines
+- No behavioral regressions
+
+**Risk Mitigation**:
+- **R-001 (API Compatibility Breaks)**: This test suite is the validation mechanism
+- **R-002 (Performance Claims Unvalidated)**: Baselines enable comparison
+- **R-003 (Authorization Correctness Bug)**: Validates graph resolution correctness
+
+---
+
 ## Phase 1: MVP - OpenFGA Compatible Core
 
 **Goal**: Drop-in replacement for OpenFGA with improved performance

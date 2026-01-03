@@ -10,8 +10,8 @@ This document outlines the complete implementation plan for RSFGA, broken down i
 
 To avoid confusion, we use these terms consistently:
 
-- **Phase** = Major implementation stage (3 total: MVP, Precomputation, Edge)
-  - Example: "Phase 1: MVP", "Phase 2: Precomputation"
+- **Phase** = Major implementation stage (4 total: Compatibility Test Suite, MVP, Precomputation, Edge)
+  - Example: "Phase 0: Compatibility Test Suite", "Phase 1: MVP", "Phase 2: Precomputation"
 
 - **Milestone** = Time-boxed deliverable within a phase (~1-2 weeks)
   - Example: "Milestone 1.1: Project Foundation", "Milestone 1.2: Type System"
@@ -34,7 +34,407 @@ To avoid confusion, we use these terms consistently:
 7. Repeat
 
 **Branch naming**: `feature/milestone-X.Y-description`
-**PR after**: Each milestone completion
+**PR after**: Each section completion (5-15 tests, <500 lines)
+
+---
+
+## Phase 0: Compatibility Test Suite
+
+**Goal**: Create comprehensive test suite that validates OpenFGA behavior, which will be used to verify RSFGA compatibility at every phase
+
+**Why First**: We claim "100% API compatibility" but OpenFGA doesn't provide a compatibility test suite. We must build our own validation framework before implementing RSFGA, so we have a ground truth to test against.
+
+**Validation at Each Phase End**: Run this test suite against RSFGA to ensure no breaking changes
+
+---
+
+### Milestone 0.1: Test Harness Foundation (Week 1)
+
+**Branch**: `feature/milestone-0.1-test-harness`
+
+**Objective**: Set up infrastructure to run tests against OpenFGA and capture expected behavior
+
+#### Section 1: OpenFGA Test Environment
+
+- [ ] Test: Can start OpenFGA via Docker Compose
+- [ ] Test: Can connect to OpenFGA HTTP API (health check)
+- [ ] Test: Can connect to OpenFGA gRPC API
+- [ ] Test: Can create a store via API
+- [ ] Test: Can clean up test stores after tests
+- [ ] Test: Test environment teardown is idempotent
+
+#### Section 2: Test Data Generators
+
+- [ ] Test: Can generate valid User identifiers
+- [ ] Test: Can generate valid Object identifiers (type:id format)
+- [ ] Test: Can generate valid Relation names
+- [ ] Test: Can generate valid Tuples
+- [ ] Test: Can generate authorization models with direct relations
+- [ ] Test: Can generate authorization models with computed relations
+- [ ] Test: Can generate authorization models with union relations
+- [ ] Test: Can generate authorization models with intersection relations
+- [ ] Test: Can generate models with deeply nested relations (10+ levels)
+
+#### Section 3: Response Capture Framework
+
+- [ ] Test: Can capture HTTP request/response pairs
+- [ ] Test: Can capture gRPC request/response pairs
+- [ ] Test: Can serialize captured data to JSON
+- [ ] Test: Can load captured test cases from disk
+- [ ] Test: Can compare two responses for equality
+- [ ] Test: Can detect breaking changes in response format
+
+**Validation Criteria**:
+- [ ] OpenFGA running in Docker
+- [ ] Test data generators produce valid inputs
+- [ ] Can capture and replay requests
+- [ ] Response comparison works correctly
+
+**Deliverables**:
+- `tests/compatibility/` directory with test harness
+- Docker Compose file for OpenFGA
+- Test data generators
+- Response capture/comparison utilities
+
+---
+
+### Milestone 0.2: Store & Model API Tests (Week 2)
+
+**Branch**: `feature/milestone-0.2-store-model-tests`
+
+**Objective**: Validate Store and Authorization Model API behavior
+
+#### Section 1: Store Management
+
+- [ ] Test: POST /stores creates store with generated ID
+- [ ] Test: POST /stores returns created store in response
+- [ ] Test: GET /stores/{store_id} retrieves store by ID
+- [ ] Test: GET /stores/{store_id} returns 404 for non-existent store
+- [ ] Test: DELETE /stores/{store_id} deletes store
+- [ ] Test: DELETE /stores/{store_id} returns 404 for non-existent store
+- [ ] Test: LIST /stores returns paginated results
+- [ ] Test: LIST /stores respects page_size parameter
+- [ ] Test: LIST /stores continuation_token works correctly
+
+#### Section 2: Authorization Model Write
+
+- [ ] Test: POST /stores/{store_id}/authorization-models creates model
+- [ ] Test: Model creation returns generated model_id
+- [ ] Test: Can create model with only direct relations
+- [ ] Test: Can create model with computed relations (union, intersection)
+- [ ] Test: Can create model with this keyword
+- [ ] Test: Can create model with wildcards
+- [ ] Test: Invalid model syntax returns 400 error
+- [ ] Test: Duplicate type definitions return error
+- [ ] Test: Undefined relation references return error
+
+#### Section 3: Authorization Model Read
+
+- [ ] Test: GET /stores/{store_id}/authorization-models/{model_id} retrieves model
+- [ ] Test: GET returns 404 for non-existent model
+- [ ] Test: GET /stores/{store_id}/authorization-models lists all models
+- [ ] Test: Latest model can be retrieved
+- [ ] Test: Model response includes schema_version
+- [ ] Test: Model response includes type_definitions
+
+**Validation Criteria**:
+- [ ] All store CRUD operations captured
+- [ ] All authorization model operations captured
+- [ ] Error conditions documented
+- [ ] Edge cases identified
+
+**Deliverables**:
+- 30+ test cases for Store API
+- 15+ test cases for Authorization Model API
+- Captured expected responses from OpenFGA
+
+---
+
+### Milestone 0.3: Tuple API Tests (Week 3)
+
+**Branch**: `feature/milestone-0.3-tuple-tests`
+
+**Objective**: Validate Tuple write and read operations
+
+#### Section 1: Tuple Write Operations
+
+- [ ] Test: POST /stores/{store_id}/write writes single tuple
+- [ ] Test: Write returns empty response on success
+- [ ] Test: Can write multiple tuples in single request
+- [ ] Test: Writes are idempotent (writing same tuple twice succeeds)
+- [ ] Test: Can delete tuple using Write API (deletes field)
+- [ ] Test: Writing tuple without store returns 404
+- [ ] Test: Writing tuple with invalid format returns 400
+- [ ] Test: Writing tuple with non-existent type returns error
+- [ ] Test: Writing tuple with non-existent relation returns error
+- [ ] Test: Conditional writes work (condition field)
+
+#### Section 2: Tuple Read Operations
+
+- [ ] Test: POST /stores/{store_id}/read reads tuples by filter
+- [ ] Test: Read with user filter returns matching tuples
+- [ ] Test: Read with relation filter returns matching tuples
+- [ ] Test: Read with object filter returns matching tuples
+- [ ] Test: Read with multiple filters combines them (AND logic)
+- [ ] Test: Read with empty filter returns all tuples
+- [ ] Test: Read respects page_size parameter
+- [ ] Test: Read continuation_token enables pagination
+- [ ] Test: Read returns empty array when no matches
+
+#### Section 3: Tuple Edge Cases
+
+- [ ] Test: Writing tuple with user wildcard (user:*)
+- [ ] Test: Reading tuple with userset relation
+- [ ] Test: Tuple with contextual tuples in condition
+- [ ] Test: Very long user/object IDs (1000+ characters)
+- [ ] Test: Special characters in user/object IDs
+- [ ] Test: Unicode characters in identifiers
+
+**Validation Criteria**:
+- [ ] All tuple write operations captured
+- [ ] All tuple read operations captured
+- [ ] Pagination behavior documented
+- [ ] Error conditions captured
+
+**Deliverables**:
+- 25+ test cases for Tuple API
+- Edge case documentation
+- Expected error responses
+
+---
+
+### Milestone 0.4: Check API Tests (Week 4)
+
+**Branch**: `feature/milestone-0.4-check-tests`
+
+**Objective**: Validate Check and Batch Check operations (the core of authorization)
+
+#### Section 1: Basic Check Operations
+
+- [ ] Test: POST /stores/{store_id}/check performs direct relation check
+- [ ] Test: Check returns {allowed: true} when tuple exists
+- [ ] Test: Check returns {allowed: false} when tuple doesn't exist
+- [ ] Test: Check follows computed relations (union)
+- [ ] Test: Check follows computed relations (intersection)
+- [ ] Test: Check follows computed relations (exclusion)
+- [ ] Test: Check resolves this keyword correctly
+- [ ] Test: Check with contextual_tuples considers them
+- [ ] Test: Check with non-existent store returns 404
+- [ ] Test: Check with invalid tuple format returns 400
+
+#### Section 2: Complex Relation Resolution
+
+- [ ] Test: Check resolves multi-hop relations (parent's viewer is child's viewer)
+- [ ] Test: Check resolves deeply nested relations (5+ hops)
+- [ ] Test: Check handles union of multiple relations
+- [ ] Test: Check handles intersection correctly (must satisfy all)
+- [ ] Test: Check handles but-not exclusion
+- [ ] Test: Check with cycle detection doesn't infinite loop
+- [ ] Test: Check with wildcards (user:*)
+- [ ] Test: Check respects authorization model version
+
+#### Section 3: Batch Check Operations
+
+- [ ] Test: POST /stores/{store_id}/batch-check checks multiple tuples
+- [ ] Test: Batch check returns array of results in same order
+- [ ] Test: Batch check handles mix of allowed/denied
+- [ ] Test: Batch check with empty array returns empty results
+- [ ] Test: Batch check with 100+ items
+- [ ] Test: Batch check deduplicates identical requests (verify via performance)
+
+#### Section 4: Check Performance & Consistency
+
+- [ ] Test: Measure check latency for direct relations (baseline)
+- [ ] Test: Measure check latency for computed relations (union)
+- [ ] Test: Measure check latency for deep nested relations
+- [ ] Test: Check immediately after write reflects new tuple (consistency)
+- [ ] Test: Check after delete reflects removed tuple
+
+**Validation Criteria**:
+- [ ] All check operations captured
+- [ ] Complex relation types tested
+- [ ] Batch check behavior documented
+- [ ] Performance baselines established (for comparison in Phase 1)
+
+**Deliverables**:
+- 30+ test cases for Check API
+- Batch check test cases
+- Performance baseline measurements
+- Consistency behavior documentation
+
+---
+
+### Milestone 0.5: Expand & ListObjects API Tests (Week 5)
+
+**Branch**: `feature/milestone-0.5-expand-listobjects-tests`
+
+**Objective**: Validate Expand (relation tree) and ListObjects operations
+
+#### Section 1: Expand API
+
+- [ ] Test: POST /stores/{store_id}/expand returns relation tree
+- [ ] Test: Expand shows direct relations as leaf nodes
+- [ ] Test: Expand shows computed relations as tree nodes
+- [ ] Test: Expand includes union branches
+- [ ] Test: Expand includes intersection branches
+- [ ] Test: Expand respects max_depth parameter
+- [ ] Test: Expand with depth=1 returns only immediate relations
+- [ ] Test: Expand with non-existent object returns empty tree
+- [ ] Test: Expand tree structure is deterministic (same result on repeat)
+
+#### Section 2: ListObjects API
+
+- [ ] Test: POST /stores/{store_id}/list-objects returns objects user can access
+- [ ] Test: ListObjects with direct relations returns correct objects
+- [ ] Test: ListObjects with computed relations returns correct objects
+- [ ] Test: ListObjects with type filter limits results
+- [ ] Test: ListObjects respects pagination (page_size)
+- [ ] Test: ListObjects with continuation_token works
+- [ ] Test: ListObjects with no accessible objects returns empty array
+- [ ] Test: ListObjects with contextual_tuples considers them
+
+#### Section 3: Edge Cases
+
+- [ ] Test: Expand with very deep relation tree (20+ levels)
+- [ ] Test: Expand with circular relation definition (cycle detection)
+- [ ] Test: ListObjects with large result set (1000+ objects)
+- [ ] Test: ListObjects with wildcards
+
+**Validation Criteria**:
+- [ ] Expand tree format documented
+- [ ] ListObjects pagination behavior captured
+- [ ] Edge cases identified
+
+**Deliverables**:
+- 20+ test cases for Expand/ListObjects APIs
+- Relation tree format documentation
+- Expected behavior for edge cases
+
+---
+
+### Milestone 0.6: Error Handling & Edge Cases (Week 6)
+
+**Branch**: `feature/milestone-0.6-error-edge-cases`
+
+**Objective**: Document all error conditions and edge cases systematically
+
+#### Section 1: Error Response Format
+
+- [ ] Test: 400 Bad Request format (error code, message, details)
+- [ ] Test: 404 Not Found format
+- [ ] Test: 500 Internal Server Error format
+- [ ] Test: Error response is consistent across all endpoints
+- [ ] Test: Error codes match OpenFGA error code enum
+- [ ] Test: Validation errors include field-level details
+
+#### Section 2: Rate Limiting & Throttling
+
+- [ ] Test: API responds with 429 when rate limited (if applicable)
+- [ ] Test: Rate limit headers present (if applicable)
+- [ ] Test: Retry-After header on rate limit (if applicable)
+
+#### Section 3: Consistency & Concurrency
+
+- [ ] Test: Concurrent writes to same tuple
+- [ ] Test: Read-after-write consistency
+- [ ] Test: Check during model update
+- [ ] Test: Check with stale model_id (if supported)
+
+#### Section 4: Limits & Boundaries
+
+- [ ] Test: Maximum tuple size (user + relation + object length)
+- [ ] Test: Maximum number of tuples in single write
+- [ ] Test: Maximum number of checks in batch
+- [ ] Test: Maximum authorization model size
+- [ ] Test: Maximum relation depth
+- [ ] Test: Request timeout behavior
+
+**Validation Criteria**:
+- [ ] All error response formats documented
+- [ ] Consistency guarantees understood
+- [ ] Limits documented
+
+**Deliverables**:
+- Complete error response catalog
+- Documented consistency model
+- Limit boundary documentation
+- Edge case test suite
+
+---
+
+### Milestone 0.7: gRPC API Compatibility (Week 7)
+
+**Branch**: `feature/milestone-0.7-grpc-tests`
+
+**Objective**: Validate gRPC API matches REST API behavior
+
+#### Section 1: gRPC Service Setup
+
+- [ ] Test: Can connect to OpenFGA gRPC service
+- [ ] Test: gRPC reflection works (can discover services)
+- [ ] Test: Can call Store service methods
+- [ ] Test: Can call Authorization Model service methods
+- [ ] Test: Can call Tuple service methods
+- [ ] Test: Can call Check service methods
+
+#### Section 2: gRPC vs REST Parity
+
+- [ ] Test: gRPC Store.Create matches REST POST /stores
+- [ ] Test: gRPC Store.Get matches REST GET /stores/{id}
+- [ ] Test: gRPC Store.Delete matches REST DELETE /stores/{id}
+- [ ] Test: gRPC Check matches REST Check
+- [ ] Test: gRPC Batch Check matches REST Batch Check
+- [ ] Test: gRPC Write matches REST Write
+- [ ] Test: gRPC Read matches REST Read
+- [ ] Test: gRPC Expand matches REST Expand
+- [ ] Test: gRPC ListObjects matches REST ListObjects
+
+#### Section 3: gRPC-Specific Features
+
+- [ ] Test: gRPC streaming (if supported)
+- [ ] Test: gRPC metadata/headers
+- [ ] Test: gRPC error codes match HTTP status codes
+- [ ] Test: gRPC error details format
+
+**Validation Criteria**:
+- [ ] All gRPC services tested
+- [ ] REST/gRPC parity verified
+- [ ] gRPC-specific features documented
+
+**Deliverables**:
+- gRPC test suite (mirroring REST tests)
+- Protobuf message examples
+- gRPC/REST compatibility matrix
+
+---
+
+## Phase 0 Summary
+
+**Total Duration**: 7 weeks
+
+**Test Count**: ~150 compatibility tests
+
+**Deliverables**:
+1. ✅ OpenFGA test harness (Docker-based)
+2. ✅ Complete REST API test suite with expected responses
+3. ✅ Complete gRPC API test suite
+4. ✅ Test data generators
+5. ✅ Performance baselines for comparison
+6. ✅ Error response catalog
+7. ✅ Compatibility validation framework
+
+**Success Criteria**:
+- [ ] Can run test suite against OpenFGA (100% pass)
+- [ ] All API endpoints covered
+- [ ] All relation types tested
+- [ ] Edge cases documented
+- [ ] Performance baselines established
+
+**Use at Each Phase End**:
+After completing Phase 1, 2, or 3, run this test suite against RSFGA to ensure:
+- All tests pass (100% compatibility)
+- Performance meets or exceeds baselines
+- No behavioral regressions
 
 ---
 

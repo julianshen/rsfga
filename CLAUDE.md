@@ -41,6 +41,8 @@ Storage Backends (PostgreSQL, MySQL, In-Memory)
 
 **Key Insight**: Authorization correctness is paramount. Graph traversal must be proven correct through property-based testing and 100% OpenFGA compatibility test suite compliance.
 
+**Note**: OpenFGA doesn't provide a compatibility test suite, so Phase 0 builds one by testing OpenFGA behavior across all APIs. This test suite becomes our validation framework for RSFGA.
+
 ---
 
 ## CRITICAL ARCHITECTURAL INVARIANTS
@@ -50,12 +52,12 @@ Storage Backends (PostgreSQL, MySQL, In-Memory)
 ### I1: Correctness Over Performance
 - Never trade authorization correctness for performance
 - A permission bug can grant unauthorized access or deny legitimate access
-- Quality Gate: 100% OpenFGA test suite pass + property-based testing
+- Quality Gate: 100% compatibility test suite pass (Phase 0) + property-based testing
 
 ### I2: 100% OpenFGA API Compatibility
 - All endpoints, request/response formats, and behaviors must be identical
 - Users must swap OpenFGA → RSFGA with zero code changes
-- Quality Gate: Automated compatibility test suite in CI
+- Quality Gate: Automated compatibility test suite in CI (built in Phase 0)
 
 ### I3: Performance Claims Require Validation
 - All performance targets are "unvalidated" until benchmarked (60% confidence)
@@ -918,4 +920,6 @@ Follow this process precisely, always prioritizing:
 
 **Current Status**: Architecture & Design ✅ Complete | Implementation ⏸️ Awaiting Approval
 
-**Ready to start Milestone 1.1? Say "go" and let's build RSFGA!**
+**Next Step**: Phase 0 - Build the compatibility test suite that validates OpenFGA behavior
+
+**Ready to start Milestone 0.1? Say "go" and let's build the validation framework!**

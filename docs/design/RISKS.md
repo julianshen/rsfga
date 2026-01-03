@@ -41,7 +41,8 @@ This document catalogs identified risks, their likelihood, impact, and mitigatio
 - Invalidates core project value proposition
 
 **Mitigation**:
-- ✅ Run OpenFGA compatibility test suite in CI
+- ✅ Build comprehensive compatibility test suite (Phase 0, Milestone 0.1-0.7)
+- ✅ Run compatibility test suite in CI against RSFGA
 - ✅ Document all deviations explicitly
 - ✅ Version API independently
 - ⏸️ Create migration validator tool (Phase 1, Milestone 1.7)
@@ -105,7 +106,7 @@ This document catalogs identified risks, their likelihood, impact, and mitigatio
 
 **Mitigation**:
 - ✅ Comprehensive unit tests (>90% coverage)
-- ✅ Integration tests against OpenFGA test suite
+- ✅ Integration tests against compatibility test suite (Phase 0)
 - ✅ Fuzzing for edge cases
 - ⏸️ Formal verification of graph algorithm (Phase 1, Milestone 1.4)
 - ⏸️ Property-based testing (QuickCheck/Proptest)
@@ -113,7 +114,7 @@ This document catalogs identified risks, their likelihood, impact, and mitigatio
 
 **Quality Gates**:
 - No graph resolution bug escapes to production
-- 100% OpenFGA test suite pass
+- 100% compatibility test suite pass (Phase 0 validates all relation types)
 - Property tests cover all relation types
 
 **Owner**: Security Team

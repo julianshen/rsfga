@@ -546,13 +546,13 @@ We need comprehensive testing to ensure correctness and prevent regressions.
 Implement **four-tier testing pyramid**:
 1. **Unit tests**: Individual components (90%+ coverage)
 2. **Integration tests**: Storage backends, API endpoints
-3. **Compatibility tests**: OpenFGA test suite
+3. **Compatibility tests**: Custom test suite (Phase 0) validating OpenFGA behavior
 4. **Performance tests**: Benchmarks, load tests (k6)
 
 **Rationale**:
 - Unit tests catch logic errors early
 - Integration tests verify component interactions
-- Compatibility tests ensure API parity with OpenFGA
+- Compatibility tests ensure API parity with OpenFGA (built in Phase 0 since OpenFGA doesn't provide one)
 - Performance tests prevent regressions
 
 **CI Pipeline**:
@@ -560,7 +560,7 @@ Implement **four-tier testing pyramid**:
 # .github/workflows/ci.yml
 - Run unit tests (cargo test)
 - Run integration tests (testcontainers)
-- Run compatibility tests (vs OpenFGA)
+- Run compatibility tests (Phase 0 test suite against RSFGA)
 - Run benchmarks (criterion, compare to baseline)
 - Run k6 load tests
 ```
@@ -571,8 +571,9 @@ Implement **four-tier testing pyramid**:
 - **Manual testing**: Not scalable, regression-prone
 
 **Validation Criteria**:
+- [ ] Phase 0 compatibility test suite complete (~150 tests, Milestone 0.7)
+- [ ] 100% compatibility test pass rate when run against RSFGA
 - [ ] Unit test coverage >90% (Milestone 1.7)
-- [ ] 100% OpenFGA compatibility test pass rate
 - [ ] Integration tests cover all storage backends
 - [ ] Performance tests establish baseline (Milestone 1.7)
 
