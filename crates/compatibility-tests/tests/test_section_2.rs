@@ -30,6 +30,34 @@ fn test_can_generate_valid_user_identifiers() -> Result<()> {
         );
     }
 
+    // Test wildcard support (for public access patterns)
+    assert!(
+        is_valid_user_format("user:*"),
+        "Wildcard user identifier 'user:*' should be valid"
+    );
+
+    // Test negative cases - invalid formats should be rejected
+    assert!(
+        !is_valid_user_format(""),
+        "Empty string should be invalid"
+    );
+    assert!(
+        !is_valid_user_format("user"),
+        "Missing colon should be invalid"
+    );
+    assert!(
+        !is_valid_user_format(":alice"),
+        "Missing user prefix should be invalid"
+    );
+    assert!(
+        !is_valid_user_format("user:"),
+        "Missing ID part should be invalid"
+    );
+    assert!(
+        !is_valid_user_format("user: alice"),
+        "Whitespace should be invalid"
+    );
+
     Ok(())
 }
 
@@ -42,7 +70,7 @@ fn generate_user_identifier(user_id: &str) -> String {
 fn is_valid_user_format(identifier: &str) -> bool {
     // Valid formats:
     // - user:<id>
-    // - user:*
+    // - user:* (wildcard for public access)
     // - Must not be empty
     // - Must not have spaces
 
@@ -63,8 +91,11 @@ fn is_valid_user_format(identifier: &str) -> bool {
         return false;
     }
 
+    let id = parts[1];
+
     // The ID part should not be empty
-    !parts[1].is_empty()
+    // Support wildcard (user:*) for public access patterns
+    !id.is_empty() && (id == "*" || !id.contains('*'))
 }
 
 /// Test: Can generate valid Object identifiers (type:id format)
@@ -114,6 +145,28 @@ fn test_can_generate_valid_object_identifiers() -> Result<()> {
             object_identifier
         );
     }
+
+    // Test negative cases - invalid formats should be rejected
+    assert!(
+        !is_valid_object_format(""),
+        "Empty string should be invalid"
+    );
+    assert!(
+        !is_valid_object_format("document"),
+        "Missing colon should be invalid"
+    );
+    assert!(
+        !is_valid_object_format(":readme"),
+        "Missing type should be invalid"
+    );
+    assert!(
+        !is_valid_object_format("document:"),
+        "Missing ID should be invalid"
+    );
+    assert!(
+        !is_valid_object_format("document: readme"),
+        "Whitespace should be invalid"
+    );
 
     Ok(())
 }
@@ -208,6 +261,7 @@ fn is_valid_relation_name(name: &str) -> bool {
 #[test]
 fn test_can_generate_valid_tuples() -> Result<()> {
     // Arrange: Set up test data
+    let store_id = "01HZQK9VXG7J8RQXYZ3MABCDEF"; // Example store ID
     let test_cases = vec![
         ("alice", "viewer", "document", "readme"),
         ("bob", "editor", "folder", "planning"),
@@ -216,17 +270,20 @@ fn test_can_generate_valid_tuples() -> Result<()> {
 
     // Act: Generate tuples
     for (user_id, relation, object_type, object_id) in test_cases {
-        let tuple = generate_tuple(user_id, relation, object_type, object_id);
+        let tuple = generate_tuple(store_id, user_id, relation, object_type, object_id);
 
         // Assert: Verify tuple structure
+        assert_eq!(
+            tuple.store_id, store_id,
+            "Tuple store_id should match"
+        );
         assert_eq!(
             tuple.user,
             generate_user_identifier(user_id),
             "Tuple user should match"
         );
         assert_eq!(
-            tuple.relation,
-            relation,
+            tuple.relation, relation,
             "Tuple relation should match"
         );
         assert_eq!(
@@ -236,6 +293,10 @@ fn test_can_generate_valid_tuples() -> Result<()> {
         );
 
         // Verify all components are valid
+        assert!(
+            !tuple.store_id.is_empty(),
+            "Tuple store_id should not be empty"
+        );
         assert!(
             is_valid_user_format(&tuple.user),
             "Tuple user should be valid: {}",
@@ -259,14 +320,22 @@ fn test_can_generate_valid_tuples() -> Result<()> {
 /// Represents a relationship tuple in OpenFGA
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Tuple {
+    store_id: String,
     user: String,
     relation: String,
     object: String,
 }
 
-/// Generate a tuple (user, relation, object)
-fn generate_tuple(user_id: &str, relation: &str, object_type: &str, object_id: &str) -> Tuple {
+/// Generate a tuple (store_id, user, relation, object)
+fn generate_tuple(
+    store_id: &str,
+    user_id: &str,
+    relation: &str,
+    object_type: &str,
+    object_id: &str,
+) -> Tuple {
     Tuple {
+        store_id: store_id.to_string(),
         user: generate_user_identifier(user_id),
         relation: relation.to_string(),
         object: generate_object_identifier(object_type, object_id),
