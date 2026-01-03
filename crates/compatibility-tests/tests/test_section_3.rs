@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 // Data Structures for Response Capture
 
@@ -17,7 +17,7 @@ struct CapturedHttpExchange {
 struct HttpRequest {
     method: String,
     path: String,
-    headers: HashMap<String, String>,
+    headers: BTreeMap<String, String>,
     body: Option<String>,
 }
 
@@ -25,7 +25,7 @@ struct HttpRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct HttpResponse {
     status_code: u16,
-    headers: HashMap<String, String>,
+    headers: BTreeMap<String, String>,
     body: Option<String>,
 }
 
@@ -42,7 +42,7 @@ struct CapturedGrpcExchange {
 /// gRPC request details
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct GrpcRequest {
-    metadata: HashMap<String, String>,
+    metadata: BTreeMap<String, String>,
     message: String, // JSON representation
 }
 
@@ -50,7 +50,7 @@ struct GrpcRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct GrpcResponse {
     status_code: i32,
-    metadata: HashMap<String, String>,
+    metadata: BTreeMap<String, String>,
     message: String, // JSON representation
 }
 
@@ -167,16 +167,18 @@ async fn test_can_serialize_captured_data_to_json() -> Result<()> {
 /// Test: Can load captured test cases from disk
 #[tokio::test]
 async fn test_can_load_captured_test_cases_from_disk() -> Result<()> {
-    // Arrange: Create a temporary directory and save test case
-    let temp_dir = std::env::temp_dir();
-    let test_file = temp_dir.join("test_http_exchange.json");
+    // Arrange: Create a temporary file and save test case
+    let temp_file = tempfile::Builder::new()
+        .prefix("test_http_exchange")
+        .suffix(".json")
+        .tempfile()?;
 
     let exchange = create_sample_http_exchange();
     let json = serde_json::to_string_pretty(&exchange)?;
-    std::fs::write(&test_file, json)?;
+    std::fs::write(temp_file.path(), json)?;
 
     // Act: Load from disk
-    let loaded_json = std::fs::read_to_string(&test_file)?;
+    let loaded_json = std::fs::read_to_string(temp_file.path())?;
     let loaded_exchange: CapturedHttpExchange = serde_json::from_str(&loaded_json)?;
 
     // Assert: Verify loaded data matches original
@@ -185,9 +187,7 @@ async fn test_can_load_captured_test_cases_from_disk() -> Result<()> {
         "Loaded data should match original"
     );
 
-    // Cleanup
-    std::fs::remove_file(&test_file)?;
-
+    // Temp file automatically cleaned up when temp_file goes out of scope
     Ok(())
 }
 
@@ -198,21 +198,15 @@ async fn test_can_compare_two_responses_for_equality() -> Result<()> {
     let response1 = create_sample_http_response();
     let response2 = create_sample_http_response();
 
-    // Act: Compare responses
-    let are_equal = compare_http_responses(&response1, &response2)?;
-
     // Assert: Should be equal
-    assert!(are_equal, "Identical responses should be equal");
+    assert_eq!(response1, response2, "Identical responses should be equal");
 
-    // Create a different response
+    // Arrange: Create a different response
     let mut response3 = create_sample_http_response();
     response3.status_code = 404;
 
-    // Compare different responses
-    let are_different = compare_http_responses(&response1, &response3)?;
-
     // Assert: Should not be equal
-    assert!(!are_different, "Different responses should not be equal");
+    assert_ne!(response1, response3, "Different responses should not be equal");
 
     Ok(())
 }
@@ -227,7 +221,7 @@ async fn test_can_detect_breaking_changes_in_response_format() -> Result<()> {
 
     // Act: Detect changes
     let is_compatible = detect_breaking_changes(original, compatible)?;
-    let is_breaking = detect_breaking_changes(original, breaking)?;
+    let is_compatible_with_breaking_payload = detect_breaking_changes(original, breaking)?;
 
     // Assert: Adding fields is compatible, changing field names is breaking
     assert!(
@@ -235,7 +229,7 @@ async fn test_can_detect_breaking_changes_in_response_format() -> Result<()> {
         "Adding new fields should be compatible"
     );
     assert!(
-        !is_breaking,
+        !is_compatible_with_breaking_payload,
         "Changing field names should be breaking"
     );
 
@@ -314,10 +308,10 @@ async fn test_can_detect_breaking_changes_in_arrays() -> Result<()> {
 
 /// Create a sample HTTP exchange for testing
 fn create_sample_http_exchange() -> CapturedHttpExchange {
-    let mut request_headers = HashMap::new();
+    let mut request_headers = BTreeMap::new();
     request_headers.insert("Content-Type".to_string(), "application/json".to_string());
 
-    let mut response_headers = HashMap::new();
+    let mut response_headers = BTreeMap::new();
     response_headers.insert("Content-Type".to_string(), "application/json".to_string());
 
     CapturedHttpExchange {
@@ -338,10 +332,10 @@ fn create_sample_http_exchange() -> CapturedHttpExchange {
 
 /// Create a sample gRPC exchange for testing
 fn create_sample_grpc_exchange() -> CapturedGrpcExchange {
-    let mut request_metadata = HashMap::new();
+    let mut request_metadata = BTreeMap::new();
     request_metadata.insert("content-type".to_string(), "application/grpc".to_string());
 
-    let mut response_metadata = HashMap::new();
+    let mut response_metadata = BTreeMap::new();
     response_metadata.insert("content-type".to_string(), "application/grpc".to_string());
 
     CapturedGrpcExchange {
@@ -362,7 +356,7 @@ fn create_sample_grpc_exchange() -> CapturedGrpcExchange {
 
 /// Create a sample HTTP response for testing
 fn create_sample_http_response() -> HttpResponse {
-    let mut headers = HashMap::new();
+    let mut headers = BTreeMap::new();
     headers.insert("Content-Type".to_string(), "application/json".to_string());
 
     HttpResponse {
@@ -370,11 +364,6 @@ fn create_sample_http_response() -> HttpResponse {
         headers,
         body: Some(r#"{"id": "store123", "name": "test-store"}"#.to_string()),
     }
-}
-
-/// Compare two HTTP responses for equality
-fn compare_http_responses(response1: &HttpResponse, response2: &HttpResponse) -> Result<bool> {
-    Ok(response1 == response2)
 }
 
 /// Detect breaking changes between two JSON responses
