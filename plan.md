@@ -106,36 +106,36 @@ To avoid confusion, we use these terms consistently:
 
 #### Section 1: Store Management
 
-- [ ] Test: POST /stores creates store with generated ID
-- [ ] Test: POST /stores returns created store in response
-- [ ] Test: GET /stores/{store_id} retrieves store by ID
-- [ ] Test: GET /stores/{store_id} returns 404 for non-existent store
-- [ ] Test: DELETE /stores/{store_id} deletes store
-- [ ] Test: DELETE /stores/{store_id} returns 404 for non-existent store
-- [ ] Test: LIST /stores returns paginated results
-- [ ] Test: LIST /stores respects page_size parameter
-- [ ] Test: LIST /stores continuation_token works correctly
+- [x] Test: POST /stores creates store with generated ID
+- [x] Test: POST /stores returns created store in response
+- [x] Test: GET /stores/{store_id} retrieves store by ID
+- [x] Test: GET /stores/{store_id} returns 400 for non-existent store
+- [x] Test: DELETE /stores/{store_id} deletes store
+- [x] Test: DELETE /stores/{store_id} returns 400 for non-existent store
+- [x] Test: LIST /stores returns paginated results
+- [x] Test: LIST /stores respects page_size parameter
+- [x] Test: LIST /stores continuation_token works correctly
 
 #### Section 2: Authorization Model Write
 
-- [ ] Test: POST /stores/{store_id}/authorization-models creates model
-- [ ] Test: Model creation returns generated model_id
-- [ ] Test: Can create model with only direct relations
-- [ ] Test: Can create model with computed relations (union, intersection)
-- [ ] Test: Can create model with this keyword
-- [ ] Test: Can create model with wildcards
-- [ ] Test: Invalid model syntax returns 400 error
-- [ ] Test: Duplicate type definitions return error
-- [ ] Test: Undefined relation references return error
+- [x] Test: POST /stores/{store_id}/authorization-models creates model
+- [x] Test: Model creation returns generated model_id
+- [x] Test: Can create model with only direct relations
+- [x] Test: Can create model with computed relations (union, intersection)
+- [x] Test: Can create model with this keyword
+- [x] Test: Can create model with wildcards
+- [x] Test: Invalid model syntax returns 400 error
+- [x] Test: Duplicate type definitions return error
+- [x] Test: Undefined relation references return error
 
 #### Section 3: Authorization Model Read
 
-- [ ] Test: GET /stores/{store_id}/authorization-models/{model_id} retrieves model
-- [ ] Test: GET returns 404 for non-existent model
-- [ ] Test: GET /stores/{store_id}/authorization-models lists all models
-- [ ] Test: Latest model can be retrieved
-- [ ] Test: Model response includes schema_version
-- [ ] Test: Model response includes type_definitions
+- [x] Test: GET /stores/{store_id}/authorization-models/{model_id} retrieves model
+- [x] Test: GET returns 404/400 for non-existent model
+- [x] Test: GET /stores/{store_id}/authorization-models lists all models
+- [x] Test: Latest model can be retrieved
+- [x] Test: Model response includes schema_version
+- [x] Test: Model response includes type_definitions
 
 **Validation Criteria**:
 - [ ] All store CRUD operations captured
