@@ -185,10 +185,12 @@ To avoid confusion, we use these terms consistently:
 
 - [x] Test: Writing tuple with user wildcard (user:*)
 - [x] Test: Reading tuple with userset relation
-- [x] Test: Tuple with contextual tuples in condition
-- [x] Test: Very long user/object IDs (1000+ characters)
+- [x] Test: Identifiers at OpenFGA size limits (user ≤512, object ≤256 bytes)
+- [x] Test: Identifiers over OpenFGA size limits should be rejected
 - [x] Test: Special characters in user/object IDs
 - [x] Test: Unicode characters in identifiers
+
+Note: Conditional writes test was moved to Section 1 (test_conditional_writes) as it's a write operation, not an edge case.
 
 **Validation Criteria**:
 - [ ] All tuple write operations captured

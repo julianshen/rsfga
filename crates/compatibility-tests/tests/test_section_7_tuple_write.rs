@@ -1,7 +1,7 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_test_model, create_test_store, get_openfga_url};
+use common::{create_conditional_model, create_test_model, create_test_store, get_openfga_url};
 use reqwest::StatusCode;
 use serde_json::json;
 use uuid::Uuid;
@@ -423,64 +423,14 @@ async fn test_conditional_writes() -> Result<()> {
     // Arrange: Create store with model that supports conditions
     let store_id = create_test_store().await?;
 
-    // Create model with conditions support
-    let client = reqwest::Client::new();
-
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            {
-                "type": "user"
-            },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": {
-                        "this": {}
-                    }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [
-                                {
-                                    "type": "user",
-                                    "condition": "ip_address_match"
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
-        ],
-        "conditions": {
-            "ip_address_match": {
-                "name": "ip_address_match",
-                "expression": "request.ip_address == '192.168.1.1'",
-                "parameters": {
-                    "ip_address": {
-                        "type_name": "string"
-                    }
-                }
-            }
-        }
-    });
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    // If model creation with conditions is not supported, skip this test
-    if !model_response.status().is_success() {
+    // Try to create model with conditions support
+    // If conditions are not supported, skip this test
+    if create_conditional_model(&store_id).await.is_err() {
         println!("Skipping conditional writes test - conditions may not be supported");
         return Ok(());
     }
+
+    let client = reqwest::Client::new();
 
     // Act: Write tuple with condition
     let write_request = json!({

@@ -230,3 +230,66 @@ pub async fn create_userset_model(store_id: &str) -> Result<String> {
 
     create_authorization_model(store_id, model).await
 }
+
+/// Helper function to create model with conditional support
+pub async fn create_conditional_model(store_id: &str) -> Result<String> {
+    let model = json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {
+                "type": "user"
+            },
+            {
+                "type": "document",
+                "relations": {
+                    "viewer": {
+                        "this": {}
+                    }
+                },
+                "metadata": {
+                    "relations": {
+                        "viewer": {
+                            "directly_related_user_types": [
+                                {
+                                    "type": "user",
+                                    "condition": "ip_address_match"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        ],
+        "conditions": {
+            "ip_address_match": {
+                "name": "ip_address_match",
+                "expression": "request.ip_address == '192.168.1.1'",
+                "parameters": {
+                    "ip_address": {
+                        "type_name": "string"
+                    }
+                }
+            }
+        }
+    });
+
+    create_authorization_model(store_id, model).await
+}
+
+/// Helper function to write sequential test tuples for pagination testing
+pub async fn write_sequential_tuples(store_id: &str, count: usize) -> Result<()> {
+    let tuples: Vec<_> = (0..count)
+        .map(|i| (
+            format!("user:user{}", i),
+            "viewer".to_string(),
+            format!("document:doc{}", i),
+        ))
+        .collect();
+
+    let tuple_refs: Vec<(&str, &str, &str)> = tuples
+        .iter()
+        .map(|(u, r, o)| (u.as_str(), r.as_str(), o.as_str()))
+        .collect();
+
+    write_tuples(store_id, tuple_refs).await
+}

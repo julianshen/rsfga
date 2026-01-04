@@ -5,6 +5,10 @@ use common::{create_test_store, create_userset_model, create_wildcard_model, get
 use reqwest::StatusCode;
 use serde_json::json;
 
+// OpenFGA identifier size limits
+const USER_ID_MAX_BYTES: usize = 512;
+const OBJECT_ID_MAX_BYTES: usize = 256;
+
 /// Test: Writing tuple with user wildcard (user:*)
 #[tokio::test]
 async fn test_write_tuple_with_wildcard() -> Result<()> {
@@ -126,10 +130,10 @@ async fn test_identifiers_at_size_limit() -> Result<()> {
 
     let client = reqwest::Client::new();
 
-    // Create IDs at exact limits (user=512 bytes total, object=256 bytes total)
+    // Create IDs at exact limits
     // Format is "type:id", so we need to account for the prefix length
-    let user_id_limit = 512 - "user:".len(); // 507 chars
-    let object_id_limit = 256 - "document:".len(); // 247 chars
+    let user_id_limit = USER_ID_MAX_BYTES - "user:".len(); // 507 chars
+    let object_id_limit = OBJECT_ID_MAX_BYTES - "document:".len(); // 247 chars
 
     let at_limit_user = format!("user:{}", "a".repeat(user_id_limit));
     let at_limit_object = format!("document:{}", "b".repeat(object_id_limit));
@@ -172,9 +176,9 @@ async fn test_identifiers_over_size_limit() -> Result<()> {
 
     let client = reqwest::Client::new();
 
-    // Create IDs just over limits (user > 512 bytes, object > 256 bytes)
-    let user_over_limit = format!("user:{}", "a".repeat(513)); // 518 bytes total
-    let object_over_limit = format!("document:{}", "b".repeat(257)); // 266 bytes total
+    // Create IDs just over limits
+    let user_over_limit = format!("user:{}", "a".repeat(USER_ID_MAX_BYTES + 1)); // 518 bytes total
+    let object_over_limit = format!("document:{}", "b".repeat(OBJECT_ID_MAX_BYTES + 1)); // 266 bytes total
 
     // Act: Write tuple with IDs over limits
     let write_request = json!({

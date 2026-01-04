@@ -2,7 +2,8 @@ mod common;
 
 use anyhow::Result;
 use common::{
-    create_test_model, create_test_store, get_openfga_url, write_tuples, ReadResponse, TupleKey,
+    create_test_model, create_test_store, get_openfga_url, write_sequential_tuples, write_tuples,
+    ReadResponse, TupleKey,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -368,22 +369,7 @@ async fn test_read_respects_page_size() -> Result<()> {
     let store_id = create_test_store().await?;
     let _model_id = create_test_model(&store_id).await?;
 
-    let mut tuples = Vec::new();
-    for i in 0..10 {
-        tuples.push((
-            format!("user:user{}", i),
-            "viewer",
-            format!("document:doc{}", i),
-        ));
-    }
-
-    // Convert to Vec<(&str, &str, &str)>
-    let tuple_refs: Vec<(&str, &str, &str)> = tuples
-        .iter()
-        .map(|(u, r, o)| (u.as_str(), *r, o.as_str()))
-        .collect();
-
-    write_tuples(&store_id, tuple_refs).await?;
+    write_sequential_tuples(&store_id, 10).await?;
 
     let client = reqwest::Client::new();
 
@@ -428,21 +414,7 @@ async fn test_read_continuation_token() -> Result<()> {
     let store_id = create_test_store().await?;
     let _model_id = create_test_model(&store_id).await?;
 
-    let mut tuples = Vec::new();
-    for i in 0..10 {
-        tuples.push((
-            format!("user:user{}", i),
-            "viewer",
-            format!("document:doc{}", i),
-        ));
-    }
-
-    let tuple_refs: Vec<(&str, &str, &str)> = tuples
-        .iter()
-        .map(|(u, r, o)| (u.as_str(), *r, o.as_str()))
-        .collect();
-
-    write_tuples(&store_id, tuple_refs).await?;
+    write_sequential_tuples(&store_id, 10).await?;
 
     let client = reqwest::Client::new();
 
