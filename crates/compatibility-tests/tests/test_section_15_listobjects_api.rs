@@ -121,22 +121,24 @@ async fn test_listobjects_with_direct_relations() -> Result<()> {
         .and_then(|o| o.as_array())
         .expect("Response should have 'objects' array");
 
-    // Charlie should have access to doc1 and doc2
-    assert_eq!(
-        objects.len(),
-        2,
-        "Charlie should have access to 2 documents as editor"
-    );
-
-    let object_ids: Vec<String> = objects
+    // Charlie should have access to exactly doc1 and doc2 (not doc3)
+    let object_ids: HashSet<String> = objects
         .iter()
         .filter_map(|o| o.as_str())
-        .map(|s| s.to_string())
+        .map(String::from)
         .collect();
 
-    assert!(object_ids.contains(&"document:doc1".to_string()));
-    assert!(object_ids.contains(&"document:doc2".to_string()));
-    assert!(!object_ids.contains(&"document:doc3".to_string()));
+    let expected_ids: HashSet<String> = [
+        "document:doc1".to_string(),
+        "document:doc2".to_string(),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        object_ids, expected_ids,
+        "Charlie should have access to exactly doc1 and doc2 as editor"
+    );
 
     Ok(())
 }
@@ -246,21 +248,24 @@ async fn test_listobjects_with_computed_relations() -> Result<()> {
         .and_then(|o| o.as_array())
         .expect("Response should have 'objects' array");
 
-    // Eve should have access to both doc1 (viewer) and doc2 (editor) via can_access
-    assert_eq!(
-        objects.len(),
-        2,
-        "Eve should have access to 2 documents via union"
-    );
-
-    let object_ids: Vec<String> = objects
+    // Eve should have access to exactly doc1 (viewer) and doc2 (editor) via can_access union
+    let object_ids: HashSet<String> = objects
         .iter()
         .filter_map(|o| o.as_str())
-        .map(|s| s.to_string())
+        .map(String::from)
         .collect();
 
-    assert!(object_ids.contains(&"document:doc1".to_string()));
-    assert!(object_ids.contains(&"document:doc2".to_string()));
+    let expected_ids: HashSet<String> = [
+        "document:doc1".to_string(),
+        "document:doc2".to_string(),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        object_ids, expected_ids,
+        "Eve should have access to exactly doc1 and doc2 via union"
+    );
 
     Ok(())
 }
@@ -365,20 +370,14 @@ async fn test_listobjects_with_type_filter() -> Result<()> {
         .and_then(|o| o.as_array())
         .expect("Response should have 'objects' array");
 
-    // Should only return documents, not folders
-    assert_eq!(
-        objects.len(),
-        2,
-        "Should return only 2 documents (filtered by type)"
-    );
-
-    let object_ids: Vec<String> = objects
+    // Should return exactly 2 documents (not folders)
+    let object_ids: HashSet<String> = objects
         .iter()
         .filter_map(|o| o.as_str())
-        .map(|s| s.to_string())
+        .map(String::from)
         .collect();
 
-    // All results should be documents
+    // All results should be documents (type filter worked)
     for object_id in &object_ids {
         assert!(
             object_id.starts_with("document:"),
@@ -387,8 +386,17 @@ async fn test_listobjects_with_type_filter() -> Result<()> {
         );
     }
 
-    assert!(object_ids.contains(&"document:doc1".to_string()));
-    assert!(object_ids.contains(&"document:doc2".to_string()));
+    let expected_ids: HashSet<String> = [
+        "document:doc1".to_string(),
+        "document:doc2".to_string(),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        object_ids, expected_ids,
+        "Should return exactly doc1 and doc2 (filtered by type)"
+    );
 
     Ok(())
 }
@@ -489,26 +497,29 @@ async fn test_listobjects_with_contextual_tuples() -> Result<()> {
 
     let response_body: serde_json::Value = response.json().await?;
 
-    // Assert: Should return objects from contextual tuples
+    // Assert: Should return exactly the objects from contextual tuples
     let objects = response_body
         .get("objects")
         .and_then(|o| o.as_array())
         .expect("Response should have 'objects' array");
 
-    assert_eq!(
-        objects.len(),
-        2,
-        "Should return objects from contextual tuples"
-    );
-
-    let object_ids: Vec<String> = objects
+    let object_ids: HashSet<String> = objects
         .iter()
         .filter_map(|o| o.as_str())
-        .map(|s| s.to_string())
+        .map(String::from)
         .collect();
 
-    assert!(object_ids.contains(&"document:doc1".to_string()));
-    assert!(object_ids.contains(&"document:doc2".to_string()));
+    let expected_ids: HashSet<String> = [
+        "document:doc1".to_string(),
+        "document:doc2".to_string(),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        object_ids, expected_ids,
+        "Should return exactly the objects from contextual tuples"
+    );
 
     Ok(())
 }

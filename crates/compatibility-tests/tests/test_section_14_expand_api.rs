@@ -48,18 +48,11 @@ async fn test_expand_returns_relation_tree() -> Result<()> {
 
     let response_body: serde_json::Value = response.json().await?;
 
-    // Verify response has 'tree' object
-    assert!(
-        response_body.get("tree").is_some(),
-        "Response should have 'tree' field"
-    );
-
-    // Verify tree has 'root' node
-    let tree = response_body.get("tree").unwrap();
-    assert!(
-        tree.get("root").is_some(),
-        "Tree should have 'root' node"
-    );
+    // Verify response has 'tree' object with 'root' node
+    response_body
+        .get("tree")
+        .and_then(|t| t.get("root"))
+        .expect("Response should have 'tree' field with 'root' node");
 
     Ok(())
 }
@@ -200,17 +193,9 @@ async fn test_expand_shows_computed_relations() -> Result<()> {
         .expect("Should have root node");
 
     // Root should have leaf with computed userset
-    let leaf = root.get("leaf");
-    assert!(
-        leaf.is_some(),
-        "Root should have leaf node for computed relation"
-    );
-
-    let leaf_value = leaf.unwrap();
-    assert!(
-        leaf_value.get("computed").is_some(),
-        "Leaf should contain computed field for computed relation"
-    );
+    root.get("leaf")
+        .and_then(|l| l.get("computed"))
+        .expect("Root should have leaf node with 'computed' field for computed relation");
 
     Ok(())
 }
@@ -573,21 +558,17 @@ async fn test_expand_includes_difference_branches() -> Result<()> {
         .and_then(|t| t.get("root"))
         .expect("Should have root node");
 
-    assert!(
-        root.get("difference").is_some(),
-        "Root should have 'difference' node for difference relation"
-    );
-
     // Difference should have base and subtract nodes
-    let difference = root.get("difference").unwrap();
-    assert!(
-        difference.get("base").is_some(),
-        "Difference should have 'base' node"
-    );
-    assert!(
-        difference.get("subtract").is_some(),
-        "Difference should have 'subtract' node"
-    );
+    let difference = root
+        .get("difference")
+        .expect("Root should have 'difference' node for difference relation");
+
+    difference
+        .get("base")
+        .expect("Difference should have 'base' node");
+    difference
+        .get("subtract")
+        .expect("Difference should have 'subtract' node");
 
     Ok(())
 }
