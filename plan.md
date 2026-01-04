@@ -205,64 +205,77 @@ Note: Conditional writes test was moved to Section 1 (test_conditional_writes) a
 
 ---
 
-### Milestone 0.4: Check API Tests (Week 4)
+### Milestone 0.4: Check API Tests (Week 4) ✅ COMPLETE
 
-**Branch**: `feature/milestone-0.4-check-tests`
+**Branch**: `milestone-0.4-check-api-tests` (PR #8 - OPEN)
 
 **Objective**: Validate Check and Batch Check operations (the core of authorization)
 
-#### Section 1: Basic Check Operations
+#### Section 10: Basic Check Operations
 
-- [ ] Test: POST /stores/{store_id}/check performs direct relation check
-- [ ] Test: Check returns {allowed: true} when tuple exists
-- [ ] Test: Check returns {allowed: false} when tuple doesn't exist
-- [ ] Test: Check follows computed relations (union)
-- [ ] Test: Check follows computed relations (intersection)
-- [ ] Test: Check follows computed relations (exclusion)
-- [ ] Test: Check resolves this keyword correctly
-- [ ] Test: Check with contextual_tuples considers them
-- [ ] Test: Check with non-existent store returns 404
-- [ ] Test: Check with invalid tuple format returns 400
+- [x] Test: POST /stores/{store_id}/check performs direct relation check
+- [x] Test: Check returns {allowed: true} when tuple exists
+- [x] Test: Check returns {allowed: false} when tuple doesn't exist
+- [x] Test: Check follows computed relations (union)
+- [x] Test: Check follows computed relations (intersection)
+- [x] Test: Check follows computed relations (exclusion)
+- [x] Test: Check resolves this keyword correctly
+- [x] Test: Check with contextual_tuples considers them
+- [x] Test: Check with non-existent store returns 404 or 400
+- [x] Test: Check with invalid tuple format returns 400
 
-#### Section 2: Complex Relation Resolution
+#### Section 11: Complex Relation Resolution
 
-- [ ] Test: Check resolves multi-hop relations (parent's viewer is child's viewer)
-- [ ] Test: Check resolves deeply nested relations (5+ hops)
-- [ ] Test: Check handles union of multiple relations
-- [ ] Test: Check handles intersection correctly (must satisfy all)
-- [ ] Test: Check handles but-not exclusion
-- [ ] Test: Check with cycle detection doesn't infinite loop
-- [ ] Test: Check with wildcards (user:*)
-- [ ] Test: Check respects authorization model version
+- [x] Test: Check resolves multi-hop relations (parent's viewer is child's viewer)
+- [x] Test: Check resolves deeply nested relations (6 hops)
+- [x] Test: Check handles union of multiple relations
+- [x] Test: Check handles intersection correctly (must satisfy all)
+- [x] Test: Check handles but-not exclusion
+- [x] Test: Check with cycle detection doesn't infinite loop
+- [x] Test: Check with wildcards (user:*)
+- [x] Test: Check respects authorization model version
 
-#### Section 3: Batch Check Operations
+#### Section 12: Batch Check Operations
 
-- [ ] Test: POST /stores/{store_id}/batch-check checks multiple tuples
-- [ ] Test: Batch check returns array of results in same order
-- [ ] Test: Batch check handles mix of allowed/denied
-- [ ] Test: Batch check with empty array returns empty results
-- [ ] Test: Batch check with 100+ items
-- [ ] Test: Batch check deduplicates identical requests (verify via performance)
+- [x] Test: POST /stores/{store_id}/batch-check checks multiple tuples
+- [x] Test: Batch check returns object keyed by correlation_id (not array)
+- [x] Test: Batch check handles mix of allowed/denied
+- [x] Test: Batch check with empty array returns 400 (requires ≥1 item)
+- [x] Test: Batch check with maximum items (50 item limit)
+- [x] Test: Batch check deduplicates identical requests (verify via performance)
 
-#### Section 4: Check Performance & Consistency
+**Batch Check API Discoveries**:
+- Requires `correlation_id` field for each check item
+- Response format: `{"result": {"check-1": {"allowed": true}, ...}}` (object/map)
+- Maximum batch size: 50 items (exceeding returns 400)
+- Empty batches rejected (minimum 1 item required)
 
-- [ ] Test: Measure check latency for direct relations (baseline)
-- [ ] Test: Measure check latency for computed relations (union)
-- [ ] Test: Measure check latency for deep nested relations
-- [ ] Test: Check immediately after write reflects new tuple (consistency)
-- [ ] Test: Check after delete reflects removed tuple
+#### Section 13: Check Performance & Consistency
+
+- [x] Test: Measure check latency for direct relations (~498µs baseline)
+- [x] Test: Measure check latency for computed relations (~851µs union)
+- [x] Test: Measure check latency for deep nested relations (~2.3ms for 6-hop)
+- [x] Test: Check immediately after write reflects new tuple (strong consistency)
+- [x] Test: Check after delete reflects removed tuple (strong consistency)
+
+**Performance Baselines** (OpenFGA v1.x):
+- Direct relation check: ~0.5ms average
+- Union relation check: ~0.9ms average
+- 6-hop nested check: ~2.3ms average
 
 **Validation Criteria**:
-- [ ] All check operations captured
-- [ ] Complex relation types tested
-- [ ] Batch check behavior documented
-- [ ] Performance baselines established (for comparison in Phase 1)
+- [x] All check operations captured
+- [x] Complex relation types tested
+- [x] Batch check behavior documented
+- [x] Performance baselines established (for comparison in Phase 1)
 
 **Deliverables**:
-- 30+ test cases for Check API
-- Batch check test cases
-- Performance baseline measurements
-- Consistency behavior documentation
+- [x] 29 test cases for Check API (10 + 8 + 6 + 5)
+- [x] Batch check test cases with correlation_id format
+- [x] Performance baseline measurements
+- [x] Consistency behavior documentation
+
+**Status**: All 29 tests passing ✅
 
 ---
 
