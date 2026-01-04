@@ -158,37 +158,39 @@ To avoid confusion, we use these terms consistently:
 
 #### Section 1: Tuple Write Operations
 
-- [ ] Test: POST /stores/{store_id}/write writes single tuple
-- [ ] Test: Write returns empty response on success
-- [ ] Test: Can write multiple tuples in single request
-- [ ] Test: Writes are idempotent (writing same tuple twice succeeds)
-- [ ] Test: Can delete tuple using Write API (deletes field)
-- [ ] Test: Writing tuple without store returns 404
-- [ ] Test: Writing tuple with invalid format returns 400
-- [ ] Test: Writing tuple with non-existent type returns error
-- [ ] Test: Writing tuple with non-existent relation returns error
-- [ ] Test: Conditional writes work (condition field)
+- [x] Test: POST /stores/{store_id}/write writes single tuple
+- [x] Test: Write returns empty response on success
+- [x] Test: Can write multiple tuples in single request
+- [x] Test: Writes are idempotent (writing same tuple twice succeeds)
+- [x] Test: Can delete tuple using Write API (deletes field)
+- [x] Test: Writing tuple without store returns 404
+- [x] Test: Writing tuple with invalid format returns 400
+- [x] Test: Writing tuple with non-existent type returns error
+- [x] Test: Writing tuple with non-existent relation returns error
+- [x] Test: Conditional writes work (condition field)
 
 #### Section 2: Tuple Read Operations
 
-- [ ] Test: POST /stores/{store_id}/read reads tuples by filter
-- [ ] Test: Read with user filter returns matching tuples
-- [ ] Test: Read with relation filter returns matching tuples
-- [ ] Test: Read with object filter returns matching tuples
-- [ ] Test: Read with multiple filters combines them (AND logic)
-- [ ] Test: Read with empty filter returns all tuples
-- [ ] Test: Read respects page_size parameter
-- [ ] Test: Read continuation_token enables pagination
-- [ ] Test: Read returns empty array when no matches
+- [x] Test: POST /stores/{store_id}/read reads tuples by filter
+- [x] Test: Read with user filter returns matching tuples
+- [x] Test: Read with relation filter returns matching tuples
+- [x] Test: Read with object filter returns matching tuples
+- [x] Test: Read with multiple filters combines them (AND logic)
+- [x] Test: Read with empty filter returns all tuples
+- [x] Test: Read respects page_size parameter
+- [x] Test: Read continuation_token enables pagination
+- [x] Test: Read returns empty array when no matches
 
 #### Section 3: Tuple Edge Cases
 
-- [ ] Test: Writing tuple with user wildcard (user:*)
-- [ ] Test: Reading tuple with userset relation
-- [ ] Test: Tuple with contextual tuples in condition
-- [ ] Test: Very long user/object IDs (1000+ characters)
-- [ ] Test: Special characters in user/object IDs
-- [ ] Test: Unicode characters in identifiers
+- [x] Test: Writing tuple with user wildcard (user:*)
+- [x] Test: Reading tuple with userset relation
+- [x] Test: Identifiers at OpenFGA size limits (user ≤512, object ≤256 bytes)
+- [x] Test: Identifiers over OpenFGA size limits should be rejected
+- [x] Test: Special characters in user/object IDs
+- [x] Test: Unicode characters in identifiers
+
+Note: Conditional writes test was moved to Section 1 (test_conditional_writes) as it's a write operation, not an edge case.
 
 **Validation Criteria**:
 - [ ] All tuple write operations captured
