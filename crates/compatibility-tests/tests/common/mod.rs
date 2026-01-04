@@ -65,8 +65,9 @@ pub async fn create_test_store() -> Result<String> {
     Ok(store.id)
 }
 
-/// Private helper to create any authorization model
-async fn create_authorization_model(
+/// Public helper to create any authorization model
+/// This allows tests to create custom models without duplicating HTTP client code
+pub async fn create_authorization_model(
     store_id: &str,
     model: serde_json::Value,
 ) -> Result<String> {
@@ -279,11 +280,13 @@ pub async fn create_conditional_model(store_id: &str) -> Result<String> {
 /// Helper function to write sequential test tuples for pagination testing
 pub async fn write_sequential_tuples(store_id: &str, count: usize) -> Result<()> {
     let tuples: Vec<_> = (0..count)
-        .map(|i| (
-            format!("user:user{}", i),
-            "viewer".to_string(),
-            format!("document:doc{}", i),
-        ))
+        .map(|i| {
+            (
+                format!("user:user{}", i),
+                "viewer".to_string(),
+                format!("document:doc{}", i),
+            )
+        })
         .collect();
 
     let tuple_refs: Vec<(&str, &str, &str)> = tuples

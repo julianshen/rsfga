@@ -1,7 +1,9 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_test_model, create_test_store, get_openfga_url, write_tuples};
+use common::{
+    create_authorization_model, create_test_model, create_test_store, get_openfga_url, write_tuples,
+};
 use serde_json::json;
 use std::collections::HashSet;
 
@@ -63,12 +65,9 @@ async fn test_listobjects_returns_accessible_objects() -> Result<()> {
         .map(String::from)
         .collect();
 
-    let expected_ids: HashSet<String> = [
-        "document:doc1".to_string(),
-        "document:doc2".to_string(),
-    ]
-    .into_iter()
-    .collect();
+    let expected_ids: HashSet<String> = ["document:doc1".to_string(), "document:doc2".to_string()]
+        .into_iter()
+        .collect();
 
     assert_eq!(
         object_ids, expected_ids,
@@ -128,12 +127,9 @@ async fn test_listobjects_with_direct_relations() -> Result<()> {
         .map(String::from)
         .collect();
 
-    let expected_ids: HashSet<String> = [
-        "document:doc1".to_string(),
-        "document:doc2".to_string(),
-    ]
-    .into_iter()
-    .collect();
+    let expected_ids: HashSet<String> = ["document:doc1".to_string(), "document:doc2".to_string()]
+        .into_iter()
+        .collect();
 
     assert_eq!(
         object_ids, expected_ids,
@@ -196,23 +192,7 @@ async fn test_listobjects_with_computed_relations() -> Result<()> {
         ]
     });
 
-    let client = reqwest::Client::new();
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    assert!(
-        model_response.status().is_success(),
-        "Creating computed relation model should succeed, got: {}",
-        model_response.status()
-    );
+    let _model_id = create_authorization_model(&store_id, model).await?;
 
     // Write tuples: eve is viewer of doc1, editor of doc2
     write_tuples(
@@ -223,6 +203,8 @@ async fn test_listobjects_with_computed_relations() -> Result<()> {
         ],
     )
     .await?;
+
+    let client = reqwest::Client::new();
 
     // Act: List objects eve can_access (union of viewer and editor)
     let list_request = json!({
@@ -255,12 +237,9 @@ async fn test_listobjects_with_computed_relations() -> Result<()> {
         .map(String::from)
         .collect();
 
-    let expected_ids: HashSet<String> = [
-        "document:doc1".to_string(),
-        "document:doc2".to_string(),
-    ]
-    .into_iter()
-    .collect();
+    let expected_ids: HashSet<String> = ["document:doc1".to_string(), "document:doc2".to_string()]
+        .into_iter()
+        .collect();
 
     assert_eq!(
         object_ids, expected_ids,
@@ -316,23 +295,7 @@ async fn test_listobjects_with_type_filter() -> Result<()> {
         ]
     });
 
-    let client = reqwest::Client::new();
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    assert!(
-        model_response.status().is_success(),
-        "Creating multi-type model should succeed, got: {}",
-        model_response.status()
-    );
+    let _model_id = create_authorization_model(&store_id, model).await?;
 
     // Write tuples for both documents and folders
     write_tuples(
@@ -345,6 +308,8 @@ async fn test_listobjects_with_type_filter() -> Result<()> {
         ],
     )
     .await?;
+
+    let client = reqwest::Client::new();
 
     // Act: List ONLY documents frank can view (type filter)
     let list_request = json!({
@@ -386,12 +351,9 @@ async fn test_listobjects_with_type_filter() -> Result<()> {
         );
     }
 
-    let expected_ids: HashSet<String> = [
-        "document:doc1".to_string(),
-        "document:doc2".to_string(),
-    ]
-    .into_iter()
-    .collect();
+    let expected_ids: HashSet<String> = ["document:doc1".to_string(), "document:doc2".to_string()]
+        .into_iter()
+        .collect();
 
     assert_eq!(
         object_ids, expected_ids,
@@ -509,12 +471,9 @@ async fn test_listobjects_with_contextual_tuples() -> Result<()> {
         .map(String::from)
         .collect();
 
-    let expected_ids: HashSet<String> = [
-        "document:doc1".to_string(),
-        "document:doc2".to_string(),
-    ]
-    .into_iter()
-    .collect();
+    let expected_ids: HashSet<String> = ["document:doc1".to_string(), "document:doc2".to_string()]
+        .into_iter()
+        .collect();
 
     assert_eq!(
         object_ids, expected_ids,
@@ -558,23 +517,7 @@ async fn test_listobjects_with_wildcards() -> Result<()> {
         ]
     });
 
-    let client = reqwest::Client::new();
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    assert!(
-        model_response.status().is_success(),
-        "Creating wildcard model should succeed, got: {}",
-        model_response.status()
-    );
+    let _model_id = create_authorization_model(&store_id, model).await?;
 
     // Write tuples with wildcard (public access)
     write_tuples(
@@ -586,6 +529,8 @@ async fn test_listobjects_with_wildcards() -> Result<()> {
         ],
     )
     .await?;
+
+    let client = reqwest::Client::new();
 
     // Act: List objects ANY user can view (including wildcard grants)
     // Note: Specific user should see both wildcard and direct grants

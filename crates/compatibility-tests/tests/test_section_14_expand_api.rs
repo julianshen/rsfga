@@ -1,7 +1,9 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_test_model, create_test_store, get_openfga_url, write_tuples};
+use common::{
+    create_authorization_model, create_test_model, create_test_store, get_openfga_url, write_tuples,
+};
 use reqwest::StatusCode;
 use serde_json::json;
 use uuid::Uuid;
@@ -13,11 +15,7 @@ async fn test_expand_returns_relation_tree() -> Result<()> {
     let store_id = create_test_store().await?;
     let _model_id = create_test_model(&store_id).await?;
 
-    write_tuples(
-        &store_id,
-        vec![("user:alice", "viewer", "document:doc1")],
-    )
-    .await?;
+    write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
 
     let client = reqwest::Client::new();
 
@@ -30,11 +28,7 @@ async fn test_expand_returns_relation_tree() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/expand",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/expand", get_openfga_url(), store_id))
         .json(&expand_request)
         .send()
         .await?;
@@ -84,11 +78,7 @@ async fn test_expand_shows_direct_relations_as_leaf() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/expand",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/expand", get_openfga_url(), store_id))
         .json(&expand_request)
         .send()
         .await?;
@@ -145,26 +135,11 @@ async fn test_expand_shows_computed_relations() -> Result<()> {
         ]
     });
 
+    let _model_id = create_authorization_model(&store_id, model).await?;
+
+    write_tuples(&store_id, vec![("user:charlie", "viewer", "document:doc2")]).await?;
+
     let client = reqwest::Client::new();
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    assert!(
-        model_response.status().is_success(),
-        "Creating computed relation model should succeed, got: {}",
-        model_response.status()
-    );
-
-    write_tuples(&store_id, vec![("user:charlie", "viewer", "document:doc2")])
-        .await?;
 
     // Act: Expand can_view relation (should show computed reference to viewer)
     let expand_request = json!({
@@ -175,11 +150,7 @@ async fn test_expand_shows_computed_relations() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/expand",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/expand", get_openfga_url(), store_id))
         .json(&expand_request)
         .send()
         .await?;
@@ -253,23 +224,7 @@ async fn test_expand_includes_union_branches() -> Result<()> {
         ]
     });
 
-    let client = reqwest::Client::new();
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    assert!(
-        model_response.status().is_success(),
-        "Creating union model should succeed, got: {}",
-        model_response.status()
-    );
+    let _model_id = create_authorization_model(&store_id, model).await?;
 
     write_tuples(
         &store_id,
@@ -280,6 +235,8 @@ async fn test_expand_includes_union_branches() -> Result<()> {
     )
     .await?;
 
+    let client = reqwest::Client::new();
+
     // Act: Expand can_access relation (should show union branches)
     let expand_request = json!({
         "tuple_key": {
@@ -289,11 +246,7 @@ async fn test_expand_includes_union_branches() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/expand",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/expand", get_openfga_url(), store_id))
         .json(&expand_request)
         .send()
         .await?;
@@ -380,23 +333,7 @@ async fn test_expand_includes_intersection_branches() -> Result<()> {
         ]
     });
 
-    let client = reqwest::Client::new();
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    assert!(
-        model_response.status().is_success(),
-        "Creating intersection model should succeed, got: {}",
-        model_response.status()
-    );
+    let _model_id = create_authorization_model(&store_id, model).await?;
 
     write_tuples(
         &store_id,
@@ -407,6 +344,8 @@ async fn test_expand_includes_intersection_branches() -> Result<()> {
     )
     .await?;
 
+    let client = reqwest::Client::new();
+
     // Act: Expand can_edit relation (should show intersection branches)
     let expand_request = json!({
         "tuple_key": {
@@ -416,11 +355,7 @@ async fn test_expand_includes_intersection_branches() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/expand",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/expand", get_openfga_url(), store_id))
         .json(&expand_request)
         .send()
         .await?;
@@ -505,23 +440,7 @@ async fn test_expand_includes_difference_branches() -> Result<()> {
         ]
     });
 
-    let client = reqwest::Client::new();
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    assert!(
-        model_response.status().is_success(),
-        "Creating difference model should succeed, got: {}",
-        model_response.status()
-    );
+    let _model_id = create_authorization_model(&store_id, model).await?;
 
     write_tuples(
         &store_id,
@@ -532,6 +451,8 @@ async fn test_expand_includes_difference_branches() -> Result<()> {
     )
     .await?;
 
+    let client = reqwest::Client::new();
+
     // Act: Expand can_view relation (should show difference branches)
     let expand_request = json!({
         "tuple_key": {
@@ -541,11 +462,7 @@ async fn test_expand_includes_difference_branches() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/expand",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/expand", get_openfga_url(), store_id))
         .json(&expand_request)
         .send()
         .await?;
@@ -591,11 +508,7 @@ async fn test_expand_with_nonexistent_object() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/expand",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/expand", get_openfga_url(), store_id))
         .json(&expand_request)
         .send()
         .await?;
@@ -647,11 +560,7 @@ async fn test_expand_tree_is_deterministic() -> Result<()> {
     let mut responses = Vec::new();
     for _ in 0..3 {
         let response = client
-            .post(format!(
-                "{}/stores/{}/expand",
-                get_openfga_url(),
-                store_id
-            ))
+            .post(format!("{}/stores/{}/expand", get_openfga_url(), store_id))
             .json(&expand_request)
             .send()
             .await?;
@@ -671,7 +580,8 @@ async fn test_expand_tree_is_deterministic() -> Result<()> {
     let first_response = &responses[0];
     for (i, response) in responses.iter().enumerate().skip(1) {
         assert_eq!(
-            first_response, response,
+            first_response,
+            response,
             "Expand response {} should match first response (deterministic)",
             i + 1
         );
@@ -707,8 +617,7 @@ async fn test_expand_with_invalid_store() -> Result<()> {
 
     // Assert: Returns 400 or 404
     assert!(
-        response.status() == StatusCode::NOT_FOUND
-            || response.status() == StatusCode::BAD_REQUEST,
+        response.status() == StatusCode::NOT_FOUND || response.status() == StatusCode::BAD_REQUEST,
         "Expand with non-existent store should return 404 or 400, got: {}",
         response.status()
     );

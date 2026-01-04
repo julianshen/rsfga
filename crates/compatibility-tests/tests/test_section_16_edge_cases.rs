@@ -1,7 +1,7 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_test_store, get_openfga_url, write_tuples};
+use common::{create_authorization_model, create_test_store, get_openfga_url, write_tuples};
 use serde_json::json;
 
 /// Test: Expand with deep relation tree (approaching server limit)
@@ -57,23 +57,7 @@ async fn test_expand_with_deep_relation_tree() -> Result<()> {
         ]
     });
 
-    let client = reqwest::Client::new();
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    assert!(
-        model_response.status().is_success(),
-        "Creating deep hierarchy model should succeed, got: {}",
-        model_response.status()
-    );
+    let _model_id = create_authorization_model(&store_id, model).await?;
 
     // Create 20-level deep hierarchy (approaching default limit of 25)
     let mut tuples = Vec::new();
@@ -98,6 +82,8 @@ async fn test_expand_with_deep_relation_tree() -> Result<()> {
 
     write_tuples(&store_id, tuple_refs).await?;
 
+    let client = reqwest::Client::new();
+
     // Act: Expand viewer at deepest level (should traverse 20 hops)
     let expand_request = json!({
         "tuple_key": {
@@ -107,11 +93,7 @@ async fn test_expand_with_deep_relation_tree() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/expand",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/expand", get_openfga_url(), store_id))
         .json(&expand_request)
         .send()
         .await?;
@@ -187,23 +169,7 @@ async fn test_expand_with_circular_relations() -> Result<()> {
         ]
     });
 
-    let client = reqwest::Client::new();
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    assert!(
-        model_response.status().is_success(),
-        "Creating cycle-capable model should succeed, got: {}",
-        model_response.status()
-    );
+    let _model_id = create_authorization_model(&store_id, model).await?;
 
     // Create cycle: folderA -> folderB -> folderA
     write_tuples(
@@ -216,6 +182,8 @@ async fn test_expand_with_circular_relations() -> Result<()> {
     )
     .await?;
 
+    let client = reqwest::Client::new();
+
     // Act: Expand viewer on cyclic structure (should handle gracefully)
     let expand_request = json!({
         "tuple_key": {
@@ -225,11 +193,7 @@ async fn test_expand_with_circular_relations() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/expand",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/expand", get_openfga_url(), store_id))
         .json(&expand_request)
         .send()
         .await?;
@@ -283,23 +247,7 @@ async fn test_listobjects_with_large_result_set() -> Result<()> {
         ]
     });
 
-    let client = reqwest::Client::new();
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    assert!(
-        model_response.status().is_success(),
-        "Creating model should succeed, got: {}",
-        model_response.status()
-    );
+    let _model_id = create_authorization_model(&store_id, model).await?;
 
     // Create 1000 documents that charlie can view
     // Note: We'll do this in batches to avoid overwhelming the write API
@@ -325,6 +273,8 @@ async fn test_listobjects_with_large_result_set() -> Result<()> {
 
         write_tuples(&store_id, tuple_refs).await?;
     }
+
+    let client = reqwest::Client::new();
 
     // Act: List all objects charlie can view (should return 1000)
     let list_request = json!({
@@ -443,27 +393,12 @@ async fn test_complex_nested_computed_relations() -> Result<()> {
         ]
     });
 
-    let client = reqwest::Client::new();
-
-    let model_response = client
-        .post(format!(
-            "{}/stores/{}/authorization-models",
-            get_openfga_url(),
-            store_id
-        ))
-        .json(&model)
-        .send()
-        .await?;
-
-    assert!(
-        model_response.status().is_success(),
-        "Creating nested computed model should succeed, got: {}",
-        model_response.status()
-    );
+    let _model_id = create_authorization_model(&store_id, model).await?;
 
     // Write tuple: dave is owner (should imply editor and viewer)
-    write_tuples(&store_id, vec![("user:dave", "owner", "document:doc1")])
-        .await?;
+    write_tuples(&store_id, vec![("user:dave", "owner", "document:doc1")]).await?;
+
+    let client = reqwest::Client::new();
 
     // Act 1: Expand viewer relation (should show nested computed path)
     let expand_request = json!({
@@ -474,11 +409,7 @@ async fn test_complex_nested_computed_relations() -> Result<()> {
     });
 
     let expand_response = client
-        .post(format!(
-            "{}/stores/{}/expand",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/expand", get_openfga_url(), store_id))
         .json(&expand_request)
         .send()
         .await?;
