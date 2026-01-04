@@ -132,7 +132,7 @@ async fn test_check_latency_computed_union() -> Result<()> {
 
     let client = reqwest::Client::new();
 
-    client
+    let model_response = client
         .post(format!(
             "{}/stores/{}/authorization-models",
             get_openfga_url(),
@@ -141,6 +141,12 @@ async fn test_check_latency_computed_union() -> Result<()> {
         .json(&model)
         .send()
         .await?;
+
+    assert!(
+        model_response.status().is_success(),
+        "Creating union model should succeed, got: {}",
+        model_response.status()
+    );
 
     write_tuples(&store_id, vec![("user:bob", "editor", "document:doc1")])
         .await?;
@@ -257,7 +263,7 @@ async fn test_check_latency_deep_nested() -> Result<()> {
 
     let client = reqwest::Client::new();
 
-    client
+    let model_response = client
         .post(format!(
             "{}/stores/{}/authorization-models",
             get_openfga_url(),
@@ -266,6 +272,12 @@ async fn test_check_latency_deep_nested() -> Result<()> {
         .json(&model)
         .send()
         .await?;
+
+    assert!(
+        model_response.status().is_success(),
+        "Creating hierarchy model should succeed, got: {}",
+        model_response.status()
+    );
 
     // Create 5-level deep hierarchy
     write_tuples(

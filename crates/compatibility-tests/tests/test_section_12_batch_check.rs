@@ -96,7 +96,7 @@ async fn test_batch_check_multiple_tuples() -> Result<()> {
     Ok(())
 }
 
-/// Test: Batch check returns array of results in same order
+/// Test: Batch check returns results keyed by correlation_id
 #[tokio::test]
 async fn test_batch_check_preserves_order() -> Result<()> {
     // Arrange: Create store, model, and write tuples

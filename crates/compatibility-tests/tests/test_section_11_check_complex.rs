@@ -187,8 +187,8 @@ async fn test_check_deeply_nested_relations() -> Result<()> {
         "Creating deep hierarchy model should succeed"
     );
 
-    // Create 5-level deep hierarchy:
-    // root -> level1 -> level2 -> level3 -> level4 -> level5
+    // Create 6-level deep hierarchy:
+    // level1 -> level2 -> level3 -> level4 -> level5 -> level6
     write_tuples(
         &store_id,
         vec![
@@ -298,7 +298,7 @@ async fn test_check_union_multiple_relations() -> Result<()> {
 
     let client = reqwest::Client::new();
 
-    client
+    let model_response = client
         .post(format!(
             "{}/stores/{}/authorization-models",
             get_openfga_url(),
@@ -307,6 +307,12 @@ async fn test_check_union_multiple_relations() -> Result<()> {
         .json(&model)
         .send()
         .await?;
+
+    assert!(
+        model_response.status().is_success(),
+        "Creating union model should succeed, got: {}",
+        model_response.status()
+    );
 
     // Write tuple: charlie is only viewer (not owner or editor)
     write_tuples(
@@ -400,7 +406,7 @@ async fn test_check_intersection_all_required() -> Result<()> {
 
     let client = reqwest::Client::new();
 
-    client
+    let model_response = client
         .post(format!(
             "{}/stores/{}/authorization-models",
             get_openfga_url(),
@@ -409,6 +415,12 @@ async fn test_check_intersection_all_required() -> Result<()> {
         .json(&model)
         .send()
         .await?;
+
+    assert!(
+        model_response.status().is_success(),
+        "Creating intersection model should succeed, got: {}",
+        model_response.status()
+    );
 
     // Write tuple: dave is approved but NOT editor (missing one requirement)
     write_tuples(
@@ -500,7 +512,7 @@ async fn test_check_exclusion_but_not() -> Result<()> {
 
     let client = reqwest::Client::new();
 
-    client
+    let model_response = client
         .post(format!(
             "{}/stores/{}/authorization-models",
             get_openfga_url(),
@@ -509,6 +521,12 @@ async fn test_check_exclusion_but_not() -> Result<()> {
         .json(&model)
         .send()
         .await?;
+
+    assert!(
+        model_response.status().is_success(),
+        "Creating exclusion model should succeed, got: {}",
+        model_response.status()
+    );
 
     // Write tuples: eve is viewer AND blocked
     write_tuples(
@@ -605,7 +623,7 @@ async fn test_check_cycle_detection() -> Result<()> {
 
     let client = reqwest::Client::new();
 
-    client
+    let model_response = client
         .post(format!(
             "{}/stores/{}/authorization-models",
             get_openfga_url(),
@@ -614,6 +632,12 @@ async fn test_check_cycle_detection() -> Result<()> {
         .json(&model)
         .send()
         .await?;
+
+    assert!(
+        model_response.status().is_success(),
+        "Creating cycle detection model should succeed, got: {}",
+        model_response.status()
+    );
 
     // Create cycle: folderA -> folderB -> folderA
     write_tuples(
@@ -786,7 +810,7 @@ async fn test_check_respects_model_version() -> Result<()> {
         ]
     });
 
-    client
+    let response_v2 = client
         .post(format!(
             "{}/stores/{}/authorization-models",
             get_openfga_url(),
@@ -795,6 +819,12 @@ async fn test_check_respects_model_version() -> Result<()> {
         .json(&model_v2)
         .send()
         .await?;
+
+    assert!(
+        response_v2.status().is_success(),
+        "Creating second model version should succeed, got: {}",
+        response_v2.status()
+    );
 
     // Write tuple using v2 model (has editor)
     write_tuples(&store_id, vec![("user:helen", "editor", "document:doc1")])

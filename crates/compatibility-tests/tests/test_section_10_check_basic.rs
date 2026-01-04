@@ -49,10 +49,11 @@ async fn test_check_direct_relation() -> Result<()> {
 
     let response_body: serde_json::Value = response.json().await?;
 
-    // Verify response has 'allowed' field
-    assert!(
-        response_body.get("allowed").is_some(),
-        "Response should contain 'allowed' field"
+    // Verify response has 'allowed' field set to true
+    assert_eq!(
+        response_body.get("allowed").and_then(|v| v.as_bool()),
+        Some(true),
+        "Check for an existing direct relation should return {{allowed: true}}"
     );
 
     Ok(())
