@@ -3,6 +3,7 @@ mod common;
 use anyhow::Result;
 use common::{create_test_model, create_test_store, get_openfga_url, write_tuples};
 use serde_json::json;
+use std::collections::HashSet;
 
 /// Test: POST /stores/{store_id}/list-objects returns objects user can access
 #[tokio::test]
@@ -55,28 +56,23 @@ async fn test_listobjects_returns_accessible_objects() -> Result<()> {
         .and_then(|o| o.as_array())
         .expect("Response should have 'objects' array");
 
-    // Alice should have access to doc1 and doc2
-    assert_eq!(
-        objects.len(),
-        2,
-        "Alice should have access to 2 documents, got: {}",
-        objects.len()
-    );
-
-    // Convert to strings for easier assertion
-    let object_ids: Vec<String> = objects
+    // Convert to HashSet for robust, order-independent comparison
+    let object_ids: HashSet<String> = objects
         .iter()
         .filter_map(|o| o.as_str())
-        .map(|s| s.to_string())
+        .map(String::from)
         .collect();
 
-    assert!(
-        object_ids.contains(&"document:doc1".to_string()),
-        "Alice should have access to doc1"
-    );
-    assert!(
-        object_ids.contains(&"document:doc2".to_string()),
-        "Alice should have access to doc2"
+    let expected_ids: HashSet<String> = [
+        "document:doc1".to_string(),
+        "document:doc2".to_string(),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        object_ids, expected_ids,
+        "Alice should have access to exactly doc1 and doc2"
     );
 
     Ok(())
@@ -605,21 +601,24 @@ async fn test_listobjects_with_wildcards() -> Result<()> {
         .and_then(|o| o.as_array())
         .expect("Response should have 'objects' array");
 
-    // Judy should see wildcard-granted objects (public1, public2)
-    assert!(
-        objects.len() >= 2,
-        "User should have access to at least wildcard-granted objects, got: {}",
-        objects.len()
-    );
-
-    let object_ids: Vec<String> = objects
+    // Judy should see exactly wildcard-granted objects (public1, public2)
+    let object_ids: HashSet<String> = objects
         .iter()
         .filter_map(|o| o.as_str())
-        .map(|s| s.to_string())
+        .map(String::from)
         .collect();
 
-    assert!(object_ids.contains(&"document:public1".to_string()));
-    assert!(object_ids.contains(&"document:public2".to_string()));
+    let expected_ids: HashSet<String> = [
+        "document:public1".to_string(),
+        "document:public2".to_string(),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        object_ids, expected_ids,
+        "User 'judy' should have access to exactly 2 wildcard-granted objects (public1 and public2)"
+    );
 
     Ok(())
 }

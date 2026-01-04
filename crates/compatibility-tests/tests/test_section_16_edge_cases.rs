@@ -367,15 +367,10 @@ async fn test_listobjects_with_large_result_set() -> Result<()> {
         "Should return all 1000 documents"
     );
 
-    // Performance check: Should complete in reasonable time
-    println!(
-        "ListObjects with 1000 results took: {:?}",
-        duration
-    );
-
+    // Performance check: Should complete in reasonable time (sanity check, not strict benchmark)
     assert!(
-        duration.as_secs() < 30,
-        "ListObjects with 1000 results should complete in < 30s, got: {:?}",
+        duration.as_secs() < 2,
+        "ListObjects with 1000 results should complete in < 2s, got: {:?}",
         duration
     );
 

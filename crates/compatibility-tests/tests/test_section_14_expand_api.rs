@@ -108,16 +108,10 @@ async fn test_expand_shows_direct_relations_as_leaf() -> Result<()> {
         .and_then(|t| t.get("root"))
         .expect("Should have root node");
 
-    // Check if root has leaf node
-    let leaf = root.get("leaf");
-    assert!(leaf.is_some(), "Root should have leaf node for direct relations");
-
-    // Leaf should contain users
-    let leaf_value = leaf.unwrap();
-    assert!(
-        leaf_value.get("users").is_some(),
-        "Leaf should contain users field"
-    );
+    // Check if root has a leaf node containing users
+    root.get("leaf")
+        .and_then(|l| l.get("users"))
+        .expect("Root should have a leaf node with a 'users' field for direct relations");
 
     Ok(())
 }
@@ -680,6 +674,13 @@ async fn test_expand_tree_is_deterministic() -> Result<()> {
             .json(&expand_request)
             .send()
             .await?;
+
+        // Assert status is successful before parsing
+        assert!(
+            response.status().is_success(),
+            "Expand should succeed on each iteration, got: {}",
+            response.status()
+        );
 
         let response_body: serde_json::Value = response.json().await?;
         responses.push(response_body);
