@@ -279,51 +279,63 @@ Note: Conditional writes test was moved to Section 1 (test_conditional_writes) a
 
 ---
 
-### Milestone 0.5: Expand & ListObjects API Tests (Week 5)
+### Milestone 0.5: Expand & ListObjects API Tests (Week 5) ✅ COMPLETE
 
-**Branch**: `feature/milestone-0.5-expand-listobjects-tests`
+**Branch**: `milestone-0.5-expand-listobjects-tests` (PR #9 - PENDING)
 
 **Objective**: Validate Expand (relation tree) and ListObjects operations
 
-#### Section 1: Expand API
+#### Section 14: Expand API
 
-- [ ] Test: POST /stores/{store_id}/expand returns relation tree
-- [ ] Test: Expand shows direct relations as leaf nodes
-- [ ] Test: Expand shows computed relations as tree nodes
-- [ ] Test: Expand includes union branches
-- [ ] Test: Expand includes intersection branches
-- [ ] Test: Expand respects max_depth parameter
-- [ ] Test: Expand with depth=1 returns only immediate relations
-- [ ] Test: Expand with non-existent object returns empty tree
-- [ ] Test: Expand tree structure is deterministic (same result on repeat)
+- [x] Test: POST /stores/{store_id}/expand returns relation tree
+- [x] Test: Expand shows direct relations as leaf nodes
+- [x] Test: Expand shows computed relations as tree nodes
+- [x] Test: Expand includes union branches
+- [x] Test: Expand includes intersection branches
+- [x] Test: Expand includes difference (but-not) branches
+- [x] Test: Expand with non-existent object returns empty tree
+- [x] Test: Expand tree structure is deterministic (same result on repeat)
+- [x] Test: Expand with invalid store returns 404 or 400
 
-#### Section 2: ListObjects API
+**Note on max_depth**: OpenFGA uses server-wide `OPENFGA_RESOLVE_NODE_LIMIT` (default: 25 levels), not per-request max_depth parameter.
 
-- [ ] Test: POST /stores/{store_id}/list-objects returns objects user can access
-- [ ] Test: ListObjects with direct relations returns correct objects
-- [ ] Test: ListObjects with computed relations returns correct objects
-- [ ] Test: ListObjects with type filter limits results
-- [ ] Test: ListObjects respects pagination (page_size)
-- [ ] Test: ListObjects with continuation_token works
-- [ ] Test: ListObjects with no accessible objects returns empty array
-- [ ] Test: ListObjects with contextual_tuples considers them
+#### Section 15: ListObjects API
 
-#### Section 3: Edge Cases
+- [x] Test: POST /stores/{store_id}/list-objects returns objects user can access
+- [x] Test: ListObjects with direct relations returns correct objects
+- [x] Test: ListObjects with computed relations returns correct objects
+- [x] Test: ListObjects with type filter limits results
+- [x] Test: ListObjects with no accessible objects returns empty array
+- [x] Test: ListObjects with contextual_tuples considers them
+- [x] Test: ListObjects with wildcards returns all matching objects
 
-- [ ] Test: Expand with very deep relation tree (20+ levels)
-- [ ] Test: Expand with circular relation definition (cycle detection)
-- [ ] Test: ListObjects with large result set (1000+ objects)
-- [ ] Test: ListObjects with wildcards
+**Pagination Discovery**: ListObjects API currently does NOT support pagination (no `continuation_token` field in protobuf). All results returned in single response.
+
+#### Section 16: Edge Cases
+
+- [x] Test: Expand with very deep relation tree (20 levels tested)
+- [x] Test: Expand with circular relation definition (cycle detection)
+- [x] Test: ListObjects with large result set (1000 objects - ~7ms performance)
+- [x] Test: Complex nested computed relations (multi-level inheritance)
+
+**Key API Discoveries**:
+- **Expand Tree Structure**: UsersetTree with Node types: `union`, `intersection`, `difference`, `leaf` (containing `users`, `computed`, or `tuple_to_userset`)
+- **No Pagination**: ListObjects returns all results in single `objects` array (no paging support)
+- **Depth Limit**: Server-wide limit of 25 levels (not per-request configurable)
+- **Cycle Handling**: Both APIs gracefully handle circular relations without infinite loops
+- **Performance**: ListObjects scales well - 1000 objects returned in ~7ms
 
 **Validation Criteria**:
-- [ ] Expand tree format documented
-- [ ] ListObjects pagination behavior captured
-- [ ] Edge cases identified
+- [x] Expand tree format documented (UsersetTree protobuf structure)
+- [x] ListObjects pagination behavior captured (no pagination support)
+- [x] Edge cases identified (deep nesting, cycles, large result sets)
 
 **Deliverables**:
-- 20+ test cases for Expand/ListObjects APIs
-- Relation tree format documentation
-- Expected behavior for edge cases
+- [x] 20 test cases for Expand/ListObjects APIs (9 + 7 + 4)
+- [x] Relation tree format documentation
+- [x] Expected behavior for edge cases
+
+**Status**: All 20 tests passing ✅
 
 ---
 
