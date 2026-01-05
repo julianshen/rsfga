@@ -1,9 +1,8 @@
 mod common;
 
 use anyhow::Result;
-use common::{get_grpc_url, get_openfga_url};
+use common::{get_openfga_url, grpc_call};
 use serde_json::json;
-use std::process::Command;
 
 // ============================================================================
 // Section 22: gRPC vs REST Parity Tests
@@ -13,36 +12,6 @@ use std::process::Command;
 // For each operation, we perform the same action via both APIs and compare.
 //
 // ============================================================================
-
-/// Execute gRPC call with grpcurl
-fn grpc_call(method: &str, data: &serde_json::Value) -> Result<serde_json::Value> {
-    let url = get_grpc_url();
-    let data_str = serde_json::to_string(data)?;
-
-    let output = Command::new("grpcurl")
-        .args(["-plaintext", "-d", &data_str, &url, method])
-        .output()?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if !output.status.success() {
-        // Check if it's a gRPC error (which might still have JSON in stdout)
-        if !stdout.trim().is_empty() {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                return Ok(json);
-            }
-        }
-        anyhow::bail!("grpcurl failed: {} {}", stderr, stdout);
-    }
-
-    if stdout.trim().is_empty() {
-        return Ok(json!({}));
-    }
-
-    let json: serde_json::Value = serde_json::from_str(&stdout)?;
-    Ok(json)
-}
 
 /// Execute REST call with reqwest (blocking for simplicity in comparison tests)
 async fn rest_call(

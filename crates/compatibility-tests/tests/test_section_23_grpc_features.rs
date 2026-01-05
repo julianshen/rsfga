@@ -1,7 +1,7 @@
 mod common;
 
 use anyhow::Result;
-use common::{get_grpc_url, get_openfga_url};
+use common::{create_test_store_grpc, get_grpc_url, get_openfga_url, grpc_call};
 use serde_json::json;
 use std::process::Command;
 
@@ -63,34 +63,6 @@ fn grpcurl_list_methods(service: &str) -> Result<Vec<String>> {
     Ok(methods)
 }
 
-/// Helper to create a test store via gRPC
-fn create_test_store_grpc() -> Result<String> {
-    let url = get_grpc_url();
-    let data_str = serde_json::to_string(&json!({"name": "grpc-features-test"}))?;
-
-    let output = Command::new("grpcurl")
-        .args([
-            "-plaintext",
-            "-d",
-            &data_str,
-            &url,
-            "openfga.v1.OpenFGAService/CreateStore",
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("CreateStore failed: {}", stderr);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)?;
-    let store_id = response["id"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("No store ID in response"))?;
-    Ok(store_id.to_string())
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -122,7 +94,7 @@ async fn test_grpc_streaming_not_supported() -> Result<()> {
     );
 
     // The key assertion is that regular ListObjects works
-    let store_id = create_test_store_grpc()?;
+    let store_id = create_test_store_grpc("grpc-features-test")?;
 
     // Create model for ListObjects test
     let url = get_grpc_url();
@@ -417,7 +389,7 @@ async fn test_grpc_error_details_format() -> Result<()> {
     );
 
     // Test 2: Check that successful responses don't contain error fields
-    let store_id = create_test_store_grpc()?;
+    let store_id = create_test_store_grpc("grpc-features-test")?;
 
     let url = get_grpc_url();
     let output = Command::new("grpcurl")
