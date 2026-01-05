@@ -326,13 +326,14 @@ pub fn build_check_request(user: &str, relation: &str, object: &str) -> serde_js
 }
 
 /// Helper function to check a permission and return the result
+/// Accepts a reference to reqwest::Client for connection reuse
 pub async fn check_permission(
+    client: &reqwest::Client,
     store_id: &str,
     user: &str,
     relation: &str,
     object: &str,
 ) -> Result<bool> {
-    let client = reqwest::Client::new();
     let check_request = build_check_request(user, relation, object);
 
     let response = client
@@ -346,10 +347,9 @@ pub async fn check_permission(
     }
 
     let body: serde_json::Value = response.json().await?;
-    Ok(body
-        .get("allowed")
+    body.get("allowed")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false))
+        .ok_or_else(|| anyhow::anyhow!("Response missing or invalid 'allowed' field"))
 }
 
 // ============================================================================
@@ -357,14 +357,14 @@ pub async fn check_permission(
 // ============================================================================
 
 /// Helper function to read tuples with optional filter
+/// Accepts a reference to reqwest::Client for connection reuse
 pub async fn read_tuples_filtered(
+    client: &reqwest::Client,
     store_id: &str,
     user: Option<&str>,
     relation: Option<&str>,
     object: Option<&str>,
 ) -> Result<Vec<Tuple>> {
-    let client = reqwest::Client::new();
-
     let mut tuple_key = serde_json::Map::new();
     if let Some(u) = user {
         tuple_key.insert("user".to_string(), json!(u));
