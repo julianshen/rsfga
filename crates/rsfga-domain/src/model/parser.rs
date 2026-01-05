@@ -201,11 +201,12 @@ fn parse_base_userset<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
     alt((parse_this, parse_tuple_to_userset, parse_computed_userset))(input)
 }
 
-/// Parse a userset with "but not" exclusion
-fn parse_exclusion<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
+/// Parse a userset with "but not" exclusion (highest precedence after base)
+fn parse_exclusion_or_base<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
     input: &'a str,
 ) -> IResult<&'a str, Userset, E> {
-    context(
+    // Try to parse base "but not" subtract
+    let exclusion_result: IResult<&str, Userset, E> = context(
         "exclusion",
         map(
             tuple((
@@ -222,59 +223,80 @@ fn parse_exclusion<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
                 subtract: Box::new(subtract),
             },
         ),
-    )(input)
+    )(input);
+
+    match exclusion_result {
+        Ok(result) => Ok(result),
+        Err(_) => parse_base_userset(input),
+    }
 }
 
-/// Parse additional union operands: "or relation"
-fn parse_or_operand<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
+/// Parse intersection level (and binds tighter than or)
+fn parse_intersection_level<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
     input: &'a str,
 ) -> IResult<&'a str, Userset, E> {
-    preceded(
-        tuple((space0, tag("or"), space1)),
-        alt((parse_exclusion, parse_base_userset)),
-    )(input)
-}
+    let (rest, first) = parse_exclusion_or_base(input)?;
 
-/// Parse additional intersection operands: "and relation"
-fn parse_and_operand<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
-    input: &'a str,
-) -> IResult<&'a str, Userset, E> {
-    preceded(
+    let (rest, and_operands) = many0(preceded(
         tuple((space0, tag("and"), space1)),
-        alt((parse_exclusion, parse_base_userset)),
-    )(input)
+        parse_exclusion_or_base,
+    ))(rest)?;
+
+    if and_operands.is_empty() {
+        Ok((rest, first))
+    } else {
+        let mut children = vec![first];
+        children.extend(and_operands);
+        Ok((rest, Userset::Intersection { children }))
+    }
 }
 
-/// Parse a complete userset expression, optionally starting with a base
+/// Parse union level (lowest precedence)
+fn parse_union_level<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, Userset, E> {
+    let (rest, first) = parse_intersection_level(input)?;
+
+    let (rest, or_operands) = many0(preceded(
+        tuple((space0, tag("or"), space1)),
+        parse_intersection_level,
+    ))(rest)?;
+
+    if or_operands.is_empty() {
+        Ok((rest, first))
+    } else {
+        let mut children = vec![first];
+        children.extend(or_operands);
+        Ok((rest, Userset::Union { children }))
+    }
+}
+
+/// Parse a complete userset expression with proper operator precedence
+/// Precedence (highest to lowest): exclusion (but not), intersection (and), union (or)
 fn parse_userset<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
     input: &'a str,
 ) -> IResult<&'a str, Userset, E> {
-    // First try to parse a base userset
-    let (rest, first) = alt((parse_exclusion, parse_base_userset))(input)?;
-
-    // Then check for "or" or "and" continuations
-    let (rest, or_operands) = many0(parse_or_operand)(rest)?;
-    if !or_operands.is_empty() {
-        let mut children = vec![first];
-        children.extend(or_operands);
-        return Ok((rest, Userset::Union { children }));
-    }
-
-    let (rest, and_operands) = many0(parse_and_operand)(rest)?;
-    if !and_operands.is_empty() {
-        let mut children = vec![first];
-        children.extend(and_operands);
-        return Ok((rest, Userset::Intersection { children }));
-    }
-
-    Ok((rest, first))
+    parse_union_level(input)
 }
 
-/// Parse a userset that starts with "or" (for cases where [type] implies This)
+/// Parse additional or/and operands after a type constraint (respects precedence)
 fn parse_userset_continuation<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
     input: &'a str,
 ) -> IResult<&'a str, Vec<Userset>, E> {
-    many0(alt((parse_or_operand, parse_and_operand)))(input)
+    // Parse "or" operands - each operand is at intersection level for proper precedence
+    let or_operands = many0(preceded(
+        tuple((space0, tag("or"), space1)),
+        parse_intersection_level,
+    ));
+
+    // Parse "and" operands
+    let and_operands = many0(preceded(
+        tuple((space0, tag("and"), space1)),
+        parse_exclusion_or_base,
+    ));
+
+    // Try or first, then and
+    alt((or_operands, and_operands))(input)
 }
 
 // ============ Relation Definition Parser ============
@@ -336,6 +358,7 @@ fn parse_relation_definition<'a, E: ParseError<&'a str> + ContextError<&'a str>>
 
                 RelationDefinition {
                     name: name.to_string(),
+                    type_constraints: type_constraint.unwrap_or_default(),
                     rewrite,
                 }
             },
@@ -637,6 +660,47 @@ type document
                 assert_eq!(computed_userset, "viewer");
             }
             _ => panic!("Expected TupleToUserset, got {:?}", doc_viewer.rewrite),
+        }
+    }
+
+    #[test]
+    fn test_parser_handles_mixed_and_or_precedence() {
+        // "and" should bind tighter than "or"
+        // "editor and owner or reader" should parse as "(editor and owner) or reader"
+        let input = r#"
+type document
+  relations
+    define editor: [user]
+    define owner: [user]
+    define reader: [user]
+    define access: editor and owner or reader
+"#;
+        let result = parse(input);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let model = result.unwrap();
+        let access = &model.type_definitions[0].relations[3];
+        assert_eq!(access.name, "access");
+
+        // Should be Union { [Intersection { [editor, owner] }, reader] }
+        match &access.rewrite {
+            Userset::Union { children } => {
+                assert_eq!(children.len(), 2, "Expected 2 children in union");
+                // First child should be an intersection
+                match &children[0] {
+                    Userset::Intersection { children: inner } => {
+                        assert_eq!(inner.len(), 2, "Expected 2 children in intersection");
+                    }
+                    _ => panic!("Expected first child to be Intersection, got {:?}", children[0]),
+                }
+                // Second child should be computed userset (reader)
+                match &children[1] {
+                    Userset::ComputedUserset { relation } => {
+                        assert_eq!(relation, "reader");
+                    }
+                    _ => panic!("Expected second child to be ComputedUserset, got {:?}", children[1]),
+                }
+            }
+            _ => panic!("Expected Union, got {:?}", access.rewrite),
         }
     }
 

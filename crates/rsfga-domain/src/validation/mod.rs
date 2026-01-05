@@ -165,6 +165,14 @@ impl ModelValidator {
     ) {
         // Check for undefined relation references in all relations
         for relation_def in &type_def.relations {
+            // Validate type constraints
+            self.validate_type_constraints(
+                &type_def.type_name,
+                &relation_def.name,
+                &relation_def.type_constraints,
+                errors,
+            );
+
             self.validate_userset(
                 &type_def.type_name,
                 &relation_def.name,
@@ -180,6 +188,47 @@ impl ModelValidator {
                 relation_name,
                 cycle_path,
             });
+        }
+    }
+
+    /// Validate type constraints (e.g., [user], [group#member])
+    fn validate_type_constraints(
+        &self,
+        type_name: &str,
+        relation_name: &str,
+        constraints: &[String],
+        errors: &mut Vec<ValidationError>,
+    ) {
+        for constraint in constraints {
+            // Parse the constraint - can be "type" or "type#relation"
+            let (ref_type, ref_relation) = if let Some(hash_pos) = constraint.find('#') {
+                let type_part = &constraint[..hash_pos];
+                let rel_part = &constraint[hash_pos + 1..];
+                (type_part, Some(rel_part))
+            } else {
+                (constraint.as_str(), None)
+            };
+
+            // Check if the referenced type exists
+            if !self.defined_types.contains(ref_type) {
+                errors.push(ValidationError::InvalidTypeConstraint {
+                    type_name: type_name.to_string(),
+                    relation_name: relation_name.to_string(),
+                    invalid_type: constraint.clone(),
+                });
+                continue;
+            }
+
+            // If there's a relation part (type#relation), check if that relation exists
+            if let Some(relation) = ref_relation {
+                if !self.relation_exists(ref_type, relation) {
+                    errors.push(ValidationError::InvalidTypeConstraint {
+                        type_name: type_name.to_string(),
+                        relation_name: relation_name.to_string(),
+                        invalid_type: constraint.clone(),
+                    });
+                }
+            }
         }
     }
 
@@ -365,10 +414,12 @@ mod tests {
                     relations: vec![
                         RelationDefinition {
                             name: "owner".to_string(),
+                            type_constraints: vec![],
                             rewrite: Userset::This,
                         },
                         RelationDefinition {
                             name: "editor".to_string(),
+                            type_constraints: vec![],
                             rewrite: Userset::Union {
                                 children: vec![
                                     Userset::This,
@@ -380,6 +431,7 @@ mod tests {
                         },
                         RelationDefinition {
                             name: "viewer".to_string(),
+                            type_constraints: vec![],
                             rewrite: Userset::Union {
                                 children: vec![
                                     Userset::This,
@@ -412,12 +464,14 @@ mod tests {
                 relations: vec![
                     RelationDefinition {
                         name: "a".to_string(),
+                        type_constraints: vec![],
                         rewrite: Userset::ComputedUserset {
                             relation: "b".to_string(),
                         },
                     },
                     RelationDefinition {
                         name: "b".to_string(),
+                        type_constraints: vec![],
                         rewrite: Userset::ComputedUserset {
                             relation: "a".to_string(),
                         },
@@ -446,6 +500,7 @@ mod tests {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
+                    type_constraints: vec![],
                     rewrite: Userset::ComputedUserset {
                         relation: "nonexistent".to_string(),
                     },
@@ -517,14 +572,17 @@ mod tests {
                 relations: vec![
                     RelationDefinition {
                         name: "owner".to_string(),
+                        type_constraints: vec![],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "editor".to_string(),
+                        type_constraints: vec![],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "viewer".to_string(),
+                        type_constraints: vec![],
                         rewrite: Userset::Union {
                             children: vec![
                                 Userset::This,
@@ -555,14 +613,17 @@ mod tests {
                 relations: vec![
                     RelationDefinition {
                         name: "owner".to_string(),
+                        type_constraints: vec![],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "approved".to_string(),
+                        type_constraints: vec![],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "can_delete".to_string(),
+                        type_constraints: vec![],
                         rewrite: Userset::Intersection {
                             children: vec![
                                 Userset::ComputedUserset {
@@ -592,14 +653,17 @@ mod tests {
                 relations: vec![
                     RelationDefinition {
                         name: "viewer".to_string(),
+                        type_constraints: vec![],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "blocked".to_string(),
+                        type_constraints: vec![],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "can_view".to_string(),
+                        type_constraints: vec![],
                         rewrite: Userset::Exclusion {
                             base: Box::new(Userset::ComputedUserset {
                                 relation: "viewer".to_string(),
@@ -615,5 +679,129 @@ mod tests {
 
         let result = validate(&model);
         assert!(result.is_ok(), "Exclusion relations should be valid");
+    }
+
+    #[test]
+    fn test_validator_rejects_invalid_type_constraints() {
+        let model = AuthorizationModel {
+            id: None,
+            schema_version: "1.1".to_string(),
+            type_definitions: vec![
+                TypeDefinition {
+                    type_name: "user".to_string(),
+                    relations: vec![],
+                },
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "owner".to_string(),
+                        // References a type that doesn't exist
+                        type_constraints: vec!["nonexistent".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+            ],
+        };
+
+        let result = validate(&model);
+        assert!(
+            result.is_err(),
+            "Invalid type constraint should fail validation"
+        );
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::InvalidTypeConstraint { invalid_type, .. }
+                if invalid_type == "nonexistent"
+            )),
+            "Should have invalid type constraint error"
+        );
+    }
+
+    #[test]
+    fn test_validator_rejects_invalid_relation_in_type_constraint() {
+        let model = AuthorizationModel {
+            id: None,
+            schema_version: "1.1".to_string(),
+            type_definitions: vec![
+                TypeDefinition {
+                    type_name: "user".to_string(),
+                    relations: vec![],
+                },
+                TypeDefinition {
+                    type_name: "group".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "member".to_string(),
+                        type_constraints: vec!["user".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "owner".to_string(),
+                        // References a relation that doesn't exist on the type
+                        type_constraints: vec!["group#nonexistent".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+            ],
+        };
+
+        let result = validate(&model);
+        assert!(
+            result.is_err(),
+            "Invalid relation in type constraint should fail validation"
+        );
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::InvalidTypeConstraint { invalid_type, .. }
+                if invalid_type == "group#nonexistent"
+            )),
+            "Should have invalid type constraint error for relation"
+        );
+    }
+
+    #[test]
+    fn test_validator_accepts_valid_type_constraints() {
+        let model = AuthorizationModel {
+            id: None,
+            schema_version: "1.1".to_string(),
+            type_definitions: vec![
+                TypeDefinition {
+                    type_name: "user".to_string(),
+                    relations: vec![],
+                },
+                TypeDefinition {
+                    type_name: "group".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "member".to_string(),
+                        type_constraints: vec!["user".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec![
+                            "user".to_string(),
+                            "group#member".to_string(),
+                        ],
+                        rewrite: Userset::This,
+                    }],
+                },
+            ],
+        };
+
+        let result = validate(&model);
+        assert!(
+            result.is_ok(),
+            "Valid type constraints should pass validation: {:?}",
+            result.err()
+        );
     }
 }

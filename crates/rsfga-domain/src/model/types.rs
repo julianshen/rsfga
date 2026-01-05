@@ -283,6 +283,8 @@ pub struct TypeDefinition {
 pub struct RelationDefinition {
     /// The relation name.
     pub name: String,
+    /// Type constraints for direct assignment (e.g., [user], [group#member]).
+    pub type_constraints: Vec<String>,
     /// The userset rewrite for this relation.
     pub rewrite: Userset,
 }
