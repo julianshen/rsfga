@@ -37,6 +37,21 @@ pub struct Store {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// A stored authorization model.
+#[derive(Debug, Clone)]
+pub struct StoredModel {
+    /// Unique model identifier.
+    pub id: String,
+    /// Store this model belongs to.
+    pub store_id: String,
+    /// Schema version (e.g., "1.1").
+    pub schema_version: String,
+    /// Serialized model data (JSON).
+    pub model_json: String,
+    /// When the model was created.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// Abstract storage interface for authorization data.
 ///
 /// Implementations must be thread-safe (Send + Sync) and support
@@ -74,5 +89,24 @@ pub trait DataStore: Send + Sync + 'static {
         filter: &TupleFilter,
     ) -> StorageResult<Vec<StoredTuple>>;
 
-    // Model operations (placeholder - will be expanded in Milestone 1.2)
+    // Model operations
+
+    /// Writes an authorization model to storage.
+    ///
+    /// Returns the generated model ID.
+    async fn write_model(
+        &self,
+        store_id: &str,
+        schema_version: &str,
+        model_json: &str,
+    ) -> StorageResult<String>;
+
+    /// Reads an authorization model by ID.
+    async fn read_model(&self, store_id: &str, model_id: &str) -> StorageResult<StoredModel>;
+
+    /// Reads the latest authorization model for a store.
+    async fn read_latest_model(&self, store_id: &str) -> StorageResult<StoredModel>;
+
+    /// Lists all authorization models for a store.
+    async fn list_models(&self, store_id: &str) -> StorageResult<Vec<StoredModel>>;
 }

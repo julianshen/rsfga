@@ -1,0 +1,500 @@
+// OpenFGA Protocol Buffer Definitions
+// Based on OpenFGA v1 API
+//
+// This file contains the core message types and service definitions
+// for OpenFGA-compatible authorization.
+
+syntax = "proto3";
+
+package openfga.v1;
+
+option go_package = "github.com/openfga/api/proto/openfga/v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// ============ Core Types ============
+
+// TupleKey represents a relationship tuple
+message TupleKey {
+  string user = 1;
+  string relation = 2;
+  string object = 3;
+}
+
+// Tuple represents a stored relationship tuple with metadata
+message Tuple {
+  TupleKey key = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+// TupleKeys is a collection of tuple keys
+message TupleKeys {
+  repeated TupleKey tuple_keys = 1;
+}
+
+// ============ Authorization Model Types ============
+
+// AuthorizationModel represents a complete authorization model
+message AuthorizationModel {
+  string id = 1;
+  string schema_version = 2;
+  repeated TypeDefinition type_definitions = 3;
+  map<string, ConditionMetadata> conditions = 4;
+}
+
+// TypeDefinition defines a type and its relations
+message TypeDefinition {
+  string type = 1;
+  map<string, Userset> relations = 2;
+  Metadata metadata = 3;
+}
+
+// Metadata contains additional information about a type
+message Metadata {
+  map<string, RelationMetadata> relations = 1;
+}
+
+// RelationMetadata contains metadata about a relation
+message RelationMetadata {
+  repeated RelationReference directly_related_user_types = 1;
+}
+
+// RelationReference identifies a type and optional relation
+message RelationReference {
+  string type = 1;
+  oneof relation_or_wildcard {
+    string relation = 2;
+    Wildcard wildcard = 3;
+  }
+  string condition = 4;
+}
+
+// Wildcard represents a wildcard type reference
+message Wildcard {}
+
+// ConditionMetadata contains condition information
+message ConditionMetadata {
+  string name = 1;
+  string expression = 2;
+  map<string, ConditionParamTypeRef> parameters = 3;
+}
+
+// ConditionParamTypeRef represents a condition parameter type
+message ConditionParamTypeRef {
+  TypeName type_name = 1;
+  repeated TypeName generic_types = 2;
+}
+
+// TypeName represents parameter types for conditions
+enum TypeName {
+  TYPE_NAME_UNSPECIFIED = 0;
+  TYPE_NAME_ANY = 1;
+  TYPE_NAME_BOOL = 2;
+  TYPE_NAME_STRING = 3;
+  TYPE_NAME_INT = 4;
+  TYPE_NAME_UINT = 5;
+  TYPE_NAME_DOUBLE = 6;
+  TYPE_NAME_DURATION = 7;
+  TYPE_NAME_TIMESTAMP = 8;
+  TYPE_NAME_MAP = 9;
+  TYPE_NAME_LIST = 10;
+  TYPE_NAME_IPADDRESS = 11;
+}
+
+// ============ Userset Types ============
+
+// Userset defines how a relation is computed
+message Userset {
+  oneof userset {
+    DirectUserset this = 1;
+    ObjectRelation computed_userset = 2;
+    TupleToUserset tuple_to_userset = 3;
+    Usersets union = 4;
+    Usersets intersection = 5;
+    Difference difference = 6;
+  }
+}
+
+// DirectUserset represents direct assignment (this)
+message DirectUserset {}
+
+// ObjectRelation represents a computed userset from another relation
+message ObjectRelation {
+  string object = 1;
+  string relation = 2;
+}
+
+// TupleToUserset represents "relation from tupleset"
+message TupleToUserset {
+  ObjectRelation tupleset = 1;
+  ObjectRelation computed_userset = 2;
+}
+
+// Usersets represents a collection of usersets (for union/intersection)
+message Usersets {
+  repeated Userset child = 1;
+}
+
+// Difference represents base - subtract (exclusion)
+message Difference {
+  Userset base = 1;
+  Userset subtract = 2;
+}
+
+// ============ Store Types ============
+
+// Store represents an authorization store
+message Store {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+  google.protobuf.Timestamp deleted_at = 5;
+}
+
+// ============ Check Types ============
+
+// CheckRequestTupleKey is the tuple key for check requests
+message CheckRequestTupleKey {
+  string user = 1;
+  string relation = 2;
+  string object = 3;
+}
+
+// ContextualTupleKeys represents contextual tuples for a request
+message ContextualTupleKeys {
+  repeated TupleKey tuple_keys = 1;
+}
+
+// ============ Expand Types ============
+
+// UsersetTree represents the expanded relation tree
+message UsersetTree {
+  oneof node {
+    Leaf leaf = 1;
+    Nodes difference = 2;
+    Nodes union = 3;
+    Nodes intersection = 4;
+  }
+}
+
+// Leaf represents a leaf node in the userset tree
+message Leaf {
+  oneof value {
+    Users users = 1;
+    Computed computed = 2;
+    TupleToUsersetResult tuple_to_userset = 3;
+  }
+}
+
+// Users represents a set of users
+message Users {
+  repeated string users = 1;
+}
+
+// Computed represents a computed userset reference
+message Computed {
+  string userset = 1;
+}
+
+// TupleToUsersetResult represents expanded TTU results
+message TupleToUsersetResult {
+  string tupleset = 1;
+  repeated Computed computed = 2;
+}
+
+// Nodes represents child nodes in the tree
+message Nodes {
+  repeated UsersetTree nodes = 1;
+}
+
+// ============ Service Definition ============
+
+// OpenFGAService provides authorization operations
+service OpenFGAService {
+  // Store operations
+  rpc CreateStore(CreateStoreRequest) returns (CreateStoreResponse);
+  rpc GetStore(GetStoreRequest) returns (GetStoreResponse);
+  rpc DeleteStore(DeleteStoreRequest) returns (DeleteStoreResponse);
+  rpc ListStores(ListStoresRequest) returns (ListStoresResponse);
+
+  // Authorization Model operations
+  rpc WriteAuthorizationModel(WriteAuthorizationModelRequest) returns (WriteAuthorizationModelResponse);
+  rpc ReadAuthorizationModel(ReadAuthorizationModelRequest) returns (ReadAuthorizationModelResponse);
+  rpc ReadAuthorizationModels(ReadAuthorizationModelsRequest) returns (ReadAuthorizationModelsResponse);
+
+  // Tuple operations
+  rpc Write(WriteRequest) returns (WriteResponse);
+  rpc Read(ReadRequest) returns (ReadResponse);
+  rpc ReadChanges(ReadChangesRequest) returns (ReadChangesResponse);
+
+  // Check operations
+  rpc Check(CheckRequest) returns (CheckResponse);
+  rpc BatchCheck(BatchCheckRequest) returns (BatchCheckResponse);
+
+  // Expand and ListObjects
+  rpc Expand(ExpandRequest) returns (ExpandResponse);
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+
+  // Assertions (for testing)
+  rpc ReadAssertions(ReadAssertionsRequest) returns (ReadAssertionsResponse);
+  rpc WriteAssertions(WriteAssertionsRequest) returns (WriteAssertionsResponse);
+}
+
+// ============ Request/Response Messages ============
+
+// Store requests
+message CreateStoreRequest {
+  string name = 1;
+}
+
+message CreateStoreResponse {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message GetStoreRequest {
+  string store_id = 1;
+}
+
+message GetStoreResponse {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message DeleteStoreRequest {
+  string store_id = 1;
+}
+
+message DeleteStoreResponse {}
+
+message ListStoresRequest {
+  int32 page_size = 1;
+  string continuation_token = 2;
+}
+
+message ListStoresResponse {
+  repeated Store stores = 1;
+  string continuation_token = 2;
+}
+
+// Authorization Model requests
+message WriteAuthorizationModelRequest {
+  string store_id = 1;
+  repeated TypeDefinition type_definitions = 2;
+  string schema_version = 3;
+  map<string, ConditionMetadata> conditions = 4;
+}
+
+message WriteAuthorizationModelResponse {
+  string authorization_model_id = 1;
+}
+
+message ReadAuthorizationModelRequest {
+  string store_id = 1;
+  string id = 2;
+}
+
+message ReadAuthorizationModelResponse {
+  AuthorizationModel authorization_model = 1;
+}
+
+message ReadAuthorizationModelsRequest {
+  string store_id = 1;
+  int32 page_size = 2;
+  string continuation_token = 3;
+}
+
+message ReadAuthorizationModelsResponse {
+  repeated AuthorizationModel authorization_models = 1;
+  string continuation_token = 2;
+}
+
+// Tuple requests
+message WriteRequest {
+  string store_id = 1;
+  TupleKeys writes = 2;
+  TupleKeys deletes = 3;
+  string authorization_model_id = 4;
+}
+
+message WriteResponse {}
+
+message ReadRequest {
+  string store_id = 1;
+  TupleKey tuple_key = 2;
+  int32 page_size = 3;
+  string continuation_token = 4;
+}
+
+message ReadResponse {
+  repeated Tuple tuples = 1;
+  string continuation_token = 2;
+}
+
+message ReadChangesRequest {
+  string store_id = 1;
+  string type = 2;
+  int32 page_size = 3;
+  string continuation_token = 4;
+}
+
+message ReadChangesResponse {
+  repeated TupleChange changes = 1;
+  string continuation_token = 2;
+}
+
+message TupleChange {
+  TupleKey tuple_key = 1;
+  TupleOperation operation = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+enum TupleOperation {
+  TUPLE_OPERATION_UNSPECIFIED = 0;
+  TUPLE_OPERATION_WRITE = 1;
+  TUPLE_OPERATION_DELETE = 2;
+}
+
+// Check requests
+message CheckRequest {
+  string store_id = 1;
+  CheckRequestTupleKey tuple_key = 2;
+  ContextualTupleKeys contextual_tuples = 3;
+  string authorization_model_id = 4;
+  bool trace = 5;
+  google.protobuf.Struct context = 6;
+}
+
+message CheckResponse {
+  bool allowed = 1;
+  string resolution = 2;
+}
+
+message BatchCheckRequest {
+  string store_id = 1;
+  repeated BatchCheckItem checks = 2;
+  string authorization_model_id = 3;
+}
+
+message BatchCheckItem {
+  CheckRequestTupleKey tuple_key = 1;
+  ContextualTupleKeys contextual_tuples = 2;
+  google.protobuf.Struct context = 3;
+  string correlation_id = 4;
+}
+
+message BatchCheckResponse {
+  repeated BatchCheckResult results = 1;
+}
+
+message BatchCheckResult {
+  bool allowed = 1;
+  CheckRequest request = 2;
+  string correlation_id = 3;
+  ErrorInfo error = 4;
+}
+
+message ErrorInfo {
+  string code = 1;
+  string message = 2;
+}
+
+// Expand requests
+message ExpandRequest {
+  string store_id = 1;
+  TupleKey tuple_key = 2;
+  string authorization_model_id = 3;
+}
+
+message ExpandResponse {
+  UsersetTree tree = 1;
+}
+
+// ListObjects requests
+message ListObjectsRequest {
+  string store_id = 1;
+  string authorization_model_id = 2;
+  string type = 3;
+  string relation = 4;
+  string user = 5;
+  ContextualTupleKeys contextual_tuples = 6;
+  google.protobuf.Struct context = 7;
+}
+
+message ListObjectsResponse {
+  repeated string objects = 1;
+}
+
+// ListUsers requests
+message ListUsersRequest {
+  string store_id = 1;
+  string authorization_model_id = 2;
+  ObjectRelation object = 3;
+  string relation = 4;
+  repeated UserTypeFilter user_filters = 5;
+  ContextualTupleKeys contextual_tuples = 6;
+  google.protobuf.Struct context = 7;
+}
+
+message UserTypeFilter {
+  string type = 1;
+  string relation = 2;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+}
+
+message User {
+  oneof user {
+    Object object = 1;
+    UsersetUser userset = 2;
+    TypedWildcard wildcard = 3;
+  }
+}
+
+message Object {
+  string type = 1;
+  string id = 2;
+}
+
+message UsersetUser {
+  string type = 1;
+  string id = 2;
+  string relation = 3;
+}
+
+message TypedWildcard {
+  string type = 1;
+}
+
+// Assertions requests
+message ReadAssertionsRequest {
+  string store_id = 1;
+  string authorization_model_id = 2;
+}
+
+message ReadAssertionsResponse {
+  string authorization_model_id = 1;
+  repeated Assertion assertions = 2;
+}
+
+message WriteAssertionsRequest {
+  string store_id = 1;
+  string authorization_model_id = 2;
+  repeated Assertion assertions = 3;
+}
+
+message WriteAssertionsResponse {}
+
+message Assertion {
+  TupleKey tuple_key = 1;
+  bool expectation = 2;
+}

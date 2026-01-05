@@ -27,4 +27,4 @@ pub mod traits;
 // Re-export commonly used types
 pub use error::{StorageError, StorageResult};
 pub use memory::MemoryDataStore;
-pub use traits::DataStore;
+pub use traits::{DataStore, Store, StoredModel, StoredTuple, TupleFilter};
