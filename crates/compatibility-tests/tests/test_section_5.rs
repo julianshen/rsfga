@@ -1,31 +1,9 @@
+mod common;
+
 use anyhow::Result;
+use common::{create_test_store, get_openfga_url};
 use reqwest::StatusCode;
 use serde_json::json;
-use uuid::Uuid;
-
-/// Helper function to get OpenFGA URL
-fn get_openfga_url() -> String {
-    std::env::var("OPENFGA_URL").unwrap_or_else(|_| "http://localhost:18080".to_string())
-}
-
-/// Helper function to create a test store
-async fn create_test_store() -> Result<String> {
-    let client = reqwest::Client::new();
-    let store_name = format!("test-store-{}", Uuid::new_v4());
-
-    let response = client
-        .post(format!("{}/stores", get_openfga_url()))
-        .json(&json!({ "name": store_name }))
-        .send()
-        .await?;
-
-    let store: serde_json::Value = response.json().await?;
-    Ok(store
-        .get("id")
-        .and_then(|v| v.as_str())
-        .expect("Created store should have an ID")
-        .to_string())
-}
 
 /// Test: POST /stores/{store_id}/authorization-models creates model
 #[tokio::test]

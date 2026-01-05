@@ -1,12 +1,10 @@
+mod common;
+
 use anyhow::Result;
+use common::get_openfga_url;
 use reqwest::StatusCode;
 use serde_json::json;
 use uuid::Uuid;
-
-/// Helper function to start OpenFGA (reuse from section 1)
-fn get_openfga_url() -> String {
-    std::env::var("OPENFGA_URL").unwrap_or_else(|_| "http://localhost:18080".to_string())
-}
 
 /// Test: POST /stores creates store with generated ID
 #[tokio::test]

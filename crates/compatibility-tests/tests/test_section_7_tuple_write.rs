@@ -78,7 +78,7 @@ async fn test_write_returns_empty_response() -> Result<()> {
     // OpenFGA returns empty object {}
     assert!(response_body.is_object(), "Response should be an object");
     assert!(
-        response_body.as_object().map_or(false, |o| o.is_empty()),
+        response_body.as_object().is_some_and(|o| o.is_empty()),
         "Response should be an empty object {{}}"
     );
 
