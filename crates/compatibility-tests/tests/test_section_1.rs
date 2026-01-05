@@ -39,7 +39,7 @@ fn start_docker_compose() -> Result<()> {
     let compose_file = format!("{}/docker-compose.yml", crate_root);
 
     let output = Command::new("docker-compose")
-        .args(&["-f", &compose_file, "up", "-d"])
+        .args(["-f", &compose_file, "up", "-d"])
         .output()?;
 
     if !output.status.success() {
@@ -63,7 +63,7 @@ fn stop_docker_compose() -> Result<()> {
     let compose_file = format!("{}/docker-compose.yml", crate_root);
 
     let output = Command::new("docker-compose")
-        .args(&[
+        .args([
             "-f",
             &compose_file,
             "down",
@@ -82,7 +82,7 @@ fn stop_docker_compose() -> Result<()> {
     // Docker-compose down is asynchronous, so we need to wait for containers to be gone
     for _ in 0..10 {
         let check_output = Command::new("docker-compose")
-            .args(&[
+            .args([
                 "-f",
                 &compose_file,
                 "ps",
@@ -110,7 +110,7 @@ fn check_openfga_running() -> Result<bool> {
     let compose_file = format!("{}/docker-compose.yml", crate_root);
 
     let output = Command::new("docker-compose")
-        .args(&[
+        .args([
             "-f",
             &compose_file,
             "ps",

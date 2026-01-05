@@ -1,3 +1,7 @@
+// Allow dead_code because each test file is compiled as a separate crate,
+// so not all helper functions are used in every test file.
+#![allow(dead_code)]
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -295,4 +299,97 @@ pub async fn write_sequential_tuples(store_id: &str, count: usize) -> Result<()>
         .collect();
 
     write_tuples(store_id, tuple_refs).await
+}
+
+// ============================================================================
+// HTTP Client Helper
+// ============================================================================
+
+/// Helper function to create an HTTP client
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::new()
+}
+
+// ============================================================================
+// Check API Helpers
+// ============================================================================
+
+/// Build a check request JSON payload
+pub fn build_check_request(user: &str, relation: &str, object: &str) -> serde_json::Value {
+    json!({
+        "tuple_key": {
+            "user": user,
+            "relation": relation,
+            "object": object
+        }
+    })
+}
+
+/// Helper function to check a permission and return the result
+pub async fn check_permission(
+    store_id: &str,
+    user: &str,
+    relation: &str,
+    object: &str,
+) -> Result<bool> {
+    let client = reqwest::Client::new();
+    let check_request = build_check_request(user, relation, object);
+
+    let response = client
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
+        .json(&check_request)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Check failed with status: {}", response.status());
+    }
+
+    let body: serde_json::Value = response.json().await?;
+    Ok(body
+        .get("allowed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+// ============================================================================
+// Read API Helpers
+// ============================================================================
+
+/// Helper function to read tuples with optional filter
+pub async fn read_tuples_filtered(
+    store_id: &str,
+    user: Option<&str>,
+    relation: Option<&str>,
+    object: Option<&str>,
+) -> Result<Vec<Tuple>> {
+    let client = reqwest::Client::new();
+
+    let mut tuple_key = serde_json::Map::new();
+    if let Some(u) = user {
+        tuple_key.insert("user".to_string(), json!(u));
+    }
+    if let Some(r) = relation {
+        tuple_key.insert("relation".to_string(), json!(r));
+    }
+    if let Some(o) = object {
+        tuple_key.insert("object".to_string(), json!(o));
+    }
+
+    let read_request = json!({
+        "tuple_key": tuple_key
+    });
+
+    let response = client
+        .post(format!("{}/stores/{}/read", get_openfga_url(), store_id))
+        .json(&read_request)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Read tuples failed with status: {}", response.status());
+    }
+
+    let read_response: ReadResponse = response.json().await?;
+    Ok(read_response.tuples)
 }
