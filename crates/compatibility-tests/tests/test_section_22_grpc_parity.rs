@@ -1,7 +1,7 @@
 mod common;
 
 use anyhow::Result;
-use common::get_openfga_url;
+use common::{get_grpc_url, get_openfga_url};
 use serde_json::json;
 use std::process::Command;
 
@@ -13,12 +13,6 @@ use std::process::Command;
 // For each operation, we perform the same action via both APIs and compare.
 //
 // ============================================================================
-
-/// Get gRPC URL from HTTP URL
-fn get_grpc_url() -> String {
-    let http_url = get_openfga_url();
-    http_url.replace(":18080", ":18081").replace("http://", "")
-}
 
 /// Execute gRPC call with grpcurl
 fn grpc_call(method: &str, data: &serde_json::Value) -> Result<serde_json::Value> {
@@ -59,12 +53,25 @@ async fn rest_call(
 ) -> Result<serde_json::Value> {
     let url = format!("{}{}", get_openfga_url(), path);
 
-    let response = match method {
-        "GET" => client.get(&url).send().await?,
-        "POST" => client.post(&url).json(&data).send().await?,
-        "DELETE" => client.delete(&url).send().await?,
-        _ => anyhow::bail!("Unsupported method: {}", method),
+    let response = {
+        let mut builder = match method {
+            "GET" => client.get(&url),
+            "POST" => client.post(&url),
+            "DELETE" => client.delete(&url),
+            _ => anyhow::bail!("Unsupported method: {}", method),
+        };
+        if let Some(json_data) = data {
+            builder = builder.json(json_data);
+        }
+        builder.send().await?
     };
+
+    // Fail early on non-2xx responses
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        anyhow::bail!("REST call failed with status {}: {}", status, text);
+    }
 
     let text = response.text().await?;
     if text.trim().is_empty() {

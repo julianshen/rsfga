@@ -53,9 +53,7 @@ pub fn get_openfga_url() -> String {
 /// Helper function to get OpenFGA gRPC URL (port 18081)
 pub fn get_grpc_url() -> String {
     let http_url = get_openfga_url();
-    http_url
-        .replace(":18080", ":18081")
-        .replace("http://", "")
+    http_url.replace(":18080", ":18081").replace("http://", "")
 }
 
 /// Helper function to create a test store

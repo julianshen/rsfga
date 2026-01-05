@@ -1,7 +1,7 @@
 mod common;
 
 use anyhow::Result;
-use common::get_openfga_url;
+use common::{get_grpc_url, get_openfga_url};
 use serde_json::json;
 use std::process::Command;
 
@@ -16,12 +16,6 @@ use std::process::Command;
 // - Error detail format
 //
 // ============================================================================
-
-/// Get gRPC URL from HTTP URL
-fn get_grpc_url() -> String {
-    let http_url = get_openfga_url();
-    http_url.replace(":18080", ":18081").replace("http://", "")
-}
 
 /// Execute gRPC call with grpcurl and capture full output including errors
 fn grpc_call_with_error(method: &str, data: &serde_json::Value) -> Result<(bool, String, String)> {
@@ -52,20 +46,19 @@ fn grpcurl_list_methods(service: &str) -> Result<Vec<String>> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Parse method names from describe output
+    // Expected format: "  rpc MethodName ( .SomeRequest ) returns ( .SomeResponse );"
     let methods: Vec<String> = stdout
         .lines()
         .filter(|line| line.contains("rpc "))
-        .map(|line| {
+        .filter_map(|line| {
             // Extract method name from "rpc MethodName ( ... )" format
-            line.trim()
-                .strip_prefix("rpc ")
-                .unwrap_or("")
-                .split(' ')
-                .next()
-                .unwrap_or("")
-                .to_string()
+            let method_name = line.trim().strip_prefix("rpc ")?.split(' ').next()?;
+            if method_name.is_empty() {
+                None
+            } else {
+                Some(method_name.to_string())
+            }
         })
-        .filter(|s| !s.is_empty())
         .collect();
     Ok(methods)
 }
@@ -306,9 +299,11 @@ async fn test_grpc_error_codes_match_http() -> Result<()> {
     // gRPC: InvalidArgument, HTTP: 400
 
     // gRPC call
+    // Note: Use "!@$" instead of "!@#" because # is a URL fragment delimiter
+    // and would be stripped from the HTTP request
     let (success, _stdout, stderr) = grpc_call_with_error(
         "openfga.v1.OpenFGAService/GetStore",
-        &json!({"store_id": "invalid-id!@#"}),
+        &json!({"store_id": "invalid-id!@$"}),
     )?;
 
     assert!(!success, "gRPC should fail for invalid store ID");
@@ -320,7 +315,7 @@ async fn test_grpc_error_codes_match_http() -> Result<()> {
 
     // HTTP call - same invalid request
     let http_response = client
-        .get(format!("{}/stores/{}", get_openfga_url(), "invalid-id!@#"))
+        .get(format!("{}/stores/{}", get_openfga_url(), "invalid-id!@$"))
         .send()
         .await?;
 
@@ -360,11 +355,11 @@ async fn test_grpc_error_codes_match_http() -> Result<()> {
         .await?;
 
     // OpenFGA returns 400 for non-existent stores (not 404)
-    let http_status = http_response.status().as_u16();
-    assert!(
-        http_status == 400 || http_status == 404,
-        "HTTP should return 400 or 404 for non-existent store, got {}",
-        http_status
+    // This is a deliberate design choice in OpenFGA - store-related errors are validation errors
+    assert_eq!(
+        http_response.status().as_u16(),
+        400,
+        "HTTP should return 400 for non-existent store"
     );
 
     // Test 3: Validation error (missing required field)

@@ -1,7 +1,7 @@
 mod common;
 
 use anyhow::Result;
-use common::get_openfga_url;
+use common::get_grpc_url;
 use serde_json::json;
 use std::process::Command;
 
@@ -15,41 +15,8 @@ use std::process::Command;
 //
 // ============================================================================
 
-/// Helper to get the gRPC URL (port 18081 instead of HTTP port 18080)
-fn get_grpc_url() -> String {
-    let http_url = get_openfga_url();
-    // Replace port 18080 with 18081 for gRPC
-    http_url.replace(":18080", ":18081").replace("http://", "")
-}
-
-/// Helper to execute grpcurl commands and return parsed JSON
-#[allow(dead_code)]
-fn grpcurl(args: &[&str]) -> Result<serde_json::Value> {
-    let output = Command::new("grpcurl")
-        .args(["-plaintext"])
-        .args(args)
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("grpcurl failed: {}", stderr);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if stdout.trim().is_empty() {
-        return Ok(json!({}));
-    }
-
-    let json: serde_json::Value = serde_json::from_str(&stdout)?;
-    Ok(json)
-}
-
 /// Helper to execute grpcurl with data payload
-fn grpcurl_with_data(
-    _endpoint: &str,
-    method: &str,
-    data: &serde_json::Value,
-) -> Result<serde_json::Value> {
+fn grpcurl_with_data(method: &str, data: &serde_json::Value) -> Result<serde_json::Value> {
     let url = get_grpc_url();
     let data_str = serde_json::to_string(data)?;
 
@@ -169,18 +136,12 @@ async fn test_grpc_reflection_works() -> Result<()> {
 /// Test: Can call Store service methods
 #[tokio::test]
 async fn test_can_call_store_service_methods() -> Result<()> {
-    let url = get_grpc_url();
-
     // Act: Create a store via gRPC
     let create_request = json!({
         "name": "grpc-store-test"
     });
 
-    let response = grpcurl_with_data(
-        &url,
-        "openfga.v1.OpenFGAService/CreateStore",
-        &create_request,
-    )?;
+    let response = grpcurl_with_data("openfga.v1.OpenFGAService/CreateStore", &create_request)?;
 
     // Assert: Should return store with ID
     assert!(
@@ -195,7 +156,7 @@ async fn test_can_call_store_service_methods() -> Result<()> {
         "store_id": store_id
     });
 
-    let get_response = grpcurl_with_data(&url, "openfga.v1.OpenFGAService/GetStore", &get_request)?;
+    let get_response = grpcurl_with_data("openfga.v1.OpenFGAService/GetStore", &get_request)?;
 
     // Assert: Should return the same store
     assert_eq!(
@@ -210,8 +171,7 @@ async fn test_can_call_store_service_methods() -> Result<()> {
     );
 
     // Act: List stores via gRPC
-    let list_response =
-        grpcurl_with_data(&url, "openfga.v1.OpenFGAService/ListStores", &json!({}))?;
+    let list_response = grpcurl_with_data("openfga.v1.OpenFGAService/ListStores", &json!({}))?;
 
     // Assert: Should return stores array
     assert!(
@@ -224,11 +184,8 @@ async fn test_can_call_store_service_methods() -> Result<()> {
         "store_id": store_id
     });
 
-    let delete_response = grpcurl_with_data(
-        &url,
-        "openfga.v1.OpenFGAService/DeleteStore",
-        &delete_request,
-    )?;
+    let delete_response =
+        grpcurl_with_data("openfga.v1.OpenFGAService/DeleteStore", &delete_request)?;
 
     // Assert: Delete should succeed (empty response)
     assert!(
@@ -242,11 +199,8 @@ async fn test_can_call_store_service_methods() -> Result<()> {
 /// Test: Can call Authorization Model service methods
 #[tokio::test]
 async fn test_can_call_authorization_model_service_methods() -> Result<()> {
-    let url = get_grpc_url();
-
     // Create a store first
     let store_response = grpcurl_with_data(
-        &url,
         "openfga.v1.OpenFGAService/CreateStore",
         &json!({"name": "grpc-model-test"}),
     )?;
@@ -275,7 +229,6 @@ async fn test_can_call_authorization_model_service_methods() -> Result<()> {
     });
 
     let model_response = grpcurl_with_data(
-        &url,
         "openfga.v1.OpenFGAService/WriteAuthorizationModel",
         &model_request,
     )?;
@@ -294,7 +247,6 @@ async fn test_can_call_authorization_model_service_methods() -> Result<()> {
     });
 
     let read_response = grpcurl_with_data(
-        &url,
         "openfga.v1.OpenFGAService/ReadAuthorizationModel",
         &read_request,
     )?;
@@ -311,7 +263,6 @@ async fn test_can_call_authorization_model_service_methods() -> Result<()> {
     });
 
     let list_response = grpcurl_with_data(
-        &url,
         "openfga.v1.OpenFGAService/ReadAuthorizationModels",
         &list_request,
     )?;
@@ -328,11 +279,8 @@ async fn test_can_call_authorization_model_service_methods() -> Result<()> {
 /// Test: Can call Tuple service methods
 #[tokio::test]
 async fn test_can_call_tuple_service_methods() -> Result<()> {
-    let url = get_grpc_url();
-
     // Create store and model
     let store_response = grpcurl_with_data(
-        &url,
         "openfga.v1.OpenFGAService/CreateStore",
         &json!({"name": "grpc-tuple-test"}),
     )?;
@@ -360,7 +308,6 @@ async fn test_can_call_tuple_service_methods() -> Result<()> {
     });
 
     grpcurl_with_data(
-        &url,
         "openfga.v1.OpenFGAService/WriteAuthorizationModel",
         &model_request,
     )?;
@@ -379,8 +326,7 @@ async fn test_can_call_tuple_service_methods() -> Result<()> {
         }
     });
 
-    let write_response =
-        grpcurl_with_data(&url, "openfga.v1.OpenFGAService/Write", &write_request)?;
+    let write_response = grpcurl_with_data("openfga.v1.OpenFGAService/Write", &write_request)?;
 
     // Assert: Write should succeed (empty response)
     assert!(
@@ -398,7 +344,7 @@ async fn test_can_call_tuple_service_methods() -> Result<()> {
         }
     });
 
-    let read_response = grpcurl_with_data(&url, "openfga.v1.OpenFGAService/Read", &read_request)?;
+    let read_response = grpcurl_with_data("openfga.v1.OpenFGAService/Read", &read_request)?;
 
     // Assert: Should return the tuple
     assert!(
@@ -414,11 +360,8 @@ async fn test_can_call_tuple_service_methods() -> Result<()> {
 /// Test: Can call Check service methods
 #[tokio::test]
 async fn test_can_call_check_service_methods() -> Result<()> {
-    let url = get_grpc_url();
-
     // Create store and model
     let store_response = grpcurl_with_data(
-        &url,
         "openfga.v1.OpenFGAService/CreateStore",
         &json!({"name": "grpc-check-test"}),
     )?;
@@ -446,7 +389,6 @@ async fn test_can_call_check_service_methods() -> Result<()> {
     });
 
     grpcurl_with_data(
-        &url,
         "openfga.v1.OpenFGAService/WriteAuthorizationModel",
         &model_request,
     )?;
@@ -463,7 +405,7 @@ async fn test_can_call_check_service_methods() -> Result<()> {
         }
     });
 
-    grpcurl_with_data(&url, "openfga.v1.OpenFGAService/Write", &write_request)?;
+    grpcurl_with_data("openfga.v1.OpenFGAService/Write", &write_request)?;
 
     // Act: Check via gRPC (should return allowed: true)
     let check_request = json!({
@@ -475,8 +417,7 @@ async fn test_can_call_check_service_methods() -> Result<()> {
         }
     });
 
-    let check_response =
-        grpcurl_with_data(&url, "openfga.v1.OpenFGAService/Check", &check_request)?;
+    let check_response = grpcurl_with_data("openfga.v1.OpenFGAService/Check", &check_request)?;
 
     // Assert: Should return allowed: true
     assert_eq!(
@@ -495,8 +436,7 @@ async fn test_can_call_check_service_methods() -> Result<()> {
         }
     });
 
-    let check_response2 =
-        grpcurl_with_data(&url, "openfga.v1.OpenFGAService/Check", &check_request2)?;
+    let check_response2 = grpcurl_with_data("openfga.v1.OpenFGAService/Check", &check_request2)?;
 
     // Assert: Should return allowed: false
     // Note: gRPC/protobuf omits fields with default values, so "allowed": false
