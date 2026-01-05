@@ -50,6 +50,14 @@ pub fn get_openfga_url() -> String {
     std::env::var("OPENFGA_URL").unwrap_or_else(|_| "http://localhost:18080".to_string())
 }
 
+/// Helper function to get OpenFGA gRPC URL (port 18081)
+pub fn get_grpc_url() -> String {
+    let http_url = get_openfga_url();
+    http_url
+        .replace(":18080", ":18081")
+        .replace("http://", "")
+}
+
 /// Helper function to create a test store
 pub async fn create_test_store() -> Result<String> {
     let client = reqwest::Client::new();
