@@ -27,15 +27,10 @@ impl User {
             return Ok(Self(value));
         }
 
-        // Must contain colon for type:id format
-        if !value.contains(':') {
+        // Validate type:id or type:id#relation format using split_once
+        let Some((type_part, rest)) = value.split_once(':') else {
             return Err("user identifier must be in 'type:id' format (e.g., 'user:alice')");
-        }
-
-        // Validate type:id or type:id#relation format
-        let colon_pos = value.find(':').unwrap();
-        let type_part = &value[..colon_pos];
-        let rest = &value[colon_pos + 1..];
+        };
 
         if type_part.is_empty() {
             return Err("user type cannot be empty");
@@ -46,10 +41,8 @@ impl User {
             return Err("user id cannot be empty");
         }
 
-        // If it contains #, validate the relation part
-        if let Some(hash_pos) = rest.find('#') {
-            let id_part = &rest[..hash_pos];
-            let relation_part = &rest[hash_pos + 1..];
+        // If it contains #, validate the relation part using split_once
+        if let Some((id_part, relation_part)) = rest.split_once('#') {
             if id_part.is_empty() {
                 return Err("user id cannot be empty");
             }

@@ -18,7 +18,7 @@ pub struct TupleFilter {
 }
 
 /// A stored tuple.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StoredTuple {
     pub object_type: String,
     pub object_id: String,
