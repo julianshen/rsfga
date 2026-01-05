@@ -50,6 +50,15 @@ pub fn get_openfga_url() -> String {
     std::env::var("OPENFGA_URL").unwrap_or_else(|_| "http://localhost:18080".to_string())
 }
 
+/// Helper function to get OpenFGA gRPC URL (port 18081)
+pub fn get_grpc_url() -> String {
+    let http_url = get_openfga_url();
+    http_url
+        .replace(":18080", ":18081")
+        .replace("http://", "")
+        .replace("https://", "")
+}
+
 /// Helper function to create a test store
 pub async fn create_test_store() -> Result<String> {
     let client = reqwest::Client::new();
@@ -308,6 +317,50 @@ pub async fn write_sequential_tuples(store_id: &str, count: usize) -> Result<()>
 /// Helper function to create an HTTP client
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::new()
+}
+
+// ============================================================================
+// gRPC Helpers
+// ============================================================================
+
+/// Execute gRPC call with grpcurl and return parsed JSON response
+pub fn grpc_call(method: &str, data: &serde_json::Value) -> Result<serde_json::Value> {
+    use std::process::Command;
+
+    let url = get_grpc_url();
+    let data_str = serde_json::to_string(data)?;
+
+    let output = Command::new("grpcurl")
+        .args(["-plaintext", "-d", &data_str, &url, method])
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        // Always fail when grpcurl exits with non-zero status.
+        // Tests that need to inspect error responses should use grpc_call_with_error.
+        anyhow::bail!("grpcurl failed: {} {}", stderr, stdout);
+    }
+
+    if stdout.trim().is_empty() {
+        return Ok(json!({}));
+    }
+
+    let json: serde_json::Value = serde_json::from_str(&stdout)?;
+    Ok(json)
+}
+
+/// Helper to create a test store via gRPC
+pub fn create_test_store_grpc(name: &str) -> Result<String> {
+    let response = grpc_call(
+        "openfga.v1.OpenFGAService/CreateStore",
+        &json!({"name": name}),
+    )?;
+    let store_id = response["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("CreateStore response missing 'id' field"))?;
+    Ok(store_id.to_string())
 }
 
 // ============================================================================

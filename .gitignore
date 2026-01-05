@@ -34,6 +34,7 @@ tarpaulin-report.html
 # Local development
 .env
 .env.local
+.claude/
 
 # Documentation
 /target/doc/
@@ -70,6 +71,9 @@ $RECYCLE.BIN/
 # OpenFGA test environment
 /tests/compatibility/.openfga/
 /tests/compatibility/test-data/
+
+# Proto files (use upstream OpenFGA definitions)
+**/proto/
 
 # Temporary files
 *.tmp
