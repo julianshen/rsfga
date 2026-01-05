@@ -5,8 +5,32 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+description = "Storage abstraction layer for RSFGA"
 
 [dependencies]
+# Async runtime
 tokio = { workspace = true }
+
+# Async trait support
+async-trait = "0.1"
+
+# Database
 sqlx = { workspace = true }
+
+# Concurrency
+dashmap = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
 anyhow = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+mockall = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
