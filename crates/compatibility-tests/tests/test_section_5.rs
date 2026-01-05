@@ -125,10 +125,7 @@ async fn test_model_creation_returns_generated_model_id() -> Result<()> {
         .and_then(|v| v.as_str())
         .unwrap();
 
-    assert!(
-        !model_id.is_empty(),
-        "Model ID should not be empty"
-    );
+    assert!(!model_id.is_empty(), "Model ID should not be empty");
 
     // Verify it's a valid ID format (looks like ULID or UUID)
     assert!(

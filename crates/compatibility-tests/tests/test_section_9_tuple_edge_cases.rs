@@ -113,10 +113,7 @@ async fn test_read_tuple_with_userset() -> Result<()> {
         .and_then(|v| v.as_str())
         .expect("Tuple should have user field");
 
-    assert_eq!(
-        user, "folder:parent#viewer",
-        "User should be the userset"
-    );
+    assert_eq!(user, "folder:parent#viewer", "User should be the userset");
 
     Ok(())
 }
@@ -271,11 +268,11 @@ async fn test_unicode_in_identifiers() -> Result<()> {
 
     // Test various Unicode characters (Chinese, Japanese, Emoji, Arabic)
     let test_cases = vec![
-        ("user:用户123", "document:文档"),                          // Chinese
-        ("user:ユーザー", "document:ドキュメント"),                 // Japanese
-        ("user:👤", "document:📄"),                                // Emoji
-        ("user:مستخدم", "document:وثيقة"),                        // Arabic
-        ("user:Müller", "document:résumé"),                       // Accented Latin
+        ("user:用户123", "document:文档"),          // Chinese
+        ("user:ユーザー", "document:ドキュメント"), // Japanese
+        ("user:👤", "document:📄"),                 // Emoji
+        ("user:مستخدم", "document:وثيقة"),          // Arabic
+        ("user:Müller", "document:résumé"),         // Accented Latin
     ];
 
     for (user, object) in test_cases {

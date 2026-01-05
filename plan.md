@@ -339,53 +339,84 @@ Note: Conditional writes test was moved to Section 1 (test_conditional_writes) a
 
 ---
 
-### Milestone 0.6: Error Handling & Edge Cases (Week 6)
+### Milestone 0.6: Error Handling & Edge Cases (Week 6) ✅ COMPLETE
 
 **Branch**: `feature/milestone-0.6-error-edge-cases`
 
 **Objective**: Document all error conditions and edge cases systematically
 
-#### Section 1: Error Response Format
+#### Section 17: Error Response Format
 
-- [ ] Test: 400 Bad Request format (error code, message, details)
-- [ ] Test: 404 Not Found format
-- [ ] Test: 500 Internal Server Error format
-- [ ] Test: Error response is consistent across all endpoints
-- [ ] Test: Error codes match OpenFGA error code enum
-- [ ] Test: Validation errors include field-level details
+- [x] Test: 400 Bad Request format (error code, message, details)
+- [x] Test: 404 Not Found format
+- [x] Test: 500 Internal Server Error format (documented expected format)
+- [x] Test: Error response is consistent across all endpoints
+- [x] Test: Error codes match OpenFGA error code enum
+- [x] Test: Validation errors include field-level details
 
-#### Section 2: Rate Limiting & Throttling
+**Error Format Discovery**:
+- Format: `{"code": "error_code", "message": "human readable message"}`
+- Error codes are snake_case: `validation_error`, `store_id_not_found`, `authorization_model_not_found`
+- Only `store_id_not_found` returns HTTP 404; most errors return 400
+- Validation errors include field names in message (e.g., "invalid CheckRequestTupleKey.Relation")
 
-- [ ] Test: API responds with 429 when rate limited (if applicable)
-- [ ] Test: Rate limit headers present (if applicable)
-- [ ] Test: Retry-After header on rate limit (if applicable)
+#### Section 18: Rate Limiting & Throttling
 
-#### Section 3: Consistency & Concurrency
+- [x] Test: API responds with 429 when rate limited (if applicable)
+- [x] Test: Rate limit headers present (if applicable)
+- [x] Test: Retry-After header on rate limit (if applicable)
 
-- [ ] Test: Concurrent writes to same tuple
-- [ ] Test: Read-after-write consistency
-- [ ] Test: Check during model update
-- [ ] Test: Check with stale model_id (if supported)
+**Rate Limiting Discovery**:
+- OpenFGA does NOT have built-in rate limiting
+- No rate limit headers (X-RateLimit-*, RateLimit-*) are returned
+- Rate limiting is handled at infrastructure level (API Gateway, Load Balancer)
+- Tests document expected 429 response format for RSFGA implementation
 
-#### Section 4: Limits & Boundaries
+#### Section 19: Consistency & Concurrency
 
-- [ ] Test: Maximum tuple size (user + relation + object length)
-- [ ] Test: Maximum number of tuples in single write
-- [ ] Test: Maximum number of checks in batch
-- [ ] Test: Maximum authorization model size
-- [ ] Test: Maximum relation depth
-- [ ] Test: Request timeout behavior
+- [x] Test: Concurrent writes to same tuple
+- [x] Test: Read-after-write consistency
+- [x] Test: Check during model update
+- [x] Test: Check with stale model_id (if supported)
+
+**Concurrency Discovery**:
+- OpenFGA uses transactional semantics for writes (optimistic concurrency)
+- 409 Conflict: Returned when concurrent writes conflict ("Aborted" code)
+- 400 Bad Request: Returned when writing tuple that already exists ("write_failed_due_to_invalid_input")
+- Writes are NOT idempotent under concurrency - only one write wins
+- Strong read-after-write consistency confirmed
+- Old model_ids remain valid and can be used for checks after new models are created
+
+#### Section 20: Limits & Boundaries
+
+- [x] Test: Maximum tuple size (user + relation + object length)
+- [x] Test: Maximum number of tuples in single write
+- [x] Test: Maximum number of checks in batch
+- [x] Test: Maximum authorization model size
+- [x] Test: Maximum relation depth
+- [x] Test: Request timeout behavior
+
+**Limits Discovery**:
+- Object identifier: max 256 characters (regex: `^[^\s]{2,256}$`)
+- Relation: max 50 characters (regex: `^[^:#@\s]{1,50}$`)
+- Tuples per write: max 100 (error: `exceeded_entity_limit`)
+- Batch check: max 50 items
+- Relation depth: 25 levels (server-wide `OPENFGA_RESOLVE_NODE_LIMIT`)
+- Type definitions: minimum 1 required (error: `type_definitions_too_few_items`)
 
 **Validation Criteria**:
-- [ ] All error response formats documented
-- [ ] Consistency guarantees understood
-- [ ] Limits documented
+- [x] All error response formats documented
+- [x] Consistency guarantees understood
+- [x] Limits documented
 
 **Deliverables**:
-- Complete error response catalog
-- Documented consistency model
-- Limit boundary documentation
-- Edge case test suite
+- [x] 19 test cases (6 + 3 + 4 + 6)
+- [x] Complete error response catalog
+- [x] Documented consistency model (transactional semantics)
+- [x] Limit boundary documentation
+- [x] Edge case test suite
+
+**Status**: All 19 tests passing ✅
 
 ---
 

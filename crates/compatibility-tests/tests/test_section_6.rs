@@ -20,7 +20,11 @@ async fn create_test_store() -> Result<String> {
         .await?;
 
     let store: serde_json::Value = response.json().await?;
-    Ok(store.get("id").and_then(|v| v.as_str()).unwrap().to_string())
+    Ok(store
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string())
 }
 
 /// Helper function to create a test authorization model
@@ -137,8 +141,7 @@ async fn test_get_nonexistent_model_returns_error() -> Result<()> {
 
     // Assert: Returns 404 or 400 (OpenFGA may validate format first)
     assert!(
-        response.status() == StatusCode::NOT_FOUND
-            || response.status() == StatusCode::BAD_REQUEST,
+        response.status() == StatusCode::NOT_FOUND || response.status() == StatusCode::BAD_REQUEST,
         "GET non-existent model should return 404 or 400, got: {}",
         response.status()
     );
@@ -282,12 +285,12 @@ async fn test_model_response_includes_schema_version() -> Result<()> {
         "Model should include 'schema_version' field"
     );
 
-    let schema_version = auth_model.get("schema_version").and_then(|v| v.as_str()).unwrap();
+    let schema_version = auth_model
+        .get("schema_version")
+        .and_then(|v| v.as_str())
+        .unwrap();
 
-    assert_eq!(
-        schema_version, "1.1",
-        "Schema version should be 1.1"
-    );
+    assert_eq!(schema_version, "1.1", "Schema version should be 1.1");
 
     Ok(())
 }
@@ -336,7 +339,11 @@ async fn test_model_response_includes_type_definitions() -> Result<()> {
     // Verify types include user and document
     let type_names: Vec<String> = type_definitions
         .iter()
-        .filter_map(|t| t.get("type").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .filter_map(|t| {
+            t.get("type")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
         .collect();
 
     assert!(
