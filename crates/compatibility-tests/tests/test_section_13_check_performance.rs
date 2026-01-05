@@ -11,11 +11,7 @@ async fn test_check_latency_direct_relation() -> Result<()> {
     let store_id = create_test_store().await?;
     let _model_id = create_test_model(&store_id).await?;
 
-    write_tuples(
-        &store_id,
-        vec![("user:alice", "viewer", "document:doc1")],
-    )
-    .await?;
+    write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
 
     let client = reqwest::Client::new();
 
@@ -29,11 +25,7 @@ async fn test_check_latency_direct_relation() -> Result<()> {
 
     // Warm up: Run once to establish connections
     client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -46,11 +38,7 @@ async fn test_check_latency_direct_relation() -> Result<()> {
         let start = std::time::Instant::now();
 
         let response = client
-            .post(format!(
-                "{}/stores/{}/check",
-                get_openfga_url(),
-                store_id
-            ))
+            .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
             .json(&check_request)
             .send()
             .await?;
@@ -148,8 +136,7 @@ async fn test_check_latency_computed_union() -> Result<()> {
         model_response.status()
     );
 
-    write_tuples(&store_id, vec![("user:bob", "editor", "document:doc1")])
-        .await?;
+    write_tuples(&store_id, vec![("user:bob", "editor", "document:doc1")]).await?;
 
     let check_request = json!({
         "tuple_key": {
@@ -161,11 +148,7 @@ async fn test_check_latency_computed_union() -> Result<()> {
 
     // Warm up
     client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -178,11 +161,7 @@ async fn test_check_latency_computed_union() -> Result<()> {
         let start = std::time::Instant::now();
 
         let response = client
-            .post(format!(
-                "{}/stores/{}/check",
-                get_openfga_url(),
-                store_id
-            ))
+            .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
             .json(&check_request)
             .send()
             .await?;
@@ -302,11 +281,7 @@ async fn test_check_latency_deep_nested() -> Result<()> {
 
     // Warm up
     client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -319,11 +294,7 @@ async fn test_check_latency_deep_nested() -> Result<()> {
         let start = std::time::Instant::now();
 
         let response = client
-            .post(format!(
-                "{}/stores/{}/check",
-                get_openfga_url(),
-                store_id
-            ))
+            .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
             .json(&check_request)
             .send()
             .await?;
@@ -378,10 +349,7 @@ async fn test_check_consistency_after_write() -> Result<()> {
         .send()
         .await?;
 
-    assert!(
-        write_response.status().is_success(),
-        "Write should succeed"
-    );
+    assert!(write_response.status().is_success(), "Write should succeed");
 
     // Act: Check IMMEDIATELY after write (no delay)
     let check_request = json!({
@@ -393,11 +361,7 @@ async fn test_check_consistency_after_write() -> Result<()> {
     });
 
     let check_response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -421,8 +385,7 @@ async fn test_check_consistency_after_delete() -> Result<()> {
     let store_id = create_test_store().await?;
     let _model_id = create_test_model(&store_id).await?;
 
-    write_tuples(&store_id, vec![("user:eve", "viewer", "document:doc1")])
-        .await?;
+    write_tuples(&store_id, vec![("user:eve", "viewer", "document:doc1")]).await?;
 
     let client = reqwest::Client::new();
 
@@ -436,11 +399,7 @@ async fn test_check_consistency_after_delete() -> Result<()> {
     });
 
     let response_before = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_before)
         .send()
         .await?;
@@ -487,11 +446,7 @@ async fn test_check_consistency_after_delete() -> Result<()> {
     });
 
     let response_after = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_after)
         .send()
         .await?;

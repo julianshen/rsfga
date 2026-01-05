@@ -43,7 +43,11 @@ async fn test_post_stores_creates_store_with_generated_id() -> Result<()> {
         "Store ID should be a string"
     );
     assert!(
-        !response_body.get("id").and_then(|v| v.as_str()).unwrap().is_empty(),
+        !response_body
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .is_empty(),
         "Store ID should not be empty"
     );
 
@@ -80,7 +84,10 @@ async fn test_post_stores_returns_created_store_in_response() -> Result<()> {
     );
 
     // Verify store has ID
-    assert!(response_body.get("id").is_some(), "Response should contain 'id'");
+    assert!(
+        response_body.get("id").is_some(),
+        "Response should contain 'id'"
+    );
 
     // Verify store has created_at timestamp
     assert!(

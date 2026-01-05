@@ -96,11 +96,7 @@ async fn test_check_multi_hop_relations() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -212,11 +208,7 @@ async fn test_check_deeply_nested_relations() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -315,11 +307,7 @@ async fn test_check_union_multiple_relations() -> Result<()> {
     );
 
     // Write tuple: charlie is only viewer (not owner or editor)
-    write_tuples(
-        &store_id,
-        vec![("user:charlie", "viewer", "document:doc1")],
-    )
-    .await?;
+    write_tuples(&store_id, vec![("user:charlie", "viewer", "document:doc1")]).await?;
 
     // Act: Check if charlie can_access (union of owner/editor/viewer)
     let check_request = json!({
@@ -331,11 +319,7 @@ async fn test_check_union_multiple_relations() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -423,11 +407,7 @@ async fn test_check_intersection_all_required() -> Result<()> {
     );
 
     // Write tuple: dave is approved but NOT editor (missing one requirement)
-    write_tuples(
-        &store_id,
-        vec![("user:dave", "approved", "document:doc2")],
-    )
-    .await?;
+    write_tuples(&store_id, vec![("user:dave", "approved", "document:doc2")]).await?;
 
     // Act: Check if dave can_publish (requires approved AND editor)
     let check_request = json!({
@@ -439,11 +419,7 @@ async fn test_check_intersection_all_required() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -548,11 +524,7 @@ async fn test_check_exclusion_but_not() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -659,11 +631,7 @@ async fn test_check_cycle_detection() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -694,8 +662,7 @@ async fn test_check_with_wildcards() -> Result<()> {
     let _model_id = create_wildcard_model(&store_id).await?;
 
     // Write wildcard tuple: user:* is viewer (public access)
-    write_tuples(&store_id, vec![("user:*", "viewer", "document:public")])
-        .await?;
+    write_tuples(&store_id, vec![("user:*", "viewer", "document:public")]).await?;
 
     let client = reqwest::Client::new();
 
@@ -709,11 +676,7 @@ async fn test_check_with_wildcards() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -827,8 +790,7 @@ async fn test_check_respects_model_version() -> Result<()> {
     );
 
     // Write tuple using v2 model (has editor)
-    write_tuples(&store_id, vec![("user:helen", "editor", "document:doc1")])
-        .await?;
+    write_tuples(&store_id, vec![("user:helen", "editor", "document:doc1")]).await?;
 
     // Act: Check with explicit v1 model (doesn't have editor relation)
     let check_request = json!({
@@ -841,11 +803,7 @@ async fn test_check_respects_model_version() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;

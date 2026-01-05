@@ -76,10 +76,7 @@ async fn test_write_returns_empty_response() -> Result<()> {
     let response_body: serde_json::Value = response.json().await?;
 
     // OpenFGA returns empty object {}
-    assert!(
-        response_body.is_object(),
-        "Response should be an object"
-    );
+    assert!(response_body.is_object(), "Response should be an object");
     assert!(
         response_body.as_object().map_or(false, |o| o.is_empty()),
         "Response should be an empty object {{}}"
@@ -164,7 +161,10 @@ async fn test_writes_are_idempotent() -> Result<()> {
         .send()
         .await?;
 
-    assert!(response1.status().is_success(), "First write should succeed");
+    assert!(
+        response1.status().is_success(),
+        "First write should succeed"
+    );
 
     // Act: Write same tuple second time with on_duplicate: "ignore"
     // OpenFGA returns error by default for duplicate writes
@@ -292,8 +292,7 @@ async fn test_write_without_store_returns_error() -> Result<()> {
 
     // Assert: Returns error (400 or 404)
     assert!(
-        response.status() == StatusCode::NOT_FOUND
-            || response.status() == StatusCode::BAD_REQUEST,
+        response.status() == StatusCode::NOT_FOUND || response.status() == StatusCode::BAD_REQUEST,
         "Write to non-existent store should return 404 or 400, got: {}",
         response.status()
     );

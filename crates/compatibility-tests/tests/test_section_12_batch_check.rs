@@ -69,8 +69,7 @@ async fn test_batch_check_multiple_tuples() -> Result<()> {
         let error_body = response.text().await?;
         panic!(
             "Batch check should succeed, got status: {}. Response: {}",
-            status,
-            error_body
+            status, error_body
         );
     }
 
@@ -89,9 +88,18 @@ async fn test_batch_check_multiple_tuples() -> Result<()> {
     );
 
     // Verify results keyed by correlation_id
-    assert!(results.contains_key("check-1"), "Should have check-1 result");
-    assert!(results.contains_key("check-2"), "Should have check-2 result");
-    assert!(results.contains_key("check-3"), "Should have check-3 result");
+    assert!(
+        results.contains_key("check-1"),
+        "Should have check-1 result"
+    );
+    assert!(
+        results.contains_key("check-2"),
+        "Should have check-2 result"
+    );
+    assert!(
+        results.contains_key("check-3"),
+        "Should have check-3 result"
+    );
 
     Ok(())
 }
@@ -163,19 +171,28 @@ async fn test_batch_check_preserves_order() -> Result<()> {
 
     // Assert: Results keyed by correlation_id
     assert_eq!(
-        results.get("check-1").and_then(|v| v.get("allowed")).and_then(|v| v.as_bool()),
+        results
+            .get("check-1")
+            .and_then(|v| v.get("allowed"))
+            .and_then(|v| v.as_bool()),
         Some(true),
         "check-1 result should be true (alice:viewer:doc1)"
     );
 
     assert_eq!(
-        results.get("check-2").and_then(|v| v.get("allowed")).and_then(|v| v.as_bool()),
+        results
+            .get("check-2")
+            .and_then(|v| v.get("allowed"))
+            .and_then(|v| v.as_bool()),
         Some(false),
         "check-2 result should be false (charlie:viewer:doc3 doesn't exist)"
     );
 
     assert_eq!(
-        results.get("check-3").and_then(|v| v.get("allowed")).and_then(|v| v.as_bool()),
+        results
+            .get("check-3")
+            .and_then(|v| v.get("allowed"))
+            .and_then(|v| v.as_bool()),
         Some(true),
         "check-3 result should be true (bob:editor:doc2)"
     );
@@ -411,11 +428,7 @@ async fn test_batch_check_deduplication() -> Result<()> {
     let store_id = create_test_store().await?;
     let _model_id = create_test_model(&store_id).await?;
 
-    write_tuples(
-        &store_id,
-        vec![("user:alice", "viewer", "document:doc1")],
-    )
-    .await?;
+    write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
 
     let client = reqwest::Client::new();
 

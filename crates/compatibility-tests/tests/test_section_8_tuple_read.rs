@@ -109,10 +109,7 @@ async fn test_read_with_user_filter() -> Result<()> {
             .and_then(|v| v.as_str())
             .expect("Tuple should have user field");
 
-        assert_eq!(
-            user, "user:alice",
-            "All tuples should be for user:alice"
-        );
+        assert_eq!(user, "user:alice", "All tuples should be for user:alice");
     }
 
     Ok(())
@@ -174,10 +171,7 @@ async fn test_read_with_relation_filter() -> Result<()> {
         .and_then(|v| v.as_str())
         .expect("Tuple should have relation field");
 
-    assert_eq!(
-        relation, "viewer",
-        "Tuple should have viewer relation"
-    );
+    assert_eq!(relation, "viewer", "Tuple should have viewer relation");
 
     Ok(())
 }
@@ -458,16 +452,8 @@ async fn test_read_continuation_token() -> Result<()> {
     );
 
     // Verify no overlap between pages using HashSet for efficiency
-    let first_keys: HashSet<TupleKey> = first_page
-        .tuples
-        .into_iter()
-        .map(|t| t.key)
-        .collect();
-    let second_keys: HashSet<TupleKey> = second_page
-        .tuples
-        .into_iter()
-        .map(|t| t.key)
-        .collect();
+    let first_keys: HashSet<TupleKey> = first_page.tuples.into_iter().map(|t| t.key).collect();
+    let second_keys: HashSet<TupleKey> = second_page.tuples.into_iter().map(|t| t.key).collect();
 
     assert!(
         first_keys.is_disjoint(&second_keys),

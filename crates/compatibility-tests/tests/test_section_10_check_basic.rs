@@ -13,11 +13,7 @@ async fn test_check_direct_relation() -> Result<()> {
     let store_id = create_test_store().await?;
     let _model_id = create_test_model(&store_id).await?;
 
-    write_tuples(
-        &store_id,
-        vec![("user:alice", "viewer", "document:doc1")],
-    )
-    .await?;
+    write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
 
     let client = reqwest::Client::new();
 
@@ -31,11 +27,7 @@ async fn test_check_direct_relation() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -66,8 +58,7 @@ async fn test_check_returns_true_when_tuple_exists() -> Result<()> {
     let store_id = create_test_store().await?;
     let _model_id = create_test_model(&store_id).await?;
 
-    write_tuples(&store_id, vec![("user:bob", "editor", "document:doc2")])
-        .await?;
+    write_tuples(&store_id, vec![("user:bob", "editor", "document:doc2")]).await?;
 
     let client = reqwest::Client::new();
 
@@ -81,11 +72,7 @@ async fn test_check_returns_true_when_tuple_exists() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -121,11 +108,7 @@ async fn test_check_returns_false_when_tuple_does_not_exist() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -219,8 +202,7 @@ async fn test_check_follows_computed_union() -> Result<()> {
     );
 
     // Write tuple: dave is editor
-    write_tuples(&store_id, vec![("user:dave", "editor", "document:doc4")])
-        .await?;
+    write_tuples(&store_id, vec![("user:dave", "editor", "document:doc4")]).await?;
 
     // Act: Check if dave can_view (should follow union to editor)
     let check_request = json!({
@@ -232,11 +214,7 @@ async fn test_check_follows_computed_union() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -343,11 +321,7 @@ async fn test_check_follows_computed_intersection() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -433,8 +407,7 @@ async fn test_check_follows_computed_exclusion() -> Result<()> {
     );
 
     // Write tuple: frank is viewer but NOT editor
-    write_tuples(&store_id, vec![("user:frank", "viewer", "document:doc6")])
-        .await?;
+    write_tuples(&store_id, vec![("user:frank", "viewer", "document:doc6")]).await?;
 
     // Act: Check if frank can_view_only (viewer BUT NOT editor)
     let check_request = json!({
@@ -446,11 +419,7 @@ async fn test_check_follows_computed_exclusion() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -475,11 +444,7 @@ async fn test_check_resolves_this_keyword() -> Result<()> {
     let _model_id = create_test_model(&store_id).await?;
 
     // The test model uses "this": {} for direct relations
-    write_tuples(
-        &store_id,
-        vec![("user:george", "viewer", "document:doc7")],
-    )
-    .await?;
+    write_tuples(&store_id, vec![("user:george", "viewer", "document:doc7")]).await?;
 
     let client = reqwest::Client::new();
 
@@ -493,11 +458,7 @@ async fn test_check_resolves_this_keyword() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -542,11 +503,7 @@ async fn test_check_with_contextual_tuples() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&check_request)
         .send()
         .await?;
@@ -591,8 +548,7 @@ async fn test_check_with_nonexistent_store() -> Result<()> {
 
     // Assert: Returns 400 or 404
     assert!(
-        response.status() == StatusCode::NOT_FOUND
-            || response.status() == StatusCode::BAD_REQUEST,
+        response.status() == StatusCode::NOT_FOUND || response.status() == StatusCode::BAD_REQUEST,
         "Check with non-existent store should return 404 or 400, got: {}",
         response.status()
     );
@@ -618,11 +574,7 @@ async fn test_check_with_invalid_format() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/check",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
         .json(&invalid_request)
         .send()
         .await?;
