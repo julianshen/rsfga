@@ -1,7 +1,7 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_test_store_grpc, get_grpc_url, get_openfga_url};
+use common::{create_test_store_grpc, get_grpc_url, get_openfga_url, grpc_call};
 use serde_json::json;
 use std::process::Command;
 
@@ -97,7 +97,6 @@ async fn test_grpc_streaming_not_supported() -> Result<()> {
     let store_id = create_test_store_grpc("grpc-features-test")?;
 
     // Create model for ListObjects test
-    let url = get_grpc_url();
     let model_data = json!({
         "store_id": store_id,
         "type_definitions": [
@@ -115,19 +114,10 @@ async fn test_grpc_streaming_not_supported() -> Result<()> {
         "schema_version": "1.1"
     });
 
-    let output = Command::new("grpcurl")
-        .args([
-            "-plaintext",
-            "-d",
-            &serde_json::to_string(&model_data)?,
-            &url,
-            "openfga.v1.OpenFGAService/WriteAuthorizationModel",
-        ])
-        .output()?;
-    assert!(
-        output.status.success(),
-        "WriteAuthorizationModel should succeed"
-    );
+    grpc_call(
+        "openfga.v1.OpenFGAService/WriteAuthorizationModel",
+        &model_data,
+    )?;
 
     // Write a tuple
     let write_data = json!({
@@ -141,16 +131,7 @@ async fn test_grpc_streaming_not_supported() -> Result<()> {
         }
     });
 
-    let output = Command::new("grpcurl")
-        .args([
-            "-plaintext",
-            "-d",
-            &serde_json::to_string(&write_data)?,
-            &url,
-            "openfga.v1.OpenFGAService/Write",
-        ])
-        .output()?;
-    assert!(output.status.success(), "Write should succeed");
+    grpc_call("openfga.v1.OpenFGAService/Write", &write_data)?;
 
     // Call ListObjects (unary RPC)
     let list_data = json!({
@@ -160,23 +141,8 @@ async fn test_grpc_streaming_not_supported() -> Result<()> {
         "user": "user:stream-test"
     });
 
-    let output = Command::new("grpcurl")
-        .args([
-            "-plaintext",
-            "-d",
-            &serde_json::to_string(&list_data)?,
-            &url,
-            "openfga.v1.OpenFGAService/ListObjects",
-        ])
-        .output()?;
+    let response = grpc_call("openfga.v1.OpenFGAService/ListObjects", &list_data)?;
 
-    assert!(
-        output.status.success(),
-        "ListObjects (unary) should succeed"
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)?;
     let objects = response["objects"]
         .as_array()
         .expect("Should have objects array");
@@ -391,21 +357,10 @@ async fn test_grpc_error_details_format() -> Result<()> {
     // Test 2: Check that successful responses don't contain error fields
     let store_id = create_test_store_grpc("grpc-features-test")?;
 
-    let url = get_grpc_url();
-    let output = Command::new("grpcurl")
-        .args([
-            "-plaintext",
-            "-d",
-            &format!(r#"{{"store_id": "{}"}}"#, store_id),
-            &url,
-            "openfga.v1.OpenFGAService/GetStore",
-        ])
-        .output()?;
-
-    assert!(output.status.success(), "GetStore should succeed");
-
-    let response_stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&response_stdout)?;
+    let response = grpc_call(
+        "openfga.v1.OpenFGAService/GetStore",
+        &json!({"store_id": store_id}),
+    )?;
 
     // Successful response should have expected fields, not error fields
     assert!(

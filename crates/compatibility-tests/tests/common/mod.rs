@@ -338,12 +338,8 @@ pub fn grpc_call(method: &str, data: &serde_json::Value) -> Result<serde_json::V
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if !output.status.success() {
-        // Check if it's a gRPC error (which might still have JSON in stdout)
-        if !stdout.trim().is_empty() {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                return Ok(json);
-            }
-        }
+        // Always fail when grpcurl exits with non-zero status.
+        // Tests that need to inspect error responses should use grpc_call_with_error.
         anyhow::bail!("grpcurl failed: {} {}", stderr, stdout);
     }
 
