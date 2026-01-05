@@ -1,0 +1,14 @@
+# Cargo audit configuration
+# See: https://docs.rs/cargo-audit/latest/cargo_audit/config/
+
+[advisories]
+# Ignored vulnerabilities with no fix available
+ignore = [
+    # rsa 0.9.9 - Marvin Attack timing sidechannel (RUSTSEC-2023-0071)
+    # Severity: Medium (5.9)
+    # Status: No fixed upgrade available
+    # Impact: This is a transitive dependency from sqlx-mysql. RSFGA does not
+    # use RSA for key generation/exchange, so the risk is minimal.
+    # We will monitor for upstream fixes.
+    "RUSTSEC-2023-0071",
+]

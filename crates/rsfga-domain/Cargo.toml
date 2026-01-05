@@ -5,7 +5,38 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+description = "Core authorization domain logic for RSFGA"
 
 [dependencies]
+# Async runtime
 tokio = { workspace = true }
+
+# Serialization
 serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Concurrency (for cache and resolver)
+dashmap = { workspace = true }
+
+# Caching
+moka = { workspace = true }
+
+# Parsing (for DSL)
+nom = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+mockall = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "check_bench"
+harness = false
