@@ -1,7 +1,7 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_test_store_grpc, get_grpc_url, get_openfga_url, grpc_call};
+use common::{create_test_store_grpc, get_grpc_url, get_openfga_url};
 use serde_json::json;
 use std::process::Command;
 

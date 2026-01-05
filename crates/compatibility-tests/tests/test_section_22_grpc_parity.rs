@@ -432,6 +432,29 @@ async fn test_grpc_batch_check_matches_rest() -> Result<()> {
         "REST check-1 should be allowed"
     );
 
+    // Both should have check-2
+    assert!(
+        grpc_result.contains_key("check-2"),
+        "gRPC should have check-2"
+    );
+    assert!(
+        rest_result.contains_key("check-2"),
+        "REST should have check-2"
+    );
+
+    // check-2 should be denied (allowed: false or field omitted due to protobuf default)
+    let grpc_allowed2 = grpc_result["check-2"]
+        .get("allowed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    assert!(!grpc_allowed2, "gRPC check-2 should be denied");
+
+    let rest_allowed2 = rest_result["check-2"]
+        .get("allowed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    assert!(!rest_allowed2, "REST check-2 should be denied");
+
     Ok(())
 }
 
