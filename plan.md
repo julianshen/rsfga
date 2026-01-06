@@ -808,7 +808,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 
 #### Section 1: Cache Structure ✅
 
-- [x] Test: Can create cache with DashMap
+- [x] Test: Can create cache with Moka
 - [x] Test: Can insert check result into cache
 - [x] Test: Can retrieve cached check result
 - [x] Test: Cache miss returns None

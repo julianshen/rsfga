@@ -82,15 +82,6 @@ impl CacheKey {
             user: user.into(),
         }
     }
-
-    /// Returns a string representation for pattern matching.
-    #[allow(dead_code)]
-    fn pattern_key(&self) -> String {
-        format!(
-            "{}:{}:{}:{}",
-            self.store_id, self.object, self.relation, self.user
-        )
-    }
 }
 
 impl Hash for CacheKey {
@@ -286,7 +277,7 @@ mod tests {
     // ============================================================
 
     #[tokio::test]
-    async fn test_can_create_cache_with_dashmap() {
+    async fn test_cache_creation_and_initial_state() {
         // Arrange
         let config = CheckCacheConfig::default();
 
