@@ -84,6 +84,12 @@ pub trait DataStore: Send + Sync + 'static {
     /// Lists all stores.
     async fn list_stores(&self) -> StorageResult<Vec<Store>>;
 
+    /// Lists stores with pagination support.
+    async fn list_stores_paginated(
+        &self,
+        pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<Store>>;
+
     // Tuple operations
 
     /// Writes a single tuple to storage.
@@ -105,6 +111,14 @@ pub trait DataStore: Send + Sync + 'static {
         store_id: &str,
         filter: &TupleFilter,
     ) -> StorageResult<Vec<StoredTuple>>;
+
+    /// Reads tuples matching the filter with pagination support.
+    async fn read_tuples_paginated(
+        &self,
+        store_id: &str,
+        filter: &TupleFilter,
+        pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<StoredTuple>>;
 
     /// Deletes a single tuple from storage.
     async fn delete_tuple(&self, store_id: &str, tuple: StoredTuple) -> StorageResult<()> {

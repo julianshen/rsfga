@@ -7,7 +7,8 @@
 //! Run with: cargo test -p rsfga-storage --test storage_integration -- --ignored
 
 use rsfga_storage::{
-    DataStore, MemoryDataStore, PostgresConfig, PostgresDataStore, StoredTuple, TupleFilter,
+    DataStore, MemoryDataStore, PaginationOptions, PostgresConfig, PostgresDataStore, StoredTuple,
+    TupleFilter,
 };
 use std::sync::Arc;
 
@@ -533,4 +534,82 @@ async fn test_concurrent_access_across_threads() {
 
     // Clean up
     store.delete_store("integration-concurrent").await.unwrap();
+}
+
+// ============================================================================
+// Test: Pagination consistency across implementations
+// ============================================================================
+
+/// Helper function to run pagination test against any DataStore implementation.
+async fn run_pagination_test<S: DataStore>(store: &S, store_id: &str) {
+    store
+        .create_store(store_id, "Pagination Test Store")
+        .await
+        .unwrap();
+
+    // Write 25 tuples
+    let tuples: Vec<StoredTuple> = (0..25)
+        .map(|i| StoredTuple {
+            object_type: "document".to_string(),
+            object_id: format!("doc{}", i),
+            relation: "viewer".to_string(),
+            user_type: "user".to_string(),
+            user_id: format!("user{}", i),
+            user_relation: None,
+        })
+        .collect();
+
+    store.write_tuples(store_id, tuples, vec![]).await.unwrap();
+
+    // First page of 10
+    let pagination = PaginationOptions {
+        page_size: Some(10),
+        continuation_token: None,
+    };
+    let result = store
+        .read_tuples_paginated(store_id, &TupleFilter::default(), &pagination)
+        .await
+        .unwrap();
+    assert_eq!(result.items.len(), 10);
+    assert!(result.continuation_token.is_some());
+
+    // Second page of 10
+    let pagination = PaginationOptions {
+        page_size: Some(10),
+        continuation_token: result.continuation_token,
+    };
+    let result = store
+        .read_tuples_paginated(store_id, &TupleFilter::default(), &pagination)
+        .await
+        .unwrap();
+    assert_eq!(result.items.len(), 10);
+    assert!(result.continuation_token.is_some());
+
+    // Third page (only 5 remaining)
+    let pagination = PaginationOptions {
+        page_size: Some(10),
+        continuation_token: result.continuation_token,
+    };
+    let result = store
+        .read_tuples_paginated(store_id, &TupleFilter::default(), &pagination)
+        .await
+        .unwrap();
+    assert_eq!(result.items.len(), 5);
+    assert!(result.continuation_token.is_none()); // No more pages
+
+    // Clean up
+    store.delete_store(store_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_pagination_memory() {
+    let store = create_memory_store();
+    run_pagination_test(&store, "integration-pagination-memory").await;
+}
+
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_pagination_postgres() {
+    let store = create_postgres_store().await;
+    run_pagination_test(&store, "integration-pagination-postgres").await;
 }

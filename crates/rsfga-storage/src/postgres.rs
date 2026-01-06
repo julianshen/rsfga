@@ -6,7 +6,9 @@ use sqlx::Row;
 use tracing::{debug, instrument};
 
 use crate::error::{StorageError, StorageResult};
-use crate::traits::{DataStore, Store, StoredTuple, TupleFilter};
+use crate::traits::{
+    DataStore, PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter,
+};
 
 /// PostgreSQL configuration options.
 #[derive(Clone)]
@@ -322,6 +324,57 @@ impl DataStore for PostgresDataStore {
             .collect())
     }
 
+    #[instrument(skip(self, pagination))]
+    async fn list_stores_paginated(
+        &self,
+        pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<Store>> {
+        let page_size = pagination.page_size.unwrap_or(100) as i64;
+        let offset: i64 = pagination
+            .continuation_token
+            .as_ref()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(0);
+
+        let rows = sqlx::query(
+            r#"
+            SELECT id, name, created_at, updated_at
+            FROM stores
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+            "#,
+        )
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to list stores: {}", e),
+        })?;
+
+        let items: Vec<Store> = rows
+            .into_iter()
+            .map(|row| Store {
+                id: row.get("id"),
+                name: row.get("name"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            })
+            .collect();
+
+        let next_offset = offset + items.len() as i64;
+        let continuation_token = if items.len() == page_size as usize {
+            Some(next_offset.to_string())
+        } else {
+            None
+        };
+
+        Ok(PaginatedResult {
+            items,
+            continuation_token,
+        })
+    }
+
     #[instrument(skip(self, writes, deletes))]
     async fn write_tuples(
         &self,
@@ -529,6 +582,119 @@ impl DataStore for PostgresDataStore {
                 user_relation: row.get("user_relation"),
             })
             .collect())
+    }
+
+    #[instrument(skip(self, filter, pagination))]
+    async fn read_tuples_paginated(
+        &self,
+        store_id: &str,
+        filter: &TupleFilter,
+        pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<StoredTuple>> {
+        // Verify store exists
+        let store_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+            "#,
+        )
+        .bind(store_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check store existence: {}", e),
+        })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Parse user filter upfront to validate and extract components
+        let user_filter = if let Some(ref user) = filter.user {
+            Some(Self::parse_user_filter(user)?)
+        } else {
+            None
+        };
+
+        let page_size = pagination.page_size.unwrap_or(100) as i64;
+        let offset: i64 = pagination
+            .continuation_token
+            .as_ref()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(0);
+
+        // Use sqlx::QueryBuilder for safe dynamic query construction
+        let mut builder: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "SELECT object_type, object_id, relation, user_type, user_id, user_relation FROM tuples WHERE store_id = ",
+        );
+        builder.push_bind(store_id);
+
+        if let Some(ref object_type) = filter.object_type {
+            builder.push(" AND object_type = ");
+            builder.push_bind(object_type);
+        }
+
+        if let Some(ref object_id) = filter.object_id {
+            builder.push(" AND object_id = ");
+            builder.push_bind(object_id);
+        }
+
+        if let Some(ref relation) = filter.relation {
+            builder.push(" AND relation = ");
+            builder.push_bind(relation);
+        }
+
+        if let Some((user_type, user_id, user_relation)) = user_filter {
+            builder.push(" AND user_type = ");
+            builder.push_bind(user_type);
+            builder.push(" AND user_id = ");
+            builder.push_bind(user_id);
+            if let Some(rel) = user_relation {
+                builder.push(" AND user_relation = ");
+                builder.push_bind(rel);
+            } else {
+                builder.push(" AND user_relation IS NULL");
+            }
+        }
+
+        builder.push(" ORDER BY created_at DESC LIMIT ");
+        builder.push_bind(page_size);
+        builder.push(" OFFSET ");
+        builder.push_bind(offset);
+
+        let rows =
+            builder
+                .build()
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to read tuples: {}", e),
+                })?;
+
+        let items: Vec<StoredTuple> = rows
+            .into_iter()
+            .map(|row| StoredTuple {
+                object_type: row.get("object_type"),
+                object_id: row.get("object_id"),
+                relation: row.get("relation"),
+                user_type: row.get("user_type"),
+                user_id: row.get("user_id"),
+                user_relation: row.get("user_relation"),
+            })
+            .collect();
+
+        let next_offset = offset + items.len() as i64;
+        let continuation_token = if items.len() == page_size as usize {
+            Some(next_offset.to_string())
+        } else {
+            None
+        };
+
+        Ok(PaginatedResult {
+            items,
+            continuation_token,
+        })
     }
 
     async fn begin_transaction(&self) -> StorageResult<()> {
