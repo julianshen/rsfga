@@ -47,6 +47,10 @@ pub enum StorageError {
     #[error("transaction error: {message}")]
     TransactionError { message: String },
 
+    /// Invalid filter error.
+    #[error("invalid filter: {message}")]
+    InvalidFilter { message: String },
+
     /// Serialization error.
     #[error("serialization error: {message}")]
     SerializationError { message: String },

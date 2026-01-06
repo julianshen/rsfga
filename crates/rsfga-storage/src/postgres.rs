@@ -9,7 +9,7 @@ use crate::error::{StorageError, StorageResult};
 use crate::traits::{DataStore, Store, StoredTuple, TupleFilter};
 
 /// PostgreSQL configuration options.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PostgresConfig {
     /// Database connection URL.
     pub database_url: String,
@@ -19,6 +19,18 @@ pub struct PostgresConfig {
     pub min_connections: u32,
     /// Connection timeout in seconds.
     pub connect_timeout_secs: u64,
+}
+
+// Custom Debug implementation to hide credentials in database_url
+impl std::fmt::Debug for PostgresConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PostgresConfig")
+            .field("database_url", &"[REDACTED]")
+            .field("max_connections", &self.max_connections)
+            .field("min_connections", &self.min_connections)
+            .field("connect_timeout_secs", &self.connect_timeout_secs)
+            .finish()
+    }
 }
 
 impl Default for PostgresConfig {
@@ -91,9 +103,12 @@ impl PostgresDataStore {
         })?;
 
         // Create tuples table
+        // Note: We use a surrogate primary key and a unique index instead of a composite
+        // PRIMARY KEY with COALESCE, since PostgreSQL doesn't allow expressions in PKs.
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS tuples (
+                id BIGSERIAL PRIMARY KEY,
                 store_id VARCHAR(255) NOT NULL,
                 object_type VARCHAR(255) NOT NULL,
                 object_id VARCHAR(255) NOT NULL,
@@ -102,7 +117,6 @@ impl PostgresDataStore {
                 user_id VARCHAR(255) NOT NULL,
                 user_relation VARCHAR(255),
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (store_id, object_type, object_id, relation, user_type, user_id, COALESCE(user_relation, '')),
                 FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
             )
             "#,
@@ -113,12 +127,25 @@ impl PostgresDataStore {
             message: format!("Failed to create tuples table: {}", e),
         })?;
 
+        // Create unique index to enforce tuple uniqueness (handles NULL user_relation correctly)
+        sqlx::query(
+            r#"
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tuples_unique
+            ON tuples (store_id, object_type, object_id, relation, user_type, user_id, COALESCE(user_relation, ''))
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to create unique index: {}", e),
+        })?;
+
         // Create indexes for common query patterns
         let indexes = [
             "CREATE INDEX IF NOT EXISTS idx_tuples_store ON tuples(store_id)",
             "CREATE INDEX IF NOT EXISTS idx_tuples_object ON tuples(store_id, object_type, object_id)",
             "CREATE INDEX IF NOT EXISTS idx_tuples_user ON tuples(store_id, user_type, user_id)",
-            "CREATE INDEX IF NOT EXISTS idx_tuples_relation ON tuples(store_id, object_type, relation)",
+            "CREATE INDEX IF NOT EXISTS idx_tuples_relation ON tuples(store_id, object_type, object_id, relation)",
         ];
 
         for index_sql in indexes {
@@ -321,12 +348,13 @@ impl DataStore for PostgresDataStore {
         }
 
         // Process writes (upsert to handle idempotent writes)
+        // Use ON CONFLICT with the expression that matches our unique index
         for tuple in &writes {
             sqlx::query(
                 r#"
                 INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, COALESCE(user_relation, ''))
+                ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, (COALESCE(user_relation, '')))
                 DO NOTHING
                 "#,
             )
@@ -413,29 +441,49 @@ impl DataStore for PostgresDataStore {
             // User filter is in format "type:id" or "type:id#relation"
             if user.contains('#') {
                 let parts: Vec<&str> = user.split('#').collect();
-                let user_parts: Vec<&str> = parts[0].split(':').collect();
-                if user_parts.len() == 2 {
-                    query.push_str(&format!(
-                        " AND user_type = ${} AND user_id = ${} AND user_relation = ${}",
-                        param_index,
-                        param_index + 1,
-                        param_index + 2
-                    ));
-                    params.push(user_parts[0].to_string());
-                    params.push(user_parts[1].to_string());
-                    params.push(parts[1].to_string());
+                if parts.len() != 2 {
+                    return Err(StorageError::InvalidFilter {
+                        message: format!(
+                            "Invalid user filter format: '{}'. Expected 'type:id#relation'",
+                            user
+                        ),
+                    });
                 }
+                let user_parts: Vec<&str> = parts[0].split(':').collect();
+                if user_parts.len() != 2 {
+                    return Err(StorageError::InvalidFilter {
+                        message: format!(
+                            "Invalid user filter format: '{}'. Expected 'type:id#relation'",
+                            user
+                        ),
+                    });
+                }
+                query.push_str(&format!(
+                    " AND user_type = ${} AND user_id = ${} AND user_relation = ${}",
+                    param_index,
+                    param_index + 1,
+                    param_index + 2
+                ));
+                params.push(user_parts[0].to_string());
+                params.push(user_parts[1].to_string());
+                params.push(parts[1].to_string());
             } else {
                 let user_parts: Vec<&str> = user.split(':').collect();
-                if user_parts.len() == 2 {
-                    query.push_str(&format!(
-                        " AND user_type = ${} AND user_id = ${} AND user_relation IS NULL",
-                        param_index,
-                        param_index + 1
-                    ));
-                    params.push(user_parts[0].to_string());
-                    params.push(user_parts[1].to_string());
+                if user_parts.len() != 2 {
+                    return Err(StorageError::InvalidFilter {
+                        message: format!(
+                            "Invalid user filter format: '{}'. Expected 'type:id'",
+                            user
+                        ),
+                    });
                 }
+                query.push_str(&format!(
+                    " AND user_type = ${} AND user_id = ${} AND user_relation IS NULL",
+                    param_index,
+                    param_index + 1
+                ));
+                params.push(user_parts[0].to_string());
+                params.push(user_parts[1].to_string());
             }
         }
 
@@ -469,23 +517,29 @@ impl DataStore for PostgresDataStore {
     }
 
     async fn begin_transaction(&self) -> StorageResult<()> {
-        // For individual transaction calls, we just verify we can start a transaction
-        // The actual transaction is managed per write_tuples call
+        // Note: Individual transaction control is not supported.
+        // Transactions are managed internally per write_tuples call.
+        // Use write_tuples with both writes and deletes to get atomic behavior.
         Ok(())
     }
 
     async fn commit_transaction(&self) -> StorageResult<()> {
-        // Transactions are committed automatically in write_tuples
+        // Note: Individual transaction control is not supported.
+        // Transactions are committed automatically in write_tuples.
         Ok(())
     }
 
     async fn rollback_transaction(&self) -> StorageResult<()> {
-        // Transactions are rolled back automatically on error in write_tuples
+        // Note: Individual transaction control is not supported.
+        // Transactions are rolled back automatically on error in write_tuples.
         Ok(())
     }
 
     fn supports_transactions(&self) -> bool {
-        true
+        // Returns false because individual transaction control (begin/commit/rollback)
+        // is not supported. However, write_tuples operations are atomic internally.
+        // Users should use write_tuples with both writes and deletes for atomic operations.
+        false
     }
 }
 

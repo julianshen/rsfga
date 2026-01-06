@@ -65,10 +65,12 @@ async fn cleanup_test_stores(store: &PostgresDataStore) {
 async fn test_can_connect_to_postgres() {
     let store = create_store().await;
 
-    // Verify we can list stores
-    let stores = store.list_stores().await.unwrap();
-    // May have stores from other tests, but should not error
-    assert!(stores.is_empty() || !stores.is_empty());
+    // Verify we can list stores - the call should succeed without error
+    let result = store.list_stores().await;
+    assert!(
+        result.is_ok(),
+        "Should be able to list stores after connecting"
+    );
 }
 
 // Test: Can create tables with migrations
@@ -530,12 +532,14 @@ async fn test_large_result_set_ordering() {
     store.delete_store("test-large-set").await.unwrap();
 }
 
-// Test: supports_transactions returns true for PostgreSQL
+// Test: supports_transactions returns false (individual tx control not supported)
+// Note: write_tuples operations are still atomic internally
 #[tokio::test]
 #[ignore = "requires running PostgreSQL"]
 async fn test_supports_transactions() {
     let store = create_store().await;
-    assert!(store.supports_transactions());
+    // Individual transaction control is not supported, but write_tuples is atomic
+    assert!(!store.supports_transactions());
 }
 
 // Test: Delete store cascades to tuples
