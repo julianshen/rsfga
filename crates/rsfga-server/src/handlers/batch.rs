@@ -1,11 +1,13 @@
-//! Batch check handler with three-stage deduplication.
+//! Batch check handler with two-stage deduplication.
 //!
 //! This handler processes multiple permission checks in a single request,
 //! optimizing throughput through:
 //!
 //! 1. **Intra-batch deduplication**: Identical checks execute only once
 //! 2. **Singleflight**: Concurrent requests for same check share results
-//! 3. **Cache integration**: Already-computed results skip execution
+//!
+//! Note: Cache integration (stage 3) is handled at the API layer where
+//! the CheckCache is consulted before invoking the batch handler.
 //!
 //! # Performance Target (UNVALIDATED - M1.8)
 //!
@@ -20,6 +22,9 @@ use futures::future::join_all;
 use rsfga_domain::cache::CheckCache;
 use rsfga_domain::resolver::{CheckRequest, GraphResolver, ModelReader, TupleReader};
 use tokio::sync::broadcast;
+
+/// Maximum batch size to prevent resource exhaustion.
+const MAX_BATCH_SIZE: usize = 1000;
 
 /// Key for identifying unique checks (used for deduplication).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -41,17 +46,6 @@ impl CheckKey {
     }
 }
 
-impl From<&BatchCheckItem> for CheckKey {
-    fn from(item: &BatchCheckItem) -> Self {
-        Self {
-            store_id: String::new(), // Will be set separately
-            user: item.user.clone(),
-            relation: item.relation.clone(),
-            object: item.object.clone(),
-        }
-    }
-}
-
 /// Result type for singleflight operations.
 #[derive(Debug, Clone)]
 struct SingleflightResult {
@@ -59,10 +53,22 @@ struct SingleflightResult {
     error: Option<String>,
 }
 
+/// Result of trying to acquire a singleflight slot.
+enum SingleflightSlot {
+    /// We won the race and should execute the check.
+    /// Contains the sender to broadcast results.
+    Leader(broadcast::Sender<SingleflightResult>),
+    /// Another task is executing; wait for its result.
+    Follower(broadcast::Receiver<SingleflightResult>),
+}
+
 /// Singleflight implementation for deduplicating concurrent check requests.
 ///
 /// When multiple requests for the same check arrive concurrently,
 /// only one actual check is executed and all requesters share the result.
+///
+/// Uses atomic operations to prevent race conditions between checking
+/// for existing requests and registering new ones.
 struct Singleflight {
     /// Map of in-flight requests to their broadcast senders.
     in_flight: DashMap<CheckKey, broadcast::Sender<SingleflightResult>>,
@@ -75,23 +81,67 @@ impl Singleflight {
         }
     }
 
-    /// Try to join an existing in-flight request.
-    /// Returns Some(receiver) if there's an in-flight request, None otherwise.
-    fn try_join(&self, key: &CheckKey) -> Option<broadcast::Receiver<SingleflightResult>> {
-        self.in_flight.get(key).map(|sender| sender.subscribe())
-    }
+    /// Atomically try to acquire a slot for this check.
+    ///
+    /// Returns `Leader` if this caller should execute the check,
+    /// or `Follower` if another caller is already executing it.
+    ///
+    /// This uses DashMap's entry API for atomic check-and-insert,
+    /// preventing race conditions between try_join and register.
+    fn acquire(&self, key: CheckKey) -> SingleflightSlot {
+        use dashmap::mapref::entry::Entry;
 
-    /// Register a new in-flight request.
-    /// Returns the broadcast sender for publishing the result.
-    fn register(&self, key: CheckKey) -> broadcast::Sender<SingleflightResult> {
-        let (tx, _rx) = broadcast::channel(1);
-        self.in_flight.insert(key, tx.clone());
-        tx
+        match self.in_flight.entry(key) {
+            Entry::Occupied(entry) => {
+                // Another task is already executing this check
+                SingleflightSlot::Follower(entry.get().subscribe())
+            }
+            Entry::Vacant(entry) => {
+                // We're the first - register and become the leader
+                let (tx, _rx) = broadcast::channel(1);
+                entry.insert(tx.clone());
+                SingleflightSlot::Leader(tx)
+            }
+        }
     }
 
     /// Remove a completed in-flight request.
     fn complete(&self, key: &CheckKey) {
         self.in_flight.remove(key);
+    }
+}
+
+/// RAII guard that ensures singleflight cleanup on drop.
+///
+/// This prevents resource leaks if the check execution panics.
+struct SingleflightGuard<'a> {
+    singleflight: &'a Singleflight,
+    key: CheckKey,
+    completed: bool,
+}
+
+impl<'a> SingleflightGuard<'a> {
+    fn new(singleflight: &'a Singleflight, key: CheckKey) -> Self {
+        Self {
+            singleflight,
+            key,
+            completed: false,
+        }
+    }
+
+    /// Mark as completed (normal path, not panic).
+    fn complete(mut self) {
+        self.singleflight.complete(&self.key);
+        self.completed = true;
+    }
+}
+
+impl<'a> Drop for SingleflightGuard<'a> {
+    fn drop(&mut self) {
+        // If not already completed (e.g., due to panic), clean up
+        if !self.completed {
+            self.singleflight.complete(&self.key);
+        }
     }
 }
 
@@ -148,6 +198,10 @@ pub enum BatchCheckError {
     #[error("batch request cannot be empty")]
     EmptyBatch,
 
+    /// The batch request exceeds the maximum allowed size.
+    #[error("batch size {size} exceeds maximum allowed {max}")]
+    BatchTooLarge { size: usize, max: usize },
+
     /// A check item has invalid format.
     #[error("invalid check at index {index}: {message}")]
     InvalidCheck { index: usize, message: String },
@@ -168,7 +222,11 @@ pub type BatchCheckResult<T> = Result<T, BatchCheckError>;
 
 /// Handler for batch permission checks.
 ///
-/// Processes multiple checks in parallel with three-stage deduplication.
+/// Processes multiple checks in parallel with two-stage deduplication:
+/// 1. Intra-batch: Identical checks within a batch execute once
+/// 2. Singleflight: Concurrent requests across batches share results
+///
+/// Cache integration is handled at the API layer.
 pub struct BatchCheckHandler<T, M>
 where
     T: TupleReader,
@@ -176,7 +234,7 @@ where
 {
     /// The graph resolver for executing checks.
     resolver: Arc<GraphResolver<T, M>>,
-    /// Cache for storing check results.
+    /// Cache for storing check results (used by API layer).
     #[allow(dead_code)]
     cache: Arc<CheckCache>,
     /// Singleflight for deduplicating concurrent requests.
@@ -202,6 +260,14 @@ where
         // Check for empty batch
         if request.checks.is_empty() {
             return Err(BatchCheckError::EmptyBatch);
+        }
+
+        // Check batch size limit
+        if request.checks.len() > MAX_BATCH_SIZE {
+            return Err(BatchCheckError::BatchTooLarge {
+                size: request.checks.len(),
+                max: MAX_BATCH_SIZE,
+            });
         }
 
         // Validate each check item
@@ -276,60 +342,66 @@ where
     ///
     /// If there's already an in-flight request for this check, wait for its result.
     /// Otherwise, execute the check and broadcast the result to any waiters.
+    ///
+    /// Uses atomic acquire() to prevent race conditions and SingleflightGuard
+    /// for cleanup on panic.
     async fn execute_check_with_singleflight(
         &self,
         store_id: &str,
         check: &BatchCheckItem,
         key: CheckKey,
     ) -> BatchCheckItemResult {
-        // Try to join an existing in-flight request
-        if let Some(mut receiver) = self.singleflight.try_join(&key) {
-            // Wait for the result from the in-flight request
-            match receiver.recv().await {
-                Ok(result) => {
-                    return BatchCheckItemResult {
+        // Atomically acquire a slot - either become leader or follower
+        match self.singleflight.acquire(key.clone()) {
+            SingleflightSlot::Follower(mut receiver) => {
+                // Wait for the leader's result
+                match receiver.recv().await {
+                    Ok(result) => BatchCheckItemResult {
                         allowed: result.allowed,
                         error: result.error,
-                    };
-                }
-                Err(_) => {
-                    // Sender was dropped, execute the check ourselves
+                    },
+                    Err(_) => {
+                        // Leader was dropped (likely panicked), retry as new leader
+                        // This is safe because SingleflightGuard cleaned up
+                        Box::pin(self.execute_check_with_singleflight(store_id, check, key)).await
+                    }
                 }
             }
-        }
+            SingleflightSlot::Leader(sender) => {
+                // We're the leader - create guard for cleanup on panic
+                let guard = SingleflightGuard::new(&self.singleflight, key);
 
-        // Register ourselves as the executor for this check
-        let sender = self.singleflight.register(key.clone());
+                // Execute the actual check
+                let check_request = CheckRequest::new(
+                    store_id.to_string(),
+                    check.user.clone(),
+                    check.relation.clone(),
+                    check.object.clone(),
+                    vec![], // No contextual tuples in batch checks
+                );
 
-        // Execute the actual check
-        let check_request = CheckRequest::new(
-            store_id.to_string(),
-            check.user.clone(),
-            check.relation.clone(),
-            check.object.clone(),
-            vec![], // No contextual tuples in batch checks
-        );
+                let result = match self.resolver.check(&check_request).await {
+                    Ok(result) => SingleflightResult {
+                        allowed: result.allowed,
+                        error: None,
+                    },
+                    Err(e) => SingleflightResult {
+                        allowed: false,
+                        error: Some(e.to_string()),
+                    },
+                };
 
-        let result = match self.resolver.check(&check_request).await {
-            Ok(result) => SingleflightResult {
-                allowed: result.allowed,
-                error: None,
-            },
-            Err(e) => SingleflightResult {
-                allowed: false,
-                error: Some(e.to_string()),
-            },
-        };
+                // Broadcast the result to any waiters (ignore send errors - no receivers)
+                let _ = sender.send(result.clone());
 
-        // Broadcast the result to any waiters
-        let _ = sender.send(result.clone());
+                // Complete and clean up (guard handles this)
+                guard.complete();
 
-        // Remove from in-flight map
-        self.singleflight.complete(&key);
-
-        BatchCheckItemResult {
-            allowed: result.allowed,
-            error: result.error,
+                BatchCheckItemResult {
+                    allowed: result.allowed,
+                    error: result.error,
+                }
+            }
         }
     }
 
@@ -338,7 +410,7 @@ where
     pub fn dedup_stats(&self, request: &BatchCheckRequest) -> (usize, usize) {
         let mut seen: HashMap<CheckKey, ()> = HashMap::new();
         for check in &request.checks {
-            let key = CheckKey::from(check);
+            let key = CheckKey::new(&request.store_id, check);
             seen.entry(key).or_insert(());
         }
         (request.checks.len(), seen.len())
@@ -593,6 +665,54 @@ mod tests {
         // Assert
         assert!(result.is_ok());
         assert_eq!(request.checks.len(), 150);
+    }
+
+    #[test]
+    fn test_rejects_batch_exceeding_max_size() {
+        // Arrange
+        let handler = create_test_handler();
+        let checks: Vec<BatchCheckItem> = (0..1001) // MAX_BATCH_SIZE + 1
+            .map(|i| BatchCheckItem {
+                user: format!("user:user{}", i),
+                relation: "viewer".to_string(),
+                object: format!("document:doc{}", i),
+            })
+            .collect();
+        let request = BatchCheckRequest::new("store1", checks);
+
+        // Act
+        let result = handler.validate(&request);
+
+        // Assert
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            BatchCheckError::BatchTooLarge { size, max } => {
+                assert_eq!(size, 1001);
+                assert_eq!(max, MAX_BATCH_SIZE);
+            }
+            _ => panic!("Expected BatchTooLarge error"),
+        }
+    }
+
+    #[test]
+    fn test_accepts_batch_at_max_size() {
+        // Arrange
+        let handler = create_test_handler();
+        let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
+            .map(|i| BatchCheckItem {
+                user: format!("user:user{}", i),
+                relation: "viewer".to_string(),
+                object: format!("document:doc{}", i),
+            })
+            .collect();
+        let request = BatchCheckRequest::new("store1", checks);
+
+        // Act
+        let result = handler.validate(&request);
+
+        // Assert
+        assert!(result.is_ok());
+        assert_eq!(request.checks.len(), MAX_BATCH_SIZE);
     }
 
     // ============================================================
