@@ -26,4 +26,7 @@ pub mod traits;
 pub use error::{StorageError, StorageResult};
 pub use memory::MemoryDataStore;
 pub use postgres::{PostgresConfig, PostgresDataStore};
-pub use traits::{DataStore, PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter};
+pub use traits::{
+    parse_user_filter, validate_store_id, validate_store_name, validate_tuple, DataStore,
+    PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter,
+};

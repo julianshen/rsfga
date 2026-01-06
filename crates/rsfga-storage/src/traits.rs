@@ -2,7 +2,140 @@
 
 use async_trait::async_trait;
 
-use crate::error::StorageResult;
+use crate::error::{StorageError, StorageResult};
+
+/// Maximum length for string fields.
+const MAX_FIELD_LENGTH: usize = 255;
+
+/// Validate a store ID.
+///
+/// # Errors
+/// Returns `StorageError::InvalidInput` if the store ID is empty or too long.
+pub fn validate_store_id(store_id: &str) -> StorageResult<()> {
+    if store_id.is_empty() {
+        return Err(StorageError::InvalidInput {
+            message: "store_id cannot be empty".to_string(),
+        });
+    }
+    if store_id.len() > MAX_FIELD_LENGTH {
+        return Err(StorageError::InvalidInput {
+            message: format!(
+                "store_id exceeds maximum length of {} characters",
+                MAX_FIELD_LENGTH
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Validate a store name.
+///
+/// # Errors
+/// Returns `StorageError::InvalidInput` if the name is empty or too long.
+pub fn validate_store_name(name: &str) -> StorageResult<()> {
+    if name.is_empty() {
+        return Err(StorageError::InvalidInput {
+            message: "store name cannot be empty".to_string(),
+        });
+    }
+    if name.len() > MAX_FIELD_LENGTH {
+        return Err(StorageError::InvalidInput {
+            message: format!(
+                "store name exceeds maximum length of {} characters",
+                MAX_FIELD_LENGTH
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Validate a stored tuple.
+///
+/// # Errors
+/// Returns `StorageError::InvalidInput` if any field is empty or too long.
+pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
+    if tuple.object_type.is_empty() {
+        return Err(StorageError::InvalidInput {
+            message: "object_type cannot be empty".to_string(),
+        });
+    }
+    if tuple.object_type.len() > MAX_FIELD_LENGTH {
+        return Err(StorageError::InvalidInput {
+            message: format!(
+                "object_type exceeds maximum length of {} characters",
+                MAX_FIELD_LENGTH
+            ),
+        });
+    }
+    if tuple.object_id.is_empty() {
+        return Err(StorageError::InvalidInput {
+            message: "object_id cannot be empty".to_string(),
+        });
+    }
+    if tuple.object_id.len() > MAX_FIELD_LENGTH {
+        return Err(StorageError::InvalidInput {
+            message: format!(
+                "object_id exceeds maximum length of {} characters",
+                MAX_FIELD_LENGTH
+            ),
+        });
+    }
+    if tuple.relation.is_empty() {
+        return Err(StorageError::InvalidInput {
+            message: "relation cannot be empty".to_string(),
+        });
+    }
+    if tuple.relation.len() > MAX_FIELD_LENGTH {
+        return Err(StorageError::InvalidInput {
+            message: format!(
+                "relation exceeds maximum length of {} characters",
+                MAX_FIELD_LENGTH
+            ),
+        });
+    }
+    if tuple.user_type.is_empty() {
+        return Err(StorageError::InvalidInput {
+            message: "user_type cannot be empty".to_string(),
+        });
+    }
+    if tuple.user_type.len() > MAX_FIELD_LENGTH {
+        return Err(StorageError::InvalidInput {
+            message: format!(
+                "user_type exceeds maximum length of {} characters",
+                MAX_FIELD_LENGTH
+            ),
+        });
+    }
+    if tuple.user_id.is_empty() {
+        return Err(StorageError::InvalidInput {
+            message: "user_id cannot be empty".to_string(),
+        });
+    }
+    if tuple.user_id.len() > MAX_FIELD_LENGTH {
+        return Err(StorageError::InvalidInput {
+            message: format!(
+                "user_id exceeds maximum length of {} characters",
+                MAX_FIELD_LENGTH
+            ),
+        });
+    }
+    if let Some(ref user_relation) = tuple.user_relation {
+        if user_relation.is_empty() {
+            return Err(StorageError::InvalidInput {
+                message: "user_relation cannot be empty if provided".to_string(),
+            });
+        }
+        if user_relation.len() > MAX_FIELD_LENGTH {
+            return Err(StorageError::InvalidInput {
+                message: format!(
+                    "user_relation exceeds maximum length of {} characters",
+                    MAX_FIELD_LENGTH
+                ),
+            });
+        }
+    }
+    Ok(())
+}
 
 /// Filter for reading tuples.
 #[derive(Debug, Clone, Default)]
@@ -24,6 +157,67 @@ pub struct TupleFilter {
     /// # Errors
     /// Invalid formats will result in `StorageError::InvalidFilter` when the filter is applied.
     pub user: Option<String>,
+}
+
+/// Parse user filter string into (user_type, user_id, Option<user_relation>).
+///
+/// # Format
+/// - `"type:id"` for direct users
+/// - `"type:id#relation"` for usersets
+///
+/// # Errors
+/// Returns `StorageError::InvalidFilter` if the format is invalid.
+///
+/// # Examples
+/// ```
+/// use rsfga_storage::traits::parse_user_filter;
+///
+/// // Direct user
+/// let (user_type, user_id, relation) = parse_user_filter("user:alice").unwrap();
+/// assert_eq!(user_type, "user");
+/// assert_eq!(user_id, "alice");
+/// assert!(relation.is_none());
+///
+/// // Userset
+/// let (user_type, user_id, relation) = parse_user_filter("group:eng#member").unwrap();
+/// assert_eq!(user_type, "group");
+/// assert_eq!(user_id, "eng");
+/// assert_eq!(relation, Some("member".to_string()));
+/// ```
+pub fn parse_user_filter(user: &str) -> StorageResult<(String, String, Option<String>)> {
+    if user.contains('#') {
+        let parts: Vec<&str> = user.split('#').collect();
+        if parts.len() != 2 || parts[1].is_empty() {
+            return Err(StorageError::InvalidFilter {
+                message: format!(
+                    "Invalid user filter format: '{}'. Expected 'type:id#relation'",
+                    user
+                ),
+            });
+        }
+        let user_parts: Vec<&str> = parts[0].split(':').collect();
+        if user_parts.len() != 2 || user_parts[0].is_empty() || user_parts[1].is_empty() {
+            return Err(StorageError::InvalidFilter {
+                message: format!(
+                    "Invalid user filter format: '{}'. Expected 'type:id#relation'",
+                    user
+                ),
+            });
+        }
+        Ok((
+            user_parts[0].to_string(),
+            user_parts[1].to_string(),
+            Some(parts[1].to_string()),
+        ))
+    } else {
+        let user_parts: Vec<&str> = user.split(':').collect();
+        if user_parts.len() != 2 || user_parts[0].is_empty() || user_parts[1].is_empty() {
+            return Err(StorageError::InvalidFilter {
+                message: format!("Invalid user filter format: '{}'. Expected 'type:id'", user),
+            });
+        }
+        Ok((user_parts[0].to_string(), user_parts[1].to_string(), None))
+    }
 }
 
 /// A stored tuple.
@@ -131,29 +325,53 @@ pub trait DataStore: Send + Sync + 'static {
     }
 
     // Transaction support
+    //
+    // Note: Individual transaction control is NOT currently supported by any implementation.
+    // These methods exist for future extensibility. For atomic operations, use `write_tuples`
+    // which provides atomic behavior for writes and deletes within a single call.
+    //
+    // Callers should check `supports_transactions()` before relying on transaction methods.
 
-    /// Begins a transaction. Returns a transaction handle.
-    /// For stores that don't support transactions, this is a no-op.
+    /// Begins a transaction.
+    ///
+    /// **Note**: Currently returns `Ok(())` as a no-op for all implementations.
+    /// Check `supports_transactions()` to determine if explicit transaction control is available.
+    ///
+    /// For atomic write operations, use `write_tuples` which handles transactions internally.
     async fn begin_transaction(&self) -> StorageResult<()> {
-        // Default: no-op for stores without transaction support
+        // Default: no-op - no implementations currently support explicit transaction control
         Ok(())
     }
 
     /// Commits the current transaction.
-    /// For stores that don't support transactions, this is a no-op.
+    ///
+    /// **Note**: Currently returns `Ok(())` as a no-op for all implementations.
+    /// Check `supports_transactions()` to determine if explicit transaction control is available.
+    ///
+    /// For atomic write operations, use `write_tuples` which commits transactions internally.
     async fn commit_transaction(&self) -> StorageResult<()> {
-        // Default: no-op for stores without transaction support
+        // Default: no-op - no implementations currently support explicit transaction control
         Ok(())
     }
 
     /// Rolls back the current transaction.
-    /// For stores that don't support transactions, this is a no-op.
+    ///
+    /// **Note**: Currently returns `Ok(())` as a no-op for all implementations.
+    /// Check `supports_transactions()` to determine if explicit transaction control is available.
+    ///
+    /// For atomic write operations, use `write_tuples` which rolls back on error internally.
     async fn rollback_transaction(&self) -> StorageResult<()> {
-        // Default: no-op for stores without transaction support
+        // Default: no-op - no implementations currently support explicit transaction control
         Ok(())
     }
 
-    /// Checks if the store supports transactions.
+    /// Checks if the store supports explicit transaction control.
+    ///
+    /// Returns `true` if `begin_transaction`, `commit_transaction`, and `rollback_transaction`
+    /// are functional. Returns `false` if these methods are no-ops.
+    ///
+    /// **Note**: Currently returns `false` for all implementations. For atomic operations,
+    /// use `write_tuples` which provides internal transaction handling.
     fn supports_transactions(&self) -> bool {
         false
     }

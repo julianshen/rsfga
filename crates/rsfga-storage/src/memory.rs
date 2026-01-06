@@ -7,7 +7,8 @@ use dashmap::DashMap;
 
 use crate::error::{StorageError, StorageResult};
 use crate::traits::{
-    DataStore, PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter,
+    parse_user_filter, validate_store_id, validate_store_name, validate_tuple, DataStore,
+    PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter,
 };
 
 /// In-memory implementation of DataStore.
@@ -29,49 +30,15 @@ impl MemoryDataStore {
     pub fn new_shared() -> Arc<Self> {
         Arc::new(Self::new())
     }
-
-    /// Parse user filter string into (user_type, user_id, Option<user_relation>).
-    /// Format: "type:id" or "type:id#relation"
-    fn parse_user_filter(user: &str) -> StorageResult<(String, String, Option<String>)> {
-        if user.contains('#') {
-            let parts: Vec<&str> = user.split('#').collect();
-            if parts.len() != 2 || parts[1].is_empty() {
-                return Err(StorageError::InvalidFilter {
-                    message: format!(
-                        "Invalid user filter format: '{}'. Expected 'type:id#relation'",
-                        user
-                    ),
-                });
-            }
-            let user_parts: Vec<&str> = parts[0].split(':').collect();
-            if user_parts.len() != 2 || user_parts[0].is_empty() || user_parts[1].is_empty() {
-                return Err(StorageError::InvalidFilter {
-                    message: format!(
-                        "Invalid user filter format: '{}'. Expected 'type:id#relation'",
-                        user
-                    ),
-                });
-            }
-            Ok((
-                user_parts[0].to_string(),
-                user_parts[1].to_string(),
-                Some(parts[1].to_string()),
-            ))
-        } else {
-            let user_parts: Vec<&str> = user.split(':').collect();
-            if user_parts.len() != 2 || user_parts[0].is_empty() || user_parts[1].is_empty() {
-                return Err(StorageError::InvalidFilter {
-                    message: format!("Invalid user filter format: '{}'. Expected 'type:id'", user),
-                });
-            }
-            Ok((user_parts[0].to_string(), user_parts[1].to_string(), None))
-        }
-    }
 }
 
 #[async_trait]
 impl DataStore for MemoryDataStore {
     async fn create_store(&self, id: &str, name: &str) -> StorageResult<Store> {
+        // Validate inputs
+        validate_store_id(id)?;
+        validate_store_name(name)?;
+
         // Check if store already exists
         if self.stores.contains_key(id) {
             return Err(StorageError::StoreAlreadyExists {
@@ -152,6 +119,15 @@ impl DataStore for MemoryDataStore {
         writes: Vec<StoredTuple>,
         deletes: Vec<StoredTuple>,
     ) -> StorageResult<()> {
+        // Validate inputs
+        validate_store_id(store_id)?;
+        for tuple in &writes {
+            validate_tuple(tuple)?;
+        }
+        for tuple in &deletes {
+            validate_tuple(tuple)?;
+        }
+
         // Verify store exists
         if !self.stores.contains_key(store_id) {
             return Err(StorageError::StoreNotFound {
@@ -207,7 +183,7 @@ impl DataStore for MemoryDataStore {
 
         // Parse and validate user filter upfront
         let user_filter = if let Some(ref user) = filter.user {
-            Some(Self::parse_user_filter(user)?)
+            Some(parse_user_filter(user)?)
         } else {
             None
         };
@@ -256,13 +232,13 @@ impl DataStore for MemoryDataStore {
 
         // Parse and validate user filter upfront
         let user_filter = if let Some(ref user) = filter.user {
-            Some(Self::parse_user_filter(user)?)
+            Some(parse_user_filter(user)?)
         } else {
             None
         };
 
         // Filter tuples
-        let filtered: Vec<StoredTuple> = self
+        let mut filtered: Vec<StoredTuple> = self
             .tuples
             .get(store_id)
             .map(|tuples| {
@@ -286,6 +262,24 @@ impl DataStore for MemoryDataStore {
                     .collect()
             })
             .unwrap_or_default();
+
+        // Sort for consistent pagination (by object_type, object_id, relation, user_type, user_id)
+        filtered.sort_by(|a, b| {
+            (
+                &a.object_type,
+                &a.object_id,
+                &a.relation,
+                &a.user_type,
+                &a.user_id,
+            )
+                .cmp(&(
+                    &b.object_type,
+                    &b.object_id,
+                    &b.relation,
+                    &b.user_type,
+                    &b.user_id,
+                ))
+        });
 
         let page_size = pagination.page_size.unwrap_or(100) as usize;
         let offset: usize = pagination
