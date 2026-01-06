@@ -292,12 +292,11 @@ async fn test_grpc_error_codes_match_http() -> Result<()> {
         .send()
         .await?;
 
-    // OpenFGA returns 400 for non-existent stores (not 404)
-    // This is a deliberate design choice in OpenFGA - store-related errors are validation errors
+    // OpenFGA returns 404 for non-existent stores (correct REST semantics)
     assert_eq!(
         http_response.status().as_u16(),
-        400,
-        "HTTP should return 400 for non-existent store"
+        404,
+        "HTTP should return 404 for non-existent store"
     );
 
     // Test 3: Validation error (missing required field)
