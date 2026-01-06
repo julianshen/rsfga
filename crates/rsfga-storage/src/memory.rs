@@ -173,6 +173,28 @@ impl DataStore for MemoryDataStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    // Test: InMemoryStore can be created
+    #[tokio::test]
+    async fn test_memory_store_can_be_created() {
+        let store = MemoryDataStore::new();
+        // Verify the store can be used
+        let result = store.list_stores().await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    // Test: InMemoryStore can be created as shared Arc
+    #[tokio::test]
+    async fn test_memory_store_shared() {
+        let store = MemoryDataStore::new_shared();
+        store.create_store("test-id", "Test Store").await.unwrap();
+
+        // Clone Arc and verify state is shared
+        let store2 = Arc::clone(&store);
+        let retrieved = store2.get_store("test-id").await.unwrap();
+        assert_eq!(retrieved.id, "test-id");
+    }
 
     #[tokio::test]
     async fn test_create_and_get_store() {
@@ -194,6 +216,32 @@ mod tests {
         assert!(matches!(result, Err(StorageError::StoreNotFound { .. })));
     }
 
+    // Test: Can write a single tuple
+    #[tokio::test]
+    async fn test_write_single_tuple() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuple = StoredTuple {
+            object_type: "document".to_string(),
+            object_id: "doc1".to_string(),
+            relation: "viewer".to_string(),
+            user_type: "user".to_string(),
+            user_id: "alice".to_string(),
+            user_relation: None,
+        };
+
+        // Use write_tuple (singular) convenience method
+        store.write_tuple("test-store", tuple).await.unwrap();
+
+        let tuples = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(tuples.len(), 1);
+    }
+
+    // Test: Can read back written tuple
     #[tokio::test]
     async fn test_write_and_read_tuple() {
         let store = MemoryDataStore::new();
@@ -221,6 +269,414 @@ mod tests {
         let tuples = store.read_tuples("test-store", &filter).await.unwrap();
         assert_eq!(tuples.len(), 1);
         assert_eq!(tuples[0], tuple);
+    }
+
+    // Test: Read returns empty vec when no tuples match
+    #[tokio::test]
+    async fn test_read_returns_empty_when_no_match() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuple = StoredTuple {
+            object_type: "document".to_string(),
+            object_id: "doc1".to_string(),
+            relation: "viewer".to_string(),
+            user_type: "user".to_string(),
+            user_id: "alice".to_string(),
+            user_relation: None,
+        };
+
+        store
+            .write_tuples("test-store", vec![tuple], vec![])
+            .await
+            .unwrap();
+
+        // Search for non-existent object type
+        let filter = TupleFilter {
+            object_type: Some("folder".to_string()),
+            ..Default::default()
+        };
+
+        let tuples = store.read_tuples("test-store", &filter).await.unwrap();
+        assert!(
+            tuples.is_empty(),
+            "Expected empty result for non-matching filter"
+        );
+    }
+
+    // Test: Can write multiple tuples
+    #[tokio::test]
+    async fn test_write_multiple_tuples() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuples = vec![
+            StoredTuple {
+                object_type: "document".to_string(),
+                object_id: "doc1".to_string(),
+                relation: "viewer".to_string(),
+                user_type: "user".to_string(),
+                user_id: "alice".to_string(),
+                user_relation: None,
+            },
+            StoredTuple {
+                object_type: "document".to_string(),
+                object_id: "doc2".to_string(),
+                relation: "viewer".to_string(),
+                user_type: "user".to_string(),
+                user_id: "bob".to_string(),
+                user_relation: None,
+            },
+            StoredTuple {
+                object_type: "folder".to_string(),
+                object_id: "folder1".to_string(),
+                relation: "owner".to_string(),
+                user_type: "user".to_string(),
+                user_id: "charlie".to_string(),
+                user_relation: None,
+            },
+        ];
+
+        store
+            .write_tuples("test-store", tuples.clone(), vec![])
+            .await
+            .unwrap();
+
+        let result = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 3);
+    }
+
+    // Test: Can filter tuples by user
+    #[tokio::test]
+    async fn test_filter_tuples_by_user() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuples = vec![
+            StoredTuple {
+                object_type: "document".to_string(),
+                object_id: "doc1".to_string(),
+                relation: "viewer".to_string(),
+                user_type: "user".to_string(),
+                user_id: "alice".to_string(),
+                user_relation: None,
+            },
+            StoredTuple {
+                object_type: "document".to_string(),
+                object_id: "doc2".to_string(),
+                relation: "viewer".to_string(),
+                user_type: "user".to_string(),
+                user_id: "bob".to_string(),
+                user_relation: None,
+            },
+            StoredTuple {
+                object_type: "document".to_string(),
+                object_id: "doc3".to_string(),
+                relation: "editor".to_string(),
+                user_type: "user".to_string(),
+                user_id: "alice".to_string(),
+                user_relation: None,
+            },
+        ];
+
+        store
+            .write_tuples("test-store", tuples, vec![])
+            .await
+            .unwrap();
+
+        let filter = TupleFilter {
+            user: Some("user:alice".to_string()),
+            ..Default::default()
+        };
+
+        let result = store.read_tuples("test-store", &filter).await.unwrap();
+        assert_eq!(result.len(), 2, "Expected 2 tuples for user:alice");
+        assert!(result.iter().all(|t| t.user_id == "alice"));
+    }
+
+    // Test: Can filter tuples by object
+    #[tokio::test]
+    async fn test_filter_tuples_by_object() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuples = vec![
+            StoredTuple {
+                object_type: "document".to_string(),
+                object_id: "doc1".to_string(),
+                relation: "viewer".to_string(),
+                user_type: "user".to_string(),
+                user_id: "alice".to_string(),
+                user_relation: None,
+            },
+            StoredTuple {
+                object_type: "document".to_string(),
+                object_id: "doc1".to_string(),
+                relation: "editor".to_string(),
+                user_type: "user".to_string(),
+                user_id: "bob".to_string(),
+                user_relation: None,
+            },
+            StoredTuple {
+                object_type: "document".to_string(),
+                object_id: "doc2".to_string(),
+                relation: "viewer".to_string(),
+                user_type: "user".to_string(),
+                user_id: "charlie".to_string(),
+                user_relation: None,
+            },
+        ];
+
+        store
+            .write_tuples("test-store", tuples, vec![])
+            .await
+            .unwrap();
+
+        let filter = TupleFilter {
+            object_type: Some("document".to_string()),
+            object_id: Some("doc1".to_string()),
+            ..Default::default()
+        };
+
+        let result = store.read_tuples("test-store", &filter).await.unwrap();
+        assert_eq!(result.len(), 2, "Expected 2 tuples for document:doc1");
+        assert!(result.iter().all(|t| t.object_id == "doc1"));
+    }
+
+    // Test: Can filter tuples by relation
+    #[tokio::test]
+    async fn test_filter_tuples_by_relation() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuples = vec![
+            StoredTuple {
+                object_type: "document".to_string(),
+                object_id: "doc1".to_string(),
+                relation: "viewer".to_string(),
+                user_type: "user".to_string(),
+                user_id: "alice".to_string(),
+                user_relation: None,
+            },
+            StoredTuple {
+                object_type: "document".to_string(),
+                object_id: "doc1".to_string(),
+                relation: "editor".to_string(),
+                user_type: "user".to_string(),
+                user_id: "bob".to_string(),
+                user_relation: None,
+            },
+            StoredTuple {
+                object_type: "document".to_string(),
+                object_id: "doc2".to_string(),
+                relation: "viewer".to_string(),
+                user_type: "user".to_string(),
+                user_id: "charlie".to_string(),
+                user_relation: None,
+            },
+        ];
+
+        store
+            .write_tuples("test-store", tuples, vec![])
+            .await
+            .unwrap();
+
+        let filter = TupleFilter {
+            relation: Some("viewer".to_string()),
+            ..Default::default()
+        };
+
+        let result = store.read_tuples("test-store", &filter).await.unwrap();
+        assert_eq!(result.len(), 2, "Expected 2 tuples with viewer relation");
+        assert!(result.iter().all(|t| t.relation == "viewer"));
+    }
+
+    // Test: Can delete tuple
+    #[tokio::test]
+    async fn test_delete_tuple() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuple = StoredTuple {
+            object_type: "document".to_string(),
+            object_id: "doc1".to_string(),
+            relation: "viewer".to_string(),
+            user_type: "user".to_string(),
+            user_id: "alice".to_string(),
+            user_relation: None,
+        };
+
+        store
+            .write_tuples("test-store", vec![tuple.clone()], vec![])
+            .await
+            .unwrap();
+
+        // Verify tuple exists
+        let result = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+
+        // Delete tuple using delete_tuple convenience method
+        store.delete_tuple("test-store", tuple).await.unwrap();
+
+        // Verify tuple is gone
+        let result = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert!(result.is_empty(), "Expected tuple to be deleted");
+    }
+
+    // Test: Delete is idempotent (deleting non-existent tuple is ok)
+    #[tokio::test]
+    async fn test_delete_is_idempotent() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuple = StoredTuple {
+            object_type: "document".to_string(),
+            object_id: "doc1".to_string(),
+            relation: "viewer".to_string(),
+            user_type: "user".to_string(),
+            user_id: "alice".to_string(),
+            user_relation: None,
+        };
+
+        // Delete a tuple that doesn't exist - should succeed
+        let result = store.delete_tuple("test-store", tuple.clone()).await;
+        assert!(result.is_ok(), "Deleting non-existent tuple should succeed");
+
+        // Write and delete the tuple
+        store
+            .write_tuple("test-store", tuple.clone())
+            .await
+            .unwrap();
+        store
+            .delete_tuple("test-store", tuple.clone())
+            .await
+            .unwrap();
+
+        // Delete again - should still succeed
+        let result = store.delete_tuple("test-store", tuple).await;
+        assert!(
+            result.is_ok(),
+            "Deleting already-deleted tuple should succeed"
+        );
+    }
+
+    // Test: Concurrent writes don't lose data
+    #[tokio::test]
+    async fn test_concurrent_writes_dont_lose_data() {
+        let store = MemoryDataStore::new_shared();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let num_tasks = 100;
+        let mut handles = Vec::with_capacity(num_tasks);
+
+        for i in 0..num_tasks {
+            let store = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                let tuple = StoredTuple {
+                    object_type: "document".to_string(),
+                    object_id: format!("doc{}", i),
+                    relation: "viewer".to_string(),
+                    user_type: "user".to_string(),
+                    user_id: format!("user{}", i),
+                    user_relation: None,
+                };
+                store.write_tuple("test-store", tuple).await.unwrap();
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let result = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            result.len(),
+            num_tasks,
+            "All concurrent writes should be preserved"
+        );
+    }
+
+    // Test: Concurrent reads while writing return consistent data
+    #[tokio::test]
+    async fn test_concurrent_reads_while_writing() {
+        let store = MemoryDataStore::new_shared();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Pre-populate with some data
+        for i in 0..50 {
+            let tuple = StoredTuple {
+                object_type: "document".to_string(),
+                object_id: format!("doc{}", i),
+                relation: "viewer".to_string(),
+                user_type: "user".to_string(),
+                user_id: format!("user{}", i),
+                user_relation: None,
+            };
+            store.write_tuple("test-store", tuple).await.unwrap();
+        }
+
+        // Start concurrent reads and writes
+        let mut handles = Vec::new();
+
+        // Writers
+        for i in 50..100 {
+            let store = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                let tuple = StoredTuple {
+                    object_type: "document".to_string(),
+                    object_id: format!("doc{}", i),
+                    relation: "viewer".to_string(),
+                    user_type: "user".to_string(),
+                    user_id: format!("user{}", i),
+                    user_relation: None,
+                };
+                store.write_tuple("test-store", tuple).await.unwrap();
+            }));
+        }
+
+        // Readers - should see consistent state (no partial writes)
+        for _ in 0..50 {
+            let store = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                let result = store
+                    .read_tuples("test-store", &TupleFilter::default())
+                    .await
+                    .unwrap();
+                // Should see at least the initial 50 tuples
+                assert!(
+                    result.len() >= 50,
+                    "Should see at least initial tuples, got {}",
+                    result.len()
+                );
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Final state should have all 100 tuples
+        let result = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            result.len(),
+            100,
+            "Should have all tuples after concurrent operations"
+        );
     }
 
     #[tokio::test]
@@ -277,6 +733,106 @@ mod tests {
             tuples.len(),
             2,
             "Both tuples should be stored as they differ by user_relation"
+        );
+    }
+
+    // Test: Delete store removes all tuples
+    #[tokio::test]
+    async fn test_delete_store_removes_tuples() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuple = StoredTuple {
+            object_type: "document".to_string(),
+            object_id: "doc1".to_string(),
+            relation: "viewer".to_string(),
+            user_type: "user".to_string(),
+            user_id: "alice".to_string(),
+            user_relation: None,
+        };
+
+        store.write_tuple("test-store", tuple).await.unwrap();
+
+        // Delete the store
+        store.delete_store("test-store").await.unwrap();
+
+        // Store should be gone
+        let result = store.get_store("test-store").await;
+        assert!(matches!(result, Err(StorageError::StoreNotFound { .. })));
+
+        // Reading tuples from deleted store should fail
+        let result = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await;
+        assert!(matches!(result, Err(StorageError::StoreNotFound { .. })));
+    }
+
+    // Test: List stores returns all stores
+    #[tokio::test]
+    async fn test_list_stores() {
+        let store = MemoryDataStore::new();
+        store.create_store("store1", "Store 1").await.unwrap();
+        store.create_store("store2", "Store 2").await.unwrap();
+        store.create_store("store3", "Store 3").await.unwrap();
+
+        let stores = store.list_stores().await.unwrap();
+        assert_eq!(stores.len(), 3);
+
+        let ids: Vec<_> = stores.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"store1"));
+        assert!(ids.contains(&"store2"));
+        assert!(ids.contains(&"store3"));
+    }
+
+    // Test: Writing to non-existent store fails
+    #[tokio::test]
+    async fn test_write_to_nonexistent_store_fails() {
+        let store = MemoryDataStore::new();
+
+        let tuple = StoredTuple {
+            object_type: "document".to_string(),
+            object_id: "doc1".to_string(),
+            relation: "viewer".to_string(),
+            user_type: "user".to_string(),
+            user_id: "alice".to_string(),
+            user_relation: None,
+        };
+
+        let result = store.write_tuple("nonexistent", tuple).await;
+        assert!(matches!(result, Err(StorageError::StoreNotFound { .. })));
+    }
+
+    // Test: Write is idempotent (writing same tuple twice succeeds)
+    #[tokio::test]
+    async fn test_write_is_idempotent() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuple = StoredTuple {
+            object_type: "document".to_string(),
+            object_id: "doc1".to_string(),
+            relation: "viewer".to_string(),
+            user_type: "user".to_string(),
+            user_id: "alice".to_string(),
+            user_relation: None,
+        };
+
+        // Write the same tuple twice
+        store
+            .write_tuple("test-store", tuple.clone())
+            .await
+            .unwrap();
+        store.write_tuple("test-store", tuple).await.unwrap();
+
+        // Should only have one tuple
+        let result = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            result.len(),
+            1,
+            "Writing same tuple twice should not create duplicates"
         );
     }
 }

@@ -19,12 +19,11 @@
 
 pub mod error;
 pub mod memory;
+pub mod postgres;
 pub mod traits;
-
-// PostgreSQL implementation will be added in Milestone 1.3
-// pub mod postgres;
 
 // Re-export commonly used types
 pub use error::{StorageError, StorageResult};
 pub use memory::MemoryDataStore;
-pub use traits::DataStore;
+pub use postgres::{PostgresConfig, PostgresDataStore};
+pub use traits::{DataStore, PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter};
