@@ -26,4 +26,5 @@ pub mod resolver;
 pub mod validation;
 
 // Re-export commonly used types at the crate root
+pub use cache::{CacheKey, CheckCache, CheckCacheConfig};
 pub use error::{DomainError, DomainResult};
