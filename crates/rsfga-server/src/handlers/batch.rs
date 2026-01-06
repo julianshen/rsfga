@@ -9,6 +9,16 @@
 //! Note: Cache integration (stage 3) is handled at the API layer where
 //! the CheckCache is consulted before invoking the batch handler.
 //!
+//! # API Format Adaptation
+//!
+//! This module uses a simplified internal format for the domain layer.
+//! The HTTP API layer (`rsfga-api`) adapts to OpenFGA's wire format:
+//!
+//! - **Request**: OpenFGA uses `correlation_id` and nested `tuple_key` objects.
+//!   The API layer extracts these and maps to our flat `BatchCheckItem`.
+//! - **Response**: OpenFGA returns `{ "result": { "<correlation_id>": {...} } }`.
+//!   The API layer maps our `Vec<BatchCheckItemResult>` back using correlation IDs.
+//!
 //! # Performance Target (UNVALIDATED - M1.8)
 //!
 //! - Batch throughput: >500 checks/s
@@ -23,8 +33,9 @@ use rsfga_domain::cache::CheckCache;
 use rsfga_domain::resolver::{CheckRequest, GraphResolver, ModelReader, TupleReader};
 use tokio::sync::broadcast;
 
-/// Maximum batch size to prevent resource exhaustion.
-const MAX_BATCH_SIZE: usize = 1000;
+/// Maximum batch size per OpenFGA specification.
+/// OpenFGA enforces a limit of 50 items per batch-check request.
+const MAX_BATCH_SIZE: usize = 50;
 
 /// Key for identifying unique checks (used for deduplication).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -647,10 +658,10 @@ mod tests {
     }
 
     #[test]
-    fn test_accepts_batch_with_100_plus_checks() {
-        // Arrange
+    fn test_accepts_batch_near_max_size() {
+        // Arrange - test with batch size just under the limit
         let handler = create_test_handler();
-        let checks: Vec<BatchCheckItem> = (0..150)
+        let checks: Vec<BatchCheckItem> = (0..45) // Below MAX_BATCH_SIZE (50)
             .map(|i| BatchCheckItem {
                 user: format!("user:user{}", i),
                 relation: "viewer".to_string(),
@@ -664,14 +675,14 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
-        assert_eq!(request.checks.len(), 150);
+        assert_eq!(request.checks.len(), 45);
     }
 
     #[test]
     fn test_rejects_batch_exceeding_max_size() {
-        // Arrange
+        // Arrange - OpenFGA enforces max 50 items per batch
         let handler = create_test_handler();
-        let checks: Vec<BatchCheckItem> = (0..1001) // MAX_BATCH_SIZE + 1
+        let checks: Vec<BatchCheckItem> = (0..51) // MAX_BATCH_SIZE + 1
             .map(|i| BatchCheckItem {
                 user: format!("user:user{}", i),
                 relation: "viewer".to_string(),
@@ -687,7 +698,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             BatchCheckError::BatchTooLarge { size, max } => {
-                assert_eq!(size, 1001);
+                assert_eq!(size, 51);
                 assert_eq!(max, MAX_BATCH_SIZE);
             }
             _ => panic!("Expected BatchTooLarge error"),
@@ -1456,8 +1467,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_respects_concurrency_limits() {
-        // Arrange - this test verifies the handler doesn't spawn unlimited concurrent tasks
+    async fn test_parallel_execution_uses_all_available_concurrency() {
+        // This test verifies that the handler executes checks in parallel.
+        // Note: Explicit concurrency limits (e.g., buffer_unordered) are not yet
+        // implemented. When added, this test should verify the actual limit.
+        // For now, we verify parallelism is happening (max_concurrent > 1).
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::Duration;
 
@@ -1511,8 +1525,8 @@ mod tests {
         let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
         let handler = BatchCheckHandler::new(resolver, cache);
 
-        // Create batch with 100 unique checks
-        let checks: Vec<BatchCheckItem> = (0..100)
+        // Create batch with MAX_BATCH_SIZE unique checks
+        let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
             .map(|i| BatchCheckItem {
                 user: format!("user:user{}", i),
                 relation: "viewer".to_string(),
@@ -1524,16 +1538,15 @@ mod tests {
         // Act
         let _ = handler.check(request).await.unwrap();
 
-        // Assert - max concurrent should be bounded (not 100 simultaneous)
-        // A reasonable limit might be something like 32 or based on config
-        // For now, we just ensure it's not unbounded
+        // Assert - verify parallel execution is happening
         let max = max_concurrent.load(Ordering::SeqCst);
         assert!(
-            max <= 100,
-            "Max concurrent checks should be bounded, was {}",
+            max > 1,
+            "Checks should execute in parallel, max concurrent was {}",
             max
         );
-        // Note: If we add explicit concurrency limits, this test should verify them
+        // TODO: When explicit concurrency limits are added (e.g., MAX_CONCURRENT = 32),
+        // add assertion: assert!(max <= MAX_CONCURRENT, "Should respect limit");
     }
 
     #[tokio::test]
@@ -1643,7 +1656,7 @@ mod tests {
     // ============================================================
 
     #[tokio::test]
-    async fn test_batch_of_100_identical_checks_executes_approximately_1_check() {
+    async fn test_batch_of_max_identical_checks_executes_only_once() {
         // Arrange
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1693,8 +1706,8 @@ mod tests {
         let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
         let handler = BatchCheckHandler::new(resolver, cache);
 
-        // Create batch with 100 identical checks
-        let checks: Vec<BatchCheckItem> = (0..100)
+        // Create batch with MAX_BATCH_SIZE identical checks
+        let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
             .map(|_| BatchCheckItem {
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
@@ -1707,15 +1720,15 @@ mod tests {
         let response = handler.check(request).await.unwrap();
 
         // Assert
-        assert_eq!(response.results.len(), 100);
+        assert_eq!(response.results.len(), MAX_BATCH_SIZE);
         assert!(response.results.iter().all(|r| r.allowed));
 
         // With intra-batch deduplication, only 1 unique check should execute
         let actual_calls = call_count.load(Ordering::SeqCst);
         assert_eq!(
             actual_calls, 1,
-            "100 identical checks should execute only 1 check, got {}",
-            actual_calls
+            "{} identical checks should execute only 1 check, got {}",
+            MAX_BATCH_SIZE, actual_calls
         );
     }
 
@@ -1765,12 +1778,13 @@ mod tests {
         let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
         let handler = BatchCheckHandler::new(resolver, cache);
 
-        // Create batch with 500 checks (mix of duplicates)
-        let checks: Vec<BatchCheckItem> = (0..500)
+        // Create batch with MAX_BATCH_SIZE checks (mix of duplicates)
+        // OpenFGA limits batches to 50 items, so we test at that limit
+        let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
             .map(|i| BatchCheckItem {
-                user: format!("user:user{}", i % 50), // 50 unique users
+                user: format!("user:user{}", i % 10), // 10 unique users
                 relation: "viewer".to_string(),
-                object: format!("document:doc{}", i % 100), // 100 unique docs
+                object: format!("document:doc{}", i % 25), // 25 unique docs
             })
             .collect();
         let request = BatchCheckRequest::new("store1", checks);
@@ -1781,9 +1795,9 @@ mod tests {
         let elapsed = start.elapsed();
 
         // Assert
-        assert_eq!(response.results.len(), 500);
+        assert_eq!(response.results.len(), MAX_BATCH_SIZE);
 
-        let checks_per_second = 500.0 / elapsed.as_secs_f64();
+        let checks_per_second = MAX_BATCH_SIZE as f64 / elapsed.as_secs_f64();
 
         // Target: >500 checks/s
         // Note: This is a rough test; actual performance depends on hardware
@@ -1798,7 +1812,7 @@ mod tests {
         // Log actual throughput for visibility (won't cause test failure)
         println!(
             "Batch throughput: {:.0} checks/s ({} checks in {:?})",
-            checks_per_second, 500, elapsed
+            checks_per_second, MAX_BATCH_SIZE, elapsed
         );
     }
 
