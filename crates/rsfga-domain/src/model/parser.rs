@@ -17,9 +17,9 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{char, multispace1, space0, space1},
-    combinator::{all_consuming, map, opt, recognize, value},
+    combinator::{all_consuming, map, opt, recognize, success, value},
     error::{context, ContextError, ParseError},
-    multi::{many0, separated_list1},
+    multi::{many0, many1, separated_list1},
     sequence::{delimited, pair, preceded, terminated, tuple},
     IResult,
 };
@@ -293,31 +293,32 @@ enum ContinuationResult {
 
 /// Parse additional or/and operands after a type constraint (respects precedence).
 /// Returns the operator type along with the operands to ensure correct semantics.
+///
+/// Uses idiomatic nom combinators: `alt` tries each parser in order, `many1` requires
+/// at least one match (failing allows `alt` to try next), `success` provides fallback.
 fn parse_userset_continuation<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
     input: &'a str,
 ) -> IResult<&'a str, ContinuationResult, E> {
-    // Try parsing "or" operands first - each operand is at intersection level for proper precedence
-    let (rest, or_ops) = many0(preceded(
-        tuple((space0, tag("or"), space1)),
-        parse_intersection_level,
-    ))(input)?;
-
-    if !or_ops.is_empty() {
-        return Ok((rest, ContinuationResult::Or(or_ops)));
-    }
-
-    // Try parsing "and" operands
-    let (rest, and_ops) = many0(preceded(
-        tuple((space0, tag("and"), space1)),
-        parse_exclusion_or_base,
-    ))(input)?;
-
-    if !and_ops.is_empty() {
-        return Ok((rest, ContinuationResult::And(and_ops)));
-    }
-
-    // No continuations found
-    Ok((input, ContinuationResult::None))
+    alt((
+        // Try "or" operands first - each operand is at intersection level for proper precedence
+        map(
+            many1(preceded(
+                tuple((space0, tag("or"), space1)),
+                parse_intersection_level,
+            )),
+            ContinuationResult::Or,
+        ),
+        // Try "and" operands - each operand is at exclusion/base level
+        map(
+            many1(preceded(
+                tuple((space0, tag("and"), space1)),
+                parse_exclusion_or_base,
+            )),
+            ContinuationResult::And,
+        ),
+        // No continuations found
+        success(ContinuationResult::None),
+    ))(input)
 }
 
 // ============ Relation Definition Parser ============
@@ -352,16 +353,8 @@ fn parse_relation_definition<'a, E: ParseError<&'a str> + ContextError<&'a str>>
                 Option<Userset>,
                 ContinuationResult,
             )| {
-                let base_userset = if let Some(explicit_userset) = userset {
-                    // Explicit userset provided (e.g., "this" or "viewer from parent")
-                    explicit_userset
-                } else if type_constraint.is_some() {
-                    // Type constraint implies This
-                    Userset::This
-                } else {
-                    // No type constraint or userset, defaults to This
-                    Userset::This
-                };
+                // Base userset: explicit if provided, otherwise This (type constraint or default)
+                let base_userset = userset.unwrap_or(Userset::This);
 
                 // Combine base userset with continuations using the correct operator
                 let rewrite = match continuation {
