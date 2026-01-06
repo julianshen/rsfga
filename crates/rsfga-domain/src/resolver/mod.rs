@@ -653,6 +653,11 @@ where
     }
 
     /// Resolves an exclusion (base must be true AND subtract must be false).
+    ///
+    /// Error handling (ADR-003):
+    /// - If base is false → return false (don't need subtract)
+    /// - If subtract is true → return false (don't need base)
+    /// - Cycle errors only propagate when the errored branch's result is needed
     async fn resolve_exclusion(
         &self,
         request: CheckRequest,
@@ -677,12 +682,38 @@ where
         )
         .await;
 
-        let base_allowed = base_result?.allowed;
-        let subtract_allowed = subtract_result?.allowed;
+        // Handle results with proper error semantics
+        // Exclusion: base AND NOT subtract
+        match (base_result, subtract_result) {
+            // Both succeeded - normal case
+            (Ok(base), Ok(subtract)) => Ok(CheckResult {
+                allowed: base.allowed && !subtract.allowed,
+            }),
 
-        Ok(CheckResult {
-            allowed: base_allowed && !subtract_allowed,
-        })
+            // Base is false - result is false regardless of subtract
+            (Ok(CheckResult { allowed: false }), _) => Ok(CheckResult { allowed: false }),
+
+            // Subtract is true - result is false regardless of base
+            (_, Ok(CheckResult { allowed: true })) => Ok(CheckResult { allowed: false }),
+
+            // Base is true, subtract errored - we need subtract, propagate error
+            (Ok(CheckResult { allowed: true }), Err(e)) => Err(e),
+
+            // Base errored, subtract is false - we need base, propagate error
+            (Err(e), Ok(CheckResult { allowed: false })) => Err(e),
+
+            // Both errored - propagate cycle error if present, otherwise base error
+            (Err(base_err), Err(subtract_err)) => {
+                // Prefer cycle errors as they're more specific
+                if matches!(base_err, DomainError::CycleDetected { .. }) {
+                    Err(base_err)
+                } else if matches!(subtract_err, DomainError::CycleDetected { .. }) {
+                    Err(subtract_err)
+                } else {
+                    Err(base_err)
+                }
+            }
+        }
     }
 
     /// Checks if a user matches a target user string.
@@ -2128,6 +2159,324 @@ mod tests {
         assert!(
             !result.allowed,
             "Exclusion: viewer but blocked should be denied"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exclusion_returns_false_when_base_false_despite_subtract_cycle() {
+        // Test that exclusion returns false (not error) when base is false,
+        // even if subtract would cycle. Since base is false, we don't need subtract.
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        // can_view = viewer but not blocked
+        // blocked will have a cycle (blocked -> blocked_cyclic -> blocked)
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![
+                        RelationDefinition {
+                            name: "viewer".to_string(),
+                            type_constraints: vec!["user".to_string()],
+                            rewrite: Userset::This,
+                        },
+                        RelationDefinition {
+                            name: "blocked".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "blocked_cyclic".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "blocked_cyclic".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "blocked".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "can_view".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::Exclusion {
+                                base: Box::new(Userset::ComputedUserset {
+                                    relation: "viewer".to_string(),
+                                }),
+                                subtract: Box::new(Userset::ComputedUserset {
+                                    relation: "blocked".to_string(),
+                                }),
+                            },
+                        },
+                    ],
+                },
+            )
+            .await;
+
+        // Alice is NOT a viewer (no tuple), so base=false
+        // subtract would cycle, but we don't need it
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "can_view".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        // Should return false (base is false), not CycleDetected error
+        let result = resolver.check(&request).await;
+        assert!(
+            result.is_ok(),
+            "Exclusion with base=false should not error despite cyclic subtract: {:?}",
+            result
+        );
+        assert!(
+            !result.unwrap().allowed,
+            "Exclusion with base=false should return false"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exclusion_returns_false_when_subtract_true_despite_base_cycle() {
+        // Test that exclusion returns false (not error) when subtract is true,
+        // even if base would cycle. Since subtract is true, result is false regardless of base.
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        // can_view = viewer but not blocked
+        // viewer will have a cycle (viewer -> viewer_cyclic -> viewer)
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![
+                        RelationDefinition {
+                            name: "viewer".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "viewer_cyclic".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "viewer_cyclic".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "viewer".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "blocked".to_string(),
+                            type_constraints: vec!["user".to_string()],
+                            rewrite: Userset::This,
+                        },
+                        RelationDefinition {
+                            name: "can_view".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::Exclusion {
+                                base: Box::new(Userset::ComputedUserset {
+                                    relation: "viewer".to_string(),
+                                }),
+                                subtract: Box::new(Userset::ComputedUserset {
+                                    relation: "blocked".to_string(),
+                                }),
+                            },
+                        },
+                    ],
+                },
+            )
+            .await;
+
+        // Alice IS blocked (subtract=true), viewer would cycle but we don't need it
+        tuple_reader
+            .add_tuple(
+                "store1", "document", "doc1", "blocked", "user", "alice", None,
+            )
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "can_view".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        // Should return false (subtract is true), not CycleDetected error
+        let result = resolver.check(&request).await;
+        assert!(
+            result.is_ok(),
+            "Exclusion with subtract=true should not error despite cyclic base: {:?}",
+            result
+        );
+        assert!(
+            !result.unwrap().allowed,
+            "Exclusion with subtract=true should return false"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exclusion_returns_cycle_error_when_both_branches_cycle() {
+        // Test that exclusion returns CycleDetected when BOTH branches cycle
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        // Both viewer and blocked have cycles
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![
+                        RelationDefinition {
+                            name: "viewer".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "viewer_cyclic".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "viewer_cyclic".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "viewer".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "blocked".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "blocked_cyclic".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "blocked_cyclic".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "blocked".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "can_view".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::Exclusion {
+                                base: Box::new(Userset::ComputedUserset {
+                                    relation: "viewer".to_string(),
+                                }),
+                                subtract: Box::new(Userset::ComputedUserset {
+                                    relation: "blocked".to_string(),
+                                }),
+                            },
+                        },
+                    ],
+                },
+            )
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "can_view".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        // Should return CycleDetected error since both branches cycle
+        let result = resolver.check(&request).await;
+        assert!(
+            matches!(result, Err(DomainError::CycleDetected { .. })),
+            "Exclusion with both cyclic branches should return CycleDetected, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exclusion_propagates_error_when_base_true_and_subtract_errors() {
+        // Test that when base is true but subtract errors, the error is propagated
+        // (because we need subtract's result to compute the final answer)
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![
+                        RelationDefinition {
+                            name: "viewer".to_string(),
+                            type_constraints: vec!["user".to_string()],
+                            rewrite: Userset::This,
+                        },
+                        RelationDefinition {
+                            name: "blocked".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "blocked_cyclic".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "blocked_cyclic".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "blocked".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "can_view".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::Exclusion {
+                                base: Box::new(Userset::ComputedUserset {
+                                    relation: "viewer".to_string(),
+                                }),
+                                subtract: Box::new(Userset::ComputedUserset {
+                                    relation: "blocked".to_string(),
+                                }),
+                            },
+                        },
+                    ],
+                },
+            )
+            .await;
+
+        // Alice IS a viewer (base=true), but blocked cycles
+        tuple_reader
+            .add_tuple(
+                "store1", "document", "doc1", "viewer", "user", "alice", None,
+            )
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "can_view".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        // Should return CycleDetected error since we need subtract but it cycles
+        let result = resolver.check(&request).await;
+        assert!(
+            matches!(result, Err(DomainError::CycleDetected { .. })),
+            "Exclusion with base=true and cyclic subtract should return error, got {:?}",
+            result
         );
     }
 
