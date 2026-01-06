@@ -279,24 +279,45 @@ fn parse_userset<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
     parse_union_level(input)
 }
 
-/// Parse additional or/and operands after a type constraint (respects precedence)
+/// Represents the result of parsing operator continuations.
+/// Tracks both the operands AND the operator type used.
+#[derive(Debug, Clone)]
+enum ContinuationResult {
+    /// No continuation found
+    None,
+    /// "or" operator with operands (union semantics)
+    Or(Vec<Userset>),
+    /// "and" operator with operands (intersection semantics)
+    And(Vec<Userset>),
+}
+
+/// Parse additional or/and operands after a type constraint (respects precedence).
+/// Returns the operator type along with the operands to ensure correct semantics.
 fn parse_userset_continuation<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
     input: &'a str,
-) -> IResult<&'a str, Vec<Userset>, E> {
-    // Parse "or" operands - each operand is at intersection level for proper precedence
-    let or_operands = many0(preceded(
+) -> IResult<&'a str, ContinuationResult, E> {
+    // Try parsing "or" operands first - each operand is at intersection level for proper precedence
+    let (rest, or_ops) = many0(preceded(
         tuple((space0, tag("or"), space1)),
         parse_intersection_level,
-    ));
+    ))(input)?;
 
-    // Parse "and" operands
-    let and_operands = many0(preceded(
+    if !or_ops.is_empty() {
+        return Ok((rest, ContinuationResult::Or(or_ops)));
+    }
+
+    // Try parsing "and" operands
+    let (rest, and_ops) = many0(preceded(
         tuple((space0, tag("and"), space1)),
         parse_exclusion_or_base,
-    ));
+    ))(input)?;
 
-    // Try or first, then and
-    alt((or_operands, and_operands))(input)
+    if !and_ops.is_empty() {
+        return Ok((rest, ContinuationResult::And(and_ops)));
+    }
+
+    // No continuations found
+    Ok((input, ContinuationResult::None))
 }
 
 // ============ Relation Definition Parser ============
@@ -320,7 +341,7 @@ fn parse_relation_definition<'a, E: ParseError<&'a str> + ContextError<&'a str>>
                 // Also check for continuations after type constraint (e.g., "[user] or owner")
                 parse_userset_continuation,
             )),
-            |(_, _, _, name, _, _, type_constraint, userset, continuations): (
+            |(_, _, _, name, _, _, type_constraint, userset, continuation): (
                 _,
                 _,
                 _,
@@ -329,31 +350,34 @@ fn parse_relation_definition<'a, E: ParseError<&'a str> + ContextError<&'a str>>
                 _,
                 Option<Vec<String>>,
                 Option<Userset>,
-                Vec<Userset>,
+                ContinuationResult,
             )| {
-                let rewrite = if let Some(explicit_userset) = userset {
+                let base_userset = if let Some(explicit_userset) = userset {
                     // Explicit userset provided (e.g., "this" or "viewer from parent")
-                    if continuations.is_empty() {
-                        explicit_userset
-                    } else {
-                        // Combine with continuations
-                        let mut children = vec![explicit_userset];
-                        children.extend(continuations);
-                        Userset::Union { children }
-                    }
+                    explicit_userset
                 } else if type_constraint.is_some() {
                     // Type constraint implies This
-                    if continuations.is_empty() {
-                        Userset::This
-                    } else {
-                        // [user] or owner -> Union(This, ComputedUserset(owner))
-                        let mut children = vec![Userset::This];
-                        children.extend(continuations);
-                        Userset::Union { children }
-                    }
+                    Userset::This
                 } else {
                     // No type constraint or userset, defaults to This
                     Userset::This
+                };
+
+                // Combine base userset with continuations using the correct operator
+                let rewrite = match continuation {
+                    ContinuationResult::None => base_userset,
+                    ContinuationResult::Or(operands) => {
+                        // [user] or owner -> Union(This, ComputedUserset(owner))
+                        let mut children = vec![base_userset];
+                        children.extend(operands);
+                        Userset::Union { children }
+                    }
+                    ContinuationResult::And(operands) => {
+                        // [user] and admin -> Intersection(This, ComputedUserset(admin))
+                        let mut children = vec![base_userset];
+                        children.extend(operands);
+                        Userset::Intersection { children }
+                    }
                 };
 
                 RelationDefinition {
@@ -707,6 +731,98 @@ type document
                 }
             }
             _ => panic!("Expected Union, got {:?}", access.rewrite),
+        }
+    }
+
+    #[test]
+    fn test_parser_type_constraint_with_and_produces_intersection() {
+        // This is the critical test for issues #21/#22:
+        // "[user] and admin" should produce Intersection(This, ComputedUserset(admin))
+        // NOT Union(This, ComputedUserset(admin)) which was the bug
+        let input = r#"
+type user
+
+type document
+  relations
+    define admin: [user]
+    define restricted_viewer: [user] and admin
+"#;
+        let result = parse(input);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let model = result.unwrap();
+        let restricted_viewer = &model.type_definitions[1].relations[1];
+        assert_eq!(restricted_viewer.name, "restricted_viewer");
+
+        // Must be Intersection, not Union!
+        match &restricted_viewer.rewrite {
+            Userset::Intersection { children } => {
+                assert_eq!(children.len(), 2, "Expected 2 children in intersection");
+                // First child should be This (from [user])
+                match &children[0] {
+                    Userset::This => {}
+                    _ => panic!("Expected first child to be This, got {:?}", children[0]),
+                }
+                // Second child should be ComputedUserset(admin)
+                match &children[1] {
+                    Userset::ComputedUserset { relation } => {
+                        assert_eq!(relation, "admin");
+                    }
+                    _ => panic!(
+                        "Expected second child to be ComputedUserset, got {:?}",
+                        children[1]
+                    ),
+                }
+            }
+            Userset::Union { .. } => {
+                panic!(
+                    "BUG: Got Union instead of Intersection! \
+                     '[user] and admin' should be Intersection, not Union. \
+                     Got: {:?}",
+                    restricted_viewer.rewrite
+                );
+            }
+            _ => panic!(
+                "Expected Intersection, got {:?}",
+                restricted_viewer.rewrite
+            ),
+        }
+    }
+
+    #[test]
+    fn test_parser_type_constraint_with_or_produces_union() {
+        // Verify [user] or admin produces Union (this was already working)
+        let input = r#"
+type user
+
+type document
+  relations
+    define admin: [user]
+    define viewer: [user] or admin
+"#;
+        let result = parse(input);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let model = result.unwrap();
+        let viewer = &model.type_definitions[1].relations[1];
+        assert_eq!(viewer.name, "viewer");
+
+        match &viewer.rewrite {
+            Userset::Union { children } => {
+                assert_eq!(children.len(), 2, "Expected 2 children in union");
+                match &children[0] {
+                    Userset::This => {}
+                    _ => panic!("Expected first child to be This, got {:?}", children[0]),
+                }
+                match &children[1] {
+                    Userset::ComputedUserset { relation } => {
+                        assert_eq!(relation, "admin");
+                    }
+                    _ => panic!(
+                        "Expected second child to be ComputedUserset, got {:?}",
+                        children[1]
+                    ),
+                }
+            }
+            _ => panic!("Expected Union, got {:?}", viewer.rewrite),
         }
     }
 
