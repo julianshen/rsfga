@@ -787,10 +787,7 @@ mod tests {
                     type_name: "document".to_string(),
                     relations: vec![RelationDefinition {
                         name: "owner".to_string(),
-                        type_constraints: vec![
-                            "user".to_string(),
-                            "group#member".to_string(),
-                        ],
+                        type_constraints: vec!["user".to_string(), "group#member".to_string()],
                         rewrite: Userset::This,
                     }],
                 },

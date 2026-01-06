@@ -690,14 +690,20 @@ type document
                     Userset::Intersection { children: inner } => {
                         assert_eq!(inner.len(), 2, "Expected 2 children in intersection");
                     }
-                    _ => panic!("Expected first child to be Intersection, got {:?}", children[0]),
+                    _ => panic!(
+                        "Expected first child to be Intersection, got {:?}",
+                        children[0]
+                    ),
                 }
                 // Second child should be computed userset (reader)
                 match &children[1] {
                     Userset::ComputedUserset { relation } => {
                         assert_eq!(relation, "reader");
                     }
-                    _ => panic!("Expected second child to be ComputedUserset, got {:?}", children[1]),
+                    _ => panic!(
+                        "Expected second child to be ComputedUserset, got {:?}",
+                        children[1]
+                    ),
                 }
             }
             _ => panic!("Expected Union, got {:?}", access.rewrite),
