@@ -449,20 +449,9 @@ where
                     format!("{}:{}", tuple.user_type, tuple.user_id)
                 };
 
-                // Check for direct match
+                // Check for direct match or wildcard match (handled by user_matches)
                 if self.user_matches(&request.user, &tuple_user) {
                     return Ok(CheckResult { allowed: true });
-                }
-
-                // Check for wildcard match
-                let wildcard = format!("{}:*", tuple.user_type);
-                if tuple_user == wildcard {
-                    // Extract requesting user's type
-                    if let Some((user_type, _)) = request.user.split_once(':') {
-                        if user_type == tuple.user_type {
-                            return Ok(CheckResult { allowed: true });
-                        }
-                    }
                 }
 
                 // Check for userset reference (e.g., group:eng#member)
