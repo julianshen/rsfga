@@ -338,8 +338,15 @@ where
             let ctx = ctx.with_visited(&cycle_key);
 
             // Resolve based on the userset rewrite
-            self.resolve_userset(request, relation_def.rewrite, object_type, object_id, ctx)
-                .await
+            self.resolve_userset(
+                request,
+                relation_def.rewrite,
+                relation_def.type_constraints,
+                object_type,
+                object_id,
+                ctx,
+            )
+            .await
         })
     }
 
@@ -348,6 +355,7 @@ where
         &self,
         request: CheckRequest,
         userset: Userset,
+        type_constraints: Vec<String>,
         object_type: String,
         object_id: String,
         ctx: TraversalContext,
@@ -355,8 +363,8 @@ where
         Box::pin(async move {
             match userset {
                 Userset::This => {
-                    // Direct tuple lookup
-                    self.resolve_direct(request, object_type, object_id, ctx)
+                    // Direct tuple lookup with type constraint validation
+                    self.resolve_direct(request, type_constraints, object_type, object_id, ctx)
                         .await
                 }
 
@@ -391,29 +399,56 @@ where
 
                 Userset::Union { children } => {
                     // Any child must be true (parallel execution with short-circuit)
-                    self.resolve_union(request, children, object_type, object_id, ctx)
-                        .await
+                    self.resolve_union(
+                        request,
+                        children,
+                        type_constraints,
+                        object_type,
+                        object_id,
+                        ctx,
+                    )
+                    .await
                 }
 
                 Userset::Intersection { children } => {
                     // All children must be true (parallel execution with short-circuit)
-                    self.resolve_intersection(request, children, object_type, object_id, ctx)
-                        .await
+                    self.resolve_intersection(
+                        request,
+                        children,
+                        type_constraints,
+                        object_type,
+                        object_id,
+                        ctx,
+                    )
+                    .await
                 }
 
                 Userset::Exclusion { base, subtract } => {
                     // Base must be true AND subtract must be false
-                    self.resolve_exclusion(request, *base, *subtract, object_type, object_id, ctx)
-                        .await
+                    self.resolve_exclusion(
+                        request,
+                        *base,
+                        *subtract,
+                        type_constraints,
+                        object_type,
+                        object_id,
+                        ctx,
+                    )
+                    .await
                 }
             }
         })
     }
 
     /// Resolves a direct tuple assignment.
+    ///
+    /// Security: Validates that tuple user types match the relation's type_constraints.
+    /// This prevents unauthorized user types from gaining access (e.g., bot:scraper
+    /// accessing resources only intended for user or group#member types).
     fn resolve_direct(
         &self,
         request: CheckRequest,
+        type_constraints: Vec<String>,
         object_type: String,
         object_id: String,
         ctx: TraversalContext,
@@ -422,6 +457,14 @@ where
             // First check contextual tuples
             for ct in request.contextual_tuples.iter() {
                 if ct.object == request.object && ct.relation == request.relation {
+                    // Security: Validate type constraints for contextual tuples
+                    // Skip if type_constraints is empty (relation allows any type)
+                    if !type_constraints.is_empty()
+                        && !self.user_matches_type_constraints(&ct.user, &type_constraints)
+                    {
+                        continue; // Skip this tuple, type not allowed
+                    }
+
                     // Check for direct match or type wildcard
                     if self.user_matches(&request.user, &ct.user) {
                         return Ok(CheckResult { allowed: true });
@@ -459,6 +502,20 @@ where
                 .await?;
 
             for tuple in tuples {
+                // Security: Validate type constraints for stored tuples
+                // Skip if type_constraints is empty (relation allows any type)
+                if !type_constraints.is_empty() {
+                    let tuple_type_ref = if let Some(ref rel) = tuple.user_relation {
+                        format!("{}#{}", tuple.user_type, rel)
+                    } else {
+                        tuple.user_type.clone()
+                    };
+
+                    if !self.type_matches_constraints(&tuple_type_ref, &type_constraints) {
+                        continue; // Skip this tuple, type not allowed
+                    }
+                }
+
                 let tuple_user = if let Some(ref rel) = tuple.user_relation {
                     format!("{}:{}#{}", tuple.user_type, tuple.user_id, rel)
                 } else {
@@ -541,6 +598,7 @@ where
         &self,
         request: CheckRequest,
         children: Vec<Userset>,
+        type_constraints: Vec<String>,
         object_type: String,
         object_id: String,
         ctx: TraversalContext,
@@ -554,6 +612,7 @@ where
                 self.resolve_userset(
                     request.clone(),
                     child,
+                    type_constraints.clone(),
                     object_type.clone(),
                     object_id.clone(),
                     new_ctx.clone(),
@@ -611,6 +670,7 @@ where
         &self,
         request: CheckRequest,
         children: Vec<Userset>,
+        type_constraints: Vec<String>,
         object_type: String,
         object_id: String,
         ctx: TraversalContext,
@@ -624,6 +684,7 @@ where
                 self.resolve_userset(
                     request.clone(),
                     child,
+                    type_constraints.clone(),
                     object_type.clone(),
                     object_id.clone(),
                     new_ctx.clone(),
@@ -658,11 +719,13 @@ where
     /// - If base is false → return false (don't need subtract)
     /// - If subtract is true → return false (don't need base)
     /// - Cycle errors only propagate when the errored branch's result is needed
+    #[allow(clippy::too_many_arguments)]
     async fn resolve_exclusion(
         &self,
         request: CheckRequest,
         base: Userset,
         subtract: Userset,
+        type_constraints: Vec<String>,
         object_type: String,
         object_id: String,
         ctx: TraversalContext,
@@ -674,11 +737,19 @@ where
             self.resolve_userset(
                 request.clone(),
                 base,
+                type_constraints.clone(),
                 object_type.clone(),
                 object_id.clone(),
                 new_ctx.clone(),
             ),
-            self.resolve_userset(request, subtract, object_type, object_id, new_ctx),
+            self.resolve_userset(
+                request,
+                subtract,
+                type_constraints,
+                object_type,
+                object_id,
+                new_ctx,
+            ),
         )
         .await;
 
@@ -717,12 +788,23 @@ where
     }
 
     /// Checks if a user matches a target user string.
+    ///
+    /// Security: Wildcards are only valid in tuple_user (stored tuples), never in
+    /// requesting_user. A user cannot request with "admin:*" to match stored tuples.
     fn user_matches(&self, requesting_user: &str, tuple_user: &str) -> bool {
+        // Security: Reject wildcards in requesting_user to prevent authorization bypass
+        // A user should never be able to request with "admin:*" or "user:*"
+        if requesting_user.ends_with(":*") {
+            return false;
+        }
+
         if requesting_user == tuple_user {
             return true;
         }
 
-        // Check for type wildcard (e.g., user:* matches user:alice)
+        // Check for type wildcard in tuple_user (e.g., user:* matches user:alice)
+        // This allows stored tuples like (user:*, viewer, document:readme) to grant
+        // access to all users of that type
         if tuple_user.ends_with(":*") {
             if let Some((tuple_type, _)) = tuple_user.split_once(':') {
                 if let Some((user_type, _)) = requesting_user.split_once(':') {
@@ -731,6 +813,68 @@ where
             }
         }
 
+        false
+    }
+
+    /// Checks if a user string (e.g., "user:alice" or "group:eng#member") matches
+    /// any of the type constraints.
+    ///
+    /// Type constraints are strings like:
+    /// - "user" - direct user type
+    /// - "group#member" - userset reference
+    fn user_matches_type_constraints(&self, user: &str, type_constraints: &[String]) -> bool {
+        // Parse user to get type (and optional relation for userset references)
+        let (user_type, user_relation) = if let Some((obj, rel)) = user.split_once('#') {
+            // Userset reference like "group:eng#member" -> type="group", relation="member"
+            if let Some((type_part, _)) = obj.split_once(':') {
+                (type_part, Some(rel))
+            } else {
+                return false; // Invalid format
+            }
+        } else if let Some((type_part, _)) = user.split_once(':') {
+            // Direct user like "user:alice" -> type="user", relation=None
+            (type_part, None)
+        } else {
+            return false; // Invalid format
+        };
+
+        // Check if this type matches any constraint
+        self.type_matches_constraints_internal(user_type, user_relation, type_constraints)
+    }
+
+    /// Checks if a tuple type reference (e.g., "user" or "group#member") matches
+    /// any of the type constraints.
+    fn type_matches_constraints(&self, type_ref: &str, type_constraints: &[String]) -> bool {
+        // type_ref is either "user" or "group#member"
+        let (user_type, user_relation) = if let Some((type_part, rel)) = type_ref.split_once('#') {
+            (type_part, Some(rel))
+        } else {
+            (type_ref, None)
+        };
+
+        self.type_matches_constraints_internal(user_type, user_relation, type_constraints)
+    }
+
+    /// Internal helper to check type constraints.
+    fn type_matches_constraints_internal(
+        &self,
+        user_type: &str,
+        user_relation: Option<&str>,
+        type_constraints: &[String],
+    ) -> bool {
+        for constraint in type_constraints {
+            if let Some((constraint_type, constraint_rel)) = constraint.split_once('#') {
+                // Constraint is a userset reference like "group#member"
+                if user_type == constraint_type && user_relation == Some(constraint_rel) {
+                    return true;
+                }
+            } else {
+                // Constraint is a direct type like "user"
+                if user_type == constraint && user_relation.is_none() {
+                    return true;
+                }
+            }
+        }
         false
     }
 
@@ -3345,6 +3489,273 @@ mod tests {
         assert!(
             result_bob.allowed,
             "Bob should have access via stored tuple"
+        );
+    }
+
+    // ========== Section 6b: Security Tests ==========
+
+    #[tokio::test]
+    async fn test_wildcard_in_requesting_user_is_rejected() {
+        // Security test: Users cannot request with wildcards like "admin:*" to
+        // match stored tuples. This prevents authorization bypass.
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+            )
+            .await;
+
+        // Add a tuple for a specific admin
+        tuple_reader
+            .add_tuple(
+                "store1",
+                "document",
+                "secret",
+                "viewer",
+                "admin",
+                "superuser",
+                None,
+            )
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        // Attacker tries to request with wildcard to match the admin tuple
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "admin:*".to_string(), // Should NOT match admin:superuser
+            relation: "viewer".to_string(),
+            object: "document:secret".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        let result = resolver.check(&request).await.unwrap();
+        assert!(
+            !result.allowed,
+            "Wildcard in requesting_user should NOT match stored tuples"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_type_constraints_enforced_for_stored_tuples() {
+        // Security test: Tuples from disallowed user types should not grant access.
+        // If a relation only allows "user" type, a "bot" tuple should be ignored.
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        // Define viewer relation that only allows "user" type
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".to_string()], // Only users allowed
+                        rewrite: Userset::This,
+                    }],
+                },
+            )
+            .await;
+
+        // Add a tuple with disallowed type (bot instead of user)
+        tuple_reader
+            .add_tuple(
+                "store1", "document", "secret", "viewer", "bot", "scraper", None,
+            )
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        // Request from bot:scraper should be denied even though tuple exists
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "bot:scraper".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:secret".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        let result = resolver.check(&request).await.unwrap();
+        assert!(
+            !result.allowed,
+            "Tuple with disallowed user type should not grant access"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_type_constraints_enforced_for_contextual_tuples() {
+        // Security test: Contextual tuples with disallowed types should be ignored.
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        // Define viewer relation that only allows "user" type
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".to_string()], // Only users allowed
+                        rewrite: Userset::This,
+                    }],
+                },
+            )
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        // Request with contextual tuple of disallowed type
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "bot:scraper".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:secret".to_string(),
+            contextual_tuples: Arc::new(vec![ContextualTuple {
+                user: "bot:scraper".to_string(), // Type "bot" not allowed
+                relation: "viewer".to_string(),
+                object: "document:secret".to_string(),
+            }]),
+        };
+
+        let result = resolver.check(&request).await.unwrap();
+        assert!(
+            !result.allowed,
+            "Contextual tuple with disallowed user type should not grant access"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_type_constraints_allow_userset_references() {
+        // Test that type constraints properly validate userset references like "group#member"
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        // Define viewer relation that allows both user and group#member
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".to_string(), "group#member".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+            )
+            .await;
+
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "group".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "member".to_string(),
+                        type_constraints: vec!["user".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+            )
+            .await;
+
+        // Add group membership and document access via group
+        tuple_reader
+            .add_tuple("store1", "group", "eng", "member", "user", "alice", None)
+            .await;
+        tuple_reader
+            .add_tuple(
+                "store1",
+                "document",
+                "readme",
+                "viewer",
+                "group",
+                "eng",
+                Some("member"),
+            )
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:readme".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        let result = resolver.check(&request).await.unwrap();
+        assert!(
+            result.allowed,
+            "User should have access via group#member userset reference"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_empty_type_constraints_allows_any_type() {
+        // Test that empty type_constraints allows any user type (backwards compatible)
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        // Define viewer relation with empty type_constraints
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec![], // Empty = allow any
+                        rewrite: Userset::This,
+                    }],
+                },
+            )
+            .await;
+
+        // Add tuple with any type
+        tuple_reader
+            .add_tuple(
+                "store1", "document", "readme", "viewer", "bot", "scraper", None,
+            )
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "bot:scraper".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:readme".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        let result = resolver.check(&request).await.unwrap();
+        assert!(
+            result.allowed,
+            "Empty type_constraints should allow any user type"
         );
     }
 
