@@ -10,6 +10,8 @@ description = "Core authorization domain logic for RSFGA"
 [dependencies]
 # Async runtime
 tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
