@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::timeout;
 
 use crate::error::{DomainError, DomainResult};
@@ -45,7 +46,27 @@ pub struct CheckRequest {
     /// The object identifier (e.g., "document:readme").
     pub object: String,
     /// Contextual tuples to consider during the check.
-    pub contextual_tuples: Vec<ContextualTuple>,
+    /// Wrapped in Arc for cheap cloning during graph traversal.
+    pub contextual_tuples: Arc<Vec<ContextualTuple>>,
+}
+
+impl CheckRequest {
+    /// Creates a new CheckRequest with contextual tuples.
+    pub fn new(
+        store_id: String,
+        user: String,
+        relation: String,
+        object: String,
+        contextual_tuples: Vec<ContextualTuple>,
+    ) -> Self {
+        Self {
+            store_id,
+            user,
+            relation,
+            object,
+            contextual_tuples: Arc::new(contextual_tuples),
+        }
+    }
 }
 
 /// A contextual tuple for temporary authorization during a check.
@@ -69,30 +90,32 @@ struct TraversalContext {
     /// Current traversal depth.
     depth: u32,
     /// Visited nodes for cycle detection (object:relation pairs).
-    visited: HashSet<String>,
+    /// Wrapped in Arc for cheap cloning when not mutating.
+    visited: Arc<HashSet<String>>,
 }
 
 impl TraversalContext {
     fn new() -> Self {
         Self {
             depth: 0,
-            visited: HashSet::new(),
+            visited: Arc::new(HashSet::new()),
         }
     }
 
     fn increment_depth(&self) -> Self {
         Self {
             depth: self.depth + 1,
-            visited: self.visited.clone(),
+            visited: Arc::clone(&self.visited),
         }
     }
 
     fn with_visited(&self, key: &str) -> Self {
-        let mut visited = self.visited.clone();
-        visited.insert(key.to_string());
+        // Clone the inner HashSet only when adding new entries (copy-on-write)
+        let mut new_visited = (*self.visited).clone();
+        new_visited.insert(key.to_string());
         Self {
             depth: self.depth,
-            visited,
+            visited: Arc::new(new_visited),
         }
     }
 }
@@ -213,10 +236,19 @@ where
         }
 
         // User must be in type:id format (unless wildcard)
-        if request.user != "*" && !request.user.contains(':') {
-            return Err(DomainError::InvalidUserFormat {
-                value: request.user.clone(),
-            });
+        if request.user != "*" {
+            if !request.user.contains(':') {
+                return Err(DomainError::InvalidUserFormat {
+                    value: request.user.clone(),
+                });
+            }
+            // Validate user parts (both type and id must be non-empty)
+            let parts: Vec<&str> = request.user.splitn(2, ':').collect();
+            if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+                return Err(DomainError::InvalidUserFormat {
+                    value: request.user.clone(),
+                });
+            }
         }
 
         // Validate object format (must be type:id)
@@ -372,7 +404,7 @@ where
     ) -> BoxFuture<'_, DomainResult<CheckResult>> {
         Box::pin(async move {
             // First check contextual tuples
-            for ct in &request.contextual_tuples {
+            for ct in request.contextual_tuples.iter() {
                 if ct.object == request.object
                     && ct.relation == request.relation
                     && self.user_matches(&request.user, &ct.user)
@@ -480,6 +512,7 @@ where
     }
 
     /// Resolves a union of usersets (any child must be true).
+    /// Uses FuturesUnordered for short-circuiting on first success.
     async fn resolve_union(
         &self,
         request: CheckRequest,
@@ -488,11 +521,10 @@ where
         object_id: String,
         ctx: TraversalContext,
     ) -> DomainResult<CheckResult> {
-        // Execute all children in parallel and short-circuit on first true
         let new_ctx = ctx.increment_depth();
 
-        // Create futures for all children
-        let futures: Vec<_> = children
+        // Create FuturesUnordered for parallel execution with short-circuiting
+        let mut futures: FuturesUnordered<_> = children
             .into_iter()
             .map(|child| {
                 self.resolve_userset(
@@ -505,30 +537,38 @@ where
             })
             .collect();
 
-        // Execute all futures
-        let mut results = futures::future::join_all(futures).await;
+        // Track errors for reporting if all branches fail
+        let mut last_error: Option<DomainError> = None;
 
-        // Check if any succeeded with allowed=true
-        for result in &results {
-            if let Ok(CheckResult { allowed: true }) = result {
-                return Ok(CheckResult { allowed: true });
+        // Poll futures and short-circuit on first allowed=true
+        while let Some(result) = futures.next().await {
+            match result {
+                Ok(CheckResult { allowed: true }) => {
+                    // Short-circuit: found a branch that allows access
+                    return Ok(CheckResult { allowed: true });
+                }
+                Ok(CheckResult { allowed: false }) => {
+                    // Continue checking other branches
+                }
+                Err(e) => {
+                    // Don't propagate cycle errors as they might be from one branch
+                    if !matches!(e, DomainError::CycleDetected { .. }) {
+                        last_error = Some(e);
+                    }
+                }
             }
         }
 
-        // Check if all failed with errors (return the first non-cycle error)
-        for result in results.drain(..) {
-            if let Err(e) = result {
-                // Don't propagate cycle errors as they might be from one branch
-                if !matches!(e, DomainError::CycleDetected { .. }) {
-                    return Err(e);
-                }
-            }
+        // If we had a non-cycle error and no branch succeeded, propagate it
+        if let Some(e) = last_error {
+            return Err(e);
         }
 
         Ok(CheckResult { allowed: false })
     }
 
     /// Resolves an intersection of usersets (all children must be true).
+    /// Uses FuturesUnordered for short-circuiting on first failure.
     async fn resolve_intersection(
         &self,
         request: CheckRequest,
@@ -537,10 +577,10 @@ where
         object_id: String,
         ctx: TraversalContext,
     ) -> DomainResult<CheckResult> {
-        // Execute all children in parallel
         let new_ctx = ctx.increment_depth();
 
-        let futures: Vec<_> = children
+        // Create FuturesUnordered for parallel execution with short-circuiting
+        let mut futures: FuturesUnordered<_> = children
             .into_iter()
             .map(|child| {
                 self.resolve_userset(
@@ -553,17 +593,24 @@ where
             })
             .collect();
 
-        let results = futures::future::join_all(futures).await;
-
-        // All must be allowed=true
-        for result in results {
+        // Poll futures and short-circuit on first allowed=false or error
+        while let Some(result) = futures.next().await {
             match result {
-                Ok(CheckResult { allowed: true }) => continue,
-                Ok(CheckResult { allowed: false }) => return Ok(CheckResult { allowed: false }),
-                Err(e) => return Err(e),
+                Ok(CheckResult { allowed: true }) => {
+                    // Continue checking other branches
+                }
+                Ok(CheckResult { allowed: false }) => {
+                    // Short-circuit: found a branch that denies access
+                    return Ok(CheckResult { allowed: false });
+                }
+                Err(e) => {
+                    // Short-circuit on error
+                    return Err(e);
+                }
             }
         }
 
+        // All branches returned allowed=true
         Ok(CheckResult { allowed: true })
     }
 
@@ -818,7 +865,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:readme".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -858,7 +905,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:readme".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -906,7 +953,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:readme".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
         let result1 = resolver.check(&request1).await.unwrap();
         assert!(result1.allowed, "Store1 should allow access");
@@ -917,7 +964,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:readme".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
         let result2 = resolver.check(&request2).await.unwrap();
         assert!(!result2.allowed, "Store2 should deny access (no tuple)");
@@ -938,7 +985,7 @@ mod tests {
             user: "".to_string(),
             relation: "viewer".to_string(),
             object: "document:readme".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
         let result = resolver.check(&request).await;
         assert!(matches!(result, Err(DomainError::InvalidUserFormat { .. })));
@@ -949,7 +996,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "".to_string(),
             object: "document:readme".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
         let result = resolver.check(&request).await;
         assert!(matches!(
@@ -963,7 +1010,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
         let result = resolver.check(&request).await;
         assert!(matches!(
@@ -987,7 +1034,7 @@ mod tests {
             user: "alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:readme".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
         let result = resolver.check(&request).await;
         assert!(matches!(result, Err(DomainError::InvalidUserFormat { .. })));
@@ -1008,7 +1055,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "readme".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
         let result = resolver.check(&request).await;
         assert!(matches!(
@@ -1022,7 +1069,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: ":readme".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
         let result = resolver.check(&request).await;
         assert!(matches!(
@@ -1036,7 +1083,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
         let result = resolver.check(&request).await;
         assert!(matches!(
@@ -1082,7 +1129,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "owner".to_string(),
             object: "document:readme".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -1155,7 +1202,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -1257,7 +1304,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "admin".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -1321,7 +1368,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -1385,7 +1432,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -1446,7 +1493,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -1509,7 +1556,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "combined".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -1567,7 +1614,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         // Should succeed because owner branch is true
@@ -1639,7 +1686,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "can_edit".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -1705,7 +1752,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "can_edit".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -1776,7 +1823,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "all_required".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -1840,7 +1887,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "can_view".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -1899,7 +1946,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "can_view".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -1965,7 +2012,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "can_view".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -2049,7 +2096,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "level29:obj".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await;
@@ -2129,7 +2176,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "type29:obj".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await;
@@ -2222,7 +2269,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await;
@@ -2330,7 +2377,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "admin".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await.unwrap();
@@ -2423,7 +2470,7 @@ mod tests {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
-            contextual_tuples: vec![],
+            contextual_tuples: Arc::new(vec![]),
         };
 
         let result = resolver.check(&request).await;
@@ -2505,7 +2552,7 @@ mod tests {
                     user: user.clone(),
                     relation: relation.clone(),
                     object: object.clone(),
-                    contextual_tuples: vec![],
+                    contextual_tuples: Arc::new(vec![]),
                 };
 
                 // Should not panic - may return Ok or Err, but should never panic
@@ -2555,7 +2602,7 @@ mod tests {
                     user: user.clone(),
                     relation: relation.clone(),
                     object: object.clone(),
-                    contextual_tuples: vec![],
+                    contextual_tuples: Arc::new(vec![]),
                 };
 
                 // Use a timeout to ensure termination
@@ -2612,7 +2659,7 @@ mod tests {
                     user: format!("user:{}", user_name),
                     relation: "viewer".to_string(),
                     object: format!("document:{}", object_id),
-                    contextual_tuples: vec![],
+                    contextual_tuples: Arc::new(vec![]),
                 };
 
                 let result = resolver.check(&request).await.unwrap();
@@ -2664,7 +2711,7 @@ mod tests {
                     user: format!("user:{}", user_name),
                     relation: "viewer".to_string(),
                     object: format!("document:{}", object_id),
-                    contextual_tuples: vec![],
+                    contextual_tuples: Arc::new(vec![]),
                 };
 
                 let result_before = resolver.check(&request).await.unwrap();
@@ -2731,7 +2778,7 @@ mod tests {
                     user: format!("user:{}", user_name),
                     relation: "viewer".to_string(),
                     object: format!("document:{}", other_object),
-                    contextual_tuples: vec![],
+                    contextual_tuples: Arc::new(vec![]),
                 };
 
                 let result_before = resolver.check(&request).await.unwrap();
