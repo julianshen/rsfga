@@ -2,6 +2,22 @@
 //!
 //! The resolver performs async graph traversal to determine
 //! if a user has a specific permission on an object.
+//!
+//! # Architecture Decisions
+//!
+//! - **Parallel Execution (ADR-003)**: Union and intersection operations use
+//!   `FuturesUnordered` for parallel branch evaluation with short-circuiting.
+//!   Performance benefits are UNVALIDATED - benchmarks needed in M1.7.
+//!
+//! - **Cycle Detection**: Tracks visited nodes to prevent infinite loops.
+//!   Uses `Arc<HashSet>` for efficient cloning during traversal.
+//!   Memory growth is O(depth) per path. Profile in M1.7 if needed.
+//!
+//! - **Depth Limiting**: Default max depth of 25 matches OpenFGA behavior.
+//!   Prevents stack overflow and DoS attacks (ADR-003, Constraint C11).
+//!
+//! - **Timeout Handling**: Configurable timeout (default 30s) prevents
+//!   hanging on pathological graphs.
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -455,9 +471,8 @@ where
                 }
 
                 // Check for userset reference (e.g., group:eng#member)
-                if tuple.user_relation.is_some() {
+                if let Some(userset_relation) = &tuple.user_relation {
                     let userset_object = format!("{}:{}", tuple.user_type, tuple.user_id);
-                    let userset_relation = tuple.user_relation.as_ref().unwrap();
 
                     let userset_request = CheckRequest {
                         store_id: request.store_id.clone(),
@@ -519,7 +534,9 @@ where
     }
 
     /// Resolves a union of usersets (any child must be true).
-    /// Uses FuturesUnordered for short-circuiting on first success.
+    ///
+    /// Uses `FuturesUnordered` for parallel branch evaluation with short-circuiting
+    /// on first success (ADR-003). Performance benefits are unvalidated - see M1.7.
     async fn resolve_union(
         &self,
         request: CheckRequest,
@@ -587,7 +604,9 @@ where
     }
 
     /// Resolves an intersection of usersets (all children must be true).
-    /// Uses FuturesUnordered for short-circuiting on first failure.
+    ///
+    /// Uses `FuturesUnordered` for parallel branch evaluation with short-circuiting
+    /// on first failure (ADR-003). Performance benefits are unvalidated - see M1.7.
     async fn resolve_intersection(
         &self,
         request: CheckRequest,
