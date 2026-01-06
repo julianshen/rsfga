@@ -405,11 +405,29 @@ where
         Box::pin(async move {
             // First check contextual tuples
             for ct in request.contextual_tuples.iter() {
-                if ct.object == request.object
-                    && ct.relation == request.relation
-                    && self.user_matches(&request.user, &ct.user)
-                {
-                    return Ok(CheckResult { allowed: true });
+                if ct.object == request.object && ct.relation == request.relation {
+                    // Check for direct match or type wildcard
+                    if self.user_matches(&request.user, &ct.user) {
+                        return Ok(CheckResult { allowed: true });
+                    }
+
+                    // Check for userset reference in contextual tuple (e.g., "team:eng#member")
+                    if let Some((user_obj, user_rel)) = ct.user.split_once('#') {
+                        // This is a userset reference, recursively resolve it
+                        let userset_request = CheckRequest {
+                            store_id: request.store_id.clone(),
+                            user: request.user.clone(),
+                            relation: user_rel.to_string(),
+                            object: user_obj.to_string(),
+                            contextual_tuples: request.contextual_tuples.clone(),
+                        };
+
+                        let new_ctx = ctx.increment_depth();
+                        let result = self.resolve_check(userset_request, new_ctx.clone()).await?;
+                        if result.allowed {
+                            return Ok(CheckResult { allowed: true });
+                        }
+                    }
                 }
             }
 
@@ -2019,6 +2037,138 @@ mod tests {
         assert!(
             !result.allowed,
             "Exclusion: viewer but blocked should be denied"
+        );
+    }
+
+    // ========== Section 5b: Contextual Tuple Userset Resolution ==========
+
+    #[tokio::test]
+    async fn test_contextual_tuple_resolves_userset_reference() {
+        // Test that contextual tuples with userset references like "team:eng#member"
+        // are recursively resolved, not just matched literally.
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        // Set up: document has viewer relation, team has member relation
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".to_string(), "team#member".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+            )
+            .await;
+
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "team".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "member".to_string(),
+                        type_constraints: vec!["user".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+            )
+            .await;
+
+        // Alice is a member of team:eng (stored tuple)
+        tuple_reader
+            .add_tuple("store1", "team", "eng", "member", "user", "alice", None)
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        // Use contextual tuple to grant "team:eng#member" viewer access to document:readme
+        // This should resolve recursively: alice -> team:eng#member -> viewer of document:readme
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:readme".to_string(),
+            contextual_tuples: Arc::new(vec![ContextualTuple {
+                user: "team:eng#member".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:readme".to_string(),
+            }]),
+        };
+
+        let result = resolver.check(&request).await.unwrap();
+        assert!(
+            result.allowed,
+            "Contextual tuple with userset reference should be recursively resolved"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_contextual_tuple_userset_not_member_denied() {
+        // Test that users who are NOT members of the userset are denied
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".to_string(), "team#member".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+            )
+            .await;
+
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "team".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "member".to_string(),
+                        type_constraints: vec!["user".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+            )
+            .await;
+
+        // Alice is a member of team:eng, but Bob is NOT
+        tuple_reader
+            .add_tuple("store1", "team", "eng", "member", "user", "alice", None)
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        // Use contextual tuple to grant "team:eng#member" viewer access
+        // Bob should be denied because he's not a member of team:eng
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:bob".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:readme".to_string(),
+            contextual_tuples: Arc::new(vec![ContextualTuple {
+                user: "team:eng#member".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:readme".to_string(),
+            }]),
+        };
+
+        let result = resolver.check(&request).await.unwrap();
+        assert!(
+            !result.allowed,
+            "User not in userset should be denied even with contextual tuple"
         );
     }
 
