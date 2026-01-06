@@ -455,6 +455,12 @@ async fn test_grpc_batch_check_matches_rest() -> Result<()> {
         .unwrap_or(false);
     assert!(!rest_allowed2, "REST check-2 should be denied");
 
+    // Assert parity: gRPC and REST should return the same denied result
+    assert_eq!(
+        grpc_allowed2, rest_allowed2,
+        "gRPC and REST check-2 (denied) results should match"
+    );
+
     Ok(())
 }
 

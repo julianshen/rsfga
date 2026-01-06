@@ -33,6 +33,9 @@ nom = { workspace = true }
 # Tracing
 tracing = { workspace = true }
 
+# Time handling (for Store timestamps - consistent with rsfga-storage)
+chrono = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 mockall = { workspace = true }
