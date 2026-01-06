@@ -14,6 +14,15 @@ pub struct TupleFilter {
     /// Filter by relation.
     pub relation: Option<String>,
     /// Filter by user.
+    ///
+    /// Expected format: `"type:id"` for direct users, or `"type:id#relation"` for usersets.
+    ///
+    /// # Examples
+    /// - `"user:alice"` - Direct user reference
+    /// - `"group:engineering#member"` - Userset reference (members of engineering group)
+    ///
+    /// # Errors
+    /// Invalid formats will result in `StorageError::InvalidFilter` when the filter is applied.
     pub user: Option<String>,
 }
 
