@@ -765,6 +765,14 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [x] Test: Returns timeout error with context
 - [x] Test: Empty union returns false
 
+#### Section 6b: Security Tests
+
+- [x] Test: Wildcard in requesting_user is rejected
+- [x] Test: Type constraints enforced for stored tuples
+- [x] Test: Type constraints enforced for contextual tuples
+- [x] Test: Type constraints allow userset references
+- [x] Test: Empty type constraints allows any type
+
 #### Section 7: Property-Based Tests
 
 - [x] Test: Property: Resolver never panics on any input
@@ -786,9 +794,9 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [x] Depth limiting (default 25, matches OpenFGA)
 - [x] Parallel traversal using FuturesUnordered (ADR-003)
 - [x] Contextual tuple support with userset resolution
-- [x] 44 unit tests (including 5 property-based tests)
+- [x] 49 unit tests (including 5 property-based tests, 5 security tests)
 
-**Status**: All 44 tests passing ✅
+**Status**: All 49 tests passing ✅
 
 ---
 
@@ -1235,7 +1243,7 @@ Before marking Phase 1 complete:
 - Milestone 1.1: Project Foundation ✅ COMPLETE (10/10 tests)
 - Milestone 1.2: Type System & Model Parser ✅ COMPLETE (60+ tests)
 - Milestone 1.3: Storage Layer ⏸️ Pending (basic in-memory: 5 tests)
-- Milestone 1.4: Graph Resolver ✅ COMPLETE (44 tests)
+- Milestone 1.4: Graph Resolver ✅ COMPLETE (49 tests)
 
 **Current Focus**: Milestone 1.3 - Storage Layer
 - DataStore trait: ⏸️ Pending
@@ -1244,7 +1252,7 @@ Before marking Phase 1 complete:
 
 **Compatibility Tests**: Deferred to M1.7 (API Layer)
 - The 150 compatibility tests from Phase 0 require the full HTTP/gRPC API stack
-- Graph Resolver (M1.4) is validated through 44 unit tests
+- Graph Resolver (M1.4) is validated through 49 unit tests (including security tests)
 - Compatibility tests will run once M1.7 wires up the complete request/response flow
 
 **Next**: Complete Milestone 1.3 - Storage Layer with PostgreSQL implementation
