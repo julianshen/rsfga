@@ -393,6 +393,41 @@ After completing a **section** or logical group of tests:
 - Simpler to revert if needed
 - Better feedback loop
 
+### Updating Status in plan.md at Each PR
+
+**CRITICAL**: After each PR is merged, update `plan.md` to reflect the current implementation status:
+
+1. **Mark completed tests**: Change `[ ]` to `[x]` for all tests that are now passing
+2. **Update milestone status**: Add `✅ COMPLETE` to milestone header when all tests pass
+3. **Update validation criteria**: Mark criteria as complete when met
+4. **Update Current Status section**: Keep the bottom of plan.md accurate with:
+   - Current phase and milestone in progress
+   - What's been completed
+   - What's next
+5. **Commit status update**: Include plan.md updates in the PR or as a follow-up commit
+
+**Example workflow after PR merge**:
+```bash
+# After PR is merged to main
+git checkout main
+git pull origin main
+
+# Update plan.md with completed tests
+# Mark tests [x], update milestone status, etc.
+
+# Commit the status update
+git add plan.md
+git commit -m "[DOCS] Update plan.md status after Milestone X.Y completion"
+git push origin main
+```
+
+**Status Indicators**:
+- `[ ]` - Test not yet implemented
+- `[x]` - Test implemented and passing
+- `⏸️ Pending` - Work not yet started
+- `🏗️ In Progress` - Currently being worked on
+- `✅ COMPLETE` - Milestone/section fully complete
+
 ---
 
 ## COMMIT DISCIPLINE
@@ -918,8 +953,13 @@ Follow this process precisely, always prioritizing:
 
 ---
 
-**Current Status**: Architecture & Design ✅ Complete | Implementation ⏸️ Awaiting Approval
+**Current Status**:
+- Phase 0 (Compatibility Test Suite): ✅ Complete (150 tests)
+- Phase 1 (MVP Implementation): 🏗️ In Progress
+  - Milestone 1.1 (Project Foundation): ✅ Complete
+  - Milestone 1.2 (Type System & Parser): ✅ Complete
+  - Milestone 1.3 (Storage Layer): 🏗️ In Progress
 
-**Next Step**: Phase 0 - Build the compatibility test suite that validates OpenFGA behavior
+**Next Step**: Complete Milestone 1.3 - Storage Layer with PostgreSQL implementation
 
-**Ready to start Milestone 0.1? Say "go" and let's build the validation framework!**
+**To continue**: Check `plan.md` for detailed test status and say "go" to proceed!

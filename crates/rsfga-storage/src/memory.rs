@@ -263,12 +263,20 @@ mod tests {
 
         // Both should be stored (they're different due to user_relation)
         store
-            .write_tuples("test-store", vec![tuple_without.clone(), tuple_with.clone()], vec![])
+            .write_tuples(
+                "test-store",
+                vec![tuple_without.clone(), tuple_with.clone()],
+                vec![],
+            )
             .await
             .unwrap();
 
         let filter = TupleFilter::default();
         let tuples = store.read_tuples("test-store", &filter).await.unwrap();
-        assert_eq!(tuples.len(), 2, "Both tuples should be stored as they differ by user_relation");
+        assert_eq!(
+            tuples.len(),
+            2,
+            "Both tuples should be stored as they differ by user_relation"
+        );
     }
 }
