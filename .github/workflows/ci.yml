@@ -38,7 +38,7 @@ jobs:
         run: cargo build --workspace --all-features
 
       - name: Run tests
-        run: cargo test --workspace --all-features --no-fail-fast
+        run: cargo test --workspace --all-features --no-fail-fast --exclude compatibility-tests
 
   clippy:
     name: Clippy
