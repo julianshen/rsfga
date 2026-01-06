@@ -22,8 +22,13 @@ anyhow = { workspace = true }
 # Tracing
 tracing = { workspace = true }
 
+# Concurrency
+dashmap = { workspace = true }
+futures = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 mockall = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 async-trait = { workspace = true }
+futures = { workspace = true }
