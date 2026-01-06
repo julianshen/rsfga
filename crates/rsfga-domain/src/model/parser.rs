@@ -781,10 +781,7 @@ type document
                     restricted_viewer.rewrite
                 );
             }
-            _ => panic!(
-                "Expected Intersection, got {:?}",
-                restricted_viewer.rewrite
-            ),
+            _ => panic!("Expected Intersection, got {:?}", restricted_viewer.rewrite),
         }
     }
 
