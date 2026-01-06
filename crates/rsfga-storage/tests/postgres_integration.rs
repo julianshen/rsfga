@@ -570,3 +570,33 @@ async fn test_delete_store_cascades() {
     let result = store.get_store("test-cascade").await;
     assert!(matches!(result, Err(StorageError::StoreNotFound { .. })));
 }
+
+// Test: Invalid user filter returns InvalidFilter error
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_invalid_user_filter_returns_error() {
+    let store = create_store().await;
+    store
+        .create_store("test-invalid-filter", "Test Store")
+        .await
+        .unwrap();
+
+    // Missing colon separator
+    let filter = TupleFilter {
+        user: Some("invalid".to_string()),
+        ..Default::default()
+    };
+    let result = store.read_tuples("test-invalid-filter", &filter).await;
+    assert!(matches!(result, Err(StorageError::InvalidFilter { .. })));
+
+    // Invalid userset format
+    let filter = TupleFilter {
+        user: Some("invalid#member".to_string()),
+        ..Default::default()
+    };
+    let result = store.read_tuples("test-invalid-filter", &filter).await;
+    assert!(matches!(result, Err(StorageError::InvalidFilter { .. })));
+
+    // Cleanup
+    store.delete_store("test-invalid-filter").await.unwrap();
+}

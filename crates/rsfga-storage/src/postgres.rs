@@ -173,7 +173,7 @@ impl PostgresDataStore {
     fn parse_user_filter(user: &str) -> StorageResult<(String, String, Option<String>)> {
         if user.contains('#') {
             let parts: Vec<&str> = user.split('#').collect();
-            if parts.len() != 2 {
+            if parts.len() != 2 || parts[1].is_empty() {
                 return Err(StorageError::InvalidFilter {
                     message: format!(
                         "Invalid user filter format: '{}'. Expected 'type:id#relation'",
@@ -182,7 +182,7 @@ impl PostgresDataStore {
                 });
             }
             let user_parts: Vec<&str> = parts[0].split(':').collect();
-            if user_parts.len() != 2 {
+            if user_parts.len() != 2 || user_parts[0].is_empty() || user_parts[1].is_empty() {
                 return Err(StorageError::InvalidFilter {
                     message: format!(
                         "Invalid user filter format: '{}'. Expected 'type:id#relation'",
@@ -197,7 +197,7 @@ impl PostgresDataStore {
             ))
         } else {
             let user_parts: Vec<&str> = user.split(':').collect();
-            if user_parts.len() != 2 {
+            if user_parts.len() != 2 || user_parts[0].is_empty() || user_parts[1].is_empty() {
                 return Err(StorageError::InvalidFilter {
                     message: format!("Invalid user filter format: '{}'. Expected 'type:id'", user),
                 });

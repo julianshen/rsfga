@@ -29,6 +29,44 @@ impl MemoryDataStore {
     pub fn new_shared() -> Arc<Self> {
         Arc::new(Self::new())
     }
+
+    /// Parse user filter string into (user_type, user_id, Option<user_relation>).
+    /// Format: "type:id" or "type:id#relation"
+    fn parse_user_filter(user: &str) -> StorageResult<(String, String, Option<String>)> {
+        if user.contains('#') {
+            let parts: Vec<&str> = user.split('#').collect();
+            if parts.len() != 2 || parts[1].is_empty() {
+                return Err(StorageError::InvalidFilter {
+                    message: format!(
+                        "Invalid user filter format: '{}'. Expected 'type:id#relation'",
+                        user
+                    ),
+                });
+            }
+            let user_parts: Vec<&str> = parts[0].split(':').collect();
+            if user_parts.len() != 2 || user_parts[0].is_empty() || user_parts[1].is_empty() {
+                return Err(StorageError::InvalidFilter {
+                    message: format!(
+                        "Invalid user filter format: '{}'. Expected 'type:id#relation'",
+                        user
+                    ),
+                });
+            }
+            Ok((
+                user_parts[0].to_string(),
+                user_parts[1].to_string(),
+                Some(parts[1].to_string()),
+            ))
+        } else {
+            let user_parts: Vec<&str> = user.split(':').collect();
+            if user_parts.len() != 2 || user_parts[0].is_empty() || user_parts[1].is_empty() {
+                return Err(StorageError::InvalidFilter {
+                    message: format!("Invalid user filter format: '{}'. Expected 'type:id'", user),
+                });
+            }
+            Ok((user_parts[0].to_string(), user_parts[1].to_string(), None))
+        }
+    }
 }
 
 #[async_trait]
@@ -167,6 +205,13 @@ impl DataStore for MemoryDataStore {
             });
         }
 
+        // Parse and validate user filter upfront
+        let user_filter = if let Some(ref user) = filter.user {
+            Some(Self::parse_user_filter(user)?)
+        } else {
+            None
+        };
+
         // Filter first, then clone only matching tuples (more efficient)
         let filtered: Vec<StoredTuple> = self
             .tuples
@@ -184,13 +229,8 @@ impl DataStore for MemoryDataStore {
                                 .as_ref()
                                 .map_or(true, |oi| &t.object_id == oi)
                             && filter.relation.as_ref().map_or(true, |r| &t.relation == r)
-                            && filter.user.as_ref().map_or(true, |u| {
-                                let user_str = if let Some(ref rel) = t.user_relation {
-                                    format!("{}:{}#{}", t.user_type, t.user_id, rel)
-                                } else {
-                                    format!("{}:{}", t.user_type, t.user_id)
-                                };
-                                &user_str == u
+                            && user_filter.as_ref().map_or(true, |(ut, ui, ur)| {
+                                &t.user_type == ut && &t.user_id == ui && &t.user_relation == ur
                             })
                     })
                     .cloned()
@@ -214,6 +254,13 @@ impl DataStore for MemoryDataStore {
             });
         }
 
+        // Parse and validate user filter upfront
+        let user_filter = if let Some(ref user) = filter.user {
+            Some(Self::parse_user_filter(user)?)
+        } else {
+            None
+        };
+
         // Filter tuples
         let filtered: Vec<StoredTuple> = self
             .tuples
@@ -231,13 +278,8 @@ impl DataStore for MemoryDataStore {
                                 .as_ref()
                                 .map_or(true, |oi| &t.object_id == oi)
                             && filter.relation.as_ref().map_or(true, |r| &t.relation == r)
-                            && filter.user.as_ref().map_or(true, |u| {
-                                let user_str = if let Some(ref rel) = t.user_relation {
-                                    format!("{}:{}#{}", t.user_type, t.user_id, rel)
-                                } else {
-                                    format!("{}:{}", t.user_type, t.user_id)
-                                };
-                                &user_str == u
+                            && user_filter.as_ref().map_or(true, |(ut, ui, ur)| {
+                                &t.user_type == ut && &t.user_id == ui && &t.user_relation == ur
                             })
                     })
                     .cloned()
@@ -1080,5 +1122,113 @@ mod tests {
             .unwrap();
         assert_eq!(result.items.len(), 3); // 5 total documents - 2 already fetched = 3
         assert!(result.continuation_token.is_none());
+    }
+
+    // Test: Invalid user filter returns error
+    #[tokio::test]
+    async fn test_invalid_user_filter_returns_error() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Missing colon separator
+        let filter = TupleFilter {
+            user: Some("invalid".to_string()),
+            ..Default::default()
+        };
+        let result = store.read_tuples("test-store", &filter).await;
+        assert!(matches!(result, Err(StorageError::InvalidFilter { .. })));
+
+        // Empty type
+        let filter = TupleFilter {
+            user: Some(":alice".to_string()),
+            ..Default::default()
+        };
+        let result = store.read_tuples("test-store", &filter).await;
+        assert!(matches!(result, Err(StorageError::InvalidFilter { .. })));
+
+        // Too many colons
+        let filter = TupleFilter {
+            user: Some("user:alice:extra".to_string()),
+            ..Default::default()
+        };
+        let result = store.read_tuples("test-store", &filter).await;
+        assert!(matches!(result, Err(StorageError::InvalidFilter { .. })));
+
+        // Invalid userset format (missing colon in type:id part)
+        let filter = TupleFilter {
+            user: Some("invalid#member".to_string()),
+            ..Default::default()
+        };
+        let result = store.read_tuples("test-store", &filter).await;
+        assert!(matches!(result, Err(StorageError::InvalidFilter { .. })));
+    }
+
+    // Test: Valid user filter formats work correctly
+    #[tokio::test]
+    async fn test_valid_user_filter_formats() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Direct user format
+        let tuple1 = StoredTuple {
+            object_type: "document".to_string(),
+            object_id: "doc1".to_string(),
+            relation: "viewer".to_string(),
+            user_type: "user".to_string(),
+            user_id: "alice".to_string(),
+            user_relation: None,
+        };
+
+        // Userset format
+        let tuple2 = StoredTuple {
+            object_type: "document".to_string(),
+            object_id: "doc2".to_string(),
+            relation: "viewer".to_string(),
+            user_type: "group".to_string(),
+            user_id: "engineering".to_string(),
+            user_relation: Some("member".to_string()),
+        };
+
+        store
+            .write_tuples("test-store", vec![tuple1, tuple2], vec![])
+            .await
+            .unwrap();
+
+        // Filter by direct user format "type:id"
+        let filter = TupleFilter {
+            user: Some("user:alice".to_string()),
+            ..Default::default()
+        };
+        let result = store.read_tuples("test-store", &filter).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].user_id, "alice");
+
+        // Filter by userset format "type:id#relation"
+        let filter = TupleFilter {
+            user: Some("group:engineering#member".to_string()),
+            ..Default::default()
+        };
+        let result = store.read_tuples("test-store", &filter).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].user_id, "engineering");
+        assert_eq!(result[0].user_relation, Some("member".to_string()));
+    }
+
+    // Test: Invalid user filter in paginated query returns error
+    #[tokio::test]
+    async fn test_invalid_user_filter_paginated_returns_error() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let filter = TupleFilter {
+            user: Some("invalid-format".to_string()),
+            ..Default::default()
+        };
+        let pagination = PaginationOptions::default();
+
+        let result = store
+            .read_tuples_paginated("test-store", &filter, &pagination)
+            .await;
+        assert!(matches!(result, Err(StorageError::InvalidFilter { .. })));
     }
 }
