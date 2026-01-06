@@ -165,6 +165,44 @@ impl PostgresDataStore {
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
+
+    /// Parse user filter string into (user_type, user_id, Option<user_relation>).
+    /// Format: "type:id" or "type:id#relation"
+    fn parse_user_filter(user: &str) -> StorageResult<(String, String, Option<String>)> {
+        if user.contains('#') {
+            let parts: Vec<&str> = user.split('#').collect();
+            if parts.len() != 2 {
+                return Err(StorageError::InvalidFilter {
+                    message: format!(
+                        "Invalid user filter format: '{}'. Expected 'type:id#relation'",
+                        user
+                    ),
+                });
+            }
+            let user_parts: Vec<&str> = parts[0].split(':').collect();
+            if user_parts.len() != 2 {
+                return Err(StorageError::InvalidFilter {
+                    message: format!(
+                        "Invalid user filter format: '{}'. Expected 'type:id#relation'",
+                        user
+                    ),
+                });
+            }
+            Ok((
+                user_parts[0].to_string(),
+                user_parts[1].to_string(),
+                Some(parts[1].to_string()),
+            ))
+        } else {
+            let user_parts: Vec<&str> = user.split(':').collect();
+            if user_parts.len() != 2 {
+                return Err(StorageError::InvalidFilter {
+                    message: format!("Invalid user filter format: '{}'. Expected 'type:id'", user),
+                });
+            }
+            Ok((user_parts[0].to_string(), user_parts[1].to_string(), None))
+        }
+    }
 }
 
 #[async_trait]
@@ -319,56 +357,77 @@ impl DataStore for PostgresDataStore {
                 message: format!("Failed to begin transaction: {}", e),
             })?;
 
-        // Process deletes
-        for tuple in &deletes {
+        // Batch delete using UNNEST arrays (fixes N+1 query problem)
+        if !deletes.is_empty() {
+            let object_types: Vec<&str> = deletes.iter().map(|t| t.object_type.as_str()).collect();
+            let object_ids: Vec<&str> = deletes.iter().map(|t| t.object_id.as_str()).collect();
+            let relations: Vec<&str> = deletes.iter().map(|t| t.relation.as_str()).collect();
+            let user_types: Vec<&str> = deletes.iter().map(|t| t.user_type.as_str()).collect();
+            let user_ids: Vec<&str> = deletes.iter().map(|t| t.user_id.as_str()).collect();
+            let user_relations: Vec<Option<&str>> =
+                deletes.iter().map(|t| t.user_relation.as_deref()).collect();
+
             sqlx::query(
                 r#"
-                DELETE FROM tuples
-                WHERE store_id = $1
-                  AND object_type = $2
-                  AND object_id = $3
-                  AND relation = $4
-                  AND user_type = $5
-                  AND user_id = $6
-                  AND COALESCE(user_relation, '') = COALESCE($7, '')
+                DELETE FROM tuples t
+                USING (
+                    SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+                    AS d(object_type, object_id, relation, user_type, user_id, user_relation)
+                ) AS del
+                WHERE t.store_id = $1
+                  AND t.object_type = del.object_type
+                  AND t.object_id = del.object_id
+                  AND t.relation = del.relation
+                  AND t.user_type = del.user_type
+                  AND t.user_id = del.user_id
+                  AND COALESCE(t.user_relation, '') = COALESCE(del.user_relation, '')
                 "#,
             )
             .bind(store_id)
-            .bind(&tuple.object_type)
-            .bind(&tuple.object_id)
-            .bind(&tuple.relation)
-            .bind(&tuple.user_type)
-            .bind(&tuple.user_id)
-            .bind(&tuple.user_relation)
+            .bind(&object_types)
+            .bind(&object_ids)
+            .bind(&relations)
+            .bind(&user_types)
+            .bind(&user_ids)
+            .bind(&user_relations)
             .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to delete tuple: {}", e),
+                message: format!("Failed to batch delete tuples: {}", e),
             })?;
         }
 
-        // Process writes (upsert to handle idempotent writes)
-        // Use ON CONFLICT with the expression that matches our unique index
-        for tuple in &writes {
+        // Batch insert using UNNEST arrays with ON CONFLICT (fixes N+1 query problem)
+        if !writes.is_empty() {
+            let object_types: Vec<&str> = writes.iter().map(|t| t.object_type.as_str()).collect();
+            let object_ids: Vec<&str> = writes.iter().map(|t| t.object_id.as_str()).collect();
+            let relations: Vec<&str> = writes.iter().map(|t| t.relation.as_str()).collect();
+            let user_types: Vec<&str> = writes.iter().map(|t| t.user_type.as_str()).collect();
+            let user_ids: Vec<&str> = writes.iter().map(|t| t.user_id.as_str()).collect();
+            let user_relations: Vec<Option<&str>> =
+                writes.iter().map(|t| t.user_relation.as_deref()).collect();
+
             sqlx::query(
                 r#"
                 INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                SELECT $1, object_type, object_id, relation, user_type, user_id, user_relation
+                FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+                AS t(object_type, object_id, relation, user_type, user_id, user_relation)
                 ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, (COALESCE(user_relation, '')))
                 DO NOTHING
                 "#,
             )
             .bind(store_id)
-            .bind(&tuple.object_type)
-            .bind(&tuple.object_id)
-            .bind(&tuple.relation)
-            .bind(&tuple.user_type)
-            .bind(&tuple.user_id)
-            .bind(&tuple.user_relation)
+            .bind(&object_types)
+            .bind(&object_ids)
+            .bind(&relations)
+            .bind(&user_types)
+            .bind(&user_ids)
+            .bind(&user_relations)
             .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to write tuple: {}", e),
+                message: format!("Failed to batch write tuples: {}", e),
             })?;
         }
 
@@ -407,96 +466,52 @@ impl DataStore for PostgresDataStore {
             });
         }
 
-        // Build dynamic query based on filter
-        let mut query = String::from(
-            r#"
-            SELECT object_type, object_id, relation, user_type, user_id, user_relation
-            FROM tuples
-            WHERE store_id = $1
-            "#,
+        // Parse user filter upfront to validate and extract components
+        let user_filter = if let Some(ref user) = filter.user {
+            Some(Self::parse_user_filter(user)?)
+        } else {
+            None
+        };
+
+        // Use sqlx::QueryBuilder for safe dynamic query construction
+        let mut builder: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "SELECT object_type, object_id, relation, user_type, user_id, user_relation FROM tuples WHERE store_id = ",
         );
+        builder.push_bind(store_id);
 
-        let mut param_index = 2;
-        let mut params: Vec<String> = vec![];
-
-        if filter.object_type.is_some() {
-            query.push_str(&format!(" AND object_type = ${}", param_index));
-            param_index += 1;
-            params.push(filter.object_type.clone().unwrap());
+        if let Some(ref object_type) = filter.object_type {
+            builder.push(" AND object_type = ");
+            builder.push_bind(object_type);
         }
 
-        if filter.object_id.is_some() {
-            query.push_str(&format!(" AND object_id = ${}", param_index));
-            param_index += 1;
-            params.push(filter.object_id.clone().unwrap());
+        if let Some(ref object_id) = filter.object_id {
+            builder.push(" AND object_id = ");
+            builder.push_bind(object_id);
         }
 
-        if filter.relation.is_some() {
-            query.push_str(&format!(" AND relation = ${}", param_index));
-            param_index += 1;
-            params.push(filter.relation.clone().unwrap());
+        if let Some(ref relation) = filter.relation {
+            builder.push(" AND relation = ");
+            builder.push_bind(relation);
         }
 
-        if let Some(ref user) = filter.user {
-            // User filter is in format "type:id" or "type:id#relation"
-            if user.contains('#') {
-                let parts: Vec<&str> = user.split('#').collect();
-                if parts.len() != 2 {
-                    return Err(StorageError::InvalidFilter {
-                        message: format!(
-                            "Invalid user filter format: '{}'. Expected 'type:id#relation'",
-                            user
-                        ),
-                    });
-                }
-                let user_parts: Vec<&str> = parts[0].split(':').collect();
-                if user_parts.len() != 2 {
-                    return Err(StorageError::InvalidFilter {
-                        message: format!(
-                            "Invalid user filter format: '{}'. Expected 'type:id#relation'",
-                            user
-                        ),
-                    });
-                }
-                query.push_str(&format!(
-                    " AND user_type = ${} AND user_id = ${} AND user_relation = ${}",
-                    param_index,
-                    param_index + 1,
-                    param_index + 2
-                ));
-                params.push(user_parts[0].to_string());
-                params.push(user_parts[1].to_string());
-                params.push(parts[1].to_string());
+        if let Some((user_type, user_id, user_relation)) = user_filter {
+            builder.push(" AND user_type = ");
+            builder.push_bind(user_type);
+            builder.push(" AND user_id = ");
+            builder.push_bind(user_id);
+            if let Some(rel) = user_relation {
+                builder.push(" AND user_relation = ");
+                builder.push_bind(rel);
             } else {
-                let user_parts: Vec<&str> = user.split(':').collect();
-                if user_parts.len() != 2 {
-                    return Err(StorageError::InvalidFilter {
-                        message: format!(
-                            "Invalid user filter format: '{}'. Expected 'type:id'",
-                            user
-                        ),
-                    });
-                }
-                query.push_str(&format!(
-                    " AND user_type = ${} AND user_id = ${} AND user_relation IS NULL",
-                    param_index,
-                    param_index + 1
-                ));
-                params.push(user_parts[0].to_string());
-                params.push(user_parts[1].to_string());
+                builder.push(" AND user_relation IS NULL");
             }
         }
 
-        query.push_str(" ORDER BY created_at DESC");
-
-        // Build and execute the query
-        let mut query_builder = sqlx::query(&query).bind(store_id);
-        for param in &params {
-            query_builder = query_builder.bind(param);
-        }
+        builder.push(" ORDER BY created_at DESC");
 
         let rows =
-            query_builder
+            builder
+                .build()
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| StorageError::QueryError {
