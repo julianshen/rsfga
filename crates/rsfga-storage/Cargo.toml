@@ -15,7 +15,7 @@ tokio = { workspace = true }
 async-trait = "0.1"
 
 # Database
-sqlx = { workspace = true }
+sqlx = { workspace = true, features = ["chrono"] }
 
 # Concurrency
 dashmap = { workspace = true }
@@ -34,3 +34,4 @@ tracing = { workspace = true }
 proptest = { workspace = true }
 mockall = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+sqlx = { workspace = true, features = ["chrono", "runtime-tokio"] }
