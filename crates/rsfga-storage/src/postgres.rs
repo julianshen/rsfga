@@ -149,6 +149,8 @@ impl PostgresDataStore {
             "CREATE INDEX IF NOT EXISTS idx_tuples_object ON tuples(store_id, object_type, object_id)",
             "CREATE INDEX IF NOT EXISTS idx_tuples_user ON tuples(store_id, user_type, user_id)",
             "CREATE INDEX IF NOT EXISTS idx_tuples_relation ON tuples(store_id, object_type, object_id, relation)",
+            // Additional index for queries filtering by relation without object_type
+            "CREATE INDEX IF NOT EXISTS idx_tuples_store_relation ON tuples(store_id, relation)",
         ];
 
         for index_sql in indexes {

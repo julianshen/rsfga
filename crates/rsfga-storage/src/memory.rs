@@ -63,7 +63,7 @@ impl DataStore for MemoryDataStore {
     async fn get_store(&self, id: &str) -> StorageResult<Store> {
         self.stores
             .get(id)
-            .map(|s| s.clone())
+            .map(|s| s.value().clone())
             .ok_or_else(|| StorageError::StoreNotFound {
                 store_id: id.to_string(),
             })
@@ -137,32 +137,21 @@ impl DataStore for MemoryDataStore {
 
         let mut tuples = self.tuples.entry(store_id.to_string()).or_default();
 
-        // Process deletes
-        for delete in deletes {
-            tuples.retain(|t| {
-                !(t.object_type == delete.object_type
-                    && t.object_id == delete.object_id
-                    && t.relation == delete.relation
-                    && t.user_type == delete.user_type
-                    && t.user_id == delete.user_id
-                    && t.user_relation == delete.user_relation)
-            });
+        // Process deletes using HashSet for O(m + n) instead of O(m * n)
+        if !deletes.is_empty() {
+            use std::collections::HashSet;
+            let delete_set: HashSet<_> = deletes.into_iter().collect();
+            tuples.retain(|t| !delete_set.contains(t));
         }
 
-        // Process writes
-        for write in writes {
-            // Check for duplicates (including user_relation)
-            let exists = tuples.iter().any(|t| {
-                t.object_type == write.object_type
-                    && t.object_id == write.object_id
-                    && t.relation == write.relation
-                    && t.user_type == write.user_type
-                    && t.user_id == write.user_id
-                    && t.user_relation == write.user_relation
-            });
-
-            if !exists {
-                tuples.push(write);
+        // Process writes using HashSet for efficient duplicate checking
+        if !writes.is_empty() {
+            use std::collections::HashSet;
+            let existing: HashSet<_> = tuples.iter().cloned().collect();
+            for write in writes {
+                if !existing.contains(&write) {
+                    tuples.push(write);
+                }
             }
         }
 
