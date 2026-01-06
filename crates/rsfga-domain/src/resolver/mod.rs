@@ -546,6 +546,8 @@ where
 
         // Track errors for reporting if all branches fail
         let mut last_error: Option<DomainError> = None;
+        let mut cycle_error: Option<DomainError> = None;
+        let mut had_false_result = false;
 
         // Poll futures and short-circuit on first allowed=true
         while let Some(result) = futures.next().await {
@@ -556,10 +558,13 @@ where
                 }
                 Ok(CheckResult { allowed: false }) => {
                     // Continue checking other branches
+                    had_false_result = true;
                 }
                 Err(e) => {
-                    // Don't propagate cycle errors as they might be from one branch
-                    if !matches!(e, DomainError::CycleDetected { .. }) {
+                    // Track cycle errors separately - they're only fatal if ALL branches cycle
+                    if matches!(e, DomainError::CycleDetected { .. }) {
+                        cycle_error = Some(e);
+                    } else {
                         last_error = Some(e);
                     }
                 }
@@ -569,6 +574,13 @@ where
         // If we had a non-cycle error and no branch succeeded, propagate it
         if let Some(e) = last_error {
             return Err(e);
+        }
+
+        // If ALL branches returned cycle errors (no false results), propagate the cycle
+        if !had_false_result {
+            if let Some(e) = cycle_error {
+                return Err(e);
+            }
         }
 
         Ok(CheckResult { allowed: false })
@@ -1629,6 +1641,77 @@ mod tests {
         assert!(result.allowed);
     }
 
+    #[tokio::test]
+    async fn test_union_returns_cycle_error_when_all_branches_cycle() {
+        // Test that when ALL branches in a union return CycleDetected,
+        // the error is properly propagated instead of returning allowed: false
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        // Create a model where union branches both lead to cycles
+        // branch1: viewer -> computed from cyclic_rel1
+        // branch2: viewer -> computed from cyclic_rel2
+        // cyclic_rel1 and cyclic_rel2 both reference viewer (creating cycles)
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![
+                        RelationDefinition {
+                            name: "viewer".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::Union {
+                                children: vec![
+                                    Userset::ComputedUserset {
+                                        relation: "cyclic_rel1".to_string(),
+                                    },
+                                    Userset::ComputedUserset {
+                                        relation: "cyclic_rel2".to_string(),
+                                    },
+                                ],
+                            },
+                        },
+                        RelationDefinition {
+                            name: "cyclic_rel1".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "viewer".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "cyclic_rel2".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "viewer".to_string(),
+                            },
+                        },
+                    ],
+                },
+            )
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        // Should return CycleDetected error, not allowed: false
+        let result = resolver.check(&request).await;
+        assert!(
+            matches!(result, Err(DomainError::CycleDetected { .. })),
+            "Union with all cyclic branches should return CycleDetected error, got {:?}",
+            result
+        );
+    }
+
     // ========== Section 4: Intersection Relations (A and B) ==========
 
     #[tokio::test]
@@ -2619,6 +2702,282 @@ mod tests {
             }
             _ => panic!("Expected Timeout error, got {:?}", result),
         }
+    }
+
+    // ========== Section 6b: Edge Case Tests ==========
+
+    #[tokio::test]
+    async fn test_empty_union_returns_false() {
+        // Empty union should return false (no branches to satisfy)
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::Union { children: vec![] },
+                    }],
+                },
+            )
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        let result = resolver.check(&request).await.unwrap();
+        assert!(!result.allowed, "Empty union should return false");
+    }
+
+    #[tokio::test]
+    async fn test_empty_intersection_returns_true() {
+        // Empty intersection should return true (vacuously all conditions met)
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::Intersection { children: vec![] },
+                    }],
+                },
+            )
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        let result = resolver.check(&request).await.unwrap();
+        assert!(result.allowed, "Empty intersection should return true");
+    }
+
+    #[tokio::test]
+    async fn test_depth_limit_at_boundary_24_succeeds() {
+        // Test that depth 24 (just under limit of 25) succeeds
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        // Create chain of exactly 24 levels
+        for i in 0..25 {
+            let type_name = format!("level{}", i);
+            let rewrite = if i == 0 {
+                Userset::This
+            } else {
+                Userset::TupleToUserset {
+                    tupleset: "parent".to_string(),
+                    computed_userset: "viewer".to_string(),
+                }
+            };
+
+            let mut relations = vec![RelationDefinition {
+                name: "viewer".to_string(),
+                type_constraints: vec!["user".to_string()],
+                rewrite,
+            }];
+
+            if i > 0 {
+                relations.push(RelationDefinition {
+                    name: "parent".to_string(),
+                    type_constraints: vec![format!("level{}", i - 1)],
+                    rewrite: Userset::This,
+                });
+            }
+
+            model_reader
+                .add_type(
+                    "store1",
+                    TypeDefinition {
+                        type_name,
+                        relations,
+                    },
+                )
+                .await;
+        }
+
+        // Create chain of parent relationships (24 hops)
+        for i in 1..25 {
+            tuple_reader
+                .add_tuple(
+                    "store1",
+                    &format!("level{}", i),
+                    "obj",
+                    "parent",
+                    &format!("level{}", i - 1),
+                    "obj",
+                    None,
+                )
+                .await;
+        }
+
+        // Alice is viewer at level0
+        tuple_reader
+            .add_tuple("store1", "level0", "obj", "viewer", "user", "alice", None)
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        // Check at level24 - should succeed (depth 24 is within limit of 25)
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "level24:obj".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        let result = resolver.check(&request).await.unwrap();
+        assert!(
+            result.allowed,
+            "Depth 24 should succeed (within limit of 25)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_contextual_tuple_overrides_stored_tuple() {
+        // Contextual tuples should be checked first and can grant access
+        // even if no stored tuple exists
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+            )
+            .await;
+
+        // No stored tuple for alice
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        // Without contextual tuple - should be denied
+        let request_without = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        let result = resolver.check(&request_without).await.unwrap();
+        assert!(!result.allowed, "Should be denied without contextual tuple");
+
+        // With contextual tuple - should be allowed
+        let request_with = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![ContextualTuple {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+            }]),
+        };
+
+        let result = resolver.check(&request_with).await.unwrap();
+        assert!(result.allowed, "Contextual tuple should grant access");
+    }
+
+    #[tokio::test]
+    async fn test_contextual_tuple_does_not_conflict_with_stored() {
+        // Both contextual and stored tuples can coexist
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".to_string()],
+                        rewrite: Userset::This,
+                    }],
+                },
+            )
+            .await;
+
+        // Bob has stored tuple
+        tuple_reader
+            .add_tuple("store1", "document", "doc1", "viewer", "user", "bob", None)
+            .await;
+
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+        // Alice uses contextual tuple, Bob uses stored - both should work
+        let request_alice = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![ContextualTuple {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+            }]),
+        };
+
+        let request_bob = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:bob".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        let result_alice = resolver.check(&request_alice).await.unwrap();
+        let result_bob = resolver.check(&request_bob).await.unwrap();
+
+        assert!(
+            result_alice.allowed,
+            "Alice should have access via contextual tuple"
+        );
+        assert!(
+            result_bob.allowed,
+            "Bob should have access via stored tuple"
+        );
     }
 
     // ========== Section 7: Property-Based Tests ==========
