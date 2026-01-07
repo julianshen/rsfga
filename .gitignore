@@ -74,6 +74,8 @@ $RECYCLE.BIN/
 
 # Proto files (use upstream OpenFGA definitions)
 **/proto/
+# But keep rsfga-api proto files (needed for build)
+!crates/rsfga-api/proto/
 
 # Temporary files
 *.tmp
