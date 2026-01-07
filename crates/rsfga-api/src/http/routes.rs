@@ -463,40 +463,45 @@ async fn write_tuples<S: DataStore>(
     let _ = state.storage.get_store(&store_id).await?;
 
     // Convert write tuples - fail if any tuple key is invalid
-    let writes: Vec<StoredTuple> = if let Some(w) = body.writes {
-        let mut tuples = Vec::with_capacity(w.tuple_keys.len());
-        for (i, tk) in w.tuple_keys.into_iter().enumerate() {
-            let stored = parse_tuple_key(&tk).ok_or_else(|| {
-                ApiError::invalid_input(format!(
-                    "invalid tuple_key at writes index {}: user='{}', object='{}'",
-                    i, tk.user, tk.object
-                ))
-            })?;
-            tuples.push(stored);
-        }
-        tuples
-    } else {
-        vec![]
-    };
+    let writes: Vec<StoredTuple> = body
+        .writes
+        .map(|w| {
+            w.tuple_keys
+                .into_iter()
+                .enumerate()
+                .map(|(i, tk)| {
+                    parse_tuple_key(&tk).ok_or_else(|| {
+                        ApiError::invalid_input(format!(
+                            "invalid tuple_key at writes index {}: user='{}', object='{}'",
+                            i, tk.user, tk.object
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
 
     // Convert delete tuples - fail if any tuple key is invalid
-    let deletes: Vec<StoredTuple> = if let Some(d) = body.deletes {
-        let mut tuples = Vec::with_capacity(d.tuple_keys.len());
-        for (i, tk) in d.tuple_keys.into_iter().enumerate() {
-            // Use parse_tuple_fields directly to avoid cloning
-            let stored =
-                parse_tuple_fields(&tk.user, &tk.relation, &tk.object).ok_or_else(|| {
-                    ApiError::invalid_input(format!(
-                        "invalid tuple_key at deletes index {}: user='{}', object='{}'",
-                        i, tk.user, tk.object
-                    ))
-                })?;
-            tuples.push(stored);
-        }
-        tuples
-    } else {
-        vec![]
-    };
+    let deletes: Vec<StoredTuple> = body
+        .deletes
+        .map(|d| {
+            d.tuple_keys
+                .into_iter()
+                .enumerate()
+                .map(|(i, tk)| {
+                    // Use parse_tuple_fields directly to avoid cloning
+                    parse_tuple_fields(&tk.user, &tk.relation, &tk.object).ok_or_else(|| {
+                        ApiError::invalid_input(format!(
+                            "invalid tuple_key at deletes index {}: user='{}', object='{}'",
+                            i, tk.user, tk.object
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
 
     state
         .storage
@@ -584,12 +589,13 @@ async fn read_tuples<S: DataStore>(
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
-    // Build filter from request
+    // Build filter from request - use parse_object for consistent validation
+    // Invalid object format is treated as "no object filter" rather than an error
+    // since read is a query operation, not a write
     let filter = if let Some(tk) = body.tuple_key {
         let object_filter = if !tk.object.is_empty() {
-            tk.object
-                .split_once(':')
-                .map(|(t, i)| (t.to_string(), i.to_string()))
+            // Use parse_object for consistent validation (rejects ":", ":id", "type:")
+            parse_object(&tk.object).map(|(t, i)| (t.to_string(), i.to_string()))
         } else {
             None
         };

@@ -166,44 +166,50 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .map_err(storage_error_to_status)?;
 
         // Convert writes - fail if any tuple key is invalid
-        let writes: Vec<StoredTuple> = if let Some(w) = req.writes {
-            let mut tuples = Vec::with_capacity(w.tuple_keys.len());
-            for (i, tk) in w.tuple_keys.iter().enumerate() {
-                let stored = tuple_key_to_stored(tk).ok_or_else(|| {
-                    Status::invalid_argument(format!(
-                        "invalid tuple_key at writes index {}: user='{}', object='{}'",
-                        i, tk.user, tk.object
-                    ))
-                })?;
-                tuples.push(stored);
-            }
-            tuples
-        } else {
-            vec![]
-        };
+        let writes: Vec<StoredTuple> = req
+            .writes
+            .map(|w| {
+                w.tuple_keys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tk)| {
+                        tuple_key_to_stored(tk).ok_or_else(|| {
+                            Status::invalid_argument(format!(
+                                "invalid tuple_key at writes index {}: user='{}', object='{}'",
+                                i, tk.user, tk.object
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
 
         // Convert deletes - fail if any tuple key is invalid
-        let deletes: Vec<StoredTuple> = if let Some(d) = req.deletes {
-            let mut tuples = Vec::with_capacity(d.tuple_keys.len());
-            for (i, tk) in d.tuple_keys.iter().enumerate() {
-                let stored = tuple_key_to_stored(&TupleKey {
-                    user: tk.user.clone(),
-                    relation: tk.relation.clone(),
-                    object: tk.object.clone(),
-                    condition: None,
-                })
-                .ok_or_else(|| {
-                    Status::invalid_argument(format!(
-                        "invalid tuple_key at deletes index {}: user='{}', object='{}'",
-                        i, tk.user, tk.object
-                    ))
-                })?;
-                tuples.push(stored);
-            }
-            tuples
-        } else {
-            vec![]
-        };
+        let deletes: Vec<StoredTuple> = req
+            .deletes
+            .map(|d| {
+                d.tuple_keys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tk)| {
+                        tuple_key_to_stored(&TupleKey {
+                            user: tk.user.clone(),
+                            relation: tk.relation.clone(),
+                            object: tk.object.clone(),
+                            condition: None,
+                        })
+                        .ok_or_else(|| {
+                            Status::invalid_argument(format!(
+                                "invalid tuple_key at deletes index {}: user='{}', object='{}'",
+                                i, tk.user, tk.object
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
 
         self.storage
             .write_tuples(&req.store_id, writes, deletes)
@@ -223,12 +229,13 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // Build filter
+        // Build filter - use parse_object for consistent validation
+        // Invalid object format is treated as "no object filter" rather than an error
+        // since read is a query operation, not a write
         let filter = if let Some(tk) = req.tuple_key {
             let object_filter = if !tk.object.is_empty() {
-                tk.object
-                    .split_once(':')
-                    .map(|(t, i)| (t.to_string(), i.to_string()))
+                // Use parse_object for consistent validation (rejects ":", ":id", "type:")
+                parse_object(&tk.object).map(|(t, i)| (t.to_string(), i.to_string()))
             } else {
                 None
             };
