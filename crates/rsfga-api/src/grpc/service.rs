@@ -10,15 +10,16 @@ use crate::utils::{format_user, parse_object, parse_user, MAX_BATCH_SIZE};
 
 use crate::proto::openfga::v1::{
     open_fga_service_server::OpenFgaService, BatchCheckItem, BatchCheckRequest, BatchCheckResponse,
-    BatchCheckSingleResult, CheckRequest, CheckResponse, CreateStoreRequest, CreateStoreResponse,
-    DeleteStoreRequest, DeleteStoreResponse, ExpandRequest, ExpandResponse, GetStoreRequest,
-    GetStoreResponse, ListObjectsRequest, ListObjectsResponse, ListStoresRequest,
-    ListStoresResponse, ListUsersRequest, ListUsersResponse, ReadAssertionsRequest,
-    ReadAssertionsResponse, ReadAuthorizationModelRequest, ReadAuthorizationModelResponse,
-    ReadAuthorizationModelsRequest, ReadAuthorizationModelsResponse, ReadChangesRequest,
-    ReadChangesResponse, ReadRequest, ReadResponse, Store, Tuple, TupleKey, UpdateStoreRequest,
-    UpdateStoreResponse, WriteAssertionsRequest, WriteAssertionsResponse,
-    WriteAuthorizationModelRequest, WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
+    BatchCheckSingleResult, CheckError, CheckRequest, CheckResponse, CreateStoreRequest,
+    CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse, ErrorCode, ExpandRequest,
+    ExpandResponse, GetStoreRequest, GetStoreResponse, ListObjectsRequest, ListObjectsResponse,
+    ListStoresRequest, ListStoresResponse, ListUsersRequest, ListUsersResponse,
+    ReadAssertionsRequest, ReadAssertionsResponse, ReadAuthorizationModelRequest,
+    ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
+    ReadAuthorizationModelsResponse, ReadChangesRequest, ReadChangesResponse, ReadRequest,
+    ReadResponse, Store, Tuple, TupleKey, UpdateStoreRequest, UpdateStoreResponse,
+    WriteAssertionsRequest, WriteAssertionsResponse, WriteAuthorizationModelRequest,
+    WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
 
 /// gRPC service implementation for OpenFGA.
@@ -140,19 +141,12 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             )));
         }
 
-        // Process each check
+        // Process each check independently - errors are captured per-item, not propagated
+        // This matches OpenFGA behavior where each check in a batch is independent
         let mut result_map = std::collections::HashMap::new();
-        for (i, item) in req.checks.into_iter().enumerate() {
-            let allowed = self
-                .process_batch_check_item(&req.store_id, &item, i)
-                .await?;
-            result_map.insert(
-                item.correlation_id,
-                BatchCheckSingleResult {
-                    allowed,
-                    error: None,
-                },
-            );
+        for item in req.checks.into_iter() {
+            let result = self.process_batch_check_item(&req.store_id, &item).await;
+            result_map.insert(item.correlation_id, result);
         }
 
         Ok(Response::new(BatchCheckResponse { result: result_map }))
@@ -571,24 +565,55 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
 impl<S: DataStore> OpenFgaGrpcService<S> {
     /// Helper to process a single batch check item.
+    /// Returns a result with either allowed status or error - errors are per-item, not propagated.
     async fn process_batch_check_item(
         &self,
         store_id: &str,
         item: &BatchCheckItem,
-        index: usize,
-    ) -> Result<bool, Status> {
-        let tuple_key = item
-            .tuple_key
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("tuple_key is required"))?;
+    ) -> BatchCheckSingleResult {
+        let tuple_key = match item.tuple_key.as_ref() {
+            Some(tk) => tk,
+            None => {
+                return BatchCheckSingleResult {
+                    allowed: false,
+                    error: Some(CheckError {
+                        code: ErrorCode::ValidationError as i32,
+                        message: "tuple_key is required".to_string(),
+                    }),
+                };
+            }
+        };
 
         // Validate object format (required: "type:id")
-        let (object_type, object_id) = parse_object(&tuple_key.object).ok_or_else(|| {
-            Status::invalid_argument(format!(
-                "invalid object format '{}' at check index {}: expected 'type:id'",
-                tuple_key.object, index
-            ))
-        })?;
+        let (object_type, object_id) = match parse_object(&tuple_key.object) {
+            Some((t, i)) => (t, i),
+            None => {
+                return BatchCheckSingleResult {
+                    allowed: false,
+                    error: Some(CheckError {
+                        code: ErrorCode::InvalidObjectFormat as i32,
+                        message: format!(
+                            "invalid object format '{}': expected 'type:id'",
+                            tuple_key.object
+                        ),
+                    }),
+                };
+            }
+        };
+
+        // Validate user format
+        if parse_user(&tuple_key.user).is_none() {
+            return BatchCheckSingleResult {
+                allowed: false,
+                error: Some(CheckError {
+                    code: ErrorCode::ValidationError as i32,
+                    message: format!(
+                        "invalid user format '{}': expected 'type:id' or 'type:id#relation'",
+                        tuple_key.user
+                    ),
+                }),
+            };
+        }
 
         let filter = TupleFilter {
             object_type: Some(object_type.to_string()),
@@ -597,12 +622,18 @@ impl<S: DataStore> OpenFgaGrpcService<S> {
             user: Some(tuple_key.user.clone()),
         };
 
-        let tuples = self
-            .storage
-            .read_tuples(store_id, &filter)
-            .await
-            .map_err(storage_error_to_status)?;
-
-        Ok(!tuples.is_empty())
+        match self.storage.read_tuples(store_id, &filter).await {
+            Ok(tuples) => BatchCheckSingleResult {
+                allowed: !tuples.is_empty(),
+                error: None,
+            },
+            Err(e) => BatchCheckSingleResult {
+                allowed: false,
+                error: Some(CheckError {
+                    code: ErrorCode::ValidationError as i32,
+                    message: format!("storage error: {}", e),
+                }),
+            },
+        }
     }
 }

@@ -318,36 +318,74 @@ async fn batch_check<S: DataStore>(
         )));
     }
 
-    // Process each check
+    // Process each check independently - errors are captured per-item, not propagated
+    // This matches OpenFGA behavior where each check in a batch is independent
     let mut result_map = std::collections::HashMap::new();
-    for (i, item) in body.checks.into_iter().enumerate() {
-        // Validate object format (required: "type:id")
-        let (object_type, object_id) = parse_object(&item.tuple_key.object).ok_or_else(|| {
-            ApiError::invalid_input(format!(
-                "invalid object format '{}' at check index {}: expected 'type:id'",
-                item.tuple_key.object, i
-            ))
-        })?;
-
-        let filter = rsfga_storage::TupleFilter {
-            object_type: Some(object_type.to_string()),
-            object_id: Some(object_id.to_string()),
-            relation: Some(item.tuple_key.relation.clone()),
-            user: Some(item.tuple_key.user.clone()),
-        };
-
-        let tuples = state.storage.read_tuples(&store_id, &filter).await?;
-
-        result_map.insert(
-            item.correlation_id,
-            BatchCheckSingleResultBody {
-                allowed: !tuples.is_empty(),
-                error: None,
-            },
-        );
+    for item in body.checks.into_iter() {
+        let result = process_single_check(state.storage.as_ref(), &store_id, &item).await;
+        result_map.insert(item.correlation_id, result);
     }
 
     Ok(Json(BatchCheckResponseBody { result: result_map }))
+}
+
+/// Process a single check item, returning a result with either allowed status or error.
+async fn process_single_check<S: DataStore>(
+    storage: &S,
+    store_id: &str,
+    item: &BatchCheckItemBody,
+) -> BatchCheckSingleResultBody {
+    // Validate object format (required: "type:id")
+    let (object_type, object_id) = match parse_object(&item.tuple_key.object) {
+        Some((t, i)) => (t, i),
+        None => {
+            return BatchCheckSingleResultBody {
+                allowed: false,
+                error: Some(BatchCheckErrorBody {
+                    code: 400,
+                    message: format!(
+                        "invalid object format '{}': expected 'type:id'",
+                        item.tuple_key.object
+                    ),
+                }),
+            };
+        }
+    };
+
+    // Validate user format
+    if parse_user(&item.tuple_key.user).is_none() {
+        return BatchCheckSingleResultBody {
+            allowed: false,
+            error: Some(BatchCheckErrorBody {
+                code: 400,
+                message: format!(
+                    "invalid user format '{}': expected 'type:id' or 'type:id#relation'",
+                    item.tuple_key.user
+                ),
+            }),
+        };
+    }
+
+    let filter = rsfga_storage::TupleFilter {
+        object_type: Some(object_type.to_string()),
+        object_id: Some(object_id.to_string()),
+        relation: Some(item.tuple_key.relation.clone()),
+        user: Some(item.tuple_key.user.clone()),
+    };
+
+    match storage.read_tuples(store_id, &filter).await {
+        Ok(tuples) => BatchCheckSingleResultBody {
+            allowed: !tuples.is_empty(),
+            error: None,
+        },
+        Err(e) => BatchCheckSingleResultBody {
+            allowed: false,
+            error: Some(BatchCheckErrorBody {
+                code: 500,
+                message: format!("storage error: {}", e),
+            }),
+        },
+    }
 }
 
 // ============================================================

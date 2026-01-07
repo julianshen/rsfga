@@ -26,15 +26,23 @@ pub fn parse_object(object: &str) -> Option<(&str, &str)> {
 /// - Simple: `"user:alice"` → `("user", "alice", None)`
 /// - Userset: `"team:eng#member"` → `("team", "eng", Some("member"))`
 ///
-/// Returns `None` if the format is invalid (missing colon separator).
+/// Returns `None` if the format is invalid (missing colon separator or empty parts).
 pub fn parse_user(user: &str) -> Option<(&str, &str, Option<&str>)> {
     // Check for userset format: "team:eng#member"
     if let Some((type_id, relation)) = user.split_once('#') {
         let (user_type, user_id) = type_id.split_once(':')?;
+        // Validate all parts are non-empty
+        if user_type.is_empty() || user_id.is_empty() || relation.is_empty() {
+            return None;
+        }
         Some((user_type, user_id, Some(relation)))
     } else {
         // Simple format: "user:alice"
         let (user_type, user_id) = user.split_once(':')?;
+        // Validate both parts are non-empty
+        if user_type.is_empty() || user_id.is_empty() {
+            return None;
+        }
         Some((user_type, user_id, None))
     }
 }
@@ -88,8 +96,14 @@ mod tests {
 
     #[test]
     fn test_parse_user_invalid() {
-        assert_eq!(parse_user("invalid"), None);
-        assert_eq!(parse_user(""), None);
+        assert_eq!(parse_user("invalid"), None); // Missing colon
+        assert_eq!(parse_user(""), None); // Empty string
+        assert_eq!(parse_user(":alice"), None); // Empty type
+        assert_eq!(parse_user("user:"), None); // Empty id
+        assert_eq!(parse_user(":"), None); // Just colon
+        assert_eq!(parse_user("type:#rel"), None); // Empty id in userset
+        assert_eq!(parse_user(":id#rel"), None); // Empty type in userset
+        assert_eq!(parse_user("type:id#"), None); // Empty relation in userset
     }
 
     #[test]
