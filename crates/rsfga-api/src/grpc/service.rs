@@ -47,9 +47,12 @@ fn storage_error_to_status(err: StorageError) -> Status {
 }
 
 /// Converts a TupleKey proto to StoredTuple.
+///
+/// Uses `parse_user` and `parse_object` for consistent validation across all handlers.
 fn tuple_key_to_stored(tk: &TupleKey) -> Option<StoredTuple> {
     let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
-    let (object_type, object_id) = tk.object.split_once(':')?;
+    // Use parse_object for consistent validation (rejects empty type or id)
+    let (object_type, object_id) = parse_object(&tk.object)?;
 
     Some(StoredTuple {
         object_type: object_type.to_string(),
@@ -108,6 +111,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         }))
     }
 
+    // NOTE: This implementation performs sequential tuple lookups for simplicity.
+    // In Milestone 1.8 (Server Integration), this will delegate to BatchCheckHandler
+    // in rsfga-server to leverage parallel execution, request deduplication, and
+    // singleflight optimizations. See plan.md for the integration roadmap.
     async fn batch_check(
         &self,
         request: Request<BatchCheckRequest>,

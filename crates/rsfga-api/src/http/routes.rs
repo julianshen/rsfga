@@ -256,6 +256,11 @@ async fn check<S: DataStore>(
 // Batch Check Operation
 // ============================================================
 
+// NOTE: This implementation performs sequential tuple lookups for simplicity.
+// In Milestone 1.8 (Server Integration), this will delegate to BatchCheckHandler
+// in rsfga-server to leverage parallel execution, request deduplication, and
+// singleflight optimizations. See plan.md for the integration roadmap.
+
 /// Request body for batch check operation.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -469,7 +474,9 @@ fn parse_tuple_key(tk: &TupleKeyBody) -> Option<rsfga_storage::StoredTuple> {
 }
 
 /// Parses tuple fields directly into a StoredTuple.
+///
 /// This avoids unnecessary cloning when converting from TupleKeyWithoutConditionBody.
+/// Uses `parse_user` and `parse_object` for consistent validation across all handlers.
 fn parse_tuple_fields(
     user: &str,
     relation: &str,
@@ -478,8 +485,8 @@ fn parse_tuple_fields(
     // Parse user: "user:alice" or "team:eng#member"
     let (user_type, user_id, user_relation) = parse_user(user)?;
 
-    // Parse object: "document:readme"
-    let (object_type, object_id) = object.split_once(':')?;
+    // Parse object: "document:readme" - use parse_object for consistent validation
+    let (object_type, object_id) = parse_object(object)?;
 
     Some(rsfga_storage::StoredTuple {
         object_type: object_type.to_string(),
