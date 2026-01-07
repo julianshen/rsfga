@@ -15,69 +15,14 @@
 //! **Note**: These tests focus on API-level security. Full security audits
 //! should include fuzz testing, penetration testing, and code review.
 
+mod common;
+
 use std::sync::Arc;
 
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-};
-use tower::ServiceExt;
-
-use rsfga_api::http::{create_router, AppState};
+use axum::http::StatusCode;
 use rsfga_storage::MemoryDataStore;
 
-// =============================================================================
-// Test Helpers
-// =============================================================================
-
-/// Create a test app with in-memory storage.
-fn create_test_app(storage: &Arc<MemoryDataStore>) -> axum::Router {
-    let state = AppState::new(Arc::clone(storage));
-    create_router(state)
-}
-
-/// Make a JSON POST request.
-async fn post_json(
-    app: axum::Router,
-    uri: &str,
-    body: serde_json::Value,
-) -> (StatusCode, serde_json::Value) {
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    let status = response.status();
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::json!({}));
-    (status, json)
-}
-
-/// Make a raw POST request with string body.
-async fn post_raw(app: axum::Router, uri: &str, body: &str) -> StatusCode {
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    response.status()
-}
+use common::{create_test_app, post_json, post_raw};
 
 // =============================================================================
 // Section 5: Security Tests
@@ -239,26 +184,50 @@ async fn test_malformed_json_rejected() {
     }
 }
 
-/// Test: Oversized payloads are rejected
+/// Test: Oversized payloads are rejected or safely processed
+///
+/// This test verifies that oversized payloads don't cause server errors.
+/// The expected behavior depends on server configuration:
+/// - With payload size limits: Returns 413 Payload Too Large or 400 Bad Request
+/// - Without limits: Successfully creates the store (validates input handling)
 #[tokio::test]
 async fn test_oversized_payload_rejected() {
     let storage = Arc::new(MemoryDataStore::new());
 
     // Create a very large payload (> 1MB)
     let large_name = "x".repeat(1024 * 1024 + 1);
-    let (status, _) = post_json(
+    let (status, response) = post_json(
         create_test_app(&storage),
         "/stores",
         serde_json::json!({"name": large_name}),
     )
     .await;
 
-    // Should be rejected - either by payload size limit or validation
-    // Note: The actual limit depends on server configuration
+    // Must NOT cause server error (5xx)
     assert!(
-        status.is_client_error() || status == StatusCode::OK,
-        "Very large payload should either be rejected or handled safely"
+        !status.is_server_error(),
+        "Oversized payload must not cause server error, got {}",
+        status
     );
+
+    // Verify behavior based on status:
+    if status.is_client_error() {
+        // Payload was rejected (expected with size limits configured)
+        // This is the preferred security behavior
+    } else if status == StatusCode::CREATED {
+        // Store was created - verify it was actually stored correctly
+        // This confirms the system handled the large payload safely
+        let store_id = response["id"].as_str();
+        assert!(
+            store_id.is_some() && !store_id.unwrap().is_empty(),
+            "If store creation succeeds, response must contain valid store ID"
+        );
+    } else {
+        panic!(
+            "Unexpected status {} for oversized payload - expected client error or CREATED",
+            status
+        );
+    }
 }
 
 /// Test: Special characters in identifiers are handled safely

@@ -2,48 +2,14 @@
 //!
 //! These tests verify end-to-end authorization flows and system integration.
 
+mod common;
+
 use std::sync::Arc;
 
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-};
-use tower::ServiceExt;
-
-use rsfga_api::http::{create_router, AppState};
+use axum::http::StatusCode;
 use rsfga_storage::MemoryDataStore;
 
-/// Helper to create a test app with in-memory storage.
-fn create_test_app(storage: &Arc<MemoryDataStore>) -> axum::Router {
-    let state = AppState::new(Arc::clone(storage));
-    create_router(state)
-}
-
-/// Helper to make JSON POST requests.
-async fn post_json(
-    app: axum::Router,
-    uri: &str,
-    body: serde_json::Value,
-) -> (StatusCode, serde_json::Value) {
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    let status = response.status();
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::json!({}));
-    (status, json)
-}
+use common::{create_test_app, post_json};
 
 // ============================================================
 // Section 2: Integration Tests

@@ -359,7 +359,16 @@ fn bench_cache_operations(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark batch checks (simulated by running multiple checks).
+/// Benchmark raw check throughput for batch-sized workloads.
+///
+/// Note: This measures sequential check performance for batch-sized workloads,
+/// not the actual `BatchCheckHandler` with deduplication and singleflight.
+/// For batch handler benchmarks with deduplication, see rsfga-server benches.
+///
+/// This benchmark is useful for:
+/// - Measuring baseline check throughput
+/// - Comparing cache hit performance across batch sizes
+/// - Validating resolver scalability under sequential load
 fn bench_batch_check(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let (tuple_reader, model_reader) = create_direct_relation_setup();
