@@ -1249,17 +1249,13 @@ Before marking Phase 1 complete:
 - Milestone 1.4: Graph Resolver ✅ COMPLETE (49 tests)
 - Milestone 1.5: Check Cache ✅ COMPLETE (23 tests)
 - Milestone 1.6: Batch Check Handler ✅ COMPLETE (20 tests)
+- Milestone 1.7: API Layer ✅ COMPLETE (37 tests)
 
-**Current Focus**: Milestone 1.6 - Batch Check Handler ✅ COMPLETE
-- Batch Request Parsing: ✅ Complete (5 tests)
-- Intra-Batch Deduplication: ✅ Complete (4 tests)
-- Singleflight Cross-Request Dedup: ✅ Complete (4 tests)
-- Parallel Execution: ✅ Complete (4 tests)
-- Performance Validation: ✅ Complete (3 tests)
+**Current Focus**: Milestone 1.8 - Testing & Benchmarking
+- Test Coverage: ⏸️ Pending
+- Integration Tests: ⏸️ Pending
+- Performance Benchmarks: ⏸️ Pending
+- Stress Testing: ⏸️ Pending
+- Security Testing: ⏸️ Pending
 
-**Compatibility Tests**: Deferred to M1.7 (API Layer)
-- The 150 compatibility tests from Phase 0 require the full HTTP/gRPC API stack
-- Graph Resolver (M1.4) is validated through 49 unit tests (including security tests)
-- Compatibility tests will run once M1.7 wires up the complete request/response flow
-
-**Next**: Milestone 1.7 - API Layer (HTTP REST and gRPC APIs)
+**Next**: Milestone 1.8 - Testing & Benchmarking (comprehensive testing and performance validation)
