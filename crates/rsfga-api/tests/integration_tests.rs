@@ -193,7 +193,13 @@ async fn test_multiple_concurrent_clients_work_correctly() {
                 )
                 .await;
 
-                (i, status, response["allowed"].as_bool().unwrap_or(false))
+                (
+                    i,
+                    status,
+                    response["allowed"]
+                        .as_bool()
+                        .expect("'allowed' field should be a boolean"),
+                )
             }
         })
         .collect();

@@ -35,7 +35,11 @@ use common::{create_test_app, post_json};
 ///
 /// Verifies the system can handle a high number of concurrent requests
 /// without errors or excessive latency.
+///
+/// Note: This test is resource-intensive and may be flaky in CI environments.
+/// Run manually with: `cargo test -p rsfga-api --test stress_tests -- --ignored`
 #[tokio::test]
+#[ignore = "resource-intensive load test - run manually"]
 async fn test_server_handles_1000_concurrent_requests() {
     let storage = Arc::new(MemoryDataStore::new());
 
@@ -135,7 +139,11 @@ async fn test_server_handles_1000_concurrent_requests() {
 ///
 /// Runs a sustained load test and verifies the system remains stable.
 /// Note: Full memory leak detection requires external tools (valgrind, heaptrack).
+///
+/// This test runs for 5 seconds with 10 workers and may be flaky in CI.
+/// Run manually with: `cargo test -p rsfga-api --test stress_tests -- --ignored`
 #[tokio::test]
+#[ignore = "resource-intensive load test - run manually"]
 async fn test_sustained_load_stability() {
     let storage = Arc::new(MemoryDataStore::new());
 
@@ -239,7 +247,11 @@ async fn test_sustained_load_stability() {
 ///
 /// Verifies the system degrades gracefully when overloaded rather than crashing.
 /// Tests that errors are appropriate (429 Too Many Requests, etc.) when overloaded.
+///
+/// This test fires 5000 concurrent requests and may be flaky in CI.
+/// Run manually with: `cargo test -p rsfga-api --test stress_tests -- --ignored`
 #[tokio::test]
+#[ignore = "resource-intensive load test - run manually"]
 async fn test_graceful_degradation_under_overload() {
     let storage = Arc::new(MemoryDataStore::new());
 

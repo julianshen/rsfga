@@ -4,9 +4,9 @@
 //!
 //! These benchmarks measure:
 //! - Direct relation check throughput
-//! - Cache hit ratio and performance
+//! - Repeated check performance (same request pattern)
 //! - Computed relation (union) performance
-//! - Batch check performance
+//! - Parallel batch check performance
 //!
 //! Target baselines (from OpenFGA):
 //! - Direct check: ~500 req/s
@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use futures::future::join_all;
 use tokio::runtime::Runtime;
 
 use rsfga_domain::error::{DomainError, DomainResult};
@@ -315,19 +316,23 @@ fn bench_union_check(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark cache performance.
-fn bench_cache_operations(c: &mut Criterion) {
+/// Benchmark repeated check performance (same request pattern).
+///
+/// This measures the performance of repeatedly checking the same request,
+/// which exercises the resolver's internal optimizations and in-memory
+/// data structures. Note: This does NOT currently exercise a check result
+/// cache (caching is implemented at the server layer, not resolver layer).
+fn bench_repeated_check(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let (tuple_reader, model_reader) = create_direct_relation_setup();
 
-    // Create resolver with cache enabled
     let config = ResolverConfig::default();
     let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
 
-    let mut group = c.benchmark_group("cache");
+    let mut group = c.benchmark_group("repeated_check");
     group.throughput(Throughput::Elements(1));
 
-    // First, warm up the cache
+    // Warm up: run the same check pattern to ensure any lazy initialization is done
     rt.block_on(async {
         for i in 0..100 {
             let request = CheckRequest::new(
@@ -341,8 +346,8 @@ fn bench_cache_operations(c: &mut Criterion) {
         }
     });
 
-    // Benchmark cache hits (same requests)
-    group.bench_function("cache_hit", |b| {
+    // Benchmark repeated checks on the same request
+    group.bench_function("same_request", |b| {
         b.to_async(&rt).iter(|| async {
             let request = CheckRequest::new(
                 "bench-store".to_string(),
@@ -359,16 +364,14 @@ fn bench_cache_operations(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark raw check throughput for batch-sized workloads.
+/// Benchmark parallel batch check throughput.
 ///
-/// Note: This measures sequential check performance for batch-sized workloads,
-/// not the actual `BatchCheckHandler` with deduplication and singleflight.
-/// For batch handler benchmarks with deduplication, see rsfga-server benches.
+/// This measures parallel check performance using `join_all` to execute
+/// multiple checks concurrently, simulating real batch check behavior.
 ///
-/// This benchmark is useful for:
-/// - Measuring baseline check throughput
-/// - Comparing cache hit performance across batch sizes
-/// - Validating resolver scalability under sequential load
+/// Note: This measures raw resolver parallelism, not the full `BatchCheckHandler`
+/// with deduplication and singleflight. For batch handler benchmarks with
+/// deduplication, see rsfga-server benches.
 fn bench_batch_check(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let (tuple_reader, model_reader) = create_direct_relation_setup();
@@ -385,17 +388,21 @@ fn bench_batch_check(c: &mut Criterion) {
                 b.to_async(&rt).iter(|| {
                     let resolver = Arc::clone(&resolver);
                     async move {
-                        let mut results = Vec::with_capacity(size);
-                        for i in 0..size {
-                            let request = CheckRequest::new(
-                                "bench-store".to_string(),
-                                "user:alice".to_string(),
-                                "viewer".to_string(),
-                                format!("document:doc{}", i % 100),
-                                vec![],
-                            );
-                            results.push(resolver.check(&request).await);
-                        }
+                        // Execute checks in parallel using join_all
+                        let futures = (0..size).map(|i| {
+                            let resolver = Arc::clone(&resolver);
+                            async move {
+                                let request = CheckRequest::new(
+                                    "bench-store".to_string(),
+                                    "user:alice".to_string(),
+                                    "viewer".to_string(),
+                                    format!("document:doc{}", i % 100),
+                                    vec![],
+                                );
+                                resolver.check(&request).await
+                            }
+                        });
+                        let results = join_all(futures).await;
                         black_box(results)
                     }
                 })
@@ -479,7 +486,7 @@ criterion_group!(
     benches,
     bench_direct_check,
     bench_union_check,
-    bench_cache_operations,
+    bench_repeated_check,
     bench_batch_check,
     bench_tuple_count_scalability,
 );
