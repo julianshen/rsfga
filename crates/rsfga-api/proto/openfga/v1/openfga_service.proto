@@ -1,0 +1,466 @@
+// RSFGA OpenFGA-compatible gRPC service definitions
+// Wire-format compatible with OpenFGA v1 API
+syntax = "proto3";
+
+package openfga.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+import "openfga/v1/openfga.proto";
+
+// ============================================================
+// OpenFGA Service
+// ============================================================
+
+service OpenFGAService {
+  // Read tuples from the store
+  rpc Read(ReadRequest) returns (ReadResponse);
+
+  // Write tuples to the store
+  rpc Write(WriteRequest) returns (WriteResponse);
+
+  // Check if a user has a relationship with an object
+  rpc Check(CheckRequest) returns (CheckResponse);
+
+  // Batch check multiple relationships
+  rpc BatchCheck(BatchCheckRequest) returns (BatchCheckResponse);
+
+  // Expand a userset
+  rpc Expand(ExpandRequest) returns (ExpandResponse);
+
+  // List objects a user has access to
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse);
+
+  // List users that have access to an object
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+
+  // Read authorization models
+  rpc ReadAuthorizationModels(ReadAuthorizationModelsRequest) returns (ReadAuthorizationModelsResponse);
+
+  // Read a specific authorization model
+  rpc ReadAuthorizationModel(ReadAuthorizationModelRequest) returns (ReadAuthorizationModelResponse);
+
+  // Write an authorization model
+  rpc WriteAuthorizationModel(WriteAuthorizationModelRequest) returns (WriteAuthorizationModelResponse);
+
+  // Read assertions
+  rpc ReadAssertions(ReadAssertionsRequest) returns (ReadAssertionsResponse);
+
+  // Write assertions
+  rpc WriteAssertions(WriteAssertionsRequest) returns (WriteAssertionsResponse);
+
+  // Read changes (changelog)
+  rpc ReadChanges(ReadChangesRequest) returns (ReadChangesResponse);
+
+  // Store management
+  rpc CreateStore(CreateStoreRequest) returns (CreateStoreResponse);
+  rpc UpdateStore(UpdateStoreRequest) returns (UpdateStoreResponse);
+  rpc DeleteStore(DeleteStoreRequest) returns (DeleteStoreResponse);
+  rpc GetStore(GetStoreRequest) returns (GetStoreResponse);
+  rpc ListStores(ListStoresRequest) returns (ListStoresResponse);
+}
+
+// ============================================================
+// Consistency
+// ============================================================
+
+enum ConsistencyPreference {
+  UNSPECIFIED = 0;
+  MINIMIZE_LATENCY = 1;
+  HIGHER_CONSISTENCY = 2;
+}
+
+// ============================================================
+// Read Request/Response
+// ============================================================
+
+message ReadRequest {
+  string store_id = 1;
+  TupleKeyWithoutCondition tuple_key = 2;
+  google.protobuf.Int32Value page_size = 3;
+  string continuation_token = 4;
+  ConsistencyPreference consistency = 5;
+}
+
+message ReadResponse {
+  repeated Tuple tuples = 1;
+  string continuation_token = 2;
+}
+
+// ============================================================
+// Write Request/Response
+// ============================================================
+
+message WriteRequest {
+  string store_id = 1;
+  WriteRequestWrites writes = 2;
+  WriteRequestDeletes deletes = 3;
+  string authorization_model_id = 4;
+}
+
+message WriteRequestWrites {
+  repeated TupleKey tuple_keys = 1;
+}
+
+message WriteRequestDeletes {
+  repeated TupleKeyWithoutCondition tuple_keys = 1;
+}
+
+message WriteResponse {}
+
+// ============================================================
+// Check Request/Response
+// ============================================================
+
+message CheckRequest {
+  string store_id = 1;
+  TupleKey tuple_key = 2;
+  ContextualTupleKeys contextual_tuples = 3;
+  string authorization_model_id = 4;
+  bool trace = 5;
+  google.protobuf.Struct context = 6;
+  ConsistencyPreference consistency = 7;
+}
+
+message CheckResponse {
+  bool allowed = 1;
+  string resolution = 2;
+}
+
+// ============================================================
+// Batch Check Request/Response
+// ============================================================
+
+message BatchCheckRequest {
+  string store_id = 1;
+  repeated BatchCheckItem checks = 2;
+  string authorization_model_id = 3;
+  ConsistencyPreference consistency = 4;
+}
+
+message BatchCheckItem {
+  TupleKey tuple_key = 1;
+  ContextualTupleKeys contextual_tuples = 2;
+  google.protobuf.Struct context = 3;
+  string correlation_id = 4;
+}
+
+message BatchCheckResponse {
+  map<string, BatchCheckSingleResult> result = 1;
+}
+
+message BatchCheckSingleResult {
+  bool allowed = 1;
+  CheckError error = 2;
+}
+
+message CheckError {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+enum ErrorCode {
+  NO_ERROR = 0;
+  VALIDATION_ERROR = 2000;
+  AUTHORIZATION_MODEL_NOT_FOUND = 2001;
+  AUTHORIZATION_MODEL_RESOLUTION_TOO_COMPLEX = 2002;
+  INVALID_WRITE_INPUT = 2003;
+  CANNOT_ALLOW_DUPLICATE_TUPLES_IN_ONE_REQUEST = 2004;
+  CANNOT_ALLOW_DUPLICATE_TYPES_IN_ONE_REQUEST = 2005;
+  CANNOT_ALLOW_MULTIPLE_REFERENCES_TO_ONE_RELATION = 2006;
+  INVALID_CONTINUATION_TOKEN = 2007;
+  INVALID_TUPLE_SET = 2008;
+  INVALID_CHECK_INPUT = 2009;
+  INVALID_EXPAND_INPUT = 2010;
+  UNSUPPORTED_USER_SET = 2011;
+  INVALID_OBJECT_FORMAT = 2012;
+  WRITE_FAILED_DUE_TO_INVALID_INPUT = 2017;
+  AUTHORIZATION_MODEL_ASSERTIONS_NOT_FOUND = 2018;
+  LATEST_AUTHORIZATION_MODEL_NOT_FOUND = 2020;
+  TYPE_NOT_FOUND = 2021;
+  RELATION_NOT_FOUND = 2022;
+  EMPTY_RELATION_DEFINITION = 2023;
+  INVALID_USER = 2025;
+  INVALID_TUPLE = 2027;
+  UNKNOWN_RELATION = 2028;
+  STORE_ID_INVALID_LENGTH = 2030;
+  ASSERTIONS_TOO_MANY_ITEMS = 2033;
+  ID_TOO_LONG = 2034;
+  AUTHORIZATION_MODEL_ID_TOO_LONG = 2036;
+  TUPLE_KEY_VALUE_NOT_SPECIFIED = 2037;
+  TUPLE_KEYS_TOO_MANY_OR_TOO_FEW_ITEMS = 2038;
+  PAGE_SIZE_INVALID = 2039;
+  PARAM_MISSING_VALUE = 2040;
+  DIFFERENCE_BASE_MISSING_VALUE = 2041;
+  SUBTRACT_BASE_MISSING_VALUE = 2042;
+  OBJECT_TOO_LONG = 2043;
+  RELATION_TOO_LONG = 2044;
+  TYPE_DEFINITIONS_TOO_FEW_ITEMS = 2045;
+  TYPE_INVALID_LENGTH = 2046;
+  TYPE_INVALID_PATTERN = 2047;
+  RELATIONS_TOO_FEW_ITEMS = 2048;
+  RELATIONS_TOO_LONG = 2049;
+  RELATIONS_INVALID_PATTERN = 2050;
+  OBJECT_INVALID_PATTERN = 2051;
+  QUERY_STRING_TYPE_CONTINUATION_TOKEN_MISMATCH = 2052;
+  EXCEEDED_ENTITY_LIMIT = 2053;
+  INVALID_CONTEXTUAL_TUPLE = 2054;
+  DUPLICATE_CONTEXTUAL_TUPLE = 2055;
+  INVALID_AUTHORIZATION_MODEL = 2056;
+  UNSUPPORTED_SCHEMA_VERSION = 2057;
+}
+
+// ============================================================
+// Expand Request/Response
+// ============================================================
+
+message ExpandRequest {
+  string store_id = 1;
+  TupleKey tuple_key = 2;
+  string authorization_model_id = 3;
+  ConsistencyPreference consistency = 4;
+}
+
+message ExpandResponse {
+  UsersetTree tree = 1;
+}
+
+message UsersetTree {
+  Node root = 1;
+}
+
+message Node {
+  string name = 1;
+  oneof value {
+    Leaf leaf = 2;
+    Nodes union = 3;
+    Nodes intersection = 4;
+    Nodes difference = 5;
+  }
+}
+
+message Nodes {
+  repeated Node nodes = 1;
+}
+
+message Leaf {
+  oneof value {
+    Users users = 1;
+    Computed computed = 2;
+    TupleToUserset tuple_to_userset = 3;
+  }
+}
+
+message Users {
+  repeated string users = 1;
+}
+
+message Computed {
+  string userset = 1;
+}
+
+// ============================================================
+// List Objects Request/Response
+// ============================================================
+
+message ListObjectsRequest {
+  string store_id = 1;
+  string authorization_model_id = 2;
+  string type = 3;
+  string relation = 4;
+  string user = 5;
+  ContextualTupleKeys contextual_tuples = 6;
+  google.protobuf.Struct context = 7;
+  ConsistencyPreference consistency = 8;
+}
+
+message ListObjectsResponse {
+  repeated string objects = 1;
+}
+
+// ============================================================
+// List Users Request/Response
+// ============================================================
+
+message ListUsersRequest {
+  string store_id = 1;
+  string authorization_model_id = 2;
+  FgaObject object = 3;
+  string relation = 4;
+  repeated UserTypeFilter user_filters = 5;
+  ContextualTupleKeys contextual_tuples = 6;
+  google.protobuf.Struct context = 7;
+  ConsistencyPreference consistency = 8;
+}
+
+message FgaObject {
+  string type = 1;
+  string id = 2;
+}
+
+message UserTypeFilter {
+  string type = 1;
+  string relation = 2;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+  repeated string excluded_users = 2;
+}
+
+message User {
+  oneof user {
+    FgaObject object = 1;
+    UsersetUser userset = 2;
+    TypedWildcard wildcard = 3;
+  }
+}
+
+message UsersetUser {
+  string type = 1;
+  string id = 2;
+  string relation = 3;
+}
+
+message TypedWildcard {
+  string type = 1;
+}
+
+// ============================================================
+// Authorization Model Request/Response
+// ============================================================
+
+message ReadAuthorizationModelsRequest {
+  string store_id = 1;
+  google.protobuf.Int32Value page_size = 2;
+  string continuation_token = 3;
+}
+
+message ReadAuthorizationModelsResponse {
+  repeated AuthorizationModel authorization_models = 1;
+  string continuation_token = 2;
+}
+
+message ReadAuthorizationModelRequest {
+  string store_id = 1;
+  string id = 2;
+}
+
+message ReadAuthorizationModelResponse {
+  AuthorizationModel authorization_model = 1;
+}
+
+message WriteAuthorizationModelRequest {
+  string store_id = 1;
+  repeated TypeDefinition type_definitions = 2;
+  string schema_version = 3;
+  map<string, Condition> conditions = 4;
+}
+
+message WriteAuthorizationModelResponse {
+  string authorization_model_id = 1;
+}
+
+// ============================================================
+// Assertions Request/Response
+// ============================================================
+
+message ReadAssertionsRequest {
+  string store_id = 1;
+  string authorization_model_id = 2;
+}
+
+message ReadAssertionsResponse {
+  string authorization_model_id = 1;
+  repeated Assertion assertions = 2;
+}
+
+message WriteAssertionsRequest {
+  string store_id = 1;
+  string authorization_model_id = 2;
+  repeated Assertion assertions = 3;
+}
+
+message WriteAssertionsResponse {}
+
+// ============================================================
+// Read Changes Request/Response
+// ============================================================
+
+message ReadChangesRequest {
+  string store_id = 1;
+  string type = 2;
+  google.protobuf.Int32Value page_size = 3;
+  string continuation_token = 4;
+}
+
+message ReadChangesResponse {
+  repeated TupleChange changes = 1;
+  string continuation_token = 2;
+}
+
+message TupleChange {
+  TupleKey tuple_key = 1;
+  TupleOperation operation = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+enum TupleOperation {
+  TUPLE_OPERATION_WRITE = 0;
+  TUPLE_OPERATION_DELETE = 1;
+}
+
+// ============================================================
+// Store Management Request/Response
+// ============================================================
+
+message CreateStoreRequest {
+  string name = 1;
+}
+
+message CreateStoreResponse {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message UpdateStoreRequest {
+  string store_id = 1;
+  string name = 2;
+}
+
+message UpdateStoreResponse {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message DeleteStoreRequest {
+  string store_id = 1;
+}
+
+message DeleteStoreResponse {}
+
+message GetStoreRequest {
+  string store_id = 1;
+}
+
+message GetStoreResponse {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message ListStoresRequest {
+  google.protobuf.Int32Value page_size = 1;
+  string continuation_token = 2;
+}
+
+message ListStoresResponse {
+  repeated Store stores = 1;
+  string continuation_token = 2;
+}
