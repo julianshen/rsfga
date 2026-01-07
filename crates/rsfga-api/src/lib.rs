@@ -22,6 +22,9 @@ pub mod grpc;
 pub mod http;
 pub mod middleware;
 
+#[cfg(test)]
+mod compatibility;
+
 /// OpenFGA-compatible protobuf types and service definitions.
 ///
 /// Generated from proto files at compile time via tonic-build.
