@@ -41,6 +41,9 @@ anyhow = { workspace = true }
 # Tracing
 tracing = { workspace = true }
 
+# Utilities
+uuid = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 mockall = { workspace = true }
