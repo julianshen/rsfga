@@ -6,7 +6,7 @@ use tonic::{Request, Response, Status};
 
 use rsfga_storage::{DataStore, StorageError, StoredTuple, TupleFilter};
 
-use crate::utils::{format_user, parse_user};
+use crate::utils::{format_user, parse_object, parse_user, MAX_BATCH_SIZE};
 
 use crate::proto::openfga::v1::{
     open_fga_service_server::OpenFgaService, BatchCheckItem, BatchCheckRequest, BatchCheckResponse,
@@ -80,10 +80,18 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .tuple_key
             .ok_or_else(|| Status::invalid_argument("tuple_key is required"))?;
 
+        // Validate object format (required: "type:id")
+        let (object_type, object_id) = parse_object(&tuple_key.object).ok_or_else(|| {
+            Status::invalid_argument(format!(
+                "invalid object format '{}': expected 'type:id'",
+                tuple_key.object
+            ))
+        })?;
+
         // Build filter for tuple lookup
         let filter = TupleFilter {
-            object_type: tuple_key.object.split(':').next().map(|s| s.to_string()),
-            object_id: tuple_key.object.split(':').nth(1).map(|s| s.to_string()),
+            object_type: Some(object_type.to_string()),
+            object_id: Some(object_id.to_string()),
             relation: Some(tuple_key.relation),
             user: Some(tuple_key.user),
         };
@@ -104,8 +112,6 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         &self,
         request: Request<BatchCheckRequest>,
     ) -> Result<Response<BatchCheckResponse>, Status> {
-        use rsfga_server::handlers::batch::MAX_BATCH_SIZE;
-
         let req = request.into_inner();
 
         // Validate store exists
@@ -129,8 +135,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         // Process each check
         let mut result_map = std::collections::HashMap::new();
-        for item in req.checks {
-            let allowed = self.process_batch_check_item(&req.store_id, &item).await?;
+        for (i, item) in req.checks.into_iter().enumerate() {
+            let allowed = self
+                .process_batch_check_item(&req.store_id, &item, i)
+                .await?;
             result_map.insert(
                 item.correlation_id,
                 BatchCheckSingleResult {
@@ -560,15 +568,24 @@ impl<S: DataStore> OpenFgaGrpcService<S> {
         &self,
         store_id: &str,
         item: &BatchCheckItem,
+        index: usize,
     ) -> Result<bool, Status> {
         let tuple_key = item
             .tuple_key
             .as_ref()
             .ok_or_else(|| Status::invalid_argument("tuple_key is required"))?;
 
+        // Validate object format (required: "type:id")
+        let (object_type, object_id) = parse_object(&tuple_key.object).ok_or_else(|| {
+            Status::invalid_argument(format!(
+                "invalid object format '{}' at check index {}: expected 'type:id'",
+                tuple_key.object, index
+            ))
+        })?;
+
         let filter = TupleFilter {
-            object_type: tuple_key.object.split(':').next().map(|s| s.to_string()),
-            object_id: tuple_key.object.split(':').nth(1).map(|s| s.to_string()),
+            object_type: Some(object_type.to_string()),
+            object_id: Some(object_id.to_string()),
             relation: Some(tuple_key.relation.clone()),
             user: Some(tuple_key.user.clone()),
         };

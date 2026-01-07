@@ -15,7 +15,7 @@ use tracing::error;
 use rsfga_storage::{DataStore, StorageError};
 
 use super::state::AppState;
-use crate::utils::{format_user, parse_user};
+use crate::utils::{format_user, parse_object, parse_user, MAX_BATCH_SIZE};
 
 /// Creates the HTTP router with all OpenFGA-compatible endpoints.
 pub fn create_router<S: DataStore>(state: AppState<S>) -> Router {
@@ -227,21 +227,19 @@ async fn check<S: DataStore>(
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
+    // Validate object format (required: "type:id")
+    let (object_type, object_id) = parse_object(&body.tuple_key.object).ok_or_else(|| {
+        ApiError::invalid_input(format!(
+            "invalid object format '{}': expected 'type:id'",
+            body.tuple_key.object
+        ))
+    })?;
+
     // For now, we perform a simple tuple lookup.
     // Full resolver integration will be added later.
     let filter = rsfga_storage::TupleFilter {
-        object_type: body
-            .tuple_key
-            .object
-            .split(':')
-            .next()
-            .map(|s| s.to_string()),
-        object_id: body
-            .tuple_key
-            .object
-            .split(':')
-            .nth(1)
-            .map(|s| s.to_string()),
+        object_type: Some(object_type.to_string()),
+        object_id: Some(object_id.to_string()),
         relation: Some(body.tuple_key.relation.clone()),
         user: Some(body.tuple_key.user.clone()),
     };
@@ -300,8 +298,6 @@ async fn batch_check<S: DataStore>(
     Path(store_id): Path<String>,
     Json(body): Json<BatchCheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
-    use rsfga_server::handlers::batch::MAX_BATCH_SIZE;
-
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
@@ -319,20 +315,18 @@ async fn batch_check<S: DataStore>(
 
     // Process each check
     let mut result_map = std::collections::HashMap::new();
-    for item in body.checks {
+    for (i, item) in body.checks.into_iter().enumerate() {
+        // Validate object format (required: "type:id")
+        let (object_type, object_id) = parse_object(&item.tuple_key.object).ok_or_else(|| {
+            ApiError::invalid_input(format!(
+                "invalid object format '{}' at check index {}: expected 'type:id'",
+                item.tuple_key.object, i
+            ))
+        })?;
+
         let filter = rsfga_storage::TupleFilter {
-            object_type: item
-                .tuple_key
-                .object
-                .split(':')
-                .next()
-                .map(|s| s.to_string()),
-            object_id: item
-                .tuple_key
-                .object
-                .split(':')
-                .nth(1)
-                .map(|s| s.to_string()),
+            object_type: Some(object_type.to_string()),
+            object_id: Some(object_id.to_string()),
             relation: Some(item.tuple_key.relation.clone()),
             user: Some(item.tuple_key.user.clone()),
         };
@@ -446,17 +440,14 @@ async fn write_tuples<S: DataStore>(
     let deletes: Vec<StoredTuple> = if let Some(d) = body.deletes {
         let mut tuples = Vec::with_capacity(d.tuple_keys.len());
         for (i, tk) in d.tuple_keys.into_iter().enumerate() {
-            let stored = parse_tuple_key(&TupleKeyBody {
-                user: tk.user.clone(),
-                relation: tk.relation.clone(),
-                object: tk.object.clone(),
-            })
-            .ok_or_else(|| {
-                ApiError::invalid_input(format!(
-                    "invalid tuple_key at deletes index {}: user='{}', object='{}'",
-                    i, tk.user, tk.object
-                ))
-            })?;
+            // Use parse_tuple_fields directly to avoid cloning
+            let stored =
+                parse_tuple_fields(&tk.user, &tk.relation, &tk.object).ok_or_else(|| {
+                    ApiError::invalid_input(format!(
+                        "invalid tuple_key at deletes index {}: user='{}', object='{}'",
+                        i, tk.user, tk.object
+                    ))
+                })?;
             tuples.push(stored);
         }
         tuples
@@ -474,16 +465,26 @@ async fn write_tuples<S: DataStore>(
 
 /// Parses a tuple key into a StoredTuple.
 fn parse_tuple_key(tk: &TupleKeyBody) -> Option<rsfga_storage::StoredTuple> {
+    parse_tuple_fields(&tk.user, &tk.relation, &tk.object)
+}
+
+/// Parses tuple fields directly into a StoredTuple.
+/// This avoids unnecessary cloning when converting from TupleKeyWithoutConditionBody.
+fn parse_tuple_fields(
+    user: &str,
+    relation: &str,
+    object: &str,
+) -> Option<rsfga_storage::StoredTuple> {
     // Parse user: "user:alice" or "team:eng#member"
-    let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
+    let (user_type, user_id, user_relation) = parse_user(user)?;
 
     // Parse object: "document:readme"
-    let (object_type, object_id) = tk.object.split_once(':')?;
+    let (object_type, object_id) = object.split_once(':')?;
 
     Some(rsfga_storage::StoredTuple {
         object_type: object_type.to_string(),
         object_id: object_id.to_string(),
-        relation: tk.relation.clone(),
+        relation: relation.to_string(),
         user_type: user_type.to_string(),
         user_id: user_id.to_string(),
         user_relation: user_relation.map(|s| s.to_string()),

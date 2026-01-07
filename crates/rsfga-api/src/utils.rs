@@ -2,6 +2,24 @@
 //!
 //! Contains common parsing and formatting functions used by both HTTP and gRPC handlers.
 
+/// Maximum number of checks allowed in a single batch request.
+/// This matches the OpenFGA specification limit.
+pub const MAX_BATCH_SIZE: usize = 50;
+
+/// Parses an object string into (type, id).
+///
+/// Format: `"document:readme"` → `("document", "readme")`
+///
+/// Returns `None` if the format is invalid (missing colon separator or empty parts).
+pub fn parse_object(object: &str) -> Option<(&str, &str)> {
+    let (object_type, object_id) = object.split_once(':')?;
+    // Validate both parts are non-empty
+    if object_type.is_empty() || object_id.is_empty() {
+        return None;
+    }
+    Some((object_type, object_id))
+}
+
 /// Parses a user string into (type, id, optional_relation).
 ///
 /// Supports two formats:
@@ -37,6 +55,24 @@ pub fn format_user(user_type: &str, user_id: &str, user_relation: Option<&str>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_object_valid() {
+        assert_eq!(
+            parse_object("document:readme"),
+            Some(("document", "readme"))
+        );
+        assert_eq!(parse_object("folder:root"), Some(("folder", "root")));
+    }
+
+    #[test]
+    fn test_parse_object_invalid() {
+        assert_eq!(parse_object("document"), None); // Missing colon
+        assert_eq!(parse_object(":readme"), None); // Empty type
+        assert_eq!(parse_object("document:"), None); // Empty id
+        assert_eq!(parse_object(""), None); // Empty string
+        assert_eq!(parse_object(":"), None); // Just colon
+    }
 
     #[test]
     fn test_parse_user_simple() {
