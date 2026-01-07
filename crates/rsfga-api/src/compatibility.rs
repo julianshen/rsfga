@@ -43,10 +43,19 @@ mod tests {
         // GET /stores
         let response = app
             .clone()
-            .oneshot(Request::builder().uri("/stores").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/stores")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
-        assert_ne!(response.status(), StatusCode::NOT_FOUND, "GET /stores should exist");
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "GET /stores should exist"
+        );
 
         // POST /stores
         let response = app
@@ -61,7 +70,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(response.status(), StatusCode::NOT_FOUND, "POST /stores should exist");
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "POST /stores should exist"
+        );
 
         // GET /stores/test-store
         let response = app
@@ -74,7 +87,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(response.status(), StatusCode::NOT_FOUND, "GET /stores/test-store should exist");
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "GET /stores/test-store should exist"
+        );
 
         // POST /stores/test-store/check
         let response = app
@@ -91,7 +108,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(response.status(), StatusCode::NOT_FOUND, "POST /stores/test-store/check should exist");
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "POST /stores/test-store/check should exist"
+        );
 
         // POST /stores/test-store/batch-check
         let response = app
@@ -108,7 +129,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(response.status(), StatusCode::NOT_FOUND, "POST /stores/test-store/batch-check should exist");
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "POST /stores/test-store/batch-check should exist"
+        );
 
         // POST /stores/test-store/expand
         let response = app
@@ -125,7 +150,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(response.status(), StatusCode::NOT_FOUND, "POST /stores/test-store/expand should exist");
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "POST /stores/test-store/expand should exist"
+        );
 
         // POST /stores/test-store/write
         let response = app
@@ -140,7 +169,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(response.status(), StatusCode::NOT_FOUND, "POST /stores/test-store/write should exist");
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "POST /stores/test-store/write should exist"
+        );
 
         // POST /stores/test-store/read
         let response = app
@@ -155,7 +188,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(response.status(), StatusCode::NOT_FOUND, "POST /stores/test-store/read should exist");
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "POST /stores/test-store/read should exist"
+        );
 
         // POST /stores/test-store/list-objects
         let response = app
@@ -172,7 +209,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(response.status(), StatusCode::NOT_FOUND, "POST /stores/test-store/list-objects should exist");
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "POST /stores/test-store/list-objects should exist"
+        );
 
         // DELETE /stores/test-store (do this last)
         let response = app
@@ -185,7 +226,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(response.status(), StatusCode::NOT_FOUND, "DELETE /stores/test-store should exist");
+        assert_ne!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "DELETE /stores/test-store should exist"
+        );
     }
 
     /// Test: Request/response schemas match exactly
@@ -229,10 +274,7 @@ mod tests {
             json.get("allowed").is_some(),
             "Check response must have 'allowed' field"
         );
-        assert!(
-            json["allowed"].is_boolean(),
-            "'allowed' must be a boolean"
-        );
+        assert!(json["allowed"].is_boolean(), "'allowed' must be a boolean");
 
         // Test Read response schema
         let response = app
@@ -259,10 +301,7 @@ mod tests {
             json.get("tuples").is_some(),
             "Read response must have 'tuples' field"
         );
-        assert!(
-            json["tuples"].is_array(),
-            "'tuples' must be an array"
-        );
+        assert!(json["tuples"].is_array(), "'tuples' must be an array");
 
         // Test BatchCheck response schema
         let response = app
@@ -291,10 +330,7 @@ mod tests {
             json.get("result").is_some(),
             "BatchCheck response must have 'result' field"
         );
-        assert!(
-            json["result"].is_object(),
-            "'result' must be an object/map"
-        );
+        assert!(json["result"].is_object(), "'result' must be an object/map");
 
         // Test GetStore response schema
         let response = app
@@ -418,7 +454,10 @@ mod tests {
         let storage = Arc::new(MemoryDataStore::new());
 
         // Create a test store
-        let store = storage.create_store("compat-store", "Compatibility Test Store").await.unwrap();
+        let store = storage
+            .create_store("compat-store", "Compatibility Test Store")
+            .await
+            .unwrap();
         assert!(!store.id.is_empty());
         assert_eq!(store.name, "Compatibility Test Store");
 
@@ -460,7 +499,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let tuples = json["tuples"].as_array().unwrap();
         assert_eq!(tuples.len(), 3, "Should have 3 tuples");
@@ -481,7 +522,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["allowed"], true);
 
@@ -501,7 +544,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["allowed"], false);
 
@@ -525,7 +570,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 2048).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 2048)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let result = json["result"].as_object().unwrap();
         assert!(result["alice-owner"]["allowed"].as_bool().unwrap());
@@ -567,9 +614,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["allowed"], false, "Deleted tuple should not be allowed");
+        assert_eq!(
+            json["allowed"], false,
+            "Deleted tuple should not be allowed"
+        );
 
         // 8. List stores
         let response = app
@@ -584,7 +636,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let stores = json["stores"].as_array().unwrap();
         assert!(!stores.is_empty(), "Should have at least one store");

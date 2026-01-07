@@ -7,17 +7,16 @@ use tonic::{Request, Response, Status};
 use rsfga_storage::{DataStore, StorageError, StoredTuple, TupleFilter};
 
 use crate::proto::openfga::v1::{
-    open_fga_service_server::OpenFgaService, BatchCheckItem, BatchCheckRequest,
-    BatchCheckResponse, BatchCheckSingleResult, CheckRequest, CheckResponse, CreateStoreRequest,
-    CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse, ExpandRequest, ExpandResponse,
-    GetStoreRequest, GetStoreResponse, ListObjectsRequest, ListObjectsResponse,
-    ListStoresRequest, ListStoresResponse, ListUsersRequest, ListUsersResponse,
-    ReadAssertionsRequest, ReadAssertionsResponse, ReadAuthorizationModelRequest,
-    ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
-    ReadAuthorizationModelsResponse, ReadChangesRequest, ReadChangesResponse, ReadRequest,
-    ReadResponse, Store, Tuple, TupleKey, UpdateStoreRequest, UpdateStoreResponse,
-    WriteAssertionsRequest, WriteAssertionsResponse, WriteAuthorizationModelRequest,
-    WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
+    open_fga_service_server::OpenFgaService, BatchCheckItem, BatchCheckRequest, BatchCheckResponse,
+    BatchCheckSingleResult, CheckRequest, CheckResponse, CreateStoreRequest, CreateStoreResponse,
+    DeleteStoreRequest, DeleteStoreResponse, ExpandRequest, ExpandResponse, GetStoreRequest,
+    GetStoreResponse, ListObjectsRequest, ListObjectsResponse, ListStoresRequest,
+    ListStoresResponse, ListUsersRequest, ListUsersResponse, ReadAssertionsRequest,
+    ReadAssertionsResponse, ReadAuthorizationModelRequest, ReadAuthorizationModelResponse,
+    ReadAuthorizationModelsRequest, ReadAuthorizationModelsResponse, ReadChangesRequest,
+    ReadChangesResponse, ReadRequest, ReadResponse, Store, Tuple, TupleKey, UpdateStoreRequest,
+    UpdateStoreResponse, WriteAssertionsRequest, WriteAssertionsResponse,
+    WriteAuthorizationModelRequest, WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
 
 /// gRPC service implementation for OpenFGA.
@@ -429,7 +428,11 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         &self,
         _request: Request<ListStoresRequest>,
     ) -> Result<Response<ListStoresResponse>, Status> {
-        let stores = self.storage.list_stores().await.map_err(storage_error_to_status)?;
+        let stores = self
+            .storage
+            .list_stores()
+            .await
+            .map_err(storage_error_to_status)?;
 
         let response_stores: Vec<Store> = stores
             .into_iter()

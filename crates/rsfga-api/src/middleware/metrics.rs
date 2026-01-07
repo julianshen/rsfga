@@ -38,7 +38,8 @@ impl RequestMetrics {
     /// Records a request with the given status and duration.
     pub fn record(&self, status: u16, duration_us: u64) {
         self.request_count.fetch_add(1, Ordering::Relaxed);
-        self.total_duration_us.fetch_add(duration_us, Ordering::Relaxed);
+        self.total_duration_us
+            .fetch_add(duration_us, Ordering::Relaxed);
 
         match status {
             200..=299 => {

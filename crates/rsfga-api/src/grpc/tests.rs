@@ -322,10 +322,7 @@ async fn test_read_rpc_works_correctly() {
 
     let result = response.unwrap().into_inner();
     assert_eq!(result.tuples.len(), 1);
-    assert_eq!(
-        result.tuples[0].key.as_ref().unwrap().user,
-        "user:alice"
-    );
+    assert_eq!(result.tuples[0].key.as_ref().unwrap().user, "user:alice");
 }
 
 /// Test: gRPC errors map correctly to status codes
