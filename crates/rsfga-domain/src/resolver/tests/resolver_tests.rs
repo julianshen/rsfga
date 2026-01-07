@@ -1070,8 +1070,7 @@ async fn test_union_returns_depth_limit_error_when_all_branches_hit_depth_limit(
     assert!(
         matches!(
             result,
-            Err(DomainError::DepthLimitExceeded { .. })
-                | Err(DomainError::CycleDetected { .. })
+            Err(DomainError::DepthLimitExceeded { .. }) | Err(DomainError::CycleDetected { .. })
         ),
         "Union with all depth-limited branches should return path-termination error, got {:?}",
         result
@@ -2183,8 +2182,7 @@ async fn test_cycle_detection_prevents_infinite_loops() {
     assert!(
         matches!(
             result,
-            Err(DomainError::CycleDetected { .. })
-                | Err(DomainError::DepthLimitExceeded { .. })
+            Err(DomainError::CycleDetected { .. }) | Err(DomainError::DepthLimitExceeded { .. })
         ),
         "Should detect cycle or hit depth limit"
     );
