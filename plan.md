@@ -468,11 +468,128 @@ Note: Conditional writes test was moved to Section 1 (test_conditional_writes) a
 
 ---
 
+### Milestone 0.8: CEL Condition Compatibility Tests (Week 8)
+
+**Branch**: `feature/milestone-0.8-cel-conditions`
+
+**Objective**: Capture OpenFGA's CEL condition behavior for RSFGA compatibility validation
+
+**Why**: CEL conditions enable ABAC patterns. Before implementing in M1.10, we must document OpenFGA's exact behavior for conditions in models, tuples, and checks.
+
+#### Section 24: Authorization Model with Conditions
+
+- [ ] Test: Can create model with condition definitions
+- [ ] Test: Condition has name, expression, and parameters
+- [ ] Test: Condition expression uses CEL syntax
+- [ ] Test: Condition parameters have type definitions (string, int, bool, timestamp, duration, list, map)
+- [ ] Test: Relation can reference condition via `directly_related_user_types[].condition`
+- [ ] Test: Invalid condition expression returns 400
+- [ ] Test: Undefined condition reference returns 400
+- [ ] Test: Can retrieve model with conditions via GET
+
+**Example Model**:
+```json
+{
+  "schema_version": "1.1",
+  "type_definitions": [...],
+  "conditions": {
+    "time_bound_access": {
+      "name": "time_bound_access",
+      "expression": "request.current_time < request.expires_at",
+      "parameters": {
+        "current_time": { "type_name": "TYPE_NAME_TIMESTAMP" },
+        "expires_at": { "type_name": "TYPE_NAME_TIMESTAMP" }
+      }
+    }
+  }
+}
+```
+
+#### Section 25: Writing Tuples with Conditions
+
+- [ ] Test: Can write tuple with condition name
+- [ ] Test: Can write tuple with condition context (parameter values)
+- [ ] Test: Condition context values match parameter types
+- [ ] Test: Writing tuple with undefined condition returns 400
+- [ ] Test: Writing tuple with mismatched context types returns 400
+- [ ] Test: Can write multiple tuples with different conditions
+- [ ] Test: Can delete tuple with condition
+
+#### Section 26: Reading Tuples with Conditions
+
+- [ ] Test: Read returns tuple with condition name
+- [ ] Test: Read returns tuple with condition context
+- [ ] Test: Can filter tuples by condition (if supported)
+- [ ] Test: Tuple response format matches OpenFGA spec
+
+#### Section 27: Check with Condition Evaluation
+
+- [ ] Test: Check API accepts `context` parameter
+- [ ] Test: Check returns `allowed: true` when condition evaluates true
+- [ ] Test: Check returns `allowed: false` when condition evaluates false
+- [ ] Test: Check without required context returns error (not false)
+- [ ] Test: Check with partial context returns error for missing params
+- [ ] Test: Check with wrong context type returns error
+- [ ] Test: Condition evaluation with timestamp comparison
+- [ ] Test: Condition evaluation with duration arithmetic
+- [ ] Test: Condition evaluation with string operations
+- [ ] Test: Condition evaluation with list membership (`in` operator)
+- [ ] Test: Condition evaluation with logical operators (&&, ||, !)
+- [ ] Test: Batch check evaluates conditions correctly
+- [ ] Test: Contextual tuples with conditions work
+
+**Example Check Request**:
+```json
+{
+  "tuple_key": {
+    "user": "user:alice",
+    "relation": "viewer",
+    "object": "document:secret"
+  },
+  "context": {
+    "current_time": "2024-01-15T10:00:00Z",
+    "expires_at": "2024-12-31T23:59:59Z"
+  }
+}
+```
+
+#### Section 28: CEL Expression Edge Cases
+
+- [ ] Test: Empty context with no required params succeeds
+- [ ] Test: Null values in context handled correctly
+- [ ] Test: Very long string values in context
+- [ ] Test: Large list values in context
+- [ ] Test: Deeply nested map values in context
+- [ ] Test: CEL expression timeout behavior (if any)
+- [ ] Test: CEL expression with undefined variable access
+- [ ] Test: CEL expression division by zero
+
+#### Section 29: Condition Performance Baselines
+
+- [ ] Test: Measure check latency with simple condition
+- [ ] Test: Measure check latency with complex condition (multiple operators)
+- [ ] Test: Measure batch check with conditions
+- [ ] Test: Compare conditional vs non-conditional check latency
+
+**Validation Criteria**:
+- [ ] All condition API behaviors captured
+- [ ] CEL expression format documented
+- [ ] Error responses cataloged
+- [ ] Performance baselines established
+
+**Deliverables**:
+- 40+ CEL condition compatibility tests
+- Condition schema documentation
+- CEL expression examples (valid and invalid)
+- Performance baseline for conditional checks
+
+---
+
 ## Phase 0 Summary
 
-**Total Duration**: 7 weeks
+**Total Duration**: 8 weeks
 
-**Test Count**: ~150 compatibility tests
+**Test Count**: ~190 compatibility tests (150 + 40 CEL)
 
 **Deliverables**:
 1. ✅ OpenFGA test harness (Docker-based)
@@ -482,6 +599,7 @@ Note: Conditional writes test was moved to Section 1 (test_conditional_writes) a
 5. ✅ Performance baselines for comparison
 6. ✅ Error response catalog
 7. ✅ Compatibility validation framework
+8. ⏸️ CEL condition compatibility tests (Milestone 0.8)
 
 **Success Criteria**:
 - [x] Can run test suite against OpenFGA (100% pass)
@@ -489,6 +607,7 @@ Note: Conditional writes test was moved to Section 1 (test_conditional_writes) a
 - [x] All relation types tested
 - [x] Edge cases documented
 - [x] Performance baselines established
+- [ ] CEL condition behavior documented (Milestone 0.8)
 
 **Use at Each Phase End**:
 After completing Phase 1, 2, or 3, run this test suite against RSFGA to ensure:
@@ -1065,9 +1184,11 @@ RSFGA Target (60% confidence):
 
 ---
 
-### Milestone 1.10: CEL Condition Evaluation (Week 13)
+### Milestone 1.10: CEL Condition Evaluation (Week 14)
 
 **Branch**: `feature/milestone-1.10-cel-conditions`
+
+**Depends on**: Milestone 0.8 (CEL Condition Compatibility Tests)
 
 **Objective**: Support CEL (Common Expression Language) conditions on authorization tuples
 
@@ -1173,7 +1294,7 @@ condition time_bound_access(current_time: timestamp, expires_at: timestamp) {
 
 ---
 
-### Milestone 1.9: Production Readiness (Week 14)
+### Milestone 1.9: Production Readiness (Week 15)
 
 **Branch**: `feature/milestone-1.9-production-ready`
 
@@ -1349,7 +1470,7 @@ Before marking Phase 1 complete:
 
 ## Current Status
 
-**Phase 0**: ✅ Compatibility Test Suite - COMPLETE (150 tests)
+**Phase 0**: 🏗️ Compatibility Test Suite - In Progress (150/190 tests)
 - Milestone 0.1: Test Harness Foundation ✅
 - Milestone 0.2: Store & Model API Tests ✅
 - Milestone 0.3: Tuple API Tests ✅
@@ -1357,6 +1478,7 @@ Before marking Phase 1 complete:
 - Milestone 0.5: Expand & ListObjects API Tests ✅
 - Milestone 0.6: Error Handling & Edge Cases ✅
 - Milestone 0.7: gRPC API Compatibility ✅
+- Milestone 0.8: CEL Condition Compatibility ⏸️ Pending (40 tests)
 
 **Phase 1**: 🏗️ MVP Implementation - In Progress
 - Milestone 1.1: Project Foundation ✅ COMPLETE (10/10 tests)
