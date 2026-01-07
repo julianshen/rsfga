@@ -13,13 +13,17 @@ use super::types::{
     BatchCheckResult, MAX_BATCH_SIZE,
 };
 
+/// Maximum number of singleflight retries when a leader is dropped.
+/// This prevents unbounded recursion in edge cases.
+const MAX_SINGLEFLIGHT_RETRIES: u32 = 3;
+
 /// Key for identifying unique checks (used for deduplication).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CheckKey {
-    pub store_id: String,
-    pub user: String,
-    pub relation: String,
-    pub object: String,
+    store_id: String,
+    user: String,
+    relation: String,
+    object: String,
 }
 
 impl CheckKey {
@@ -116,27 +120,31 @@ where
         self.validate(&request)?;
 
         // Stage 1: Intra-batch deduplication
-        // Build a map of unique checks and track which positions map to each unique check
-        let mut unique_checks: Vec<&BatchCheckItem> = Vec::new();
+        // Build a map of unique checks with their keys, avoiding key recreation
+        let mut unique_entries: Vec<(&BatchCheckItem, CheckKey)> = Vec::new();
         let mut key_to_index: HashMap<CheckKey, usize> = HashMap::new();
         let mut position_to_unique: Vec<usize> = Vec::with_capacity(request.checks.len());
 
         for check in &request.checks {
             let key = CheckKey::new(&request.store_id, check);
-            let unique_index = *key_to_index.entry(key).or_insert_with(|| {
-                let idx = unique_checks.len();
-                unique_checks.push(check);
-                idx
-            });
+            let unique_index = match key_to_index.get(&key) {
+                Some(&idx) => idx,
+                None => {
+                    let idx = unique_entries.len();
+                    key_to_index.insert(key.clone(), idx);
+                    unique_entries.push((check, key));
+                    idx
+                }
+            };
             position_to_unique.push(unique_index);
         }
 
         // Execute unique checks in parallel with singleflight (Stage 2: Cross-request dedup)
-        let check_futures: Vec<_> = unique_checks
-            .iter()
-            .map(|check| {
-                let key = CheckKey::new(&request.store_id, check);
-                self.execute_check_with_singleflight(&request.store_id, check, key)
+        // Reuse keys from unique_entries instead of recreating them
+        let check_futures: Vec<_> = unique_entries
+            .into_iter()
+            .map(|(check, key)| {
+                self.execute_check_with_singleflight(&request.store_id, check, key, 0)
             })
             .collect();
 
@@ -157,12 +165,13 @@ where
     /// Otherwise, execute the check and broadcast the result to any waiters.
     ///
     /// Uses atomic acquire() to prevent race conditions and SingleflightGuard
-    /// for cleanup on panic.
+    /// for cleanup on panic. Retries are limited by MAX_SINGLEFLIGHT_RETRIES.
     async fn execute_check_with_singleflight(
         &self,
         store_id: &str,
         check: &BatchCheckItem,
         key: CheckKey,
+        retry_count: u32,
     ) -> BatchCheckItemResult {
         // Atomically acquire a slot - either become leader or follower
         match self.singleflight.acquire(key.clone()) {
@@ -175,8 +184,24 @@ where
                     },
                     Err(_) => {
                         // Leader was dropped (likely panicked), retry as new leader
+                        // Limit retries to prevent unbounded recursion
+                        if retry_count >= MAX_SINGLEFLIGHT_RETRIES {
+                            return BatchCheckItemResult {
+                                allowed: false,
+                                error: Some(format!(
+                                    "singleflight retry limit exceeded ({} retries)",
+                                    MAX_SINGLEFLIGHT_RETRIES
+                                )),
+                            };
+                        }
                         // This is safe because SingleflightGuard cleaned up
-                        Box::pin(self.execute_check_with_singleflight(store_id, check, key)).await
+                        Box::pin(self.execute_check_with_singleflight(
+                            store_id,
+                            check,
+                            key,
+                            retry_count + 1,
+                        ))
+                        .await
                     }
                 }
             }
