@@ -1065,7 +1065,115 @@ RSFGA Target (60% confidence):
 
 ---
 
-### Milestone 1.9: Production Readiness (Week 13)
+### Milestone 1.10: CEL Condition Evaluation (Week 13)
+
+**Branch**: `feature/milestone-1.10-cel-conditions`
+
+**Objective**: Support CEL (Common Expression Language) conditions on authorization tuples
+
+**Background**: CEL conditions enable attribute-based access control (ABAC) patterns:
+- Time-based access: `context.current_time < request.expires_at`
+- Attribute conditions: `context.user.department == "engineering"`
+- Contextual permissions: `context.request.ip in request.allowed_ips`
+
+**Implementation**: Leverage [cel-rust](https://github.com/cel-rust/cel-rust) (v0.12.0+)
+- Google CEL specification compliant
+- Non-Turing complete (safe, sandboxed)
+- Simple API: `Program::compile()` → `Context` + variables → `execute()`
+- Supports: timestamps, durations, lists, maps, custom functions
+
+```toml
+[dependencies]
+cel-interpreter = "0.12"
+```
+
+#### Section 1: CEL Expression Parser
+
+- [ ] Test: Can parse simple CEL expression (e.g., `a == b`)
+- [ ] Test: Can parse arithmetic expressions (e.g., `a + b > c`)
+- [ ] Test: Can parse comparison operators (==, !=, <, >, <=, >=)
+- [ ] Test: Can parse logical operators (&&, ||, !)
+- [ ] Test: Can parse string operations (contains, startsWith, endsWith)
+- [ ] Test: Can parse list operations (in, size, all, exists)
+- [ ] Test: Can parse timestamp comparisons
+- [ ] Test: Parser rejects invalid CEL syntax with clear error
+- [ ] Test: Parser handles nested expressions
+
+#### Section 2: CEL Expression Evaluation
+
+- [ ] Test: Can evaluate CEL expression with context map
+- [ ] Test: Context variables are accessible (context.foo)
+- [ ] Test: Request variables are accessible (request.bar)
+- [ ] Test: Missing required variable returns error
+- [ ] Test: Type mismatch returns error (string vs int)
+- [ ] Test: Can evaluate timestamp comparisons
+- [ ] Test: Can evaluate duration arithmetic
+- [ ] Test: Empty context returns false for condition
+- [ ] Test: Evaluation timeout prevents DoS
+
+#### Section 3: Condition Model Integration
+
+- [ ] Test: AuthorizationModel can have conditions
+- [ ] Test: Condition can be attached to relation definition
+- [ ] Test: Can parse model DSL with conditions
+- [ ] Test: Model validator validates condition expressions
+- [ ] Test: Can serialize/deserialize model with conditions
+
+Example DSL:
+```
+type document
+  relations
+    define viewer: [user with time_bound_access]
+
+condition time_bound_access(current_time: timestamp, expires_at: timestamp) {
+  current_time < expires_at
+}
+```
+
+#### Section 4: Tuple Storage with Conditions
+
+- [ ] Test: Can write tuple with condition name
+- [ ] Test: Can read tuple with condition
+- [ ] Test: Condition parameters stored in tuple
+- [ ] Test: InMemoryStore stores condition data
+- [ ] Test: PostgresStore stores condition data
+- [ ] Test: Can query tuples by condition name
+
+#### Section 5: Check with Condition Evaluation
+
+- [ ] Test: Check evaluates tuple condition with context
+- [ ] Test: Check returns false when condition evaluates false
+- [ ] Test: Check returns true when condition evaluates true
+- [ ] Test: Check without required context returns error (not false)
+- [ ] Test: Check with multiple conditions evaluates all
+- [ ] Test: Condition evaluation respects tuple's condition params
+- [ ] Test: Contextual tuples with conditions work
+- [ ] Test: Batch check evaluates conditions correctly
+
+#### Section 6: API Integration
+
+- [ ] Test: Check API accepts context parameter
+- [ ] Test: Write API accepts condition on tuples
+- [ ] Test: Read API returns condition on tuples
+- [ ] Test: Error response when condition evaluation fails
+- [ ] Test: OpenFGA compatibility for condition format
+
+**Validation Criteria**:
+- [ ] All OpenFGA CEL-related tests pass
+- [ ] CEL evaluation <1ms p95
+- [ ] >90% test coverage on CEL module
+- [ ] Security review for CEL injection prevention
+
+**Deliverables**:
+- CEL parser and evaluator (rsfga-domain/src/cel/)
+- Condition support in model and tuples
+- Check integration with condition evaluation
+- API support for context and conditions
+- 40+ tests
+
+---
+
+### Milestone 1.9: Production Readiness (Week 14)
 
 **Branch**: `feature/milestone-1.9-production-ready`
 
@@ -1138,6 +1246,7 @@ RSFGA Target (60% confidence):
 ✅ Lock-free caching with TTL
 ✅ Batch checking with deduplication
 ✅ REST and gRPC APIs
+✅ CEL condition evaluation for ABAC patterns
 ✅ >90% test coverage
 ✅ 2x performance improvement (validated)
 ✅ Production-ready observability
@@ -1257,12 +1366,14 @@ Before marking Phase 1 complete:
 - Milestone 1.5: Check Cache ✅ COMPLETE (23 tests)
 - Milestone 1.6: Batch Check Handler ✅ COMPLETE (20 tests)
 - Milestone 1.7: API Layer ✅ COMPLETE (37 tests)
+- Milestone 1.8: Testing & Benchmarking ✅ COMPLETE
+- Milestone 1.9: Production Readiness ⏸️ Pending
+- Milestone 1.10: CEL Condition Evaluation ⏸️ Pending
 
-**Current Focus**: Milestone 1.8 - Testing & Benchmarking
-- Test Coverage: ⏸️ Pending
-- Integration Tests: ⏸️ Pending
-- Performance Benchmarks: ⏸️ Pending
-- Stress Testing: ⏸️ Pending
-- Security Testing: ⏸️ Pending
+**Current Focus**: Milestone 1.9 - Production Readiness
+- Observability: ⏸️ Pending
+- Configuration: ⏸️ Pending
+- Documentation: ⏸️ Pending
+- Deployment: ⏸️ Pending
 
-**Next**: Milestone 1.8 - Testing & Benchmarking (comprehensive testing and performance validation)
+**Next**: Milestone 1.10 - CEL Condition Evaluation (attribute-based access control)
