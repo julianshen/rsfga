@@ -19,13 +19,17 @@ mod common;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use axum::http::StatusCode;
 use futures::future::join_all;
 use rsfga_storage::MemoryDataStore;
 
-use common::{create_test_app, post_json};
+use common::{
+    create_test_app, post_json, OVERLOAD_TEST_CONCURRENT_REQUESTS, STRESS_TEST_CONCURRENT_REQUESTS,
+    STRESS_TEST_TIMEOUT, SUSTAINED_LOAD_DURATION, SUSTAINED_LOAD_WORKERS,
+    WRITE_STRESS_CONCURRENT_OPS,
+};
 
 // =============================================================================
 // Section 4: Stress Tests
@@ -76,8 +80,8 @@ async fn test_server_handles_1000_concurrent_requests() {
 
     let start = Instant::now();
 
-    // Launch 1000 concurrent check requests
-    let futures: Vec<_> = (0..1000)
+    // Launch concurrent check requests
+    let futures: Vec<_> = (0..STRESS_TEST_CONCURRENT_REQUESTS)
         .map(|i| {
             let storage = Arc::clone(&storage);
             let store_id = store_id.clone();
@@ -117,15 +121,22 @@ async fn test_server_handles_1000_concurrent_requests() {
     // Verify results
     assert_eq!(
         errors, 0,
-        "Should have no errors with 1000 concurrent requests"
+        "Should have no errors with {} concurrent requests",
+        STRESS_TEST_CONCURRENT_REQUESTS
     );
-    assert_eq!(successes, 1000, "All 1000 requests should succeed");
+    assert_eq!(
+        successes, STRESS_TEST_CONCURRENT_REQUESTS as u64,
+        "All {} requests should succeed",
+        STRESS_TEST_CONCURRENT_REQUESTS
+    );
 
     // Performance check: should complete in reasonable time
     // Note: This is a soft assertion - actual performance depends on hardware
     assert!(
-        elapsed < Duration::from_secs(30),
-        "1000 concurrent requests should complete within 30 seconds, took {:?}",
+        elapsed < STRESS_TEST_TIMEOUT,
+        "{} concurrent requests should complete within {:?}, took {:?}",
+        STRESS_TEST_CONCURRENT_REQUESTS,
+        STRESS_TEST_TIMEOUT,
         elapsed
     );
 
@@ -174,15 +185,14 @@ async fn test_sustained_load_stability() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Run sustained load for 5 seconds
-    let duration = Duration::from_secs(5);
+    // Run sustained load
+    let duration = SUSTAINED_LOAD_DURATION;
     let start = Instant::now();
     let request_count = Arc::new(AtomicU64::new(0));
     let error_count = Arc::new(AtomicU64::new(0));
 
     // Spawn multiple worker tasks
-    let num_workers = 10;
-    let handles: Vec<_> = (0..num_workers)
+    let handles: Vec<_> = (0..SUSTAINED_LOAD_WORKERS)
         .map(|_| {
             let storage = Arc::clone(&storage);
             let store_id = store_id.clone();
@@ -282,12 +292,12 @@ async fn test_graceful_degradation_under_overload() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Spawn extreme concurrent load (5000 requests at once)
+    // Spawn extreme concurrent load
     let success_count = Arc::new(AtomicU64::new(0));
     let client_error_count = Arc::new(AtomicU64::new(0)); // 4xx
     let server_error_count = Arc::new(AtomicU64::new(0)); // 5xx
 
-    let futures: Vec<_> = (0..5000)
+    let futures: Vec<_> = (0..OVERLOAD_TEST_CONCURRENT_REQUESTS)
         .map(|_| {
             let storage = Arc::clone(&storage);
             let store_id = store_id.clone();
@@ -342,7 +352,7 @@ async fn test_graceful_degradation_under_overload() {
 
     // Verify the system processed most requests
     assert!(
-        successes + client_errors == 5000,
+        successes + client_errors == OVERLOAD_TEST_CONCURRENT_REQUESTS as u64,
         "All requests should complete (success or client error)"
     );
 }
@@ -392,8 +402,8 @@ async fn test_high_write_throughput() {
     let success_count = Arc::new(AtomicU64::new(0));
     let error_count = Arc::new(AtomicU64::new(0));
 
-    // Launch 100 concurrent write operations
-    let futures: Vec<_> = (0..100)
+    // Launch concurrent write operations
+    let futures: Vec<_> = (0..WRITE_STRESS_CONCURRENT_OPS)
         .map(|i| {
             let storage = Arc::clone(&storage);
             let store_id = store_id.clone();
@@ -435,7 +445,10 @@ async fn test_high_write_throughput() {
     let errors = error_count.load(Ordering::Relaxed);
 
     assert_eq!(errors, 0, "Should have no write errors");
-    assert_eq!(successes, 100, "All writes should succeed");
+    assert_eq!(
+        successes, WRITE_STRESS_CONCURRENT_OPS as u64,
+        "All writes should succeed"
+    );
 
     println!(
         "Write stress test: {} writes in {:?} ({:.0} writes/s)",

@@ -9,7 +9,10 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use rsfga_storage::MemoryDataStore;
 
-use common::{create_test_app, post_json};
+use common::{
+    create_test_app, post_json, CONCURRENT_CLIENT_COUNT, HIERARCHY_TEST_DEPTH,
+    LARGE_MODEL_BATCH_SIZE, LARGE_MODEL_TUPLE_COUNT,
+};
 
 // ============================================================
 // Section 2: Integration Tests
@@ -170,8 +173,8 @@ async fn test_multiple_concurrent_clients_work_correctly() {
         assert_eq!(status, StatusCode::OK);
     }
 
-    // Launch 50 concurrent check requests
-    let futures: Vec<_> = (0..50)
+    // Launch concurrent check requests
+    let futures: Vec<_> = (0..CONCURRENT_CLIENT_COUNT)
         .map(|i| {
             let storage = Arc::clone(&storage);
             let store_id = store_id.clone();
@@ -219,6 +222,7 @@ async fn test_multiple_concurrent_clients_work_correctly() {
 #[tokio::test]
 async fn test_large_authorization_models_work() {
     let storage = Arc::new(MemoryDataStore::new());
+    let num_batches = LARGE_MODEL_TUPLE_COUNT / LARGE_MODEL_BATCH_SIZE;
 
     // Create a store
     let store_id = {
@@ -232,11 +236,11 @@ async fn test_large_authorization_models_work() {
         response["id"].as_str().unwrap().to_string()
     };
 
-    // Write 1000 tuples in batches of 100
-    for batch in 0..10 {
-        let tuples: Vec<_> = (0..100)
+    // Write tuples in batches
+    for batch in 0..num_batches {
+        let tuples: Vec<_> = (0..LARGE_MODEL_BATCH_SIZE)
             .map(|i| {
-                let idx = batch * 100 + i;
+                let idx = batch * LARGE_MODEL_BATCH_SIZE + i;
                 serde_json::json!({
                     "user": format!("user:user{}", idx),
                     "relation": "viewer",
@@ -264,7 +268,8 @@ async fn test_large_authorization_models_work() {
     }
 
     // Verify we can check permissions for tuples at various positions
-    for idx in [0, 499, 999] {
+    let check_positions = [0, LARGE_MODEL_TUPLE_COUNT / 2 - 1, LARGE_MODEL_TUPLE_COUNT - 1];
+    for idx in check_positions {
         let (status, response) = post_json(
             create_test_app(&storage),
             &format!("/stores/{}/check", store_id),
@@ -286,6 +291,7 @@ async fn test_large_authorization_models_work() {
     }
 
     // Verify non-existent tuple returns false
+    let last_doc_idx = LARGE_MODEL_TUPLE_COUNT - 1;
     let (status, response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{}/check", store_id),
@@ -293,7 +299,7 @@ async fn test_large_authorization_models_work() {
             "tuple_key": {
                 "user": "user:user0",
                 "relation": "viewer",
-                "object": "document:doc999"  // user0 doesn't have access to doc999
+                "object": format!("document:doc{}", last_doc_idx)  // user0 doesn't have access to last doc
             }
         }),
     )
@@ -323,10 +329,10 @@ async fn test_deep_hierarchies_work() {
         response["id"].as_str().unwrap().to_string()
     };
 
-    // Create a chain of 20 folder relationships: folder0 -> folder1 -> ... -> folder19
+    // Create a chain of folder relationships: folder0 -> folder1 -> ... -> folder{DEPTH-1}
     // Each folder has a "parent" relation to the next
     let mut tuples = Vec::new();
-    for i in 0..20 {
+    for i in 0..HIERARCHY_TEST_DEPTH {
         // folder{i} is parent of folder{i+1}
         tuples.push(serde_json::json!({
             "user": format!("folder:folder{}#parent", i),
