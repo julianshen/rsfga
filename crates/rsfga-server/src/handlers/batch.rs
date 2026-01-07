@@ -9,22 +9,25 @@
 //! Note: Cache integration (stage 3) is handled at the API layer where
 //! the CheckCache is consulted before invoking the batch handler.
 //!
-//! # API Format Adaptation
+//! # API Format Adaptation (Deferred to M1.7)
 //!
-//! This module uses a simplified internal format for the domain layer.
-//! The HTTP API layer (`rsfga-api`) adapts to OpenFGA's wire format:
+//! This module uses a simplified internal format for the domain/server layer.
+//! The HTTP API layer (`rsfga-api`) will adapt to OpenFGA's wire format in
+//! Milestone 1.7 when HTTP routes are implemented:
 //!
 //! - **Request**: OpenFGA uses `correlation_id` and nested `tuple_key` objects.
-//!   The API layer extracts these and maps to our flat `BatchCheckItem`.
+//!   The API layer will extract these and map to our flat `BatchCheckItem`.
 //! - **Response**: OpenFGA returns `{ "result": { "<correlation_id>": {...} } }`.
-//!   The API layer maps our `Vec<BatchCheckItemResult>` back using correlation IDs.
+//!   The API layer will map our `Vec<BatchCheckItemResult>` back using correlation IDs.
+//!
+//! Note: `rsfga-api/src/http/mod.rs` is currently a placeholder stub.
 //!
 //! # Performance Target (UNVALIDATED - M1.8)
 //!
 //! - Batch throughput: >500 checks/s
 //! - Deduplication effectiveness: >90% on typical workloads
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -419,10 +422,10 @@ where
     /// Returns statistics about deduplication for a batch request.
     /// Returns (total_checks, unique_checks).
     pub fn dedup_stats(&self, request: &BatchCheckRequest) -> (usize, usize) {
-        let mut seen: HashMap<CheckKey, ()> = HashMap::new();
+        let mut seen: HashSet<CheckKey> = HashSet::with_capacity(request.checks.len());
         for check in &request.checks {
             let key = CheckKey::new(&request.store_id, check);
-            seen.entry(key).or_insert(());
+            seen.insert(key);
         }
         (request.checks.len(), seen.len())
     }
