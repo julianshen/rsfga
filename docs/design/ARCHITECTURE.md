@@ -143,9 +143,10 @@ These are explicitly out of scope. Requests for these features should be decline
 
 ### Phase 1 (MVP) Non-Goals
 
-1. **NG1**: ❌ **CEL condition evaluation** - Deferred to post-MVP
-   - **Rationale**: Complex feature, low usage in practice
-   - **Future**: May add in Phase 1.5 if user demand exists
+1. **~~NG1~~**: ✅ **CEL condition evaluation** - **Moved to Phase 1 (Milestone 1.10)**
+   - **Status**: Now included in MVP scope
+   - **Rationale**: Required for ABAC patterns and full OpenFGA compatibility
+   - **Implementation**: [cel-rust](https://github.com/cel-rust/cel-rust) v0.12+ (Google CEL compliant, sandboxed)
 
 2. **NG2**: ❌ **gRPC streaming for batch-check** - Deferred (ADR-006)
    - **Rationale**: Adds complexity, users haven't requested it
@@ -1078,7 +1079,7 @@ services:
 - [ ] Evaluate RocksDB vs sled for embedded storage at edge
 
 ### Features
-- [ ] CEL condition evaluation (deferred to post-MVP)
+- [ ] CEL condition evaluation (Milestone 1.10)
 - [ ] Relationship queries (expand API)
 - [ ] Schema versioning and migration tools
 
