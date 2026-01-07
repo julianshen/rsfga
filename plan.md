@@ -918,13 +918,13 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 
 **Objective**: HTTP REST and gRPC APIs with OpenFGA compatibility
 
-#### Section 1: Protobuf Definitions
+#### Section 1: Protobuf Definitions ✅
 
-- [ ] Test: Protobuf files compile
-- [ ] Test: Generated Rust code is identical to OpenFGA types
-- [ ] Test: Can serialize/deserialize Check request
-- [ ] Test: Can serialize/deserialize Check response
-- [ ] Test: Can serialize/deserialize all request types
+- [x] Test: Protobuf files compile
+- [x] Test: Generated Rust code is identical to OpenFGA types
+- [x] Test: Can serialize/deserialize Check request
+- [x] Test: Can serialize/deserialize Check response
+- [x] Test: Can serialize/deserialize all request types
 
 #### Section 2: HTTP REST API
 
