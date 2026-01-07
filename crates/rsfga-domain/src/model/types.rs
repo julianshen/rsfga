@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// A user identifier (e.g., "user:alice" or "group:eng#member").
@@ -181,21 +182,52 @@ impl Tuple {
 }
 
 /// A store that contains authorization models and tuples.
+///
+/// This type uses `chrono::DateTime<Utc>` for timestamps to ensure consistency
+/// with the storage layer (rsfga-storage). Serde serializes timestamps as ISO 8601
+/// strings for API compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Store {
     /// Unique store identifier.
     pub id: String,
     /// Human-readable store name.
     pub name: String,
-    /// When the store was created (ISO 8601 timestamp).
-    pub created_at: Option<String>,
-    /// When the store was last updated (ISO 8601 timestamp).
-    pub updated_at: Option<String>,
+    /// When the store was created.
+    pub created_at: DateTime<Utc>,
+    /// When the store was last updated.
+    pub updated_at: DateTime<Utc>,
 }
 
 impl Store {
     /// Creates a new Store with the given ID and name.
+    /// Sets created_at and updated_at to the current time.
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Result<Self, &'static str> {
+        let id = id.into();
+        let name = name.into();
+
+        if id.is_empty() {
+            return Err("store id cannot be empty");
+        }
+        if name.is_empty() {
+            return Err("store name cannot be empty");
+        }
+
+        let now = Utc::now();
+        Ok(Self {
+            id,
+            name,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    /// Creates a Store with explicit timestamps.
+    pub fn with_timestamps(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        created_at: DateTime<Utc>,
+        updated_at: DateTime<Utc>,
+    ) -> Result<Self, &'static str> {
         let id = id.into();
         let name = name.into();
 
@@ -209,22 +241,9 @@ impl Store {
         Ok(Self {
             id,
             name,
-            created_at: None,
-            updated_at: None,
+            created_at,
+            updated_at,
         })
-    }
-
-    /// Creates a Store with timestamps.
-    pub fn with_timestamps(
-        id: impl Into<String>,
-        name: impl Into<String>,
-        created_at: impl Into<String>,
-        updated_at: impl Into<String>,
-    ) -> Result<Self, &'static str> {
-        let mut store = Self::new(id, name)?;
-        store.created_at = Some(created_at.into());
-        store.updated_at = Some(updated_at.into());
-        Ok(store)
     }
 }
 
@@ -468,11 +487,17 @@ mod tests {
 
     #[test]
     fn test_store_creation_with_unique_id() {
+        let before = Utc::now();
         let store = Store::new("store-123", "My Store").unwrap();
+        let after = Utc::now();
+
         assert_eq!(store.id, "store-123");
         assert_eq!(store.name, "My Store");
-        assert!(store.created_at.is_none());
-        assert!(store.updated_at.is_none());
+        // Timestamps should be set to around the current time
+        assert!(store.created_at >= before && store.created_at <= after);
+        assert!(store.updated_at >= before && store.updated_at <= after);
+        // created_at and updated_at should be the same for a new store
+        assert_eq!(store.created_at, store.updated_at);
     }
 
     #[test]
@@ -491,16 +516,13 @@ mod tests {
 
     #[test]
     fn test_store_with_timestamps() {
-        let store = Store::with_timestamps(
-            "store-123",
-            "My Store",
-            "2024-01-01T00:00:00Z",
-            "2024-01-02T00:00:00Z",
-        )
-        .unwrap();
+        let created = "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let updated = "2024-01-02T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+        let store = Store::with_timestamps("store-123", "My Store", created, updated).unwrap();
         assert_eq!(store.id, "store-123");
-        assert_eq!(store.created_at, Some("2024-01-01T00:00:00Z".to_string()));
-        assert_eq!(store.updated_at, Some("2024-01-02T00:00:00Z".to_string()));
+        assert_eq!(store.created_at, created);
+        assert_eq!(store.updated_at, updated);
     }
 
     // ========== AuthorizationModel Tests ==========

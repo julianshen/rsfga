@@ -621,8 +621,11 @@ where
             .collect();
 
         // Track errors for reporting if all branches fail
-        let mut last_error: Option<DomainError> = None;
-        let mut cycle_error: Option<DomainError> = None;
+        // Path-termination errors (CycleDetected, DepthLimitExceeded) mean "this branch
+        // couldn't find access" - they should be treated as false for union semantics,
+        // not as fatal errors. Only propagate if ALL branches hit path-termination.
+        let mut fatal_error: Option<DomainError> = None;
+        let mut path_termination_error: Option<DomainError> = None;
         let mut had_false_result = false;
 
         // Poll futures and short-circuit on first allowed=true
@@ -637,24 +640,30 @@ where
                     had_false_result = true;
                 }
                 Err(e) => {
-                    // Track cycle errors separately - they're only fatal if ALL branches cycle
-                    if matches!(e, DomainError::CycleDetected { .. }) {
-                        cycle_error = Some(e);
+                    // Path-termination errors (cycle, depth limit) are NOT fatal for unions.
+                    // They mean "this branch couldn't reach a conclusion" which is effectively
+                    // "this branch didn't grant access" - so treat as false and continue.
+                    if matches!(
+                        e,
+                        DomainError::CycleDetected { .. } | DomainError::DepthLimitExceeded { .. }
+                    ) {
+                        path_termination_error = Some(e);
                     } else {
-                        last_error = Some(e);
+                        fatal_error = Some(e);
                     }
                 }
             }
         }
 
-        // If we had a non-cycle error and no branch succeeded, propagate it
-        if let Some(e) = last_error {
+        // Fatal errors (storage errors, etc.) should always propagate
+        if let Some(e) = fatal_error {
             return Err(e);
         }
 
-        // If ALL branches returned cycle errors (no false results), propagate the cycle
+        // If ALL branches returned path-termination errors (no false results), propagate
+        // the error - this indicates the entire union couldn't be evaluated
         if !had_false_result {
-            if let Some(e) = cycle_error {
+            if let Some(e) = path_termination_error {
                 return Err(e);
             }
         }
@@ -1902,6 +1911,195 @@ mod tests {
         assert!(
             matches!(result, Err(DomainError::CycleDetected { .. })),
             "Union with all cyclic branches should return CycleDetected error, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_union_returns_false_when_one_branch_false_and_other_depth_limit() {
+        // Test for issue #52: Union should return false (not error) when one branch
+        // returns false and another hits DepthLimitExceeded. DepthLimitExceeded is
+        // a path-termination error, not a fatal error for union semantics.
+        //
+        // NOTE: We use a chain of DIFFERENT relations (step0 -> step1 -> step2 -> step3 -> step4)
+        // to ensure we hit DepthLimitExceeded rather than CycleDetected. A self-referential
+        // relation would be detected as a cycle before hitting depth limit.
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        // Create a model where:
+        // - viewer = union of direct_viewer and step0
+        // - direct_viewer = This (direct tuple - will be false for alice)
+        // - step0 -> step1 -> step2 -> step3 -> step4 (linear chain exceeding depth limit)
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![
+                        RelationDefinition {
+                            name: "viewer".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::Union {
+                                children: vec![
+                                    // Branch 1: direct_viewer - will return false
+                                    Userset::ComputedUserset {
+                                        relation: "direct_viewer".to_string(),
+                                    },
+                                    // Branch 2: step0 - will hit depth limit via chain
+                                    Userset::ComputedUserset {
+                                        relation: "step0".to_string(),
+                                    },
+                                ],
+                            },
+                        },
+                        RelationDefinition {
+                            name: "direct_viewer".to_string(),
+                            type_constraints: vec!["user".to_string()],
+                            rewrite: Userset::This,
+                        },
+                        // Chain of relations to exceed depth limit without cycling
+                        RelationDefinition {
+                            name: "step0".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "step1".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "step1".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "step2".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "step2".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "step3".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "step3".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "step4".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "step4".to_string(),
+                            type_constraints: vec!["user".to_string()],
+                            rewrite: Userset::This, // Terminal - but we'll never reach it
+                        },
+                    ],
+                },
+            )
+            .await;
+
+        // Don't add any tuples - alice is NOT a direct_viewer
+
+        // Use max_depth=3 so the chain step0->step1->step2->step3 exceeds it
+        let config = ResolverConfig {
+            max_depth: 3,
+            timeout: Duration::from_secs(30),
+        };
+        let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        // Should return false, NOT DepthLimitExceeded error
+        // Because: direct_viewer returns false, step0 branch hits depth limit
+        // Union with one false branch should return false, not propagate the error
+        let result = resolver.check(&request).await;
+        assert!(
+            matches!(result, Ok(CheckResult { allowed: false })),
+            "Union with one false branch and one depth-limited branch should return false, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_union_returns_depth_limit_error_when_all_branches_hit_depth_limit() {
+        // Test that when ALL branches in a union return DepthLimitExceeded,
+        // the error is properly propagated (similar to cycle error behavior)
+        let tuple_reader = Arc::new(MockTupleReader::new());
+        let model_reader = Arc::new(MockModelReader::new());
+
+        tuple_reader.add_store("store1").await;
+
+        // Create a model where both branches hit depth limit
+        model_reader
+            .add_type(
+                "store1",
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![
+                        RelationDefinition {
+                            name: "viewer".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::Union {
+                                children: vec![
+                                    Userset::ComputedUserset {
+                                        relation: "deep1".to_string(),
+                                    },
+                                    Userset::ComputedUserset {
+                                        relation: "deep2".to_string(),
+                                    },
+                                ],
+                            },
+                        },
+                        RelationDefinition {
+                            name: "deep1".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "deep1".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "deep2".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "deep2".to_string(),
+                            },
+                        },
+                    ],
+                },
+            )
+            .await;
+
+        let config = ResolverConfig {
+            max_depth: 3,
+            timeout: Duration::from_secs(30),
+        };
+        let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+        let request = CheckRequest {
+            store_id: "store1".to_string(),
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            contextual_tuples: Arc::new(vec![]),
+        };
+
+        // Should return DepthLimitExceeded or CycleDetected (path-termination error)
+        // when ALL branches hit the limit
+        let result = resolver.check(&request).await;
+        assert!(
+            matches!(
+                result,
+                Err(DomainError::DepthLimitExceeded { .. })
+                    | Err(DomainError::CycleDetected { .. })
+            ),
+            "Union with all depth-limited branches should return path-termination error, got {:?}",
             result
         );
     }

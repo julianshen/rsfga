@@ -5,7 +5,23 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::OnceLock;
 use uuid::Uuid;
+
+// ============================================================================
+// Shared HTTP Client (Issue #26)
+// ============================================================================
+
+/// Global shared reqwest::Client for connection pool reuse.
+/// Creating a new Client for each request is inefficient as reqwest::Client
+/// holds a connection pool internally and is meant to be created once and reused.
+static SHARED_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+/// Get a reference to the shared HTTP client.
+/// This lazily initializes the client on first use and reuses it for all subsequent calls.
+pub fn shared_client() -> &'static reqwest::Client {
+    SHARED_CLIENT.get_or_init(reqwest::Client::new)
+}
 
 // ============================================================================
 // Typed API Response Structs
@@ -61,7 +77,7 @@ pub fn get_grpc_url() -> String {
 
 /// Helper function to create a test store
 pub async fn create_test_store() -> Result<String> {
-    let client = reqwest::Client::new();
+    let client = shared_client();
     let store_name = format!("test-store-{}", Uuid::new_v4());
 
     let response = client
@@ -84,7 +100,7 @@ pub async fn create_authorization_model(
     store_id: &str,
     model: serde_json::Value,
 ) -> Result<String> {
-    let client = reqwest::Client::new();
+    let client = shared_client();
 
     let response = client
         .post(format!(
@@ -144,7 +160,7 @@ pub async fn create_test_model(store_id: &str) -> Result<String> {
 
 /// Helper function to write tuples
 pub async fn write_tuples(store_id: &str, tuples: Vec<(&str, &str, &str)>) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = shared_client();
 
     let tuple_keys: Vec<serde_json::Value> = tuples
         .into_iter()
@@ -314,9 +330,15 @@ pub async fn write_sequential_tuples(store_id: &str, count: usize) -> Result<()>
 // HTTP Client Helper
 // ============================================================================
 
-/// Helper function to create an HTTP client
+/// Helper function to get an HTTP client.
+/// Returns a clone of the shared client (cheap due to internal Arc).
+/// Prefer using `shared_client()` directly when possible.
+#[deprecated(
+    since = "0.1.0",
+    note = "Use shared_client() instead for better efficiency"
+)]
 pub fn http_client() -> reqwest::Client {
-    reqwest::Client::new()
+    shared_client().clone()
 }
 
 // ============================================================================
