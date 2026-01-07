@@ -8,7 +8,7 @@ use std::{
 
 use axum::http::{Request, Response};
 use tower::{Layer, Service};
-use tracing::{info_span, Instrument, Span};
+use tracing::{field::Empty, info_span, Instrument, Span};
 
 /// Layer that creates tracing spans for requests.
 #[derive(Clone, Default)]
@@ -62,11 +62,13 @@ where
             .unwrap_or_default();
 
         // Create span for this request
+        // Note: http.status_code is declared with Empty and recorded later
         let span = info_span!(
             "http_request",
             method = %method,
             uri = %uri,
             request_id = %request_id,
+            http.status_code = Empty,
             otel.kind = "server"
         );
 

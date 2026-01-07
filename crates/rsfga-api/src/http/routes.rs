@@ -15,6 +15,7 @@ use tracing::error;
 use rsfga_storage::{DataStore, StorageError};
 
 use super::state::AppState;
+use crate::utils::{format_user, parse_user};
 
 /// Creates the HTTP router with all OpenFGA-compatible endpoints.
 pub fn create_router<S: DataStore>(state: AppState<S>) -> Router {
@@ -424,33 +425,44 @@ async fn write_tuples<S: DataStore>(
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
-    // Convert write tuples
-    let writes: Vec<StoredTuple> = body
-        .writes
-        .map(|w| {
-            w.tuple_keys
-                .into_iter()
-                .filter_map(|tk| parse_tuple_key(&tk))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Convert write tuples - fail if any tuple key is invalid
+    let writes: Vec<StoredTuple> = if let Some(w) = body.writes {
+        let mut tuples = Vec::with_capacity(w.tuple_keys.len());
+        for (i, tk) in w.tuple_keys.into_iter().enumerate() {
+            let stored = parse_tuple_key(&tk).ok_or_else(|| {
+                ApiError::invalid_input(format!(
+                    "invalid tuple_key at writes index {}: user='{}', object='{}'",
+                    i, tk.user, tk.object
+                ))
+            })?;
+            tuples.push(stored);
+        }
+        tuples
+    } else {
+        vec![]
+    };
 
-    // Convert delete tuples
-    let deletes: Vec<StoredTuple> = body
-        .deletes
-        .map(|d| {
-            d.tuple_keys
-                .into_iter()
-                .filter_map(|tk| {
-                    parse_tuple_key(&TupleKeyBody {
-                        user: tk.user,
-                        relation: tk.relation,
-                        object: tk.object,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // Convert delete tuples - fail if any tuple key is invalid
+    let deletes: Vec<StoredTuple> = if let Some(d) = body.deletes {
+        let mut tuples = Vec::with_capacity(d.tuple_keys.len());
+        for (i, tk) in d.tuple_keys.into_iter().enumerate() {
+            let stored = parse_tuple_key(&TupleKeyBody {
+                user: tk.user.clone(),
+                relation: tk.relation.clone(),
+                object: tk.object.clone(),
+            })
+            .ok_or_else(|| {
+                ApiError::invalid_input(format!(
+                    "invalid tuple_key at deletes index {}: user='{}', object='{}'",
+                    i, tk.user, tk.object
+                ))
+            })?;
+            tuples.push(stored);
+        }
+        tuples
+    } else {
+        vec![]
+    };
 
     state
         .storage
@@ -476,19 +488,6 @@ fn parse_tuple_key(tk: &TupleKeyBody) -> Option<rsfga_storage::StoredTuple> {
         user_id: user_id.to_string(),
         user_relation: user_relation.map(|s| s.to_string()),
     })
-}
-
-/// Parses a user string into (type, id, optional_relation).
-fn parse_user(user: &str) -> Option<(&str, &str, Option<&str>)> {
-    // Check for userset format: "team:eng#member"
-    if let Some((type_id, relation)) = user.split_once('#') {
-        let (user_type, user_id) = type_id.split_once(':')?;
-        Some((user_type, user_id, Some(relation)))
-    } else {
-        // Simple format: "user:alice"
-        let (user_type, user_id) = user.split_once(':')?;
-        Some((user_type, user_id, None))
-    }
 }
 
 // ============================================================
@@ -586,15 +585,6 @@ async fn read_tuples<S: DataStore>(
         tuples: response_tuples,
         continuation_token: None,
     }))
-}
-
-/// Formats a user for the response.
-fn format_user(user_type: &str, user_id: &str, user_relation: Option<&str>) -> String {
-    if let Some(rel) = user_relation {
-        format!("{}:{}#{}", user_type, user_id, rel)
-    } else {
-        format!("{}:{}", user_type, user_id)
-    }
 }
 
 // ============================================================

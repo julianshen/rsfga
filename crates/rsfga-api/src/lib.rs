@@ -21,6 +21,7 @@
 pub mod grpc;
 pub mod http;
 pub mod middleware;
+pub mod utils;
 
 #[cfg(test)]
 mod compatibility;

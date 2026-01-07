@@ -61,6 +61,13 @@ impl RequestMetrics {
     }
 
     /// Gets the average request duration in microseconds.
+    ///
+    /// Note: This method has a potential TOCTOU (time-of-check-time-of-use) issue
+    /// under high concurrency since `request_count` and `total_duration_us` are
+    /// loaded separately. The returned average may be slightly inaccurate during
+    /// concurrent updates, but this is acceptable for monitoring purposes where
+    /// exact precision is not required. For precise metrics, use a metrics library
+    /// like `metrics` or `prometheus` that handles atomic aggregation.
     pub fn get_avg_duration_us(&self) -> u64 {
         let count = self.request_count.load(Ordering::Relaxed);
         if count == 0 {

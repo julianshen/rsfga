@@ -13,6 +13,13 @@ use tower::ServiceExt;
 use super::*;
 
 /// Helper to create a test app with all middleware layers.
+///
+/// Note: In Axum, layers are applied from bottom to top (last `.layer()` call
+/// is the outermost middleware that runs first). The order here ensures:
+/// 1. RequestIdLayer runs first (outermost) - generates/propagates request ID
+/// 2. MetricsLayer runs second - records request metrics
+/// 3. TracingLayer runs third - creates tracing spans (can use request ID)
+/// 4. RequestLoggingLayer runs last (innermost) - logs with request ID
 fn test_app_with_middleware(metrics: Arc<RequestMetrics>) -> Router {
     Router::new()
         .route("/", get(|| async { "OK" }))
@@ -20,10 +27,11 @@ fn test_app_with_middleware(metrics: Arc<RequestMetrics>) -> Router {
             "/error",
             get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
         )
-        .layer(RequestLoggingLayer::new())
-        .layer(TracingLayer::new())
-        .layer(MetricsLayer::new(metrics))
-        .layer(RequestIdLayer::new())
+        // Layers are applied bottom-to-top: last .layer() is outermost
+        .layer(RequestLoggingLayer::new()) // innermost - logs request
+        .layer(TracingLayer::new()) // creates tracing spans
+        .layer(MetricsLayer::new(metrics)) // records metrics
+        .layer(RequestIdLayer::new()) // outermost - ensures request ID exists
 }
 
 /// Test: Request logging works

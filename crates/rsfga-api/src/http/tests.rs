@@ -349,12 +349,12 @@ async fn test_nonexistent_store_returns_404() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-/// Test: Server errors return 500 with details
+/// Test: Validation errors return 400 with details
 ///
-/// This test verifies error responses include proper error details.
-/// We test with an invalid input scenario that triggers validation.
+/// This test verifies that validation error responses include proper error details.
+/// We test with a batch check that has too many items, which triggers validation.
 #[tokio::test]
-async fn test_server_errors_return_500_with_details() {
+async fn test_validation_errors_return_400_with_details() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
         .create_store("test-store", "Test Store")

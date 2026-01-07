@@ -6,6 +6,8 @@ use tonic::{Request, Response, Status};
 
 use rsfga_storage::{DataStore, StorageError, StoredTuple, TupleFilter};
 
+use crate::utils::{format_user, parse_user};
+
 use crate::proto::openfga::v1::{
     open_fga_service_server::OpenFgaService, BatchCheckItem, BatchCheckRequest, BatchCheckResponse,
     BatchCheckSingleResult, CheckRequest, CheckResponse, CreateStoreRequest, CreateStoreResponse,
@@ -41,26 +43,6 @@ fn storage_error_to_status(err: StorageError) -> Status {
         StorageError::InvalidInput { message } => Status::invalid_argument(message),
         StorageError::DuplicateTuple { .. } => Status::already_exists(err.to_string()),
         _ => Status::internal(err.to_string()),
-    }
-}
-
-/// Parses a user string into (type, id, optional_relation).
-fn parse_user(user: &str) -> Option<(&str, &str, Option<&str>)> {
-    if let Some((type_id, relation)) = user.split_once('#') {
-        let (user_type, user_id) = type_id.split_once(':')?;
-        Some((user_type, user_id, Some(relation)))
-    } else {
-        let (user_type, user_id) = user.split_once(':')?;
-        Some((user_type, user_id, None))
-    }
-}
-
-/// Formats a user for response.
-fn format_user(user_type: &str, user_id: &str, user_relation: Option<&str>) -> String {
-    if let Some(rel) = user_relation {
-        format!("{}:{}#{}", user_type, user_id, rel)
-    } else {
-        format!("{}:{}", user_type, user_id)
     }
 }
 
@@ -174,34 +156,45 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // Convert writes
-        let writes: Vec<StoredTuple> = req
-            .writes
-            .map(|w| {
-                w.tuple_keys
-                    .iter()
-                    .filter_map(tuple_key_to_stored)
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Convert writes - fail if any tuple key is invalid
+        let writes: Vec<StoredTuple> = if let Some(w) = req.writes {
+            let mut tuples = Vec::with_capacity(w.tuple_keys.len());
+            for (i, tk) in w.tuple_keys.iter().enumerate() {
+                let stored = tuple_key_to_stored(tk).ok_or_else(|| {
+                    Status::invalid_argument(format!(
+                        "invalid tuple_key at writes index {}: user='{}', object='{}'",
+                        i, tk.user, tk.object
+                    ))
+                })?;
+                tuples.push(stored);
+            }
+            tuples
+        } else {
+            vec![]
+        };
 
-        // Convert deletes
-        let deletes: Vec<StoredTuple> = req
-            .deletes
-            .map(|d| {
-                d.tuple_keys
-                    .iter()
-                    .filter_map(|tk| {
-                        tuple_key_to_stored(&TupleKey {
-                            user: tk.user.clone(),
-                            relation: tk.relation.clone(),
-                            object: tk.object.clone(),
-                            condition: None,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Convert deletes - fail if any tuple key is invalid
+        let deletes: Vec<StoredTuple> = if let Some(d) = req.deletes {
+            let mut tuples = Vec::with_capacity(d.tuple_keys.len());
+            for (i, tk) in d.tuple_keys.iter().enumerate() {
+                let stored = tuple_key_to_stored(&TupleKey {
+                    user: tk.user.clone(),
+                    relation: tk.relation.clone(),
+                    object: tk.object.clone(),
+                    condition: None,
+                })
+                .ok_or_else(|| {
+                    Status::invalid_argument(format!(
+                        "invalid tuple_key at deletes index {}: user='{}', object='{}'",
+                        i, tk.user, tk.object
+                    ))
+                })?;
+                tuples.push(stored);
+            }
+            tuples
+        } else {
+            vec![]
+        };
 
         self.storage
             .write_tuples(&req.store_id, writes, deletes)
@@ -362,26 +355,19 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
     ) -> Result<Response<UpdateStoreResponse>, Status> {
         let req = request.into_inner();
 
-        // Get existing store
-        let store = self
+        // Validate store exists
+        let _ = self
             .storage
             .get_store(&req.store_id)
             .await
             .map_err(storage_error_to_status)?;
 
-        // UpdateStore not yet implemented, just return current store
-        Ok(Response::new(UpdateStoreResponse {
-            id: store.id,
-            name: store.name,
-            created_at: Some(prost_types::Timestamp {
-                seconds: store.created_at.timestamp(),
-                nanos: store.created_at.timestamp_subsec_nanos() as i32,
-            }),
-            updated_at: Some(prost_types::Timestamp {
-                seconds: store.updated_at.timestamp(),
-                nanos: store.updated_at.timestamp_subsec_nanos() as i32,
-            }),
-        }))
+        // TODO: UpdateStore requires storage layer support (update_store method)
+        // Currently returns UNIMPLEMENTED as the storage trait doesn't have update_store.
+        // This will be implemented when storage layer adds update_store support.
+        Err(Status::unimplemented(
+            "update_store is not yet implemented - storage layer support required",
+        ))
     }
 
     async fn delete_store(
