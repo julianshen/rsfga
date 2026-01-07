@@ -268,7 +268,11 @@ async fn test_large_authorization_models_work() {
     }
 
     // Verify we can check permissions for tuples at various positions
-    let check_positions = [0, LARGE_MODEL_TUPLE_COUNT / 2 - 1, LARGE_MODEL_TUPLE_COUNT - 1];
+    let check_positions = [
+        0,
+        LARGE_MODEL_TUPLE_COUNT / 2 - 1,
+        LARGE_MODEL_TUPLE_COUNT - 1,
+    ];
     for idx in check_positions {
         let (status, response) = post_json(
             create_test_app(&storage),

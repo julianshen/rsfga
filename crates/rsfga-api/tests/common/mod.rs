@@ -3,6 +3,10 @@
 //! This module provides common test helpers used across integration,
 //! security, and stress test suites.
 
+// Allow dead_code because constants/functions are used across different test files,
+// but Clippy analyzes each test file independently and can't see cross-file usage.
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
