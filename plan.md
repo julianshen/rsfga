@@ -912,7 +912,7 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 
 ---
 
-### Milestone 1.7: API Layer (Week 11)
+### Milestone 1.7: API Layer (Week 11) ✅ COMPLETE
 
 **Branch**: `feature/milestone-1.7-api-layer`
 
@@ -926,46 +926,46 @@ CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 - [x] Test: Can serialize/deserialize Check response
 - [x] Test: Can serialize/deserialize all request types
 
-#### Section 2: HTTP REST API
+#### Section 2: HTTP REST API ✅
 
-- [ ] Test: Server starts on configured port
-- [ ] Test: POST /stores/{store_id}/check returns 200
-- [ ] Test: Check endpoint validates request body
-- [ ] Test: Check endpoint returns correct response format
-- [ ] Test: POST /stores/{store_id}/expand returns 200
-- [ ] Test: POST /stores/{store_id}/write returns 200
-- [ ] Test: POST /stores/{store_id}/read returns 200
-- [ ] Test: Invalid JSON returns 400
-- [ ] Test: Non-existent store returns 404
-- [ ] Test: Server errors return 500 with details
+- [x] Test: Server starts on configured port
+- [x] Test: POST /stores/{store_id}/check returns 200
+- [x] Test: Check endpoint validates request body
+- [x] Test: Check endpoint returns correct response format
+- [x] Test: POST /stores/{store_id}/expand returns 200
+- [x] Test: POST /stores/{store_id}/write returns 200
+- [x] Test: POST /stores/{store_id}/read returns 200
+- [x] Test: Invalid JSON returns 400
+- [x] Test: Non-existent store returns 404
+- [x] Test: Server errors return 500 with details
 
-#### Section 3: gRPC API
+#### Section 3: gRPC API ✅
 
-- [ ] Test: gRPC server starts
-- [ ] Test: Check RPC works correctly
-- [ ] Test: BatchCheck RPC works correctly
-- [ ] Test: Write RPC works correctly
-- [ ] Test: Read RPC works correctly
-- [ ] Test: gRPC errors map correctly to status codes
+- [x] Test: gRPC server starts
+- [x] Test: Check RPC works correctly
+- [x] Test: BatchCheck RPC works correctly
+- [x] Test: Write RPC works correctly
+- [x] Test: Read RPC works correctly
+- [x] Test: gRPC errors map correctly to status codes
 
-#### Section 4: Middleware
+#### Section 4: Middleware ✅
 
-- [ ] Test: Request logging works
-- [ ] Test: Metrics are collected (request count, duration)
-- [ ] Test: Tracing spans are created
-- [ ] Test: CORS headers are set correctly
-- [ ] Test: Request ID is generated and propagated
+- [x] Test: Request logging works
+- [x] Test: Metrics are collected (request count, duration)
+- [x] Test: Tracing spans are created
+- [x] Test: CORS headers are set correctly
+- [x] Test: Request ID is generated and propagated
 
-#### Section 5: OpenFGA Compatibility
+#### Section 5: OpenFGA Compatibility ✅
 
-- [ ] Test: All OpenFGA API endpoints present
-- [ ] Test: Request/response schemas match exactly
-- [ ] Test: Error codes match OpenFGA
-- [ ] Test: Run OpenFGA compatibility test suite (100% pass)
+- [x] Test: All OpenFGA API endpoints present
+- [x] Test: Request/response schemas match exactly
+- [x] Test: Error codes match OpenFGA
+- [x] Test: Run OpenFGA compatibility test suite (100% pass)
 
 **Validation Criteria**:
-- [ ] 100% OpenFGA API compatibility
-- [ ] OpenFGA test suite passes 100%
+- [x] 100% OpenFGA API compatibility
+- [x] OpenFGA test suite passes 100%
 - [ ] API documentation generated
 - [ ] >90% test coverage
 
