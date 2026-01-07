@@ -1920,15 +1920,19 @@ mod tests {
         // Test for issue #52: Union should return false (not error) when one branch
         // returns false and another hits DepthLimitExceeded. DepthLimitExceeded is
         // a path-termination error, not a fatal error for union semantics.
+        //
+        // NOTE: We use a chain of DIFFERENT relations (step0 -> step1 -> step2 -> step3 -> step4)
+        // to ensure we hit DepthLimitExceeded rather than CycleDetected. A self-referential
+        // relation would be detected as a cycle before hitting depth limit.
         let tuple_reader = Arc::new(MockTupleReader::new());
         let model_reader = Arc::new(MockModelReader::new());
 
         tuple_reader.add_store("store1").await;
 
         // Create a model where:
-        // - viewer = union of direct_viewer and deep_viewer
+        // - viewer = union of direct_viewer and step0
         // - direct_viewer = This (direct tuple - will be false for alice)
-        // - deep_viewer = computed from chain that exceeds depth limit
+        // - step0 -> step1 -> step2 -> step3 -> step4 (linear chain exceeding depth limit)
         model_reader
             .add_type(
                 "store1",
@@ -1944,9 +1948,9 @@ mod tests {
                                     Userset::ComputedUserset {
                                         relation: "direct_viewer".to_string(),
                                     },
-                                    // Branch 2: deep_viewer - will hit depth limit
+                                    // Branch 2: step0 - will hit depth limit via chain
                                     Userset::ComputedUserset {
-                                        relation: "deep_viewer".to_string(),
+                                        relation: "step0".to_string(),
                                     },
                                 ],
                             },
@@ -1956,13 +1960,39 @@ mod tests {
                             type_constraints: vec!["user".to_string()],
                             rewrite: Userset::This,
                         },
+                        // Chain of relations to exceed depth limit without cycling
                         RelationDefinition {
-                            name: "deep_viewer".to_string(),
+                            name: "step0".to_string(),
                             type_constraints: vec![],
-                            // Create a self-referential chain that will hit depth limit
                             rewrite: Userset::ComputedUserset {
-                                relation: "deep_viewer".to_string(),
+                                relation: "step1".to_string(),
                             },
+                        },
+                        RelationDefinition {
+                            name: "step1".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "step2".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "step2".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "step3".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "step3".to_string(),
+                            type_constraints: vec![],
+                            rewrite: Userset::ComputedUserset {
+                                relation: "step4".to_string(),
+                            },
+                        },
+                        RelationDefinition {
+                            name: "step4".to_string(),
+                            type_constraints: vec!["user".to_string()],
+                            rewrite: Userset::This, // Terminal - but we'll never reach it
                         },
                     ],
                 },
@@ -1971,7 +2001,7 @@ mod tests {
 
         // Don't add any tuples - alice is NOT a direct_viewer
 
-        // Use a very small max_depth to trigger DepthLimitExceeded quickly
+        // Use max_depth=3 so the chain step0->step1->step2->step3 exceeds it
         let config = ResolverConfig {
             max_depth: 3,
             timeout: Duration::from_secs(30),
@@ -1987,7 +2017,7 @@ mod tests {
         };
 
         // Should return false, NOT DepthLimitExceeded error
-        // Because: direct_viewer returns false, deep_viewer hits depth limit
+        // Because: direct_viewer returns false, step0 branch hits depth limit
         // Union with one false branch should return false, not propagate the error
         let result = resolver.check(&request).await;
         assert!(
