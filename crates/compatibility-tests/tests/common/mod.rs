@@ -567,6 +567,23 @@ pub fn http_client() -> reqwest::Client {
 // gRPC Helpers
 // ============================================================================
 
+/// Check if grpcurl is available on the system.
+///
+/// grpcurl is required for gRPC-specific tests (Sections 21, 23, 34).
+/// Install via:
+/// - macOS: `brew install grpcurl`
+/// - Linux: Download from https://github.com/fullstorydev/grpcurl/releases
+/// - Go: `go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest`
+pub fn is_grpcurl_available() -> bool {
+    use std::process::Command;
+
+    Command::new("grpcurl")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Execute gRPC call with grpcurl and return parsed JSON response
 pub fn grpc_call(method: &str, data: &serde_json::Value) -> Result<serde_json::Value> {
     use std::process::Command;

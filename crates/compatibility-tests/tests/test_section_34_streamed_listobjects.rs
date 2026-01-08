@@ -2,8 +2,8 @@ mod common;
 
 use anyhow::Result;
 use common::{
-    create_test_store, get_grpc_url, grpc_call, grpc_streaming_call, simple_document_viewer_model,
-    write_tuples,
+    create_test_store, get_grpc_url, grpc_call, grpc_streaming_call, is_grpcurl_available,
+    simple_document_viewer_model, write_tuples,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -25,8 +25,16 @@ use std::process::Command;
 //
 // ============================================================================
 
-/// Helper to check if StreamedListObjects is available
-fn is_streamed_listobjects_available() -> bool {
+/// Check if grpcurl and StreamedListObjects are available.
+///
+/// Returns (grpcurl_available, method_available) tuple.
+/// - First check if grpcurl is installed
+/// - Then check if StreamedListObjects method exists on the server
+fn check_streaming_prerequisites() -> (bool, bool) {
+    if !is_grpcurl_available() {
+        return (false, false);
+    }
+
     let url = get_grpc_url();
 
     // Check if the method exists
@@ -34,13 +42,32 @@ fn is_streamed_listobjects_available() -> bool {
         .args(["-plaintext", &url, "describe", "openfga.v1.OpenFGAService"])
         .output();
 
-    match output {
+    let method_available = match output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             stdout.contains("StreamedListObjects")
         }
         Err(_) => false,
-    }
+    };
+
+    (true, method_available)
+}
+
+/// Macro to skip test with appropriate message based on prerequisites
+macro_rules! skip_if_unavailable {
+    () => {{
+        let (grpcurl_ok, method_ok) = check_streaming_prerequisites();
+        if !grpcurl_ok {
+            eprintln!(
+                "SKIPPED: grpcurl not installed. Install via: brew install grpcurl (macOS) or see https://github.com/fullstorydev/grpcurl"
+            );
+            return Ok(());
+        }
+        if !method_ok {
+            eprintln!("SKIPPED: StreamedListObjects not available in this OpenFGA version");
+            return Ok(());
+        }
+    }};
 }
 
 /// Execute StreamedListObjects via grpcurl (uses common streaming helper)
@@ -60,10 +87,7 @@ fn grpc_streamed_listobjects(
 /// Test: StreamedListObjects returns same results as ListObjects
 #[tokio::test]
 async fn test_streamed_listobjects_returns_same_as_listobjects() -> Result<()> {
-    if !is_streamed_listobjects_available() {
-        eprintln!("SKIPPED: StreamedListObjects not available in this OpenFGA version");
-        return Ok(());
-    }
+    skip_if_unavailable!();
 
     // Arrange
     let store_id = create_test_store().await?;
@@ -142,10 +166,7 @@ async fn test_streamed_listobjects_returns_same_as_listobjects() -> Result<()> {
 /// Test: StreamedListObjects handles empty results
 #[tokio::test]
 async fn test_streamed_listobjects_empty_results() -> Result<()> {
-    if !is_streamed_listobjects_available() {
-        eprintln!("SKIPPED: StreamedListObjects not available");
-        return Ok(());
-    }
+    skip_if_unavailable!();
 
     let store_id = create_test_store().await?;
 
@@ -189,10 +210,7 @@ async fn test_streamed_listobjects_empty_results() -> Result<()> {
 /// Test: StreamedListObjects handles large result sets
 #[tokio::test]
 async fn test_streamed_listobjects_large_result_set() -> Result<()> {
-    if !is_streamed_listobjects_available() {
-        eprintln!("SKIPPED: StreamedListObjects not available");
-        return Ok(());
-    }
+    skip_if_unavailable!();
 
     let store_id = create_test_store().await?;
 
@@ -257,10 +275,7 @@ async fn test_streamed_listobjects_large_result_set() -> Result<()> {
 /// Test: StreamedListObjects with contextual tuples
 #[tokio::test]
 async fn test_streamed_listobjects_with_contextual_tuples() -> Result<()> {
-    if !is_streamed_listobjects_available() {
-        eprintln!("SKIPPED: StreamedListObjects not available");
-        return Ok(());
-    }
+    skip_if_unavailable!();
 
     let store_id = create_test_store().await?;
 
@@ -313,10 +328,7 @@ async fn test_streamed_listobjects_with_contextual_tuples() -> Result<()> {
 /// Test: StreamedListObjects error handling
 #[tokio::test]
 async fn test_streamed_listobjects_error_handling() -> Result<()> {
-    if !is_streamed_listobjects_available() {
-        eprintln!("SKIPPED: StreamedListObjects not available");
-        return Ok(());
-    }
+    skip_if_unavailable!();
 
     // Act: Call with non-existent store
     let request = json!({
