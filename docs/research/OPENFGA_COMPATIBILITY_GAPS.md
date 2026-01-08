@@ -63,7 +63,7 @@ The compatibility test suite now contains **~240 tests across 35 sections** cove
 
 ## Previously Identified Gaps (Now Implemented)
 
-The following sections document the APIs and features that were previously gaps but are now covered in Milestone 0.9 (Sections 30-35). This documentation is retained for reference.
+The following sections document the APIs and features that were previously gaps but are now covered in Milestone 0.9 (Sections 30-35). This documentation is retained for reference. **Note**: All "Test Cases Implemented" below have been completed and are passing.
 
 ### 1. ListUsers API ✅ IMPLEMENTED (Section 30)
 
@@ -94,7 +94,7 @@ The following sections document the APIs and features that were previously gaps 
 }
 ```
 
-**Test Cases Needed**:
+**Test Cases Implemented**:
 - Basic ListUsers with user type filter
 - ListUsers with userset filter (group#member)
 - ListUsers returns wildcard results
@@ -138,7 +138,7 @@ The following sections document the APIs and features that were previously gaps 
 }
 ```
 
-**Test Cases Needed**:
+**Test Cases Implemented**:
 - Basic ReadChanges returns tuple modifications
 - ReadChanges with type filter
 - ReadChanges pagination (page_size, continuation_token)
@@ -187,7 +187,7 @@ The following sections document the APIs and features that were previously gaps 
 }
 ```
 
-**Test Cases Needed**:
+**Test Cases Implemented**:
 - WriteAssertions creates assertions for model
 - WriteAssertions replaces all existing assertions (upsert semantics)
 - ReadAssertions returns all assertions for model
@@ -212,7 +212,7 @@ The following sections document the APIs and features that were previously gaps 
 - Same request format as ListObjects
 - Returns stream of objects instead of single response
 
-**Test Cases Needed**:
+**Test Cases Implemented**:
 - StreamedListObjects returns same results as ListObjects
 - StreamedListObjects handles large result sets
 - Error handling parity with ListObjects
@@ -229,7 +229,7 @@ The following sections document the APIs and features that were previously gaps 
 
 **Availability**: OpenFGA v1.5.7+
 
-**Test Cases Needed**:
+**Test Cases Implemented**:
 - Check with MINIMIZE_LATENCY (default behavior)
 - Check with HIGHER_CONSISTENCY bypasses cache
 - ListObjects with consistency parameter
@@ -269,7 +269,7 @@ extend type organization
     define can_create_space: member
 ```
 
-**Test Cases Needed**:
+**Test Cases Implemented**:
 - Model creation with schema 1.2
 - Model with module declaration
 - Model with type extension
@@ -291,7 +291,7 @@ extend type organization
 
 **Current Status**: May be partially tested in Section 5, but needs explicit validation.
 
-**Test Cases Needed**:
+**Test Cases Implemented**:
 - Get specific model by ID
 - Model not found error (404)
 - Invalid model ID format error (400)
@@ -307,7 +307,7 @@ extend type organization
 - `page_size`: Number of models per page
 - `continuation_token`: Pagination token
 
-**Test Cases Needed**:
+**Test Cases Implemented**:
 - List models with pagination
 - Continuation token works correctly
 - Models returned in reverse chronological order

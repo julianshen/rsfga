@@ -10,23 +10,61 @@ use std::time::Duration;
 use uuid::Uuid;
 
 // ============================================================================
-// Test Timing Constants
+// Test Timing Configuration
 // ============================================================================
 
-/// Time to wait for changelog entries to settle after write operations.
+/// Default time to wait for changelog entries to settle after write operations.
+const DEFAULT_CHANGELOG_SETTLE_MS: u64 = 100;
+
+/// Default shorter settle time for within-batch delays.
+const DEFAULT_CHANGELOG_SETTLE_SHORT_MS: u64 = 50;
+
+/// Get the changelog settle time, configurable via environment variable.
 ///
 /// OpenFGA's changelog (ReadChanges API) may have slight propagation delays
 /// depending on the storage backend. This delay ensures changelog entries
 /// are visible when testing sequential write-then-read patterns.
 ///
-/// Note: This is primarily needed for tests that verify changelog ordering
-/// or pagination across rapid sequential writes.
-pub const CHANGELOG_SETTLE_TIME: Duration = Duration::from_millis(100);
+/// Override with `CHANGELOG_SETTLE_TIME_MS` environment variable for CI environments
+/// that may need different timing (e.g., slower storage backends).
+///
+/// # Example
+/// ```bash
+/// CHANGELOG_SETTLE_TIME_MS=200 cargo test
+/// ```
+pub fn changelog_settle_time() -> Duration {
+    std::env::var("CHANGELOG_SETTLE_TIME_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(DEFAULT_CHANGELOG_SETTLE_MS))
+}
 
-/// Shorter settle time for tests that need minimal delay.
+/// Get the short changelog settle time, configurable via environment variable.
 ///
 /// Use this when testing within a single batch of writes where
 /// full propagation isn't critical.
+///
+/// Override with `CHANGELOG_SETTLE_TIME_SHORT_MS` environment variable.
+pub fn changelog_settle_time_short() -> Duration {
+    std::env::var("CHANGELOG_SETTLE_TIME_SHORT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(DEFAULT_CHANGELOG_SETTLE_SHORT_MS))
+}
+
+// Keep the constants for backwards compatibility but mark as deprecated
+#[deprecated(
+    since = "0.1.0",
+    note = "Use changelog_settle_time() for CI configurability"
+)]
+pub const CHANGELOG_SETTLE_TIME: Duration = Duration::from_millis(100);
+
+#[deprecated(
+    since = "0.1.0",
+    note = "Use changelog_settle_time_short() for CI configurability"
+)]
 pub const CHANGELOG_SETTLE_TIME_SHORT: Duration = Duration::from_millis(50);
 
 // ============================================================================
@@ -585,6 +623,17 @@ pub fn parse_grpc_streaming_response(output: &str) -> Result<Vec<serde_json::Val
             Ok(value) => results.push(value),
             Err(_) => parse_errors += 1,
         }
+    }
+
+    // Fail explicitly if we had partial success - some lines parsed, others didn't.
+    // This indicates corrupted or malformed streaming output that should not be silently ignored.
+    if parse_errors > 0 && !results.is_empty() {
+        anyhow::bail!(
+            "Partial NDJSON parse failure: {} lines parsed successfully, {} failed. This may indicate truncated or corrupted streaming output. Preview:\n{}",
+            results.len(),
+            parse_errors,
+            &trimmed[..trimmed.len().min(500)]
+        );
     }
 
     // If we had parse errors but no results, try alternative formats

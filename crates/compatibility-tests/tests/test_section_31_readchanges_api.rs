@@ -2,8 +2,8 @@ mod common;
 
 use anyhow::Result;
 use common::{
-    create_authorization_model, create_test_store, get_openfga_url, shared_client,
-    simple_document_viewer_model, write_tuples, CHANGELOG_SETTLE_TIME, CHANGELOG_SETTLE_TIME_SHORT,
+    changelog_settle_time, changelog_settle_time_short, create_authorization_model,
+    create_test_store, get_openfga_url, shared_client, simple_document_viewer_model, write_tuples,
 };
 use reqwest::StatusCode;
 use serde_json::json;
@@ -435,7 +435,7 @@ async fn test_readchanges_same_token_when_no_changes() -> Result<()> {
     };
 
     // Wait for changelog to settle before requesting with continuation token
-    sleep(CHANGELOG_SETTLE_TIME).await;
+    sleep(changelog_settle_time()).await;
 
     let response2 = client
         .get(format!(
@@ -668,7 +668,7 @@ async fn test_readchanges_chronological_order() -> Result<()> {
             )],
         )
         .await?;
-        sleep(CHANGELOG_SETTLE_TIME_SHORT).await;
+        sleep(changelog_settle_time_short()).await;
     }
 
     let client = shared_client();

@@ -470,9 +470,14 @@ async fn test_type_definitions_schema_1_2() -> Result<()> {
     Ok(())
 }
 
-/// Test: Computed relations work with schema 1.2
+/// Test: Schema 1.2 compatibility with computed relations
+///
+/// Note: Computed relations (union, computedUserset) are standard OpenFGA
+/// features available in all schema versions. This test validates that
+/// existing relation patterns continue to work with schema 1.2, not that
+/// schema 1.2 introduces new computed relation capabilities.
 #[tokio::test]
-async fn test_computed_relations_schema_1_2() -> Result<()> {
+async fn test_schema_1_2_computed_relation_compatibility() -> Result<()> {
     let store_id = create_test_store().await?;
 
     if !is_schema_1_2_supported(&store_id).await {
@@ -482,7 +487,7 @@ async fn test_computed_relations_schema_1_2() -> Result<()> {
 
     let client = shared_client();
 
-    // Create model with computed relations
+    // Validate that existing computed relation patterns work in schema 1.2
     let model = json!({
         "schema_version": "1.2",
         "type_definitions": [

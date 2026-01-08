@@ -60,6 +60,89 @@ async fn is_listusers_available(store_id: &str) -> bool {
     }
 }
 
+/// Validate the ListUsers response format according to OpenFGA API specification.
+///
+/// The response must have:
+/// - `users` array (required)
+/// - Each user must have either:
+///   - `object` field with `type` and `id` (for direct users)
+///   - `userset` field with `type`, `id`, and `relation` (for group references)
+///   - `wildcard` field with `type` (for wildcard matches)
+///
+/// Returns the validated users array or panics with descriptive error.
+fn validate_listusers_response(response_body: &serde_json::Value) -> &Vec<serde_json::Value> {
+    // Validate root structure has 'users' array
+    let users = response_body
+        .get("users")
+        .expect("ListUsers response must have 'users' field")
+        .as_array()
+        .expect("'users' field must be an array");
+
+    // Validate each user has the required structure
+    for (i, user) in users.iter().enumerate() {
+        let has_object = user.get("object").is_some();
+        let has_userset = user.get("userset").is_some();
+        let has_wildcard = user.get("wildcard").is_some();
+
+        assert!(
+            has_object || has_userset || has_wildcard,
+            "User at index {} must have 'object', 'userset', or 'wildcard' field. Got: {}",
+            i,
+            user
+        );
+
+        // Validate object format if present
+        if let Some(object) = user.get("object") {
+            assert!(
+                object.get("type").and_then(|t| t.as_str()).is_some(),
+                "User at index {} 'object' field missing 'type'. Got: {}",
+                i,
+                object
+            );
+            assert!(
+                object.get("id").and_then(|id| id.as_str()).is_some(),
+                "User at index {} 'object' field missing 'id'. Got: {}",
+                i,
+                object
+            );
+        }
+
+        // Validate userset format if present
+        if let Some(userset) = user.get("userset") {
+            assert!(
+                userset.get("type").and_then(|t| t.as_str()).is_some(),
+                "User at index {} 'userset' field missing 'type'. Got: {}",
+                i,
+                userset
+            );
+            assert!(
+                userset.get("id").and_then(|id| id.as_str()).is_some(),
+                "User at index {} 'userset' field missing 'id'. Got: {}",
+                i,
+                userset
+            );
+            assert!(
+                userset.get("relation").and_then(|r| r.as_str()).is_some(),
+                "User at index {} 'userset' field missing 'relation'. Got: {}",
+                i,
+                userset
+            );
+        }
+
+        // Validate wildcard format if present
+        if let Some(wildcard) = user.get("wildcard") {
+            assert!(
+                wildcard.get("type").and_then(|t| t.as_str()).is_some(),
+                "User at index {} 'wildcard' field missing 'type'. Got: {}",
+                i,
+                wildcard
+            );
+        }
+    }
+
+    users
+}
+
 /// Test: POST /stores/{store_id}/list-users returns users with direct relation
 #[tokio::test]
 async fn test_listusers_returns_users_with_direct_relation() -> Result<()> {
@@ -134,11 +217,8 @@ async fn test_listusers_returns_users_with_direct_relation() -> Result<()> {
 
     let response_body: serde_json::Value = response.json().await?;
 
-    // Verify response has 'users' array
-    let users = response_body
-        .get("users")
-        .and_then(|u| u.as_array())
-        .expect("Response should have 'users' array");
+    // Validate response format according to OpenFGA API specification
+    let users = validate_listusers_response(&response_body);
 
     // Extract user IDs from response
     let user_ids: HashSet<String> = users
@@ -252,11 +332,8 @@ async fn test_listusers_with_userset_filter() -> Result<()> {
 
     let response_body: serde_json::Value = response.json().await?;
 
-    // Should return userset reference, not expanded users
-    let users = response_body
-        .get("users")
-        .and_then(|u| u.as_array())
-        .expect("Response should have 'users' array");
+    // Validate response format and check for userset references
+    let users = validate_listusers_response(&response_body);
 
     // Check for userset format in response
     let has_userset = users.iter().any(|u| u.get("userset").is_some());
@@ -334,10 +411,8 @@ async fn test_listusers_returns_wildcard() -> Result<()> {
 
     let response_body: serde_json::Value = response.json().await?;
 
-    let users = response_body
-        .get("users")
-        .and_then(|u| u.as_array())
-        .expect("Response should have 'users' array");
+    // Validate response format
+    let users = validate_listusers_response(&response_body);
 
     // Should return wildcard in response
     let has_wildcard = users.iter().any(|u| u.get("wildcard").is_some());
@@ -417,10 +492,8 @@ async fn test_listusers_with_contextual_tuples() -> Result<()> {
 
     let response_body: serde_json::Value = response.json().await?;
 
-    let users = response_body
-        .get("users")
-        .and_then(|u| u.as_array())
-        .expect("Response should have 'users' array");
+    // Validate response format
+    let users = validate_listusers_response(&response_body);
 
     // Should return user from contextual tuple
     let user_ids: HashSet<String> = users
@@ -521,10 +594,8 @@ async fn test_listusers_with_computed_relations() -> Result<()> {
 
     let response_body: serde_json::Value = response.json().await?;
 
-    let users = response_body
-        .get("users")
-        .and_then(|u| u.as_array())
-        .expect("Response should have 'users' array");
+    // Validate response format
+    let users = validate_listusers_response(&response_body);
 
     let user_ids: HashSet<String> = users
         .iter()
@@ -606,10 +677,8 @@ async fn test_listusers_empty_result() -> Result<()> {
 
     let response_body: serde_json::Value = response.json().await?;
 
-    let users = response_body
-        .get("users")
-        .and_then(|u| u.as_array())
-        .expect("Response should have 'users' array");
+    // Validate response format
+    let users = validate_listusers_response(&response_body);
 
     assert_eq!(users.len(), 0, "Should return empty array when no users");
 
