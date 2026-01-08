@@ -296,7 +296,7 @@ pub async fn create_conditional_model(store_id: &str) -> Result<String> {
                 "expression": "request.ip_address == '192.168.1.1'",
                 "parameters": {
                     "ip_address": {
-                        "type_name": "string"
+                        "type_name": "TYPE_NAME_STRING"
                     }
                 }
             }
@@ -304,6 +304,141 @@ pub async fn create_conditional_model(store_id: &str) -> Result<String> {
     });
 
     create_authorization_model(store_id, model).await
+}
+
+// ============================================================================
+// CEL Condition Helpers (Milestone 0.8)
+// ============================================================================
+
+/// Helper function to create model with time-based condition
+pub async fn create_time_condition_model(store_id: &str) -> Result<String> {
+    let model = json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {
+                "type": "user"
+            },
+            {
+                "type": "document",
+                "relations": {
+                    "viewer": {
+                        "this": {}
+                    }
+                },
+                "metadata": {
+                    "relations": {
+                        "viewer": {
+                            "directly_related_user_types": [
+                                {
+                                    "type": "user",
+                                    "condition": "time_access"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        ],
+        "conditions": {
+            "time_access": {
+                "name": "time_access",
+                "expression": "request.current_time < request.expires_at",
+                "parameters": {
+                    "current_time": {
+                        "type_name": "TYPE_NAME_TIMESTAMP"
+                    },
+                    "expires_at": {
+                        "type_name": "TYPE_NAME_TIMESTAMP"
+                    }
+                }
+            }
+        }
+    });
+
+    create_authorization_model(store_id, model).await
+}
+
+/// Helper function to write a tuple with a condition
+pub async fn write_tuple_with_condition(
+    store_id: &str,
+    user: &str,
+    relation: &str,
+    object: &str,
+    condition_name: &str,
+    condition_context: Option<serde_json::Value>,
+) -> Result<()> {
+    let client = shared_client();
+
+    let mut tuple = json!({
+        "user": user,
+        "relation": relation,
+        "object": object,
+        "condition": {
+            "name": condition_name
+        }
+    });
+
+    if let Some(ctx) = condition_context {
+        tuple["condition"]["context"] = ctx;
+    }
+
+    let write_request = json!({
+        "writes": {
+            "tuple_keys": [tuple]
+        }
+    });
+
+    let response = client
+        .post(format!("{}/stores/{}/write", get_openfga_url(), store_id))
+        .json(&write_request)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "Failed to write tuple with condition: {}",
+            response.status()
+        );
+    }
+
+    Ok(())
+}
+
+/// Helper function to check a permission with context for condition evaluation
+pub async fn check_permission_with_context(
+    client: &reqwest::Client,
+    store_id: &str,
+    user: &str,
+    relation: &str,
+    object: &str,
+    context: serde_json::Value,
+) -> Result<bool> {
+    let check_request = json!({
+        "tuple_key": {
+            "user": user,
+            "relation": relation,
+            "object": object
+        },
+        "context": context
+    });
+
+    let response = client
+        .post(format!("{}/stores/{}/check", get_openfga_url(), store_id))
+        .json(&check_request)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "Check with context failed with status: {}",
+            response.status()
+        );
+    }
+
+    let body: serde_json::Value = response.json().await?;
+    body.get("allowed")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| anyhow::anyhow!("Response missing or invalid 'allowed' field"))
 }
 
 /// Helper function to write sequential test tuples for pagination testing
