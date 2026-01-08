@@ -307,6 +307,34 @@ pub async fn create_conditional_model(store_id: &str) -> Result<String> {
 }
 
 // ============================================================================
+// Common Model Helpers
+// ============================================================================
+
+/// Create a simple document-viewer model JSON (for consistency tests and basic scenarios).
+/// This is the minimal model with a user type and a document type with a viewer relation.
+pub fn simple_document_viewer_model() -> serde_json::Value {
+    json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            { "type": "user" },
+            {
+                "type": "document",
+                "relations": {
+                    "viewer": { "this": {} }
+                },
+                "metadata": {
+                    "relations": {
+                        "viewer": {
+                            "directly_related_user_types": [{ "type": "user" }]
+                        }
+                    }
+                }
+            }
+        ]
+    })
+}
+
+// ============================================================================
 // CEL Condition Helpers (Milestone 0.8)
 // ============================================================================
 

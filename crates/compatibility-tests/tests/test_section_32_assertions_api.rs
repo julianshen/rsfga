@@ -459,28 +459,15 @@ async fn test_assertions_with_contextual_tuples() -> Result<()> {
         "Assertion expectation should be true"
     );
 
-    // Verify contextual tuples are stored (OpenFGA should preserve these)
-    // If the implementation doesn't return contextual_tuples, log it but don't fail
-    // since some implementations may store them differently
-    let contextual = assertion.get("contextual_tuples");
-    match contextual {
-        Some(ct) => {
-            let tuples = ct
-                .get("tuple_keys")
-                .and_then(|tk| tk.as_array())
-                .expect("contextual_tuples should have tuple_keys array");
-            assert!(
-                !tuples.is_empty(),
-                "Contextual tuples should be preserved when returned"
-            );
-        }
-        None => {
-            eprintln!(
-                "INFO: contextual_tuples not returned in ReadAssertions response - \
-                 implementation may store them differently"
-            );
-        }
-    }
+    // Verify contextual tuples are stored and returned
+    // OpenFGA must preserve contextual_tuples for API compatibility
+    let tuples = assertion
+        .get("contextual_tuples")
+        .and_then(|ct| ct.get("tuple_keys"))
+        .and_then(|tk| tk.as_array())
+        .expect("Contextual tuples should be returned in assertions - required for OpenFGA API compatibility");
+
+    assert!(!tuples.is_empty(), "Contextual tuples should be preserved");
 
     Ok(())
 }

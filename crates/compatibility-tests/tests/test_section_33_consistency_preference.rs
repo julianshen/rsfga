@@ -2,7 +2,8 @@ mod common;
 
 use anyhow::Result;
 use common::{
-    create_authorization_model, create_test_store, get_openfga_url, shared_client, write_tuples,
+    create_authorization_model, create_test_store, get_openfga_url, shared_client,
+    simple_document_viewer_model, write_tuples,
 };
 use serde_json::json;
 
@@ -34,27 +35,7 @@ async fn test_check_accepts_consistency_parameter() -> Result<()> {
     // Arrange
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
 
@@ -98,27 +79,7 @@ async fn test_check_accepts_consistency_parameter() -> Result<()> {
 async fn test_check_with_higher_consistency() -> Result<()> {
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
 
@@ -161,27 +122,7 @@ async fn test_check_with_higher_consistency() -> Result<()> {
 async fn test_check_with_unspecified_consistency() -> Result<()> {
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
 
@@ -235,27 +176,7 @@ async fn test_check_with_unspecified_consistency() -> Result<()> {
 async fn test_listobjects_accepts_consistency_parameter() -> Result<()> {
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     write_tuples(
         &store_id,
@@ -308,27 +229,7 @@ async fn test_listobjects_accepts_consistency_parameter() -> Result<()> {
 async fn test_expand_accepts_consistency_parameter() -> Result<()> {
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
 
@@ -366,27 +267,7 @@ async fn test_expand_accepts_consistency_parameter() -> Result<()> {
 async fn test_consistency_modes_return_same_results() -> Result<()> {
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
 
@@ -445,27 +326,7 @@ async fn test_consistency_modes_return_same_results() -> Result<()> {
 async fn test_invalid_consistency_value_error() -> Result<()> {
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     let client = shared_client();
 
@@ -521,27 +382,7 @@ async fn test_invalid_consistency_value_error() -> Result<()> {
 async fn test_batchcheck_accepts_consistency_parameter() -> Result<()> {
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
 
@@ -600,27 +441,7 @@ async fn test_batchcheck_accepts_consistency_parameter() -> Result<()> {
 async fn test_listusers_accepts_consistency_parameter() -> Result<()> {
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
 
