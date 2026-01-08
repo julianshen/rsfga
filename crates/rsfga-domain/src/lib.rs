@@ -20,6 +20,7 @@
 //! ```
 
 pub mod cache;
+pub mod cel;
 pub mod error;
 pub mod model;
 pub mod resolver;
