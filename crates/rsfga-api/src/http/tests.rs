@@ -8,7 +8,7 @@ use axum::{
 };
 use tower::ServiceExt; // for oneshot
 
-use rsfga_storage::MemoryDataStore;
+use rsfga_storage::{DataStore, MemoryDataStore};
 
 use super::routes::create_router;
 use super::state::AppState;
