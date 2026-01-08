@@ -567,12 +567,14 @@ async fn test_readchanges_same_token_when_no_changes() -> Result<()> {
         .expect("Response should have 'changes' array");
 
     // When no new changes, should return empty changes and same/similar token
-    if changes2.is_empty() && token2.is_some() {
-        // Token should be returned for future polling
-        assert!(
-            !token2.unwrap().is_empty(),
-            "Should return continuation token for polling"
-        );
+    if changes2.is_empty() {
+        if let Some(token) = token2 {
+            // Token should be returned for future polling
+            assert!(
+                !token.is_empty(),
+                "Should return continuation token for polling"
+            );
+        }
     }
 
     Ok(())
