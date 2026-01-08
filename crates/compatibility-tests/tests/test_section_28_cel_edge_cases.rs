@@ -93,11 +93,12 @@ async fn test_empty_context_no_required_params() -> Result<()> {
         .send()
         .await?;
 
+    let status = response.status();
     let body: serde_json::Value = response.json().await?;
 
     // Should succeed with empty context when no params required
     assert!(
-        response.status().is_success() && body["allowed"].as_bool() == Some(true),
+        status.is_success() && body["allowed"].as_bool() == Some(true),
         "Check with no required params should return allowed: true"
     );
 

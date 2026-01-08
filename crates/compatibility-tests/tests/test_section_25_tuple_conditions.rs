@@ -421,7 +421,8 @@ async fn test_can_delete_tuple_with_condition() -> Result<()> {
         .await?;
 
     let read_body: serde_json::Value = read_response.json().await?;
-    let tuples = read_body["tuples"].as_array().unwrap_or(&vec![]);
+    let empty_vec = vec![];
+    let tuples = read_body["tuples"].as_array().unwrap_or(&empty_vec);
 
     assert!(
         tuples.is_empty(),
