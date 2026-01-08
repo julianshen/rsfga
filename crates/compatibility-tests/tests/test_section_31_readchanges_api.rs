@@ -2,11 +2,11 @@ mod common;
 
 use anyhow::Result;
 use common::{
-    create_authorization_model, create_test_store, get_openfga_url, shared_client, write_tuples,
+    create_authorization_model, create_test_store, get_openfga_url, shared_client,
+    simple_document_viewer_model, write_tuples, CHANGELOG_SETTLE_TIME, CHANGELOG_SETTLE_TIME_SHORT,
 };
 use reqwest::StatusCode;
 use serde_json::json;
-use std::time::Duration;
 use tokio::time::sleep;
 
 /// URL-encode a continuation token for use in query parameters.
@@ -38,28 +38,7 @@ fn encode_token(token: &str) -> String {
 async fn test_readchanges_returns_tuple_writes() -> Result<()> {
     // Arrange: Create store, model, and write some tuples
     let store_id = create_test_store().await?;
-
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     // Write some tuples
     write_tuples(
@@ -123,28 +102,7 @@ async fn test_readchanges_returns_tuple_writes() -> Result<()> {
 #[tokio::test]
 async fn test_readchanges_returns_writes_and_deletes() -> Result<()> {
     let store_id = create_test_store().await?;
-
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     let client = shared_client();
 
@@ -303,28 +261,7 @@ async fn test_readchanges_with_type_filter() -> Result<()> {
 #[tokio::test]
 async fn test_readchanges_pagination_page_size() -> Result<()> {
     let store_id = create_test_store().await?;
-
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     // Write many tuples
     let tuples: Vec<_> = (0..10)
@@ -390,28 +327,7 @@ async fn test_readchanges_pagination_page_size() -> Result<()> {
 #[tokio::test]
 async fn test_readchanges_continuation_token() -> Result<()> {
     let store_id = create_test_store().await?;
-
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     // Write enough tuples to require pagination
     let tuples: Vec<_> = (0..10)
@@ -483,28 +399,7 @@ async fn test_readchanges_continuation_token() -> Result<()> {
 #[tokio::test]
 async fn test_readchanges_same_token_when_no_changes() -> Result<()> {
     let store_id = create_test_store().await?;
-
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     // Write one tuple
     write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
@@ -539,8 +434,8 @@ async fn test_readchanges_same_token_when_no_changes() -> Result<()> {
         return Ok(());
     };
 
-    // Wait a bit and request again with the token (URL-encoded)
-    sleep(Duration::from_millis(100)).await;
+    // Wait for changelog to settle before requesting with continuation token
+    sleep(CHANGELOG_SETTLE_TIME).await;
 
     let response2 = client
         .get(format!(
@@ -704,28 +599,7 @@ async fn test_readchanges_type_filter_mismatch_with_token() -> Result<()> {
 #[tokio::test]
 async fn test_readchanges_empty_for_new_store() -> Result<()> {
     let store_id = create_test_store().await?;
-
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     // Don't write any tuples
 
@@ -781,28 +655,7 @@ async fn test_readchanges_nonexistent_store_error() -> Result<()> {
 #[tokio::test]
 async fn test_readchanges_chronological_order() -> Result<()> {
     let store_id = create_test_store().await?;
-
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
-    let _model_id = create_authorization_model(&store_id, model).await?;
+    let _model_id = create_authorization_model(&store_id, simple_document_viewer_model()).await?;
 
     // Write tuples with delays to ensure ordering
     for i in 0..3 {
@@ -815,7 +668,7 @@ async fn test_readchanges_chronological_order() -> Result<()> {
             )],
         )
         .await?;
-        sleep(Duration::from_millis(50)).await;
+        sleep(CHANGELOG_SETTLE_TIME_SHORT).await;
     }
 
     let client = shared_client();

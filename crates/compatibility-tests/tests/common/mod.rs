@@ -6,7 +6,28 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::OnceLock;
+use std::time::Duration;
 use uuid::Uuid;
+
+// ============================================================================
+// Test Timing Constants
+// ============================================================================
+
+/// Time to wait for changelog entries to settle after write operations.
+///
+/// OpenFGA's changelog (ReadChanges API) may have slight propagation delays
+/// depending on the storage backend. This delay ensures changelog entries
+/// are visible when testing sequential write-then-read patterns.
+///
+/// Note: This is primarily needed for tests that verify changelog ordering
+/// or pagination across rapid sequential writes.
+pub const CHANGELOG_SETTLE_TIME: Duration = Duration::from_millis(100);
+
+/// Shorter settle time for tests that need minimal delay.
+///
+/// Use this when testing within a single batch of writes where
+/// full propagation isn't critical.
+pub const CHANGELOG_SETTLE_TIME_SHORT: Duration = Duration::from_millis(50);
 
 // ============================================================================
 // Shared HTTP Client (Issue #26)
@@ -576,9 +597,9 @@ pub fn parse_grpc_streaming_response(output: &str) -> Result<Vec<serde_json::Val
         if let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) {
             return Ok(vec![obj]);
         }
-        // Log warning if we couldn't parse anything
-        eprintln!(
-            "WARNING: Could not parse grpcurl streaming output ({} lines, {} parse errors). Output:\n{}",
+        // Return error instead of silently returning empty Vec
+        anyhow::bail!(
+            "Failed to parse grpcurl streaming output ({} lines, {} parse errors). Output preview:\n{}",
             trimmed.lines().count(),
             parse_errors,
             &trimmed[..trimmed.len().min(500)]
