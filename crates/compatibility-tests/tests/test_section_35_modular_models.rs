@@ -399,9 +399,14 @@ async fn test_model_retrieval_includes_schema_version() -> Result<()> {
     Ok(())
 }
 
-/// Test: Type definitions work correctly with schema 1.2
+/// Test: Schema 1.2 compatibility with multi-type models
+///
+/// Note: This test validates that standard multi-type authorization models
+/// work with schema 1.2. The type definition syntax (user, group, document
+/// with relations) is the same as schema 1.1 - this test confirms backward
+/// compatibility rather than new schema 1.2 features.
 #[tokio::test]
-async fn test_type_definitions_schema_1_2() -> Result<()> {
+async fn test_schema_1_2_multi_type_model_compatibility() -> Result<()> {
     let store_id = create_test_store().await?;
 
     if !is_schema_1_2_supported(&store_id).await {
@@ -411,7 +416,7 @@ async fn test_type_definitions_schema_1_2() -> Result<()> {
 
     let client = shared_client();
 
-    // Create model with multiple types
+    // Validate that standard multi-type models work with schema 1.2
     let model = json!({
         "schema_version": "1.2",
         "type_definitions": [

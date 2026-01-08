@@ -152,12 +152,14 @@ async fn test_readchanges_returns_writes_and_deletes() -> Result<()> {
         .filter_map(|c| c.get("operation").and_then(|o| o.as_str()))
         .collect();
 
+    // Use exact match for operation types to avoid matching unwanted strings
+    // OpenFGA uses TUPLE_OPERATION_WRITE and TUPLE_OPERATION_DELETE
     let has_write = operations
         .iter()
-        .any(|o| o.contains("WRITE") || o.contains("write"));
+        .any(|o| *o == "TUPLE_OPERATION_WRITE" || *o == "write" || *o == "WRITE");
     let has_delete = operations
         .iter()
-        .any(|o| o.contains("DELETE") || o.contains("delete"));
+        .any(|o| *o == "TUPLE_OPERATION_DELETE" || *o == "delete" || *o == "DELETE");
 
     assert!(has_write, "Should have WRITE operation");
     assert!(has_delete, "Should have DELETE operation");
