@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tonic::Request;
 
-use rsfga_storage::{DataStore, MemoryDataStore, StoredTuple};
+use rsfga_storage::{MemoryDataStore, StoredTuple};
 
 use crate::proto::openfga::v1::open_fga_service_server::OpenFgaService;
 use crate::proto::openfga::v1::*;
