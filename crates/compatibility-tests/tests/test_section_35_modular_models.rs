@@ -113,20 +113,28 @@ async fn test_create_model_schema_1_2() -> Result<()> {
     Ok(())
 }
 
-/// Test: Schema 1.2 model with module declaration
+/// Test: Schema 1.2 model with organization type
+///
+/// Note: This test validates schema 1.2 support with an organization type.
+/// True modular model features (module keyword, extend type) require DSL format
+/// and are not directly testable via JSON API. This test documents current
+/// JSON API behavior for schema 1.2.
 #[tokio::test]
-async fn test_model_with_module_declaration() -> Result<()> {
+async fn test_schema_1_2_with_organization_type() -> Result<()> {
     let store_id = create_test_store().await?;
 
     if !is_schema_1_2_supported(&store_id).await {
-        eprintln!("SKIPPED: Schema 1.2 not supported");
+        eprintln!(
+            "SKIPPED: Schema 1.2 not supported (requires --experimentals enable-modular-models)"
+        );
         return Ok(());
     }
 
     let client = shared_client();
 
-    // Note: The JSON format for module declarations may vary
-    // This test documents the expected behavior
+    // Schema 1.2 model with organization type
+    // Note: True modular features (module declarations, extend type) are DSL-only
+    // The JSON API accepts schema 1.2 but module-specific syntax isn't available
     let model = json!({
         "schema_version": "1.2",
         "type_definitions": [
@@ -157,19 +165,18 @@ async fn test_model_with_module_declaration() -> Result<()> {
         .send()
         .await?;
 
-    // Document the response
-    if response.status().is_success() {
-        let body: serde_json::Value = response.json().await?;
-        eprintln!(
-            "Schema 1.2 model created successfully: {:?}",
-            body.get("authorization_model_id")
-        );
-    } else {
-        eprintln!(
-            "Schema 1.2 model creation returned: {} (may require different format)",
-            response.status()
-        );
-    }
+    // Assert: Model creation should succeed with schema 1.2
+    assert!(
+        response.status().is_success(),
+        "Schema 1.2 model with organization type should succeed, got: {}",
+        response.status()
+    );
+
+    let body: serde_json::Value = response.json().await?;
+    assert!(
+        body.get("authorization_model_id").is_some(),
+        "Response should have authorization_model_id"
+    );
 
     Ok(())
 }

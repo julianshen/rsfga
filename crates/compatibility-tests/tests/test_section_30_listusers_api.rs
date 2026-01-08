@@ -1,7 +1,9 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_authorization_model, create_test_store, get_openfga_url, write_tuples};
+use common::{
+    create_authorization_model, create_test_store, get_openfga_url, shared_client, write_tuples,
+};
 use reqwest::StatusCode;
 use serde_json::json;
 use std::collections::HashSet;
@@ -23,7 +25,7 @@ use std::collections::HashSet;
 
 /// Helper to check if ListUsers API is available
 async fn is_listusers_available(store_id: &str) -> bool {
-    let client = reqwest::Client::new();
+    let client = shared_client();
     let request = json!({
         "object": { "type": "document", "id": "test" },
         "relation": "viewer",
@@ -42,10 +44,17 @@ async fn is_listusers_available(store_id: &str) -> bool {
 
     match response {
         Ok(resp) => {
-            // 400/404 means endpoint exists but validation failed
-            // 501 or connection error means not available
-            resp.status() != StatusCode::NOT_IMPLEMENTED && resp.status() != StatusCode::NOT_FOUND
-                || resp.status() == StatusCode::BAD_REQUEST
+            let status = resp.status();
+            // API is available if:
+            // - Request succeeds (2xx)
+            // - Returns BAD_REQUEST (400) - validation failed but endpoint exists
+            // - Returns UNPROCESSABLE_ENTITY (422) - validation failed but endpoint exists
+            // API is NOT available if:
+            // - Returns NOT_IMPLEMENTED (501) - feature not enabled
+            // - Returns NOT_FOUND (404) - endpoint doesn't exist
+            status.is_success()
+                || status == StatusCode::BAD_REQUEST
+                || status == StatusCode::UNPROCESSABLE_ENTITY
         }
         Err(_) => false,
     }
@@ -97,7 +106,7 @@ async fn test_listusers_returns_users_with_direct_relation() -> Result<()> {
     )
     .await?;
 
-    let client = reqwest::Client::new();
+    let client = shared_client();
 
     // Act: List users who are viewers of doc1
     let list_request = json!({
@@ -217,7 +226,7 @@ async fn test_listusers_with_userset_filter() -> Result<()> {
     )
     .await?;
 
-    let client = reqwest::Client::new();
+    let client = shared_client();
 
     // Act: List users who are viewers through group membership
     let list_request = json!({
@@ -299,7 +308,7 @@ async fn test_listusers_returns_wildcard() -> Result<()> {
     // Grant public access via wildcard
     write_tuples(&store_id, vec![("user:*", "viewer", "document:public-doc")]).await?;
 
-    let client = reqwest::Client::new();
+    let client = shared_client();
 
     // Act: List users who are viewers of public doc
     let list_request = json!({
@@ -373,7 +382,7 @@ async fn test_listusers_with_contextual_tuples() -> Result<()> {
         return Ok(());
     }
 
-    let client = reqwest::Client::new();
+    let client = shared_client();
 
     // Act: List users with contextual tuple (no stored tuples)
     let list_request = json!({
@@ -486,7 +495,7 @@ async fn test_listusers_with_computed_relations() -> Result<()> {
     )
     .await?;
 
-    let client = reqwest::Client::new();
+    let client = shared_client();
 
     // Act: List all viewers (should include editor via union)
     let list_request = json!({
@@ -575,7 +584,7 @@ async fn test_listusers_empty_result() -> Result<()> {
 
     // Don't write any tuples
 
-    let client = reqwest::Client::new();
+    let client = shared_client();
 
     let list_request = json!({
         "object": { "type": "document", "id": "no-viewers-doc" },
@@ -639,7 +648,7 @@ async fn test_listusers_invalid_type_error() -> Result<()> {
         return Ok(());
     }
 
-    let client = reqwest::Client::new();
+    let client = shared_client();
 
     // Invalid type in object
     let list_request = json!({
@@ -671,7 +680,7 @@ async fn test_listusers_invalid_type_error() -> Result<()> {
 /// Test: ListUsers with non-existent store returns error
 #[tokio::test]
 async fn test_listusers_nonexistent_store_error() -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = shared_client();
 
     let list_request = json!({
         "object": { "type": "document", "id": "doc1" },

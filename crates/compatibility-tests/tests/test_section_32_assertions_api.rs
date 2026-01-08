@@ -428,19 +428,57 @@ async fn test_assertions_with_contextual_tuples() -> Result<()> {
 
     assert_eq!(assertions.len(), 1);
 
-    // Verify contextual tuples are stored
+    // Verify the assertion was stored correctly
     let assertion = &assertions[0];
+
+    // Verify tuple_key is present and correct
+    let tuple_key = assertion
+        .get("tuple_key")
+        .expect("Assertion should have tuple_key");
+    assert_eq!(
+        tuple_key.get("user").and_then(|u| u.as_str()),
+        Some("user:alice"),
+        "Tuple key should have correct user"
+    );
+    assert_eq!(
+        tuple_key.get("relation").and_then(|r| r.as_str()),
+        Some("viewer"),
+        "Tuple key should have correct relation"
+    );
+    assert_eq!(
+        tuple_key.get("object").and_then(|o| o.as_str()),
+        Some("document:temp-doc"),
+        "Tuple key should have correct object"
+    );
+
+    // Verify expectation is preserved
+    let expectation = assertion.get("expectation").and_then(|e| e.as_bool());
+    assert_eq!(
+        expectation,
+        Some(true),
+        "Assertion expectation should be true"
+    );
+
+    // Verify contextual tuples are stored (OpenFGA should preserve these)
+    // If the implementation doesn't return contextual_tuples, log it but don't fail
+    // since some implementations may store them differently
     let contextual = assertion.get("contextual_tuples");
-
-    // Note: OpenFGA may or may not return contextual_tuples in ReadAssertions
-    // This depends on the implementation
-    if contextual.is_some() {
-        let tuples = contextual
-            .and_then(|ct| ct.get("tuple_keys"))
-            .and_then(|tk| tk.as_array());
-
-        if let Some(tuples) = tuples {
-            assert!(!tuples.is_empty(), "Contextual tuples should be preserved");
+    match contextual {
+        Some(ct) => {
+            let tuples = ct
+                .get("tuple_keys")
+                .and_then(|tk| tk.as_array())
+                .expect("contextual_tuples should have tuple_keys array");
+            assert!(
+                !tuples.is_empty(),
+                "Contextual tuples should be preserved when returned"
+            );
+        }
+        None => {
+            eprintln!(
+                "INFO: contextual_tuples not returned in ReadAssertions response - \
+                 implementation may store them differently"
+            );
         }
     }
 

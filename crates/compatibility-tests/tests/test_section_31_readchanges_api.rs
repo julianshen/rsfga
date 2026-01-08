@@ -9,6 +9,12 @@ use serde_json::json;
 use std::time::Duration;
 use tokio::time::sleep;
 
+/// URL-encode a continuation token for use in query parameters.
+/// Continuation tokens may contain special characters that need encoding.
+fn encode_token(token: &str) -> String {
+    urlencoding::encode(token).into_owned()
+}
+
 // ============================================================================
 // Section 31: ReadChanges (Changelog) API Tests
 // ============================================================================
@@ -442,20 +448,16 @@ async fn test_readchanges_continuation_token() -> Result<()> {
     let token = body1
         .get("continuation_token")
         .and_then(|t| t.as_str())
-        .filter(|t| !t.is_empty());
+        .filter(|t| !t.is_empty())
+        .expect("Should have continuation token when more results exist (wrote 10 tuples, requested page_size=3)");
 
-    if token.is_none() {
-        // Not enough changes to paginate
-        return Ok(());
-    }
-
-    // Get second page using continuation token
+    // Get second page using continuation token (URL-encoded for safety)
     let response2 = client
         .get(format!(
             "{}/stores/{}/changes?page_size=3&continuation_token={}",
             get_openfga_url(),
             store_id,
-            token.unwrap()
+            encode_token(token)
         ))
         .send()
         .await?;
@@ -522,11 +524,22 @@ async fn test_readchanges_same_token_when_no_changes() -> Result<()> {
         .and_then(|t| t.as_str())
         .filter(|t| !t.is_empty());
 
-    if token1.is_none() {
-        return Ok(()); // No token to test
-    }
+    // Some implementations may not return a token for single-change stores
+    // In that case, we skip the polling test but don't silently pass
+    let Some(token1) = token1 else {
+        eprintln!(
+            "INFO: No continuation token returned for single-tuple store - skipping polling test"
+        );
+        // Still verify the basic response was correct
+        let changes1 = body1
+            .get("changes")
+            .and_then(|c| c.as_array())
+            .expect("Response should have 'changes' array");
+        assert!(!changes1.is_empty(), "Should have at least one change");
+        return Ok(());
+    };
 
-    // Wait a bit and request again with the token
+    // Wait a bit and request again with the token (URL-encoded)
     sleep(Duration::from_millis(100)).await;
 
     let response2 = client
@@ -534,7 +547,7 @@ async fn test_readchanges_same_token_when_no_changes() -> Result<()> {
             "{}/stores/{}/changes?continuation_token={}",
             get_openfga_url(),
             store_id,
-            token1.unwrap()
+            encode_token(token1)
         ))
         .send()
         .await?;
@@ -633,32 +646,54 @@ async fn test_readchanges_type_filter_mismatch_with_token() -> Result<()> {
         .and_then(|t| t.as_str())
         .filter(|t| !t.is_empty());
 
-    if token.is_none() {
-        return Ok(()); // No token to test
-    }
+    // If no token returned, the test setup didn't produce expected pagination
+    // This is acceptable for small result sets, but we should still verify the response was valid
+    let Some(token) = token else {
+        eprintln!(
+            "INFO: No continuation token returned with type filter - verifying response was valid"
+        );
+        let changes = body1
+            .get("changes")
+            .and_then(|c| c.as_array())
+            .expect("Response should have 'changes' array");
+        // Verify we got document changes
+        for change in changes {
+            let obj = change
+                .get("tuple_key")
+                .and_then(|tk| tk.get("object"))
+                .and_then(|o| o.as_str());
+            if let Some(obj) = obj {
+                assert!(
+                    obj.starts_with("document:"),
+                    "Should only have document changes"
+                );
+            }
+        }
+        return Ok(());
+    };
 
-    // Try to use token WITHOUT type filter (should error)
+    // Try to use token WITHOUT type filter (should error per OpenFGA spec)
     let response2 = client
         .get(format!(
             "{}/stores/{}/changes?continuation_token={}",
             get_openfga_url(),
             store_id,
-            token.unwrap()
+            encode_token(token)
         ))
         .send()
         .await?;
 
     // Per documentation: "If you send a continuation token without the type parameter
     // set (when you originally filtered by type), you will get an error"
-    // However, behavior may vary - some implementations may accept it
-    if !response2.status().is_success() {
-        assert!(
-            response2.status() == StatusCode::BAD_REQUEST
-                || response2.status() == StatusCode::UNPROCESSABLE_ENTITY,
-            "Should return error for type mismatch, got: {}",
-            response2.status()
-        );
-    }
+    // Some implementations may be lenient, so we accept success OR proper error
+    let status = response2.status();
+    assert!(
+        status.is_success()
+            || status == StatusCode::BAD_REQUEST
+            || status == StatusCode::UNPROCESSABLE_ENTITY,
+        "Should either succeed or return validation error, got: {}",
+        status
+    );
 
     Ok(())
 }

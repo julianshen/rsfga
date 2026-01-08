@@ -203,16 +203,27 @@ async fn test_check_with_unspecified_consistency() -> Result<()> {
         .send()
         .await?;
 
-    // Note: UNSPECIFIED might be rejected by some versions
-    // This is acceptable - the test documents the behavior
-    if response.status().is_success() {
+    // UNSPECIFIED might be rejected by some versions, accepted by others
+    // Either behavior is acceptable, but we should verify the response is valid
+    let status = response.status();
+    assert!(
+        status.is_success() || status.is_client_error(),
+        "UNSPECIFIED consistency should either succeed or return client error, got: {}",
+        status
+    );
+
+    if status.is_success() {
         let body: serde_json::Value = response.json().await?;
-        assert_eq!(body.get("allowed").and_then(|a| a.as_bool()), Some(true));
+        assert_eq!(
+            body.get("allowed").and_then(|a| a.as_bool()),
+            Some(true),
+            "Check should return allowed=true when request succeeds"
+        );
     } else {
         // Document that UNSPECIFIED is not accepted
         eprintln!(
-            "Note: UNSPECIFIED consistency value returned status: {}",
-            response.status()
+            "INFO: UNSPECIFIED consistency value returned status: {} (acceptable)",
+            status
         );
     }
 
@@ -475,16 +486,30 @@ async fn test_invalid_consistency_value_error() -> Result<()> {
         .await?;
 
     // Behavior may vary:
-    // - Some implementations may ignore unknown values
+    // - Some implementations may ignore unknown values (success)
     // - Some may return 400 Bad Request
     // - Some may return 422 Unprocessable Entity
-    // Document the behavior
-    if response.status().is_success() {
-        eprintln!("Note: Invalid consistency value was accepted (ignored by server)");
+    // All of these are acceptable behaviors
+    let status = response.status();
+    assert!(
+        status.is_success() || status.is_client_error(),
+        "Invalid consistency value should either be ignored (success) or rejected (client error), got: {}",
+        status
+    );
+
+    if status.is_success() {
+        eprintln!("INFO: Invalid consistency value was accepted (ignored by server)");
+        // Verify the check still works correctly
+        let body: serde_json::Value = response.json().await?;
+        // allowed could be true or false depending on whether tuple exists
+        assert!(
+            body.get("allowed").is_some(),
+            "Response should have 'allowed' field even with invalid consistency"
+        );
     } else {
         eprintln!(
-            "Note: Invalid consistency value returned status: {}",
-            response.status()
+            "INFO: Invalid consistency value rejected with status: {} (acceptable)",
+            status
         );
     }
 
@@ -547,15 +572,101 @@ async fn test_batchcheck_accepts_consistency_parameter() -> Result<()> {
         .send()
         .await?;
 
-    // Note: Older versions may not support consistency in batch-check
-    if response.status().is_success() {
+    // Older versions may not support consistency in batch-check
+    // Both success and client error are acceptable
+    let status = response.status();
+    assert!(
+        status.is_success() || status.is_client_error(),
+        "BatchCheck with consistency should either succeed or return client error, got: {}",
+        status
+    );
+
+    if status.is_success() {
         let body: serde_json::Value = response.json().await?;
         let result = body.get("result");
         assert!(result.is_some(), "BatchCheck should return result");
     } else {
         eprintln!(
-            "Note: BatchCheck with consistency returned status: {} (may not be supported)",
-            response.status()
+            "INFO: BatchCheck with consistency returned status: {} (may not be supported in this version)",
+            status
+        );
+    }
+
+    Ok(())
+}
+
+/// Test: ListUsers accepts consistency parameter
+#[tokio::test]
+async fn test_listusers_accepts_consistency_parameter() -> Result<()> {
+    let store_id = create_test_store().await?;
+
+    let model = json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            { "type": "user" },
+            {
+                "type": "document",
+                "relations": {
+                    "viewer": { "this": {} }
+                },
+                "metadata": {
+                    "relations": {
+                        "viewer": {
+                            "directly_related_user_types": [{ "type": "user" }]
+                        }
+                    }
+                }
+            }
+        ]
+    });
+
+    let _model_id = create_authorization_model(&store_id, model).await?;
+
+    write_tuples(&store_id, vec![("user:alice", "viewer", "document:doc1")]).await?;
+
+    let client = shared_client();
+
+    // Act: ListUsers with consistency
+    let list_request = json!({
+        "object": { "type": "document", "id": "doc1" },
+        "relation": "viewer",
+        "user_filters": [{ "type": "user" }],
+        "consistency": "HIGHER_CONSISTENCY"
+    });
+
+    let response = client
+        .post(format!(
+            "{}/stores/{}/list-users",
+            get_openfga_url(),
+            store_id
+        ))
+        .json(&list_request)
+        .send()
+        .await?;
+
+    // ListUsers requires experimental flag, so 501/404 is acceptable
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_IMPLEMENTED || status == reqwest::StatusCode::NOT_FOUND {
+        eprintln!(
+            "SKIPPED: ListUsers API not available (requires --experimentals enable-list-users)"
+        );
+        return Ok(());
+    }
+
+    assert!(
+        status.is_success() || status.is_client_error(),
+        "ListUsers with consistency should either succeed or return client error, got: {}",
+        status
+    );
+
+    if status.is_success() {
+        let body: serde_json::Value = response.json().await?;
+        let users = body.get("users").and_then(|u| u.as_array());
+        assert!(users.is_some(), "ListUsers should return users array");
+    } else {
+        eprintln!(
+            "INFO: ListUsers with consistency returned status: {}",
+            status
         );
     }
 

@@ -69,13 +69,48 @@ fn grpc_streamed_listobjects(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // grpcurl outputs each streamed message on its own line
-    // Parse each line as a separate JSON object
-    let results: Vec<serde_json::Value> = stdout
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
+    // grpcurl outputs each streamed message on its own line as JSON
+    // Handle both single-line and multi-line JSON formats
+    let trimmed = stdout.trim();
+
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Try parsing as newline-delimited JSON (NDJSON) first
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut parse_errors = 0;
+
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => results.push(value),
+            Err(_) => parse_errors += 1,
+        }
+    }
+
+    // If we had parse errors but no results, the output might be multi-line JSON
+    // Try parsing the entire output as a single JSON value or array
+    if results.is_empty() && parse_errors > 0 {
+        // Try as array
+        if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed) {
+            return Ok(arr);
+        }
+        // Try as single object
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            return Ok(vec![obj]);
+        }
+        // Log warning if we couldn't parse anything
+        eprintln!(
+            "WARNING: Could not parse grpcurl output ({} lines, {} parse errors). Output:\n{}",
+            trimmed.lines().count(),
+            parse_errors,
+            &trimmed[..trimmed.len().min(500)]
+        );
+    }
 
     Ok(results)
 }

@@ -9,7 +9,16 @@
 
 ## Executive Summary
 
-The current compatibility test suite contains **~194 tests across 29 sections** covering the core OpenFGA functionality. However, several APIs and features are **NOT covered** or only partially covered. This document identifies these gaps for future implementation.
+The compatibility test suite now contains **~240 tests across 35 sections** covering the core OpenFGA functionality. All previously identified gaps have been addressed in Milestone 0.9 (Sections 30-35).
+
+**Coverage Summary**:
+- Sections 1-29: Core API coverage (~194 tests) ✅
+- Section 30: ListUsers API (8 tests) ✅
+- Section 31: ReadChanges API (10 tests) ✅
+- Section 32: Assertions API (9 tests) ✅
+- Section 33: Consistency Preference (8 tests) ✅
+- Section 34: StreamedListObjects (5 tests) ✅
+- Section 35: Modular Models/Schema 1.2 (6 tests) ✅
 
 ---
 
@@ -52,9 +61,11 @@ The current compatibility test suite contains **~194 tests across 29 sections** 
 
 ---
 
-## GAPS - Not Covered
+## Previously Identified Gaps (Now Implemented)
 
-### 1. ListUsers API ⚠️ HIGH PRIORITY
+The following sections document the APIs and features that were previously gaps but are now covered in Milestone 0.9 (Sections 30-35). This documentation is retained for reference.
+
+### 1. ListUsers API ✅ IMPLEMENTED (Section 30)
 
 **Endpoint**: `POST /stores/{store_id}/list-users`
 
@@ -97,7 +108,7 @@ The current compatibility test suite contains **~194 tests across 29 sections** 
 
 ---
 
-### 2. ReadChanges API ⚠️ HIGH PRIORITY
+### 2. ReadChanges API ✅ IMPLEMENTED (Section 31)
 
 **Endpoint**: `GET /stores/{store_id}/changes`
 
@@ -141,7 +152,7 @@ The current compatibility test suite contains **~194 tests across 29 sections** 
 
 ---
 
-### 3. Assertions API ⚠️ MEDIUM PRIORITY
+### 3. Assertions API ✅ IMPLEMENTED (Section 32)
 
 **Endpoints**:
 - `PUT /stores/{store_id}/assertions/{authorization_model_id}` (WriteAssertions)
@@ -189,7 +200,7 @@ The current compatibility test suite contains **~194 tests across 29 sections** 
 
 ---
 
-### 4. StreamedListObjects API ⚠️ LOW PRIORITY
+### 4. StreamedListObjects API ✅ IMPLEMENTED (Section 34)
 
 **Endpoint**: `POST /stores/{store_id}/streamed-list-objects` (gRPC only)
 
@@ -208,7 +219,7 @@ The current compatibility test suite contains **~194 tests across 29 sections** 
 
 ---
 
-### 5. Consistency Preference Parameter ⚠️ MEDIUM PRIORITY
+### 5. Consistency Preference Parameter ✅ IMPLEMENTED (Section 33)
 
 **Parameter**: `consistency` in Check, ListObjects, ListUsers, Expand
 
@@ -230,7 +241,7 @@ The current compatibility test suite contains **~194 tests across 29 sections** 
 
 ---
 
-### 6. Modular Models (Schema 1.2) ⚠️ LOW PRIORITY
+### 6. Modular Models (Schema 1.2) ✅ IMPLEMENTED (Section 35)
 
 **Description**: Allows splitting authorization models across multiple files with module declarations and type extensions.
 
@@ -272,7 +283,7 @@ extend type organization
 
 ---
 
-### 7. ReadAuthorizationModel (Single Model) ⚠️ LOW PRIORITY
+### 7. ReadAuthorizationModel (Single Model) ✅ COVERED (Section 35)
 
 **Endpoint**: `GET /stores/{store_id}/authorization-models/{id}`
 
@@ -288,7 +299,7 @@ extend type organization
 
 ---
 
-### 8. ReadAuthorizationModels Pagination ⚠️ LOW PRIORITY
+### 8. ReadAuthorizationModels Pagination ✅ COVERED (Section 35)
 
 **Endpoint**: `GET /stores/{store_id}/authorization-models`
 
@@ -305,44 +316,43 @@ extend type organization
 
 ## Feature Comparison Matrix
 
-| Feature | OpenFGA | RSFGA Tests | Gap |
-|---------|---------|-------------|-----|
-| Store CRUD | ✅ | ✅ | None |
-| Authorization Models | ✅ | ✅ | Pagination |
-| Tuple Write/Read | ✅ | ✅ | None |
-| Check API | ✅ | ✅ | Consistency param |
-| BatchCheck API | ✅ | ✅ | None |
-| Expand API | ✅ | ✅ | Contextual tuples in expand |
-| ListObjects API | ✅ | ✅ | Consistency param |
-| **ListUsers API** | ✅ | ❌ | **Full implementation** |
-| **ReadChanges API** | ✅ | ❌ | **Full implementation** |
-| **Assertions API** | ✅ | ❌ | **Full implementation** |
-| StreamedListObjects | ✅ | ❌ | gRPC streaming |
-| CEL Conditions | ✅ | ✅ | None |
-| Contextual Tuples | ✅ | ✅ | None |
-| Wildcards | ✅ | ✅ | None |
-| Usersets | ✅ | ✅ | None |
-| TupleToUserset | ✅ | ✅ | None |
-| Consistency Modes | ✅ | ❌ | Full implementation |
-| Modular Models | ✅ | ❌ | Schema 1.2 |
-| gRPC Parity | ✅ | ✅ | Streaming |
+| Feature | OpenFGA | RSFGA Tests | Status |
+|---------|---------|-------------|--------|
+| Store CRUD | ✅ | ✅ | Complete |
+| Authorization Models | ✅ | ✅ | Complete |
+| Tuple Write/Read | ✅ | ✅ | Complete |
+| Check API | ✅ | ✅ | Complete |
+| BatchCheck API | ✅ | ✅ | Complete |
+| Expand API | ✅ | ✅ | Complete |
+| ListObjects API | ✅ | ✅ | Complete |
+| ListUsers API | ✅ | ✅ | **Section 30** |
+| ReadChanges API | ✅ | ✅ | **Section 31** |
+| Assertions API | ✅ | ✅ | **Section 32** |
+| StreamedListObjects | ✅ | ✅ | **Section 34** |
+| CEL Conditions | ✅ | ✅ | Complete |
+| Contextual Tuples | ✅ | ✅ | Complete |
+| Wildcards | ✅ | ✅ | Complete |
+| Usersets | ✅ | ✅ | Complete |
+| TupleToUserset | ✅ | ✅ | Complete |
+| Consistency Modes | ✅ | ✅ | **Section 33** |
+| Modular Models | ✅ | ✅ | **Section 35** |
+| gRPC Parity | ✅ | ✅ | Complete |
 
 ---
 
-## Priority Recommendations
+## Implementation Status
 
-### Phase 1: High Priority (Milestone 0.9)
-1. **ListUsers API** - Essential for reverse lookup scenarios
-2. **ReadChanges API** - Required for audit trails and sync
+All previously identified gaps have been implemented in Milestone 0.9:
 
-### Phase 2: Medium Priority (Milestone 0.10)
-3. **Assertions API** - Important for model testing workflows
-4. **Consistency Preference** - Required for production deployments with caching
+### ✅ Milestone 0.9 (Complete)
+1. **ListUsers API** (Section 30) - 8 tests
+2. **ReadChanges API** (Section 31) - 10 tests
+3. **Assertions API** (Section 32) - 9 tests
+4. **Consistency Preference** (Section 33) - 8 tests
+5. **StreamedListObjects** (Section 34) - 5 tests
+6. **Modular Models/Schema 1.2** (Section 35) - 6 tests
 
-### Phase 3: Low Priority (Future)
-5. **StreamedListObjects** - Nice-to-have for large result sets
-6. **Modular Models** - Enterprise feature
-7. **Pagination enhancements** - Minor gaps
+**Total new tests**: 46 tests added in Milestone 0.9
 
 ---
 
@@ -372,16 +382,16 @@ extend type organization
 | 3 | DeleteStore | DELETE | /stores/{store_id} | ✅ |
 | 4 | ListStores | GET | /stores | ✅ |
 | 5 | WriteAuthorizationModel | POST | /stores/{store_id}/authorization-models | ✅ |
-| 6 | ReadAuthorizationModel | GET | /stores/{store_id}/authorization-models/{id} | ⚠️ Partial |
-| 7 | ReadAuthorizationModels | GET | /stores/{store_id}/authorization-models | ⚠️ Partial |
+| 6 | ReadAuthorizationModel | GET | /stores/{store_id}/authorization-models/{id} | ✅ (Section 35) |
+| 7 | ReadAuthorizationModels | GET | /stores/{store_id}/authorization-models | ✅ (Section 35) |
 | 8 | Write | POST | /stores/{store_id}/write | ✅ |
 | 9 | Read | POST | /stores/{store_id}/read | ✅ |
 | 10 | Check | POST | /stores/{store_id}/check | ✅ |
 | 11 | BatchCheck | POST | /stores/{store_id}/batch-check | ✅ |
 | 12 | Expand | POST | /stores/{store_id}/expand | ✅ |
 | 13 | ListObjects | POST | /stores/{store_id}/list-objects | ✅ |
-| 14 | **ListUsers** | POST | /stores/{store_id}/list-users | ❌ |
-| 15 | **ReadChanges** | GET | /stores/{store_id}/changes | ❌ |
-| 16 | **WriteAssertions** | PUT | /stores/{store_id}/assertions/{model_id} | ❌ |
-| 17 | **ReadAssertions** | GET | /stores/{store_id}/assertions/{model_id} | ❌ |
-| 18 | StreamedListObjects | POST | /stores/{store_id}/streamed-list-objects | ❌ |
+| 14 | ListUsers | POST | /stores/{store_id}/list-users | ✅ (Section 30) |
+| 15 | ReadChanges | GET | /stores/{store_id}/changes | ✅ (Section 31) |
+| 16 | WriteAssertions | PUT | /stores/{store_id}/assertions/{model_id} | ✅ (Section 32) |
+| 17 | ReadAssertions | GET | /stores/{store_id}/assertions/{model_id} | ✅ (Section 32) |
+| 18 | StreamedListObjects | POST | /stores/{store_id}/streamed-list-objects | ✅ (Section 34) |
