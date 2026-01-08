@@ -1,7 +1,9 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_authorization_model, create_test_store, get_openfga_url, write_tuples, shared_client};
+use common::{
+    create_authorization_model, create_test_store, get_openfga_url, shared_client, write_tuples,
+};
 use serde_json::json;
 
 // ============================================================================
@@ -205,10 +207,7 @@ async fn test_check_with_unspecified_consistency() -> Result<()> {
     // This is acceptable - the test documents the behavior
     if response.status().is_success() {
         let body: serde_json::Value = response.json().await?;
-        assert_eq!(
-            body.get("allowed").and_then(|a| a.as_bool()),
-            Some(true)
-        );
+        assert_eq!(body.get("allowed").and_then(|a| a.as_bool()), Some(true));
     } else {
         // Document that UNSPECIFIED is not accepted
         eprintln!(
@@ -334,11 +333,7 @@ async fn test_expand_accepts_consistency_parameter() -> Result<()> {
     });
 
     let response = client
-        .post(format!(
-            "{}/stores/{}/expand",
-            get_openfga_url(),
-            store_id
-        ))
+        .post(format!("{}/stores/{}/expand", get_openfga_url(), store_id))
         .json(&expand_request)
         .send()
         .await?;
@@ -350,10 +345,7 @@ async fn test_expand_accepts_consistency_parameter() -> Result<()> {
     );
 
     let body: serde_json::Value = response.json().await?;
-    assert!(
-        body.get("tree").is_some(),
-        "Expand should return tree"
-    );
+    assert!(body.get("tree").is_some(), "Expand should return tree");
 
     Ok(())
 }
@@ -488,9 +480,7 @@ async fn test_invalid_consistency_value_error() -> Result<()> {
     // - Some may return 422 Unprocessable Entity
     // Document the behavior
     if response.status().is_success() {
-        eprintln!(
-            "Note: Invalid consistency value was accepted (ignored by server)"
-        );
+        eprintln!("Note: Invalid consistency value was accepted (ignored by server)");
     } else {
         eprintln!(
             "Note: Invalid consistency value returned status: {}",

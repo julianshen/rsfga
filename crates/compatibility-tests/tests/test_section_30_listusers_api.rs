@@ -44,8 +44,7 @@ async fn is_listusers_available(store_id: &str) -> bool {
         Ok(resp) => {
             // 400/404 means endpoint exists but validation failed
             // 501 or connection error means not available
-            resp.status() != StatusCode::NOT_IMPLEMENTED
-                && resp.status() != StatusCode::NOT_FOUND
+            resp.status() != StatusCode::NOT_IMPLEMENTED && resp.status() != StatusCode::NOT_FOUND
                 || resp.status() == StatusCode::BAD_REQUEST
         }
         Err(_) => false,
@@ -82,7 +81,9 @@ async fn test_listusers_returns_users_with_direct_relation() -> Result<()> {
 
     // Check if ListUsers is available
     if !is_listusers_available(&store_id).await {
-        eprintln!("SKIPPED: ListUsers API not available (requires --experimentals enable-list-users)");
+        eprintln!(
+            "SKIPPED: ListUsers API not available (requires --experimentals enable-list-users)"
+        );
         return Ok(());
     }
 
@@ -134,12 +135,11 @@ async fn test_listusers_returns_users_with_direct_relation() -> Result<()> {
     let user_ids: HashSet<String> = users
         .iter()
         .filter_map(|u| {
-            u.get("object")
-                .and_then(|o| {
-                    let user_type = o.get("type")?.as_str()?;
-                    let user_id = o.get("id")?.as_str()?;
-                    Some(format!("{}:{}", user_type, user_id))
-                })
+            u.get("object").and_then(|o| {
+                let user_type = o.get("type")?.as_str()?;
+                let user_id = o.get("id")?.as_str()?;
+                Some(format!("{}:{}", user_type, user_id))
+            })
         })
         .collect();
 

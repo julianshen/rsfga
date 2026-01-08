@@ -1,7 +1,7 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_authorization_model, create_test_store, get_grpc_url, grpc_call, write_tuples};
+use common::{create_test_store, get_grpc_url, grpc_call, write_tuples};
 use serde_json::json;
 use std::collections::HashSet;
 use std::process::Command;
@@ -157,10 +157,7 @@ async fn test_streamed_listobjects_returns_same_as_listobjects() -> Result<()> {
         "user": "user:alice"
     });
 
-    let list_response = grpc_call(
-        "openfga.v1.OpenFGAService/ListObjects",
-        &list_request,
-    )?;
+    let list_response = grpc_call("openfga.v1.OpenFGAService/ListObjects", &list_request)?;
 
     let list_objects: HashSet<String> = list_response
         .get("objects")
@@ -179,11 +176,7 @@ async fn test_streamed_listobjects_returns_same_as_listobjects() -> Result<()> {
         "StreamedListObjects should return same objects as ListObjects"
     );
 
-    assert_eq!(
-        streamed_objects.len(),
-        3,
-        "Should have 3 objects"
-    );
+    assert_eq!(streamed_objects.len(), 3, "Should have 3 objects");
 
     Ok(())
 }

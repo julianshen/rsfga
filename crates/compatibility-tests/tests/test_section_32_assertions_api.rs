@@ -1,7 +1,7 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_authorization_model, create_test_store, get_openfga_url, write_tuples, shared_client};
+use common::{create_authorization_model, create_test_store, get_openfga_url, shared_client};
 use reqwest::StatusCode;
 use serde_json::json;
 
@@ -440,10 +440,7 @@ async fn test_assertions_with_contextual_tuples() -> Result<()> {
             .and_then(|tk| tk.as_array());
 
         if let Some(tuples) = tuples {
-            assert!(
-                !tuples.is_empty(),
-                "Contextual tuples should be preserved"
-            );
+            assert!(!tuples.is_empty(), "Contextual tuples should be preserved");
         }
     }
 

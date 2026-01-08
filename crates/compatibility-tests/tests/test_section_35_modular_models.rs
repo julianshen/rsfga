@@ -2,7 +2,6 @@ mod common;
 
 use anyhow::Result;
 use common::{create_test_store, get_openfga_url, shared_client};
-use reqwest::StatusCode;
 use serde_json::json;
 
 // ============================================================================
@@ -59,7 +58,9 @@ async fn test_create_model_schema_1_2() -> Result<()> {
     let store_id = create_test_store().await?;
 
     if !is_schema_1_2_supported(&store_id).await {
-        eprintln!("SKIPPED: Schema 1.2 not supported (requires --experimentals enable-modular-models)");
+        eprintln!(
+            "SKIPPED: Schema 1.2 not supported (requires --experimentals enable-modular-models)"
+        );
         return Ok(());
     }
 

@@ -1,7 +1,9 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_authorization_model, create_test_store, get_openfga_url, write_tuples, shared_client};
+use common::{
+    create_authorization_model, create_test_store, get_openfga_url, shared_client, write_tuples,
+};
 use reqwest::StatusCode;
 use serde_json::json;
 use std::time::Duration;
@@ -67,11 +69,7 @@ async fn test_readchanges_returns_tuple_writes() -> Result<()> {
 
     // Act: Get changes
     let response = client
-        .get(format!(
-            "{}/stores/{}/changes",
-            get_openfga_url(),
-            store_id
-        ))
+        .get(format!("{}/stores/{}/changes", get_openfga_url(), store_id))
         .send()
         .await?;
 
@@ -171,11 +169,7 @@ async fn test_readchanges_returns_writes_and_deletes() -> Result<()> {
 
     // Get changes
     let response = client
-        .get(format!(
-            "{}/stores/{}/changes",
-            get_openfga_url(),
-            store_id
-        ))
+        .get(format!("{}/stores/{}/changes", get_openfga_url(), store_id))
         .send()
         .await?;
 
@@ -478,10 +472,7 @@ async fn test_readchanges_continuation_token() -> Result<()> {
         .and_then(|c| c.as_array())
         .expect("Response should have 'changes' array");
 
-    assert!(
-        !changes2.is_empty(),
-        "Second page should have some changes"
-    );
+    assert!(!changes2.is_empty(), "Second page should have some changes");
 
     Ok(())
 }
@@ -520,11 +511,7 @@ async fn test_readchanges_same_token_when_no_changes() -> Result<()> {
 
     // Get all changes
     let response1 = client
-        .get(format!(
-            "{}/stores/{}/changes",
-            get_openfga_url(),
-            store_id
-        ))
+        .get(format!("{}/stores/{}/changes", get_openfga_url(), store_id))
         .send()
         .await?;
 
@@ -708,11 +695,7 @@ async fn test_readchanges_empty_for_new_store() -> Result<()> {
     let client = shared_client();
 
     let response = client
-        .get(format!(
-            "{}/stores/{}/changes",
-            get_openfga_url(),
-            store_id
-        ))
+        .get(format!("{}/stores/{}/changes", get_openfga_url(), store_id))
         .send()
         .await?;
 
@@ -801,11 +784,7 @@ async fn test_readchanges_chronological_order() -> Result<()> {
     let client = shared_client();
 
     let response = client
-        .get(format!(
-            "{}/stores/{}/changes",
-            get_openfga_url(),
-            store_id
-        ))
+        .get(format!("{}/stores/{}/changes", get_openfga_url(), store_id))
         .send()
         .await?;
 
