@@ -1,7 +1,10 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_test_store, get_grpc_url, grpc_call, write_tuples};
+use common::{
+    create_test_store, get_grpc_url, grpc_call, grpc_streaming_call, simple_document_viewer_model,
+    write_tuples,
+};
 use serde_json::json;
 use std::collections::HashSet;
 use std::process::Command;
@@ -40,79 +43,18 @@ fn is_streamed_listobjects_available() -> bool {
     }
 }
 
-/// Execute StreamedListObjects via grpcurl
+/// Execute StreamedListObjects via grpcurl (uses common streaming helper)
 fn grpc_streamed_listobjects(
     store_id: &str,
     request: &serde_json::Value,
 ) -> Result<Vec<serde_json::Value>> {
-    let url = get_grpc_url();
-
     let mut full_request = request.clone();
     full_request["store_id"] = json!(store_id);
 
-    let data_str = serde_json::to_string(&full_request)?;
-
-    let output = Command::new("grpcurl")
-        .args([
-            "-plaintext",
-            "-d",
-            &data_str,
-            &url,
-            "openfga.v1.OpenFGAService/StreamedListObjects",
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("StreamedListObjects failed: {}", stderr);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // grpcurl outputs each streamed message on its own line as JSON
-    // Handle both single-line and multi-line JSON formats
-    let trimmed = stdout.trim();
-
-    if trimmed.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Try parsing as newline-delimited JSON (NDJSON) first
-    let mut results: Vec<serde_json::Value> = Vec::new();
-    let mut parse_errors = 0;
-
-    for line in trimmed.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<serde_json::Value>(line) {
-            Ok(value) => results.push(value),
-            Err(_) => parse_errors += 1,
-        }
-    }
-
-    // If we had parse errors but no results, the output might be multi-line JSON
-    // Try parsing the entire output as a single JSON value or array
-    if results.is_empty() && parse_errors > 0 {
-        // Try as array
-        if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed) {
-            return Ok(arr);
-        }
-        // Try as single object
-        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            return Ok(vec![obj]);
-        }
-        // Log warning if we couldn't parse anything
-        eprintln!(
-            "WARNING: Could not parse grpcurl output ({} lines, {} parse errors). Output:\n{}",
-            trimmed.lines().count(),
-            parse_errors,
-            &trimmed[..trimmed.len().min(500)]
-        );
-    }
-
-    Ok(results)
+    grpc_streaming_call(
+        "openfga.v1.OpenFGAService/StreamedListObjects",
+        &full_request,
+    )
 }
 
 /// Test: StreamedListObjects returns same results as ListObjects
@@ -126,26 +68,7 @@ async fn test_streamed_listobjects_returns_same_as_listobjects() -> Result<()> {
     // Arrange
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
+    let model = simple_document_viewer_model();
     let model_data = json!({
         "store_id": store_id,
         "type_definitions": model["type_definitions"],
@@ -226,26 +149,7 @@ async fn test_streamed_listobjects_empty_results() -> Result<()> {
 
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
+    let model = simple_document_viewer_model();
     let model_data = json!({
         "store_id": store_id,
         "type_definitions": model["type_definitions"],
@@ -292,26 +196,7 @@ async fn test_streamed_listobjects_large_result_set() -> Result<()> {
 
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
+    let model = simple_document_viewer_model();
     let model_data = json!({
         "store_id": store_id,
         "type_definitions": model["type_definitions"],
@@ -379,26 +264,7 @@ async fn test_streamed_listobjects_with_contextual_tuples() -> Result<()> {
 
     let store_id = create_test_store().await?;
 
-    let model = json!({
-        "schema_version": "1.1",
-        "type_definitions": [
-            { "type": "user" },
-            {
-                "type": "document",
-                "relations": {
-                    "viewer": { "this": {} }
-                },
-                "metadata": {
-                    "relations": {
-                        "viewer": {
-                            "directly_related_user_types": [{ "type": "user" }]
-                        }
-                    }
-                }
-            }
-        ]
-    });
-
+    let model = simple_document_viewer_model();
     let model_data = json!({
         "store_id": store_id,
         "type_definitions": model["type_definitions"],

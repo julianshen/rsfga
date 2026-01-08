@@ -536,6 +536,84 @@ pub fn grpc_call(method: &str, data: &serde_json::Value) -> Result<serde_json::V
     Ok(json)
 }
 
+/// Parse grpcurl streaming response output.
+///
+/// grpcurl outputs streaming responses in various formats:
+/// - Newline-delimited JSON (NDJSON): one JSON object per line
+/// - JSON array: all objects in a single array
+/// - Single JSON object: when only one response is streamed
+///
+/// This function handles all these formats gracefully.
+pub fn parse_grpc_streaming_response(output: &str) -> Result<Vec<serde_json::Value>> {
+    let trimmed = output.trim();
+
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Try parsing as newline-delimited JSON (NDJSON) first
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut parse_errors = 0;
+
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => results.push(value),
+            Err(_) => parse_errors += 1,
+        }
+    }
+
+    // If we had parse errors but no results, try alternative formats
+    if results.is_empty() && parse_errors > 0 {
+        // Try as JSON array
+        if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed) {
+            return Ok(arr);
+        }
+        // Try as single JSON object
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            return Ok(vec![obj]);
+        }
+        // Log warning if we couldn't parse anything
+        eprintln!(
+            "WARNING: Could not parse grpcurl streaming output ({} lines, {} parse errors). Output:\n{}",
+            trimmed.lines().count(),
+            parse_errors,
+            &trimmed[..trimmed.len().min(500)]
+        );
+    }
+
+    Ok(results)
+}
+
+/// Execute gRPC streaming call and return parsed response messages.
+///
+/// Unlike `grpc_call` which expects a single response, this handles
+/// streaming RPCs that return multiple messages (e.g., StreamedListObjects).
+pub fn grpc_streaming_call(
+    method: &str,
+    data: &serde_json::Value,
+) -> Result<Vec<serde_json::Value>> {
+    use std::process::Command;
+
+    let url = get_grpc_url();
+    let data_str = serde_json::to_string(data)?;
+
+    let output = Command::new("grpcurl")
+        .args(["-plaintext", "-d", &data_str, &url, method])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("grpcurl streaming call failed: {}", stderr);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_grpc_streaming_response(&stdout)
+}
+
 /// Helper to create a test store via gRPC
 pub fn create_test_store_grpc(name: &str) -> Result<String> {
     let response = grpc_call(
