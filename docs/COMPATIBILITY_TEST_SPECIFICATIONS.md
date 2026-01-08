@@ -67,7 +67,7 @@
 
 ### Create Store
 
-```
+```text
 Given: No existing store
 When:  POST /stores with {"name": "test-store"}
 Then:  Response 201 with {"id": "<generated-ulid>", "name": "test-store", "created_at": "..."}
@@ -80,7 +80,7 @@ Then:  Response 201 with {"id": "<generated-ulid>", "name": "test-store", "creat
 
 ### Get Store
 
-```
+```text
 Given: Store "store-123" exists
 When:  GET /stores/store-123
 Then:  Response 200 with store details
@@ -93,7 +93,7 @@ Then:  Response 200 with store details
 
 ### Delete Store
 
-```
+```text
 Given: Store "store-123" exists
 When:  DELETE /stores/store-123
 Then:  Response 204 No Content
@@ -107,7 +107,7 @@ Then:  Response 204 No Content
 
 ### List Stores
 
-```
+```text
 Given: 10 stores exist
 When:  GET /stores?page_size=5
 Then:  Response with 5 stores and continuation_token
@@ -125,7 +125,7 @@ Then:  Response with 5 stores and continuation_token
 
 ### Create Model
 
-```
+```text
 Given: Store exists
 When:  POST /stores/{id}/authorization-models with type definitions
 Then:  Response 201 with authorization_model_id
@@ -191,7 +191,7 @@ Then:  Response 201 with authorization_model_id
 
 ### Write Tuples
 
-```
+```text
 Given: Store with model exists
 When:  POST /stores/{id}/write with tuple
 Then:  Response 200 with empty object {}
@@ -230,7 +230,7 @@ Then:  Response 200 with empty object {}
 
 ### Read Tuples
 
-```
+```text
 Given: Tuples exist in store
 When:  POST /stores/{id}/read with filter
 Then:  Response with matching tuples
@@ -263,7 +263,7 @@ Then:  Response with matching tuples
 
 ### Basic Check
 
-```
+```text
 Given: Tuple (user:alice, viewer, document:doc1) exists
 When:  POST /stores/{id}/check with {user: alice, relation: viewer, object: doc1}
 Then:  Response {"allowed": true}
@@ -279,7 +279,7 @@ Then:  Response {"allowed": true}
 
 ### Computed Relations
 
-```
+```text
 Given: Model where editor = owner OR direct_editor
        Tuple (user:alice, owner, document:doc1) exists
 When:  Check if alice is editor of doc1
@@ -316,7 +316,7 @@ Then:  {"allowed": true} (inherited from owner)
 
 ### Batch Check
 
-```
+```text
 Given: Multiple tuples to check
 When:  POST /stores/{id}/batch-check with array of checks
 Then:  Response with array of results in same order
@@ -345,7 +345,7 @@ Then:  Response with array of results in same order
 
 ### Basic Expand
 
-```
+```text
 Given: Model with viewer = editor OR direct_viewer
        Tuples for user:alice as editor, user:bob as viewer
 When:  POST /stores/{id}/expand {relation: viewer, object: doc1}
@@ -377,7 +377,7 @@ Then:  Response with relation tree showing both paths
 
 ### Basic ListObjects
 
-```
+```text
 Given: user:alice has viewer on doc1, doc2, doc3
 When:  POST /stores/{id}/list-objects {user: alice, relation: viewer, type: document}
 Then:  Response {"objects": ["document:doc1", "document:doc2", "document:doc3"]}
@@ -409,7 +409,7 @@ Then:  Response {"objects": ["document:doc1", "document:doc2", "document:doc3"]}
 
 ### Section 17: Error Format
 
-```
+```text
 Given: Invalid request
 When:  API call
 Then:  Error response with {code, message} structure
@@ -469,7 +469,7 @@ Then:  Error response with {code, message} structure
 
 ### Section 22: gRPC/REST Parity
 
-```
+```text
 Given: Same operation parameters
 When:  Call via REST and gRPC
 Then:  Identical results
@@ -502,7 +502,7 @@ Then:  Identical results
 
 ### Section 24: Model Conditions
 
-```
+```text
 Given: Model with condition "is_weekday"
        condition is_weekday(context) { context.day_of_week < 6 }
 When:  Create model
@@ -538,7 +538,7 @@ Then:  Model accepted with condition
 
 ### Section 27: Check with Conditions
 
-```
+```text
 Given: Tuple (alice, viewer, doc1) with condition "is_owner"
        Condition: context.user_id == "alice"
 When:  Check with context {user_id: "alice"}
@@ -592,7 +592,7 @@ Then:  {"allowed": false}
 
 ### Basic ListUsers
 
-```
+```text
 Given: Tuples: (alice, viewer, doc1), (bob, viewer, doc1), (group:eng#member, viewer, doc1)
 When:  POST /stores/{id}/list-users {object: doc1, relation: viewer, user_filters: [{type: user}]}
 Then:  Response {"users": [{"object": {"type": "user", "id": "alice"}}, ...]}
@@ -621,7 +621,7 @@ Then:  Response {"users": [{"object": {"type": "user", "id": "alice"}}, ...]}
 
 ### Basic ReadChanges
 
-```
+```text
 Given: Write tuple (alice, viewer, doc1), then delete it
 When:  GET /stores/{id}/changes
 Then:  Response with both WRITE and DELETE operations in chronological order
@@ -651,7 +651,7 @@ Then:  Response with both WRITE and DELETE operations in chronological order
 
 ### Write Assertions
 
-```
+```text
 Given: Store with model
 When:  PUT /stores/{id}/assertions/{model_id} with test cases
 Then:  Assertions stored for model validation
@@ -685,7 +685,7 @@ Then:  Assertions stored for model validation
 
 ### Consistency Parameter
 
-```
+```text
 Given: Tuple exists
 When:  Check with consistency: MINIMIZE_LATENCY
 Then:  May use cache (faster)
@@ -714,7 +714,7 @@ Then:  Reads from database (fresher)
 
 ### Basic Streaming
 
-```
+```text
 Given: user:alice has viewer on 50 documents
 When:  gRPC StreamedListObjects call
 Then:  Objects streamed incrementally (not all at once)
@@ -734,7 +734,7 @@ Then:  Objects streamed incrementally (not all at once)
 
 ### Schema 1.2 Support
 
-```
+```text
 Given: OpenFGA with modular models enabled
 When:  Create model with schema_version: "1.2"
 Then:  Model created successfully

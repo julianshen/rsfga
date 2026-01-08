@@ -24,7 +24,10 @@ use serde_json::json;
 //
 // ============================================================================
 
-/// Helper to check if Schema 1.2 / Modular Models is supported
+/// Helper to check if Schema 1.2 / Modular Models is supported.
+///
+/// Returns true if schema 1.2 is supported, false if unsupported (4xx errors),
+/// and logs warnings for transient failures (network errors, 5xx).
 async fn is_schema_1_2_supported(store_id: &str) -> bool {
     let client = shared_client();
 
@@ -47,8 +50,30 @@ async fn is_schema_1_2_supported(store_id: &str) -> bool {
         .await;
 
     match response {
-        Ok(resp) => resp.status().is_success(),
-        Err(_) => false,
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                true
+            } else if status.is_client_error() {
+                // 4xx errors indicate feature not supported or invalid request
+                false
+            } else {
+                // 5xx errors or other unexpected status - log warning but treat as unsupported
+                eprintln!(
+                    "WARNING: Unexpected status {} when checking schema 1.2 support. Treating as unsupported.",
+                    status
+                );
+                false
+            }
+        }
+        Err(e) => {
+            // Network or other transient errors - log warning
+            eprintln!(
+                "WARNING: Network error checking schema 1.2 support: {}. Treating as unsupported.",
+                e
+            );
+            false
+        }
     }
 }
 
