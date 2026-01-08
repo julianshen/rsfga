@@ -18,6 +18,7 @@ tonic = { workspace = true }
 tonic-health = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+urlencoding = "2.1"
 
 [dev-dependencies]
 tempfile = "3.9"

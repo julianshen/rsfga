@@ -301,9 +301,79 @@ This roadmap outlines the phased implementation of RSFGA, from MVP to distribute
 
 ---
 
+### Milestone 0.9: Extended API Coverage (Week 9)
+
+**Goal**: Complete coverage of all OpenFGA APIs including experimental features
+
+#### Tasks
+
+**0.9.1 ListUsers API (Section 30)**
+- POST /stores/{store_id}/list-users endpoint
+- User type filters and userset filters
+- Wildcard results handling
+- Contextual tuples support
+- Computed relations resolution
+- Error handling
+
+**0.9.2 ReadChanges API (Section 31)**
+- GET /stores/{store_id}/changes endpoint
+- Tuple write and delete operations
+- Type filter support
+- Pagination (page_size, continuation_token)
+- Chronological ordering validation
+- Empty result handling
+
+**0.9.3 Assertions API (Section 32)**
+- PUT /stores/{store_id}/assertions/{model_id} (WriteAssertions)
+- GET /stores/{store_id}/assertions/{model_id} (ReadAssertions)
+- Assertion replacement semantics (upsert)
+- Contextual tuples in assertions
+- Empty assertions handling
+- Error cases
+
+**0.9.4 Consistency Preference (Section 33)**
+- MINIMIZE_LATENCY mode
+- HIGHER_CONSISTENCY mode
+- UNSPECIFIED mode (default)
+- Support in Check, ListObjects, Expand, BatchCheck
+- Mode parity validation
+
+**0.9.5 StreamedListObjects API (Section 34)**
+- gRPC streaming endpoint
+- Parity with ListObjects results
+- Large result set handling
+- Contextual tuples support
+- Error handling
+
+**0.9.6 Modular Models - Schema 1.2 (Section 35)**
+- Schema version 1.2 support
+- Module declarations
+- Type extensions
+- Backwards compatibility with 1.1
+- Schema version in responses
+
+**Validation Criteria**:
+- [ ] ListUsers API fully tested (8 tests)
+- [ ] ReadChanges API fully tested (10 tests)
+- [ ] Assertions API fully tested (9 tests)
+- [ ] Consistency preference fully tested (8 tests)
+- [ ] StreamedListObjects tested (5 tests)
+- [ ] Modular models tested (6 tests)
+
+**Deliverables**:
+- Section 30-35 test files
+- Updated test coverage report
+- Extended API compatibility matrix
+
+**Note**: Some features require experimental flags:
+- ListUsers: `--experimentals enable-list-users`
+- Modular Models: `--experimentals enable-modular-models`
+
+---
+
 ## Phase 0 Summary
 
-**Total Test Count**: ~150 compatibility tests
+**Total Test Count**: ~240 compatibility tests (150 core + 46 extended + 44 CEL)
 
 **Key Deliverables**:
 1. OpenFGA test harness (Docker-based)

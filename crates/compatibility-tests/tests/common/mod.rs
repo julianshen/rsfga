@@ -6,7 +6,66 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::OnceLock;
+use std::time::Duration;
 use uuid::Uuid;
+
+// ============================================================================
+// Test Timing Configuration
+// ============================================================================
+
+/// Default time to wait for changelog entries to settle after write operations.
+const DEFAULT_CHANGELOG_SETTLE_MS: u64 = 100;
+
+/// Default shorter settle time for within-batch delays.
+const DEFAULT_CHANGELOG_SETTLE_SHORT_MS: u64 = 50;
+
+/// Get the changelog settle time, configurable via environment variable.
+///
+/// OpenFGA's changelog (ReadChanges API) may have slight propagation delays
+/// depending on the storage backend. This delay ensures changelog entries
+/// are visible when testing sequential write-then-read patterns.
+///
+/// Override with `CHANGELOG_SETTLE_TIME_MS` environment variable for CI environments
+/// that may need different timing (e.g., slower storage backends).
+///
+/// # Example
+/// ```bash
+/// CHANGELOG_SETTLE_TIME_MS=200 cargo test
+/// ```
+pub fn changelog_settle_time() -> Duration {
+    std::env::var("CHANGELOG_SETTLE_TIME_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(DEFAULT_CHANGELOG_SETTLE_MS))
+}
+
+/// Get the short changelog settle time, configurable via environment variable.
+///
+/// Use this when testing within a single batch of writes where
+/// full propagation isn't critical.
+///
+/// Override with `CHANGELOG_SETTLE_TIME_SHORT_MS` environment variable.
+pub fn changelog_settle_time_short() -> Duration {
+    std::env::var("CHANGELOG_SETTLE_TIME_SHORT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(DEFAULT_CHANGELOG_SETTLE_SHORT_MS))
+}
+
+// Keep the constants for backwards compatibility but mark as deprecated
+#[deprecated(
+    since = "0.1.0",
+    note = "Use changelog_settle_time() for CI configurability"
+)]
+pub const CHANGELOG_SETTLE_TIME: Duration = Duration::from_millis(100);
+
+#[deprecated(
+    since = "0.1.0",
+    note = "Use changelog_settle_time_short() for CI configurability"
+)]
+pub const CHANGELOG_SETTLE_TIME_SHORT: Duration = Duration::from_millis(50);
 
 // ============================================================================
 // Shared HTTP Client (Issue #26)
@@ -307,6 +366,34 @@ pub async fn create_conditional_model(store_id: &str) -> Result<String> {
 }
 
 // ============================================================================
+// Common Model Helpers
+// ============================================================================
+
+/// Create a simple document-viewer model JSON (for consistency tests and basic scenarios).
+/// This is the minimal model with a user type and a document type with a viewer relation.
+pub fn simple_document_viewer_model() -> serde_json::Value {
+    json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            { "type": "user" },
+            {
+                "type": "document",
+                "relations": {
+                    "viewer": { "this": {} }
+                },
+                "metadata": {
+                    "relations": {
+                        "viewer": {
+                            "directly_related_user_types": [{ "type": "user" }]
+                        }
+                    }
+                }
+            }
+        ]
+    })
+}
+
+// ============================================================================
 // CEL Condition Helpers (Milestone 0.8)
 // ============================================================================
 
@@ -480,6 +567,23 @@ pub fn http_client() -> reqwest::Client {
 // gRPC Helpers
 // ============================================================================
 
+/// Check if grpcurl is available on the system.
+///
+/// grpcurl is required for gRPC-specific tests (Sections 21, 23, 34).
+/// Install via:
+/// - macOS: `brew install grpcurl`
+/// - Linux: Download from https://github.com/fullstorydev/grpcurl/releases
+/// - Go: `go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest`
+pub fn is_grpcurl_available() -> bool {
+    use std::process::Command;
+
+    Command::new("grpcurl")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Execute gRPC call with grpcurl and return parsed JSON response
 pub fn grpc_call(method: &str, data: &serde_json::Value) -> Result<serde_json::Value> {
     use std::process::Command;
@@ -506,6 +610,95 @@ pub fn grpc_call(method: &str, data: &serde_json::Value) -> Result<serde_json::V
 
     let json: serde_json::Value = serde_json::from_str(&stdout)?;
     Ok(json)
+}
+
+/// Parse grpcurl streaming response output.
+///
+/// grpcurl outputs streaming responses in various formats:
+/// - Newline-delimited JSON (NDJSON): one JSON object per line
+/// - JSON array: all objects in a single array
+/// - Single JSON object: when only one response is streamed
+///
+/// This function handles all these formats gracefully.
+pub fn parse_grpc_streaming_response(output: &str) -> Result<Vec<serde_json::Value>> {
+    let trimmed = output.trim();
+
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Try parsing as newline-delimited JSON (NDJSON) first
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut parse_errors = 0;
+
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => results.push(value),
+            Err(_) => parse_errors += 1,
+        }
+    }
+
+    // Fail explicitly if we had partial success - some lines parsed, others didn't.
+    // This indicates corrupted or malformed streaming output that should not be silently ignored.
+    if parse_errors > 0 && !results.is_empty() {
+        anyhow::bail!(
+            "Partial NDJSON parse failure: {} lines parsed successfully, {} failed. This may indicate truncated or corrupted streaming output. Preview:\n{}",
+            results.len(),
+            parse_errors,
+            &trimmed[..trimmed.len().min(500)]
+        );
+    }
+
+    // If we had parse errors but no results, try alternative formats
+    if results.is_empty() && parse_errors > 0 {
+        // Try as JSON array
+        if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed) {
+            return Ok(arr);
+        }
+        // Try as single JSON object
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            return Ok(vec![obj]);
+        }
+        // Return error instead of silently returning empty Vec
+        anyhow::bail!(
+            "Failed to parse grpcurl streaming output ({} lines, {} parse errors). Output preview:\n{}",
+            trimmed.lines().count(),
+            parse_errors,
+            &trimmed[..trimmed.len().min(500)]
+        );
+    }
+
+    Ok(results)
+}
+
+/// Execute gRPC streaming call and return parsed response messages.
+///
+/// Unlike `grpc_call` which expects a single response, this handles
+/// streaming RPCs that return multiple messages (e.g., StreamedListObjects).
+pub fn grpc_streaming_call(
+    method: &str,
+    data: &serde_json::Value,
+) -> Result<Vec<serde_json::Value>> {
+    use std::process::Command;
+
+    let url = get_grpc_url();
+    let data_str = serde_json::to_string(data)?;
+
+    let output = Command::new("grpcurl")
+        .args(["-plaintext", "-d", &data_str, &url, method])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("grpcurl streaming call failed: {}", stderr);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_grpc_streaming_response(&stdout)
 }
 
 /// Helper to create a test store via gRPC

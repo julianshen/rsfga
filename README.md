@@ -66,6 +66,9 @@ rsfga/
 **Prerequisites**:
 - Rust 1.75+ ([Install Rust](https://rustup.rs/))
 - Docker (for OpenFGA compatibility tests)
+- grpcurl (optional, for gRPC-specific tests in Sections 21, 23, 34)
+  - macOS: `brew install grpcurl`
+  - Linux/Windows: [Download from GitHub](https://github.com/fullstorydev/grpcurl/releases)
 
 **Clone and Build**:
 ```bash
