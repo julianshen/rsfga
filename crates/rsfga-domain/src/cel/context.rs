@@ -118,9 +118,9 @@ impl CelContext {
 
     /// Convert to cel_interpreter Context
     ///
-    /// Note: add_variable returns a Result, but our cel_value_to_value
-    /// always produces valid Value types that should never fail conversion.
-    /// We use expect() to catch any unexpected failures during development.
+    /// Note: `add_variable` returns a `Result` which errors on duplicate variable names.
+    /// This is safe to use `expect()` because we are iterating over a `HashMap` which
+    /// guarantees unique keys, so `add_variable` will never be called with a duplicate name.
     pub(crate) fn to_cel_context(&self) -> Context<'_> {
         let mut ctx = Context::default();
 

@@ -439,6 +439,60 @@ fn parse_condition_parameter<'a, E: ParseError<&'a str> + ContextError<&'a str>>
     )(input)
 }
 
+/// Parse a brace-balanced expression body, handling nested braces and string literals.
+///
+/// This parser correctly handles:
+/// - Nested braces: `{ outer { inner } }`
+/// - String literals containing braces: `"foo}bar"` or `'foo}bar'`
+/// - The closing `}` that ends the condition block
+///
+/// Returns the expression content (without the closing brace) and remaining input.
+fn parse_brace_balanced_expression<'a, E: ParseError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, &'a str, E> {
+    let mut depth = 0i32;
+    let mut chars = input.char_indices().peekable();
+    let mut in_string: Option<char> = None; // Track if we're inside a string ('"' or '\'')
+
+    while let Some((idx, ch)) = chars.next() {
+        // Handle string literals - braces inside strings don't count
+        if in_string.is_some() {
+            if ch == '\\' {
+                // Skip escaped character
+                chars.next();
+            } else if Some(ch) == in_string {
+                // End of string
+                in_string = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => {
+                // Start of string literal
+                in_string = Some(ch);
+            }
+            '{' => {
+                depth += 1;
+            }
+            '}' => {
+                if depth == 0 {
+                    // Found the matching closing brace for the condition block
+                    return Ok((&input[idx..], &input[..idx]));
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+
+    // Reached end of input without finding closing brace
+    Err(nom::Err::Error(E::from_error_kind(
+        input,
+        nom::error::ErrorKind::Tag,
+    )))
+}
+
 /// Parse condition definition: condition name(params) { expression }
 fn parse_condition_definition<
     'a,
@@ -464,8 +518,8 @@ fn parse_condition_definition<
                 char(')'),
                 space0,
                 char('{'),
-                // Capture everything until closing brace as expression
-                take_while(|c| c != '}'),
+                // Parse brace-balanced expression (handles nested braces and string literals)
+                parse_brace_balanced_expression,
                 char('}'),
             )),
             |(_, _, name, _, _, _, params, _, _, _, _, expression, _): (
@@ -1127,5 +1181,85 @@ type user
         assert_eq!(model.conditions.len(), 2);
         assert_eq!(model.conditions[0].name, "time_check");
         assert_eq!(model.conditions[1].name, "dept_check");
+    }
+
+    // ========== Brace-Balanced Expression Parsing Tests ==========
+
+    #[test]
+    fn test_parser_handles_condition_with_nested_braces() {
+        // CEL map literals use braces: {"key": value}
+        let input = r#"
+condition has_required_attrs(attrs: map) {
+  attrs == {"role": "admin", "level": 5}
+}
+
+type user
+"#;
+        let result = parse(input);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let model = result.unwrap();
+
+        assert_eq!(model.conditions.len(), 1);
+        assert_eq!(model.conditions[0].name, "has_required_attrs");
+        assert!(model.conditions[0]
+            .expression
+            .contains(r#"{"role": "admin", "level": 5}"#));
+    }
+
+    #[test]
+    fn test_parser_handles_condition_with_string_containing_brace() {
+        // String literals may contain brace characters
+        let input = r#"
+condition check_format(value: string) {
+  value == "test}value"
+}
+
+type user
+"#;
+        let result = parse(input);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let model = result.unwrap();
+
+        assert_eq!(model.conditions.len(), 1);
+        assert_eq!(model.conditions[0].name, "check_format");
+        assert!(model.conditions[0].expression.contains(r#""test}value""#));
+    }
+
+    #[test]
+    fn test_parser_handles_condition_with_deeply_nested_braces() {
+        // Multiple levels of nesting
+        let input = r#"
+condition complex_check(data: map) {
+  data == {"outer": {"inner": {"deep": true}}}
+}
+
+type user
+"#;
+        let result = parse(input);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let model = result.unwrap();
+
+        assert_eq!(model.conditions.len(), 1);
+        assert!(model.conditions[0]
+            .expression
+            .contains(r#"{"outer": {"inner": {"deep": true}}}"#));
+    }
+
+    #[test]
+    fn test_parser_handles_condition_with_escaped_quote_in_string() {
+        // Escaped quotes in strings should not break parsing
+        let input = r#"
+condition check_escaped(value: string) {
+  value == "test\"value}"
+}
+
+type user
+"#;
+        let result = parse(input);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let model = result.unwrap();
+
+        assert_eq!(model.conditions.len(), 1);
+        assert!(model.conditions[0].expression.contains(r#""test\"value}""#));
     }
 }
