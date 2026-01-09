@@ -78,6 +78,19 @@ impl CelContext {
     }
 
     /// Set a timestamp variable (RFC3339 format)
+    ///
+    /// The value should be a valid RFC3339 timestamp string (e.g., "2024-01-15T10:30:00Z").
+    /// If the value is not a valid RFC3339 timestamp, it will be treated as a regular
+    /// string during CEL evaluation rather than a timestamp type. This allows timestamp
+    /// comparison expressions to gracefully handle invalid inputs.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.set_timestamp("expires_at", "2024-12-31T23:59:59Z");
+    /// ctx.set_timestamp("now", "2024-01-15T10:30:00Z");
+    /// // Expression: now < expires_at
+    /// ```
     pub fn set_timestamp(&mut self, name: impl Into<String>, value: impl Into<String>) {
         self.variables
             .insert(name.into(), CelValue::Timestamp(value.into()));
@@ -141,11 +154,12 @@ fn cel_value_to_value(v: &CelValue) -> Value {
             Value::Map(converted.into())
         }
         CelValue::Timestamp(ts) => {
-            // Parse RFC3339 timestamp
+            // Parse RFC3339 timestamp. If parsing fails, fall back to string type.
+            // This allows graceful handling of invalid timestamps in CEL expressions -
+            // the expression will still evaluate but timestamp comparisons may fail.
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
                 Value::Timestamp(dt)
             } else {
-                // If parsing fails, treat as string
                 Value::String(ts.clone().into())
             }
         }
