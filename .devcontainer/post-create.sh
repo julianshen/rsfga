@@ -16,7 +16,8 @@ echo "==> Installing cargo tools..."
 cargo install cargo-tarpaulin || echo "Warning: cargo-tarpaulin installation failed"
 cargo install cargo-audit || echo "Warning: cargo-audit installation failed"
 cargo install cargo-watch || echo "Warning: cargo-watch installation failed"
-cargo install cargo-udeps || echo "Warning: cargo-udeps installation failed"
+# Note: cargo-udeps requires nightly Rust. Install manually if needed:
+# rustup install nightly && cargo +nightly install cargo-udeps
 
 echo "==> Verifying installations..."
 echo "Rust: $(rustc --version)"
