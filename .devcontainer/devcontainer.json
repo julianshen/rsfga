@@ -35,6 +35,5 @@
   },
   "containerEnv": {
     "RUST_BACKTRACE": "1"
-  },
-  "remoteUser": "vscode"
+  }
 }
