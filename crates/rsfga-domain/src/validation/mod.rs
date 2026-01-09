@@ -8,7 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{AuthorizationModel, TypeDefinition, Userset};
+use crate::cel::CelExpression;
+use crate::model::{AuthorizationModel, TypeConstraint, TypeDefinition, Userset};
 
 /// Validation error types
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +45,17 @@ pub enum ValidationError {
     },
     /// Empty model (no type definitions)
     EmptyModel,
+    /// Condition referenced in type constraint does not exist
+    UndefinedCondition {
+        type_name: String,
+        relation_name: String,
+        condition_name: String,
+    },
+    /// Condition expression is not valid CEL
+    InvalidConditionExpression {
+        condition_name: String,
+        error_message: String,
+    },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -98,6 +110,23 @@ impl std::fmt::Display for ValidationError {
             ValidationError::EmptyModel => {
                 write!(f, "model must have at least one type definition")
             }
+            ValidationError::UndefinedCondition {
+                type_name,
+                relation_name,
+                condition_name,
+            } => write!(
+                f,
+                "undefined condition '{}' referenced in {}#{}",
+                condition_name, type_name, relation_name
+            ),
+            ValidationError::InvalidConditionExpression {
+                condition_name,
+                error_message,
+            } => write!(
+                f,
+                "invalid CEL expression in condition '{}': {}",
+                condition_name, error_message
+            ),
         }
     }
 }
@@ -113,6 +142,8 @@ pub struct ModelValidator {
     defined_types: HashSet<String>,
     /// Relations defined on each type: type_name -> [relation_names]
     type_relations: HashMap<String, HashSet<String>>,
+    /// All defined conditions in the model
+    defined_conditions: HashSet<String>,
 }
 
 impl ModelValidator {
@@ -120,6 +151,8 @@ impl ModelValidator {
     pub fn new(model: &AuthorizationModel) -> Self {
         let mut defined_types = HashSet::new();
         let mut type_relations = HashMap::new();
+        let defined_conditions: HashSet<String> =
+            model.conditions.iter().map(|c| c.name.clone()).collect();
 
         for type_def in &model.type_definitions {
             defined_types.insert(type_def.type_name.clone());
@@ -132,6 +165,7 @@ impl ModelValidator {
         Self {
             defined_types,
             type_relations,
+            defined_conditions,
         }
     }
 
@@ -143,6 +177,16 @@ impl ModelValidator {
         if model.type_definitions.is_empty() {
             errors.push(ValidationError::EmptyModel);
             return Err(errors);
+        }
+
+        // Validate condition expressions are valid CEL
+        for condition in &model.conditions {
+            if let Err(e) = CelExpression::parse(&condition.expression) {
+                errors.push(ValidationError::InvalidConditionExpression {
+                    condition_name: condition.name.clone(),
+                    error_message: e.to_string(),
+                });
+            }
         }
 
         // Validate each type definition
@@ -191,22 +235,23 @@ impl ModelValidator {
         }
     }
 
-    /// Validate type constraints (e.g., [user], [group#member])
+    /// Validate type constraints (e.g., [user], [group#member], [user with condition])
     fn validate_type_constraints(
         &self,
         type_name: &str,
         relation_name: &str,
-        constraints: &[String],
+        constraints: &[TypeConstraint],
         errors: &mut Vec<ValidationError>,
     ) {
         for constraint in constraints {
-            // Parse the constraint - can be "type" or "type#relation"
-            let (ref_type, ref_relation) = if let Some(hash_pos) = constraint.find('#') {
-                let type_part = &constraint[..hash_pos];
-                let rel_part = &constraint[hash_pos + 1..];
+            let type_ref = &constraint.type_name;
+            // Parse the type_name - can be "type" or "type#relation"
+            let (ref_type, ref_relation) = if let Some(hash_pos) = type_ref.find('#') {
+                let type_part = &type_ref[..hash_pos];
+                let rel_part = &type_ref[hash_pos + 1..];
                 (type_part, Some(rel_part))
             } else {
-                (constraint.as_str(), None)
+                (type_ref.as_str(), None)
             };
 
             // Check if the referenced type exists
@@ -214,7 +259,7 @@ impl ModelValidator {
                 errors.push(ValidationError::InvalidTypeConstraint {
                     type_name: type_name.to_string(),
                     relation_name: relation_name.to_string(),
-                    invalid_type: constraint.clone(),
+                    invalid_type: constraint.type_name.clone(),
                 });
                 continue;
             }
@@ -225,7 +270,18 @@ impl ModelValidator {
                     errors.push(ValidationError::InvalidTypeConstraint {
                         type_name: type_name.to_string(),
                         relation_name: relation_name.to_string(),
-                        invalid_type: constraint.clone(),
+                        invalid_type: constraint.type_name.clone(),
+                    });
+                }
+            }
+
+            // Check if the referenced condition exists
+            if let Some(condition_name) = &constraint.condition {
+                if !self.defined_conditions.contains(condition_name) {
+                    errors.push(ValidationError::UndefinedCondition {
+                        type_name: type_name.to_string(),
+                        relation_name: relation_name.to_string(),
+                        condition_name: condition_name.clone(),
                     });
                 }
             }
@@ -406,7 +462,7 @@ mod tests {
             schema_version: "1.1".to_string(),
             type_definitions: vec![
                 TypeDefinition {
-                    type_name: "user".to_string(),
+                    type_name: "user".into(),
                     relations: vec![],
                 },
                 TypeDefinition {
@@ -444,6 +500,7 @@ mod tests {
                     ],
                 },
             ],
+            conditions: Vec::new(),
         }
     }
 
@@ -478,6 +535,7 @@ mod tests {
                     },
                 ],
             }],
+            conditions: Vec::new(),
         };
 
         let result = validate(&model);
@@ -502,10 +560,11 @@ mod tests {
                     name: "viewer".to_string(),
                     type_constraints: vec![],
                     rewrite: Userset::ComputedUserset {
-                        relation: "nonexistent".to_string(),
+                        relation: "nonexistent".into(),
                     },
                 }],
             }],
+            conditions: Vec::new(),
         };
 
         let result = validate(&model);
@@ -549,6 +608,7 @@ mod tests {
             id: None,
             schema_version: "1.1".to_string(),
             type_definitions: vec![],
+            conditions: Vec::new(),
         };
 
         let result = validate(&empty_model);
@@ -597,6 +657,7 @@ mod tests {
                     },
                 ],
             }],
+            conditions: Vec::new(),
         };
 
         let result = validate(&model);
@@ -637,6 +698,7 @@ mod tests {
                     },
                 ],
             }],
+            conditions: Vec::new(),
         };
 
         let result = validate(&model);
@@ -675,6 +737,7 @@ mod tests {
                     },
                 ],
             }],
+            conditions: Vec::new(),
         };
 
         let result = validate(&model);
@@ -688,7 +751,7 @@ mod tests {
             schema_version: "1.1".to_string(),
             type_definitions: vec![
                 TypeDefinition {
-                    type_name: "user".to_string(),
+                    type_name: "user".into(),
                     relations: vec![],
                 },
                 TypeDefinition {
@@ -696,11 +759,12 @@ mod tests {
                     relations: vec![RelationDefinition {
                         name: "owner".to_string(),
                         // References a type that doesn't exist
-                        type_constraints: vec!["nonexistent".to_string()],
+                        type_constraints: vec!["nonexistent".into()],
                         rewrite: Userset::This,
                     }],
                 },
             ],
+            conditions: Vec::new(),
         };
 
         let result = validate(&model);
@@ -726,14 +790,14 @@ mod tests {
             schema_version: "1.1".to_string(),
             type_definitions: vec![
                 TypeDefinition {
-                    type_name: "user".to_string(),
+                    type_name: "user".into(),
                     relations: vec![],
                 },
                 TypeDefinition {
                     type_name: "group".to_string(),
                     relations: vec![RelationDefinition {
                         name: "member".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     }],
                 },
@@ -742,11 +806,12 @@ mod tests {
                     relations: vec![RelationDefinition {
                         name: "owner".to_string(),
                         // References a relation that doesn't exist on the type
-                        type_constraints: vec!["group#nonexistent".to_string()],
+                        type_constraints: vec!["group#nonexistent".into()],
                         rewrite: Userset::This,
                     }],
                 },
             ],
+            conditions: Vec::new(),
         };
 
         let result = validate(&model);
@@ -772,14 +837,14 @@ mod tests {
             schema_version: "1.1".to_string(),
             type_definitions: vec![
                 TypeDefinition {
-                    type_name: "user".to_string(),
+                    type_name: "user".into(),
                     relations: vec![],
                 },
                 TypeDefinition {
                     type_name: "group".to_string(),
                     relations: vec![RelationDefinition {
                         name: "member".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     }],
                 },
@@ -787,17 +852,165 @@ mod tests {
                     type_name: "document".to_string(),
                     relations: vec![RelationDefinition {
                         name: "owner".to_string(),
-                        type_constraints: vec!["user".to_string(), "group#member".to_string()],
+                        type_constraints: vec!["user".into(), "group#member".into()],
                         rewrite: Userset::This,
                     }],
                 },
             ],
+            conditions: Vec::new(),
         };
 
         let result = validate(&model);
         assert!(
             result.is_ok(),
             "Valid type constraints should pass validation: {:?}",
+            result.err()
+        );
+    }
+
+    // ========== Condition Validation Tests (Section 3: Condition Model Integration) ==========
+
+    #[test]
+    fn test_validator_validates_condition_expressions() {
+        // Test: Model validator validates condition expressions
+        // Valid CEL expression should pass
+        use crate::model::{Condition, ConditionParameter};
+
+        let model = AuthorizationModel {
+            id: None,
+            schema_version: "1.1".to_string(),
+            type_definitions: vec![TypeDefinition {
+                type_name: "user".into(),
+                relations: vec![],
+            }],
+            conditions: vec![Condition::with_parameters(
+                "time_check",
+                vec![
+                    ConditionParameter::new("current_time", "timestamp"),
+                    ConditionParameter::new("expires_at", "timestamp"),
+                ],
+                "current_time < expires_at",
+            )
+            .unwrap()],
+        };
+
+        let result = validate(&model);
+        assert!(
+            result.is_ok(),
+            "Valid CEL expression should pass validation: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_validator_rejects_invalid_condition_expression() {
+        // Invalid CEL expression should fail
+        use crate::model::Condition;
+
+        let model = AuthorizationModel {
+            id: None,
+            schema_version: "1.1".to_string(),
+            type_definitions: vec![TypeDefinition {
+                type_name: "user".into(),
+                relations: vec![],
+            }],
+            conditions: vec![Condition::new(
+                "bad_condition",
+                "this is not valid CEL syntax !!!@#$",
+            )
+            .unwrap()],
+        };
+
+        let result = validate(&model);
+        assert!(
+            result.is_err(),
+            "Invalid CEL expression should fail validation"
+        );
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::InvalidConditionExpression { condition_name, .. }
+                if condition_name == "bad_condition"
+            )),
+            "Should have invalid condition expression error"
+        );
+    }
+
+    #[test]
+    fn test_validator_rejects_undefined_condition_reference() {
+        // Referencing a condition that doesn't exist should fail
+        let model = AuthorizationModel {
+            id: None,
+            schema_version: "1.1".to_string(),
+            type_definitions: vec![
+                TypeDefinition {
+                    type_name: "user".into(),
+                    relations: vec![],
+                },
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec![TypeConstraint::with_condition(
+                            "user",
+                            "nonexistent_condition",
+                        )],
+                        rewrite: Userset::This,
+                    }],
+                },
+            ],
+            conditions: Vec::new(), // No conditions defined!
+        };
+
+        let result = validate(&model);
+        assert!(
+            result.is_err(),
+            "Undefined condition reference should fail validation"
+        );
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::UndefinedCondition { condition_name, .. }
+                if condition_name == "nonexistent_condition"
+            )),
+            "Should have undefined condition error"
+        );
+    }
+
+    #[test]
+    fn test_validator_accepts_valid_condition_reference() {
+        // Referencing a defined condition should pass
+        use crate::model::Condition;
+
+        let model = AuthorizationModel {
+            id: None,
+            schema_version: "1.1".to_string(),
+            type_definitions: vec![
+                TypeDefinition {
+                    type_name: "user".into(),
+                    relations: vec![],
+                },
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec![TypeConstraint::with_condition(
+                            "user",
+                            "time_check",
+                        )],
+                        rewrite: Userset::This,
+                    }],
+                },
+            ],
+            conditions: vec![Condition::new("time_check", "true").unwrap()],
+        };
+
+        let result = validate(&model);
+        assert!(
+            result.is_ok(),
+            "Valid condition reference should pass validation: {:?}",
             result.err()
         );
     }

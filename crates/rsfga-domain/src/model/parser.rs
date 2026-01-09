@@ -24,7 +24,10 @@ use nom::{
     IResult,
 };
 
-use super::{AuthorizationModel, RelationDefinition, TypeDefinition, Userset};
+use super::{
+    AuthorizationModel, Condition, ConditionParameter, RelationDefinition, TypeConstraint,
+    TypeDefinition, Userset,
+};
 
 /// Parser error type with context for better error messages.
 #[derive(Debug, Clone, PartialEq)]
@@ -140,21 +143,33 @@ fn define_keyword<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
 
 // ============ Type Constraint Parsers ============
 
-/// Parse a type constraint like [user] or [user, group#member]
+/// Parse a single type constraint item, e.g., "user" or "user with condition_name"
+fn single_type_constraint<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, TypeConstraint, E> {
+    let (input, type_name) = recognize(pair(identifier, opt(pair(char('#'), identifier))))(input)?;
+
+    // Check for "with condition_name" suffix
+    let (input, condition) =
+        opt(preceded(tuple((space1, tag("with"), space1)), identifier))(input)?;
+
+    let constraint = match condition {
+        Some(cond) => TypeConstraint::with_condition(type_name, cond),
+        None => TypeConstraint::new(type_name),
+    };
+
+    Ok((input, constraint))
+}
+
+/// Parse a type constraint like [user] or [user, group#member] or [user with condition]
 fn type_constraint<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
     input: &'a str,
-) -> IResult<&'a str, Vec<String>, E> {
+) -> IResult<&'a str, Vec<TypeConstraint>, E> {
     context(
         "type constraint",
         delimited(
             char('['),
-            separated_list1(
-                tuple((space0, char(','), space0)),
-                map(
-                    recognize(pair(identifier, opt(pair(char('#'), identifier)))),
-                    |s: &str| s.to_string(),
-                ),
-            ),
+            separated_list1(tuple((space0, char(','), space0)), single_type_constraint),
             char(']'),
         ),
     )(input)
@@ -349,7 +364,7 @@ fn parse_relation_definition<'a, E: ParseError<&'a str> + ContextError<&'a str>>
                 &str,
                 _,
                 _,
-                Option<Vec<String>>,
+                Option<Vec<TypeConstraint>>,
                 Option<Userset>,
                 ContinuationResult,
             )| {
@@ -410,7 +425,86 @@ fn parse_type_definition<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
     )(input)
 }
 
+// ============ Condition Definition Parser ============
+
+/// Parse a condition parameter like "current_time: timestamp"
+fn parse_condition_parameter<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, ConditionParameter, E> {
+    map(
+        tuple((identifier, space0, char(':'), space0, identifier)),
+        |(name, _, _, _, type_name): (&str, _, _, _, &str)| {
+            ConditionParameter::new(name, type_name)
+        },
+    )(input)
+}
+
+/// Parse condition definition: condition name(params) { expression }
+fn parse_condition_definition<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, Condition, E> {
+    context(
+        "condition definition",
+        map(
+            tuple((
+                tag("condition"),
+                space1,
+                identifier,
+                space0,
+                char('('),
+                space0,
+                opt(separated_list1(
+                    tuple((space0, char(','), space0)),
+                    parse_condition_parameter,
+                )),
+                space0,
+                char(')'),
+                space0,
+                char('{'),
+                // Capture everything until closing brace as expression
+                take_while(|c| c != '}'),
+                char('}'),
+            )),
+            |(_, _, name, _, _, _, params, _, _, _, _, expression, _): (
+                _,
+                _,
+                &str,
+                _,
+                _,
+                _,
+                Option<Vec<ConditionParameter>>,
+                _,
+                _,
+                _,
+                _,
+                &str,
+                _,
+            )| {
+                // unwrap is safe because we validate in Condition::with_parameters
+                Condition::with_parameters(name, params.unwrap_or_default(), expression.trim())
+                    .expect("condition parsing should produce valid condition")
+            },
+        ),
+    )(input)
+}
+
 // ============ Model Parser ============
+
+/// Parse a model element (either a condition or a type definition)
+fn parse_model_element<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, ModelElement, E> {
+    alt((
+        map(parse_condition_definition, ModelElement::Condition),
+        map(parse_type_definition, ModelElement::Type),
+    ))(input)
+}
+
+/// Temporary enum to collect parsed elements before splitting into types and conditions
+enum ModelElement {
+    Condition(Condition),
+    Type(TypeDefinition),
+}
 
 /// Parse a complete authorization model
 fn parse_model<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
@@ -419,11 +513,24 @@ fn parse_model<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
     context(
         "authorization model",
         map(
-            tuple((ws, many0(terminated(parse_type_definition, ws)))),
-            |(_, type_definitions)| AuthorizationModel {
-                id: None,
-                schema_version: "1.1".to_string(),
-                type_definitions,
+            tuple((ws, many0(terminated(parse_model_element, ws)))),
+            |(_, elements)| {
+                let mut type_definitions = Vec::new();
+                let mut conditions = Vec::new();
+
+                for element in elements {
+                    match element {
+                        ModelElement::Type(t) => type_definitions.push(t),
+                        ModelElement::Condition(c) => conditions.push(c),
+                    }
+                }
+
+                AuthorizationModel {
+                    id: None,
+                    schema_version: "1.1".to_string(),
+                    type_definitions,
+                    conditions,
+                }
             },
         ),
     )(input)
@@ -902,5 +1009,116 @@ type document
         // Verify document type
         assert_eq!(model.type_definitions[1].type_name, "document");
         assert_eq!(model.type_definitions[1].relations.len(), 3);
+    }
+
+    // ========== Condition Parsing Tests (Section 3: Condition Model Integration) ==========
+
+    #[test]
+    fn test_parser_parses_type_constraint_with_condition() {
+        // Test: Can parse model DSL with conditions
+        // Parse a type constraint with "with condition_name" syntax
+        let input = r#"
+type user
+
+type document
+  relations
+    define viewer: [user with time_bound_access]
+"#;
+        let result = parse(input);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let model = result.unwrap();
+
+        let viewer = &model.type_definitions[1].relations[0];
+        assert_eq!(viewer.name, "viewer");
+        assert_eq!(viewer.type_constraints.len(), 1);
+        assert_eq!(viewer.type_constraints[0].type_name, "user");
+        assert_eq!(
+            viewer.type_constraints[0].condition,
+            Some("time_bound_access".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parser_parses_mixed_type_constraints_with_and_without_conditions() {
+        // Both conditional and unconditional type constraints in same relation
+        let input = r#"
+type user
+type group
+
+type document
+  relations
+    define viewer: [user, group#member with dept_check]
+"#;
+        let result = parse(input);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let model = result.unwrap();
+
+        let viewer = &model.type_definitions[2].relations[0];
+        assert_eq!(viewer.type_constraints.len(), 2);
+
+        // First constraint: user without condition
+        assert_eq!(viewer.type_constraints[0].type_name, "user");
+        assert!(viewer.type_constraints[0].condition.is_none());
+
+        // Second constraint: group#member with condition
+        assert_eq!(viewer.type_constraints[1].type_name, "group#member");
+        assert_eq!(
+            viewer.type_constraints[1].condition,
+            Some("dept_check".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parser_parses_condition_definition() {
+        // Test parsing condition definition blocks
+        let input = r#"
+condition time_bound_access(current_time: timestamp, expires_at: timestamp) {
+  current_time < expires_at
+}
+
+type user
+
+type document
+  relations
+    define viewer: [user with time_bound_access]
+"#;
+        let result = parse(input);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let model = result.unwrap();
+
+        // Verify condition was parsed
+        assert_eq!(model.conditions.len(), 1);
+        assert_eq!(model.conditions[0].name, "time_bound_access");
+        assert_eq!(model.conditions[0].parameters.len(), 2);
+        assert_eq!(model.conditions[0].parameters[0].name, "current_time");
+        assert_eq!(model.conditions[0].parameters[0].type_name, "timestamp");
+        assert_eq!(model.conditions[0].parameters[1].name, "expires_at");
+        assert_eq!(model.conditions[0].parameters[1].type_name, "timestamp");
+        assert_eq!(
+            model.conditions[0].expression.trim(),
+            "current_time < expires_at"
+        );
+    }
+
+    #[test]
+    fn test_parser_parses_multiple_conditions() {
+        let input = r#"
+condition time_check(now: timestamp, expires: timestamp) {
+  now < expires
+}
+
+condition dept_check(user_dept: string, required: string) {
+  user_dept == required
+}
+
+type user
+"#;
+        let result = parse(input);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let model = result.unwrap();
+
+        assert_eq!(model.conditions.len(), 2);
+        assert_eq!(model.conditions[0].name, "time_check");
+        assert_eq!(model.conditions[1].name, "dept_check");
     }
 }

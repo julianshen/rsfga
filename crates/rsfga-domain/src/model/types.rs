@@ -256,6 +256,9 @@ pub struct AuthorizationModel {
     pub schema_version: String,
     /// Type definitions in the model.
     pub type_definitions: Vec<TypeDefinition>,
+    /// Condition definitions that can be used in relations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<Condition>,
 }
 
 impl AuthorizationModel {
@@ -265,6 +268,7 @@ impl AuthorizationModel {
             id: None,
             schema_version: schema_version.into(),
             type_definitions: Vec::new(),
+            conditions: Vec::new(),
         }
     }
 
@@ -277,7 +281,32 @@ impl AuthorizationModel {
             id: None,
             schema_version: schema_version.into(),
             type_definitions,
+            conditions: Vec::new(),
         }
+    }
+
+    /// Creates a new AuthorizationModel with type definitions and conditions.
+    pub fn with_types_and_conditions(
+        schema_version: impl Into<String>,
+        type_definitions: Vec<TypeDefinition>,
+        conditions: Vec<Condition>,
+    ) -> Self {
+        Self {
+            id: None,
+            schema_version: schema_version.into(),
+            type_definitions,
+            conditions,
+        }
+    }
+
+    /// Adds a condition to the model.
+    pub fn add_condition(&mut self, condition: Condition) {
+        self.conditions.push(condition);
+    }
+
+    /// Finds a condition by name.
+    pub fn find_condition(&self, name: &str) -> Option<&Condition> {
+        self.conditions.iter().find(|c| c.name == name)
     }
 }
 
@@ -296,9 +325,148 @@ pub struct RelationDefinition {
     /// The relation name.
     pub name: String,
     /// Type constraints for direct assignment (e.g., [user], [group#member]).
-    pub type_constraints: Vec<String>,
+    pub type_constraints: Vec<TypeConstraint>,
     /// The userset rewrite for this relation.
     pub rewrite: Userset,
+}
+
+/// A type constraint for a relation, optionally with a condition.
+///
+/// # Examples
+///
+/// - Simple type: `user` → `TypeConstraint { type_name: "user", condition: None }`
+/// - With condition: `user with time_bound` → `TypeConstraint { type_name: "user", condition: Some("time_bound") }`
+/// - Userset: `group#member` → `TypeConstraint { type_name: "group#member", condition: None }`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeConstraint {
+    /// The type reference (e.g., "user", "group#member").
+    pub type_name: String,
+    /// Optional condition name that must be satisfied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
+
+impl TypeConstraint {
+    /// Creates a simple type constraint without a condition.
+    pub fn new(type_name: impl Into<String>) -> Self {
+        Self {
+            type_name: type_name.into(),
+            condition: None,
+        }
+    }
+
+    /// Creates a type constraint with a condition.
+    pub fn with_condition(type_name: impl Into<String>, condition: impl Into<String>) -> Self {
+        Self {
+            type_name: type_name.into(),
+            condition: Some(condition.into()),
+        }
+    }
+
+    /// Returns true if this constraint has a condition.
+    pub fn has_condition(&self) -> bool {
+        self.condition.is_some()
+    }
+}
+
+impl From<&str> for TypeConstraint {
+    fn from(s: &str) -> Self {
+        Self::new(s)
+    }
+}
+
+impl From<String> for TypeConstraint {
+    fn from(s: String) -> Self {
+        Self::new(s)
+    }
+}
+
+/// A condition definition that can be referenced by relation type constraints.
+///
+/// Conditions enable ABAC (Attribute-Based Access Control) by allowing
+/// CEL expressions to be evaluated at check time.
+///
+/// # Example DSL
+///
+/// ```text
+/// condition time_bound_access(current_time: timestamp, expires_at: timestamp) {
+///     current_time < expires_at
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Condition {
+    /// The condition name (e.g., "time_bound_access").
+    pub name: String,
+    /// Parameter definitions for the condition.
+    pub parameters: Vec<ConditionParameter>,
+    /// The CEL expression to evaluate.
+    pub expression: String,
+}
+
+impl Condition {
+    /// Creates a new Condition with the given name and expression.
+    pub fn new(
+        name: impl Into<String>,
+        expression: impl Into<String>,
+    ) -> Result<Self, &'static str> {
+        let name = name.into();
+        let expression = expression.into();
+
+        if name.is_empty() {
+            return Err("condition name cannot be empty");
+        }
+        if expression.is_empty() {
+            return Err("condition expression cannot be empty");
+        }
+
+        Ok(Self {
+            name,
+            parameters: Vec::new(),
+            expression,
+        })
+    }
+
+    /// Creates a new Condition with parameters.
+    pub fn with_parameters(
+        name: impl Into<String>,
+        parameters: Vec<ConditionParameter>,
+        expression: impl Into<String>,
+    ) -> Result<Self, &'static str> {
+        let name = name.into();
+        let expression = expression.into();
+
+        if name.is_empty() {
+            return Err("condition name cannot be empty");
+        }
+        if expression.is_empty() {
+            return Err("condition expression cannot be empty");
+        }
+
+        Ok(Self {
+            name,
+            parameters,
+            expression,
+        })
+    }
+}
+
+/// A parameter definition for a condition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConditionParameter {
+    /// The parameter name.
+    pub name: String,
+    /// The parameter type (e.g., "string", "int", "timestamp", "bool").
+    pub type_name: String,
+}
+
+impl ConditionParameter {
+    /// Creates a new ConditionParameter.
+    pub fn new(name: impl Into<String>, type_name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            type_name: type_name.into(),
+        }
+    }
 }
 
 /// A userset defines how a relation is computed.
@@ -545,5 +713,188 @@ mod tests {
         assert_eq!(model.schema_version, "1.1");
         assert_eq!(model.type_definitions.len(), 1);
         assert_eq!(model.type_definitions[0].type_name, "user");
+    }
+
+    // ========== Condition Tests (Section 3: Condition Model Integration) ==========
+
+    #[test]
+    fn test_authorization_model_can_have_conditions() {
+        // Test: AuthorizationModel can have conditions
+        // Create a model with a time-based condition for ABAC
+        let condition = Condition::with_parameters(
+            "time_bound_access",
+            vec![
+                ConditionParameter::new("current_time", "timestamp"),
+                ConditionParameter::new("expires_at", "timestamp"),
+            ],
+            "current_time < expires_at",
+        )
+        .unwrap();
+
+        let model = AuthorizationModel::with_types_and_conditions(
+            "1.1",
+            vec![TypeDefinition {
+                type_name: "user".to_string(),
+                relations: vec![],
+            }],
+            vec![condition],
+        );
+
+        assert_eq!(model.conditions.len(), 1);
+        assert_eq!(model.conditions[0].name, "time_bound_access");
+        assert_eq!(model.conditions[0].parameters.len(), 2);
+        assert_eq!(model.conditions[0].expression, "current_time < expires_at");
+
+        // Test find_condition helper
+        let found = model.find_condition("time_bound_access");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "time_bound_access");
+
+        // Test condition not found
+        let not_found = model.find_condition("nonexistent");
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_condition_can_be_attached_to_relation_definition() {
+        // Test: Condition can be attached to relation definition via TypeConstraint
+        // OpenFGA allows conditions on type constraints, e.g., `[user with time_bound_access]`
+        let type_constraint = TypeConstraint::with_condition("user", "time_bound_access");
+
+        assert_eq!(type_constraint.type_name, "user");
+        assert_eq!(
+            type_constraint.condition,
+            Some("time_bound_access".to_string())
+        );
+        assert!(type_constraint.has_condition());
+
+        // Create a relation definition with a conditional type constraint
+        let relation_def = RelationDefinition {
+            name: "viewer".to_string(),
+            type_constraints: vec![
+                TypeConstraint::new("user"), // Direct user without condition
+                type_constraint,             // User with time-bound condition
+            ],
+            rewrite: Userset::This,
+        };
+
+        assert_eq!(relation_def.type_constraints.len(), 2);
+        assert!(!relation_def.type_constraints[0].has_condition());
+        assert!(relation_def.type_constraints[1].has_condition());
+    }
+
+    #[test]
+    fn test_condition_rejects_empty_name() {
+        let result = Condition::new("", "expression");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "condition name cannot be empty");
+    }
+
+    #[test]
+    fn test_condition_rejects_empty_expression() {
+        let result = Condition::new("condition_name", "");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "condition expression cannot be empty");
+    }
+
+    #[test]
+    fn test_add_condition_to_model() {
+        let mut model = AuthorizationModel::new("1.1");
+        assert!(model.conditions.is_empty());
+
+        let condition = Condition::new("simple_check", "true").unwrap();
+        model.add_condition(condition);
+
+        assert_eq!(model.conditions.len(), 1);
+        assert_eq!(model.conditions[0].name, "simple_check");
+    }
+
+    #[test]
+    fn test_can_serialize_deserialize_model_with_conditions() {
+        // Test: Can serialize/deserialize model with conditions
+        // Verify JSON roundtrip preserves all condition data
+        let condition = Condition::with_parameters(
+            "department_check",
+            vec![
+                ConditionParameter::new("user_dept", "string"),
+                ConditionParameter::new("required_dept", "string"),
+            ],
+            "user_dept == required_dept",
+        )
+        .unwrap();
+
+        let model = AuthorizationModel::with_types_and_conditions(
+            "1.1",
+            vec![TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec![TypeConstraint::with_condition(
+                        "user",
+                        "department_check",
+                    )],
+                    rewrite: Userset::This,
+                }],
+            }],
+            vec![condition],
+        );
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&model).expect("serialize should succeed");
+
+        // Verify condition is in the JSON
+        assert!(json.contains("department_check"));
+        assert!(json.contains("user_dept == required_dept"));
+
+        // Deserialize back
+        let deserialized: AuthorizationModel =
+            serde_json::from_str(&json).expect("deserialize should succeed");
+
+        // Verify roundtrip
+        assert_eq!(deserialized.conditions.len(), 1);
+        assert_eq!(deserialized.conditions[0].name, "department_check");
+        assert_eq!(deserialized.conditions[0].parameters.len(), 2);
+        assert_eq!(
+            deserialized.conditions[0].expression,
+            "user_dept == required_dept"
+        );
+
+        // Verify type constraint condition is preserved
+        let type_def = &deserialized.type_definitions[0];
+        let rel_def = &type_def.relations[0];
+        assert!(rel_def.type_constraints[0].has_condition());
+        assert_eq!(
+            rel_def.type_constraints[0].condition,
+            Some("department_check".to_string())
+        );
+    }
+
+    #[test]
+    fn test_type_constraint_from_str() {
+        // Test From<&str> and From<String> impls
+        let tc1: TypeConstraint = "user".into();
+        assert_eq!(tc1.type_name, "user");
+        assert!(!tc1.has_condition());
+
+        let tc2: TypeConstraint = String::from("group#member").into();
+        assert_eq!(tc2.type_name, "group#member");
+        assert!(!tc2.has_condition());
+    }
+
+    #[test]
+    fn test_condition_parameter_creation() {
+        let param = ConditionParameter::new("expires_at", "timestamp");
+        assert_eq!(param.name, "expires_at");
+        assert_eq!(param.type_name, "timestamp");
+    }
+
+    #[test]
+    fn test_model_without_conditions_omits_field_in_json() {
+        // Verify serde skip_serializing_if works for empty conditions
+        let model = AuthorizationModel::new("1.1");
+        let json = serde_json::to_string(&model).expect("serialize should succeed");
+
+        // The "conditions" field should not appear when empty
+        assert!(!json.contains("conditions"));
     }
 }

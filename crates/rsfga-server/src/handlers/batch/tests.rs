@@ -120,7 +120,7 @@ fn create_test_handler() -> BatchCheckHandler<MockTupleReader, MockModelReader> 
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });
@@ -380,7 +380,7 @@ async fn test_executes_unique_checks_only_once() {
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });
@@ -451,7 +451,7 @@ async fn test_maps_results_back_to_original_positions() {
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });
@@ -578,7 +578,7 @@ async fn test_concurrent_requests_for_same_check_share_result() {
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });
@@ -673,7 +673,7 @@ async fn test_singleflight_groups_expire_after_completion() {
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });
@@ -757,7 +757,7 @@ async fn test_errors_dont_poison_singleflight_group() {
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });
@@ -824,7 +824,7 @@ async fn test_singleflight_handles_timeouts_correctly() {
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });
@@ -909,7 +909,7 @@ async fn test_unique_checks_execute_in_parallel() {
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });
@@ -1013,7 +1013,7 @@ async fn test_batch_processes_faster_than_sequential() {
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });
@@ -1102,7 +1102,7 @@ async fn test_parallel_execution_uses_all_available_concurrency() {
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });
@@ -1178,7 +1178,7 @@ async fn test_handles_partial_failures_gracefully() {
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });
@@ -1287,7 +1287,7 @@ async fn test_batch_of_max_identical_checks_executes_only_once() {
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });
@@ -1361,7 +1361,7 @@ async fn test_batch_throughput_target() {
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     });

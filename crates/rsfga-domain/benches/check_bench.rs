@@ -158,7 +158,7 @@ fn create_direct_relation_setup() -> (Arc<BenchTupleReader>, Arc<BenchModelReade
         type_name: "document".to_string(),
         relations: vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         }],
     };
@@ -199,12 +199,12 @@ fn create_union_relation_setup() -> (Arc<BenchTupleReader>, Arc<BenchModelReader
         relations: vec![
             RelationDefinition {
                 name: "owner".to_string(),
-                type_constraints: vec!["user".to_string()],
+                type_constraints: vec!["user".into()],
                 rewrite: Userset::This,
             },
             RelationDefinition {
                 name: "viewer".to_string(),
-                type_constraints: vec!["user".to_string()],
+                type_constraints: vec!["user".into()],
                 rewrite: Userset::This,
             },
             RelationDefinition {
@@ -431,7 +431,7 @@ fn bench_tuple_count_scalability(c: &mut Criterion) {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             };

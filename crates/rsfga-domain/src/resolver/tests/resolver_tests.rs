@@ -40,7 +40,7 @@ async fn test_check_returns_true_for_direct_tuple_assignment() {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -85,7 +85,7 @@ async fn test_check_returns_false_when_no_tuple_exists() {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -126,7 +126,7 @@ async fn test_check_handles_multiple_stores_independently() {
                     type_name: "document".to_string(),
                     relations: vec![RelationDefinition {
                         name: "viewer".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     }],
                 },
@@ -305,7 +305,7 @@ async fn test_can_resolve_this_relation() {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "owner".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -347,7 +347,7 @@ async fn test_can_resolve_relation_from_parent_object() {
                 type_name: "folder".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -363,7 +363,7 @@ async fn test_can_resolve_relation_from_parent_object() {
                 relations: vec![
                     RelationDefinition {
                         name: "parent".to_string(),
-                        type_constraints: vec!["folder".to_string()],
+                        type_constraints: vec!["folder".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -423,7 +423,7 @@ async fn test_resolves_nested_parent_relationships() {
                 type_name: "org".to_string(),
                 relations: vec![RelationDefinition {
                     name: "admin".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -439,7 +439,7 @@ async fn test_resolves_nested_parent_relationships() {
                 relations: vec![
                     RelationDefinition {
                         name: "parent".to_string(),
-                        type_constraints: vec!["org".to_string()],
+                        type_constraints: vec!["org".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -464,7 +464,7 @@ async fn test_resolves_nested_parent_relationships() {
                 relations: vec![
                     RelationDefinition {
                         name: "parent".to_string(),
-                        type_constraints: vec!["folder".to_string()],
+                        type_constraints: vec!["folder".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -524,7 +524,7 @@ async fn test_handles_missing_parent_gracefully() {
                 type_name: "folder".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -539,7 +539,7 @@ async fn test_handles_missing_parent_gracefully() {
                 relations: vec![
                     RelationDefinition {
                         name: "parent".to_string(),
-                        type_constraints: vec!["folder".to_string()],
+                        type_constraints: vec!["folder".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -589,12 +589,12 @@ async fn test_union_returns_true_if_any_branch_is_true() {
                 relations: vec![
                     RelationDefinition {
                         name: "owner".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "direct_viewer".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -653,12 +653,12 @@ async fn test_union_returns_false_if_all_branches_are_false() {
                 relations: vec![
                     RelationDefinition {
                         name: "owner".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "editor".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -718,7 +718,7 @@ async fn test_union_executes_branches_in_parallel() {
     for i in 0..10 {
         relations.push(RelationDefinition {
             name: format!("branch{}", i),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         });
     }
@@ -775,7 +775,7 @@ async fn test_union_handles_errors_in_branches() {
                 relations: vec![
                     RelationDefinition {
                         name: "owner".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -931,7 +931,7 @@ async fn test_union_returns_false_when_one_branch_false_and_other_depth_limit() 
                     },
                     RelationDefinition {
                         name: "direct_viewer".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     // Chain of relations to exceed depth limit without cycling
@@ -965,7 +965,7 @@ async fn test_union_returns_false_when_one_branch_false_and_other_depth_limit() 
                     },
                     RelationDefinition {
                         name: "step4".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This, // Terminal - but we'll never reach it
                     },
                 ],
@@ -1095,12 +1095,12 @@ async fn test_intersection_returns_true_only_if_all_branches_are_true() {
                 relations: vec![
                     RelationDefinition {
                         name: "member".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "verified".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -1166,12 +1166,12 @@ async fn test_intersection_returns_false_if_any_branch_is_false() {
                 relations: vec![
                     RelationDefinition {
                         name: "member".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "verified".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -1236,7 +1236,7 @@ async fn test_intersection_executes_branches_in_parallel() {
     for i in 0..5 {
         relations.push(RelationDefinition {
             name: format!("req{}", i),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         });
     }
@@ -1303,12 +1303,12 @@ async fn test_exclusion_returns_true_if_base_true_and_subtract_false() {
                 relations: vec![
                     RelationDefinition {
                         name: "viewer".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "blocked".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -1367,12 +1367,12 @@ async fn test_exclusion_returns_false_if_base_is_false() {
                 relations: vec![
                     RelationDefinition {
                         name: "viewer".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "blocked".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -1423,12 +1423,12 @@ async fn test_exclusion_returns_false_if_subtract_is_true() {
                 relations: vec![
                     RelationDefinition {
                         name: "viewer".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
                         name: "blocked".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -1496,7 +1496,7 @@ async fn test_exclusion_returns_false_when_base_false_despite_subtract_cycle() {
                 relations: vec![
                     RelationDefinition {
                         name: "viewer".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -1589,7 +1589,7 @@ async fn test_exclusion_returns_false_when_subtract_true_despite_base_cycle() {
                     },
                     RelationDefinition {
                         name: "blocked".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -1735,7 +1735,7 @@ async fn test_exclusion_propagates_error_when_base_true_and_subtract_errors() {
                 relations: vec![
                     RelationDefinition {
                         name: "viewer".to_string(),
-                        type_constraints: vec!["user".to_string()],
+                        type_constraints: vec!["user".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -1814,7 +1814,7 @@ async fn test_contextual_tuple_resolves_userset_reference() {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string(), "team#member".to_string()],
+                    type_constraints: vec!["user".into(), "team#member".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -1828,7 +1828,7 @@ async fn test_contextual_tuple_resolves_userset_reference() {
                 type_name: "team".to_string(),
                 relations: vec![RelationDefinition {
                     name: "member".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -1878,7 +1878,7 @@ async fn test_contextual_tuple_userset_not_member_denied() {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string(), "team#member".to_string()],
+                    type_constraints: vec!["user".into(), "team#member".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -1892,7 +1892,7 @@ async fn test_contextual_tuple_userset_not_member_denied() {
                 type_name: "team".to_string(),
                 relations: vec![RelationDefinition {
                     name: "member".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -1950,14 +1950,14 @@ async fn test_depth_limit_prevents_stack_overflow() {
 
         let mut relations = vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite,
         }];
 
         if i > 0 {
             relations.push(RelationDefinition {
                 name: "parent".to_string(),
-                type_constraints: vec![format!("level{}", i - 1)],
+                type_constraints: vec![format!("level{}", i - 1).into()],
                 rewrite: Userset::This,
             });
         }
@@ -2109,7 +2109,7 @@ async fn test_cycle_detection_prevents_infinite_loops() {
                 relations: vec![
                     RelationDefinition {
                         name: "contained_doc".to_string(),
-                        type_constraints: vec!["document".to_string()],
+                        type_constraints: vec!["document".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -2133,7 +2133,7 @@ async fn test_cycle_detection_prevents_infinite_loops() {
                 relations: vec![
                     RelationDefinition {
                         name: "parent".to_string(),
-                        type_constraints: vec!["folder".to_string()],
+                        type_constraints: vec!["folder".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -2203,7 +2203,7 @@ async fn test_cycle_detection_doesnt_false_positive_on_valid_dags() {
                 type_name: "org".to_string(),
                 relations: vec![RelationDefinition {
                     name: "admin".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -2218,7 +2218,7 @@ async fn test_cycle_detection_doesnt_false_positive_on_valid_dags() {
                 relations: vec![
                     RelationDefinition {
                         name: "parent".to_string(),
-                        type_constraints: vec!["org".to_string()],
+                        type_constraints: vec!["org".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -2242,7 +2242,7 @@ async fn test_cycle_detection_doesnt_false_positive_on_valid_dags() {
                 relations: vec![
                     RelationDefinition {
                         name: "parent".to_string(),
-                        type_constraints: vec!["folder".to_string()],
+                        type_constraints: vec!["folder".into()],
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
@@ -2355,7 +2355,7 @@ async fn test_returns_timeout_error_with_context() {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -2482,14 +2482,14 @@ async fn test_depth_limit_at_boundary_24_succeeds() {
 
         let mut relations = vec![RelationDefinition {
             name: "viewer".to_string(),
-            type_constraints: vec!["user".to_string()],
+            type_constraints: vec!["user".into()],
             rewrite,
         }];
 
         if i > 0 {
             relations.push(RelationDefinition {
                 name: "parent".to_string(),
-                type_constraints: vec![format!("level{}", i - 1)],
+                type_constraints: vec![format!("level{}", i - 1).into()],
                 rewrite: Userset::This,
             });
         }
@@ -2559,7 +2559,7 @@ async fn test_contextual_tuple_overrides_stored_tuple() {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -2614,7 +2614,7 @@ async fn test_contextual_tuple_does_not_conflict_with_stored() {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -2680,7 +2680,7 @@ async fn test_wildcard_in_requesting_user_is_rejected() {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -2735,7 +2735,7 @@ async fn test_type_constraints_enforced_for_stored_tuples() {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string()], // Only users allowed
+                    type_constraints: vec!["user".into()], // Only users allowed
                     rewrite: Userset::This,
                 }],
             },
@@ -2783,7 +2783,7 @@ async fn test_type_constraints_enforced_for_contextual_tuples() {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string()], // Only users allowed
+                    type_constraints: vec!["user".into()], // Only users allowed
                     rewrite: Userset::This,
                 }],
             },
@@ -2828,7 +2828,7 @@ async fn test_type_constraints_allow_userset_references() {
                 type_name: "document".to_string(),
                 relations: vec![RelationDefinition {
                     name: "viewer".to_string(),
-                    type_constraints: vec!["user".to_string(), "group#member".to_string()],
+                    type_constraints: vec!["user".into(), "group#member".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -2842,7 +2842,7 @@ async fn test_type_constraints_allow_userset_references() {
                 type_name: "group".to_string(),
                 relations: vec![RelationDefinition {
                     name: "member".to_string(),
-                    type_constraints: vec!["user".to_string()],
+                    type_constraints: vec!["user".into()],
                     rewrite: Userset::This,
                 }],
             },
@@ -2980,7 +2980,7 @@ proptest! {
                         type_name: type_name.clone(),
                         relations: vec![RelationDefinition {
                             name: relation.clone(),
-                            type_constraints: vec!["user".to_string()],
+                            type_constraints: vec!["user".into()],
                             rewrite: Userset::This,
                         }],
                     },
@@ -3030,7 +3030,7 @@ proptest! {
                         type_name: type_name.clone(),
                         relations: vec![RelationDefinition {
                             name: relation.clone(),
-                            type_constraints: vec!["user".to_string()],
+                            type_constraints: vec!["user".into()],
                             rewrite: Userset::This,
                         }],
                     },
@@ -3086,7 +3086,7 @@ proptest! {
                         type_name: "document".to_string(),
                         relations: vec![RelationDefinition {
                             name: "viewer".to_string(),
-                            type_constraints: vec!["user".to_string()],
+                            type_constraints: vec!["user".into()],
                             rewrite: Userset::This,
                         }],
                     },
@@ -3143,7 +3143,7 @@ proptest! {
                         type_name: "document".to_string(),
                         relations: vec![RelationDefinition {
                             name: "viewer".to_string(),
-                            type_constraints: vec!["user".to_string()],
+                            type_constraints: vec!["user".into()],
                             rewrite: Userset::This,
                         }],
                     },
@@ -3202,7 +3202,7 @@ proptest! {
                         type_name: "document".to_string(),
                         relations: vec![RelationDefinition {
                             name: "viewer".to_string(),
-                            type_constraints: vec!["user".to_string()],
+                            type_constraints: vec!["user".into()],
                             rewrite: Userset::This,
                         }],
                     },
