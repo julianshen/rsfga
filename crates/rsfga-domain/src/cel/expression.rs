@@ -119,25 +119,13 @@ impl CelExpression {
         let cel_ctx = context.to_cel_context();
 
         // Execute the program with the context
-        let result = self.program.execute(&cel_ctx).map_err(|e| {
-            // Check if this is a missing variable error
-            let error_str = e.to_string();
-            if error_str.contains("undefined")
-                || error_str.contains("no such key")
-                || error_str.contains("not found")
-            {
-                // Extract variable name if possible
-                CelError::EvaluationError {
-                    expression: self.source.clone(),
-                    message: error_str,
-                }
-            } else {
-                CelError::EvaluationError {
-                    expression: self.source.clone(),
-                    message: error_str,
-                }
-            }
-        })?;
+        let result = self
+            .program
+            .execute(&cel_ctx)
+            .map_err(|e| CelError::EvaluationError {
+                expression: self.source.clone(),
+                message: e.to_string(),
+            })?;
 
         Ok(EvalResult::new(result))
     }

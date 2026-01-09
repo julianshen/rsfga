@@ -16,7 +16,7 @@ use cel_interpreter::{Context, Value};
 /// use rsfga_domain::cel::{CelContext, CelExpression};
 ///
 /// let mut ctx = CelContext::new();
-/// ctx.set("department", "engineering");
+/// ctx.set_string("department", "engineering");
 ///
 /// let expr = CelExpression::parse("department == \"engineering\"")?;
 /// let result = expr.evaluate(&ctx)?;
@@ -104,11 +104,16 @@ impl CelContext {
     }
 
     /// Convert to cel_interpreter Context
+    ///
+    /// Note: add_variable returns a Result, but our cel_value_to_value
+    /// always produces valid Value types that should never fail conversion.
+    /// We use expect() to catch any unexpected failures during development.
     pub(crate) fn to_cel_context(&self) -> Context<'_> {
         let mut ctx = Context::default();
 
         for (name, value) in &self.variables {
-            let _ = ctx.add_variable(name.as_str(), cel_value_to_value(value));
+            ctx.add_variable(name.as_str(), cel_value_to_value(value))
+                .expect("Failed to add variable to CEL context - this should not happen");
         }
 
         ctx

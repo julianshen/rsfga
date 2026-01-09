@@ -26,8 +26,8 @@
 //! │               CEL Module                     │
 //! ├─────────────────────────────────────────────┤
 //! │  CelExpression  - Parsed CEL expression     │
-//! │  CelContext     - Evaluation context        │
-//! │  CelEvaluator   - Expression evaluator      │
+//! │  CelContext     - Variable bindings         │
+//! │  CelValue       - Type-safe CEL values      │
 //! │  CelError       - CEL-specific errors       │
 //! └─────────────────────────────────────────────┘
 //! ```

@@ -23,13 +23,6 @@ pub enum CelError {
         message: String,
     },
 
-    /// A required variable is missing from the context
-    #[error("Missing required variable '{variable}' in CEL context")]
-    MissingVariable {
-        /// Name of the missing variable
-        variable: String,
-    },
-
     /// Type mismatch during evaluation
     #[error("Type mismatch: expected {expected}, got {actual}")]
     TypeError {
