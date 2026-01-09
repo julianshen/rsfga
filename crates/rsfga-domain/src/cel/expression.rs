@@ -1,6 +1,7 @@
 //! CEL expression parsing and representation
 
 use std::panic;
+use std::sync::Arc;
 use std::time::Duration;
 
 use cel_interpreter::Program;
@@ -14,6 +15,9 @@ use super::{CelError, CelResult};
 /// This struct holds a compiled CEL expression that can be evaluated
 /// against a context containing variables.
 ///
+/// The compiled `Program` is wrapped in `Arc` to enable efficient sharing
+/// across threads for timeout-protected evaluation without re-parsing.
+///
 /// # Example
 ///
 /// ```ignore
@@ -25,8 +29,8 @@ use super::{CelError, CelResult};
 pub struct CelExpression {
     /// The original source expression
     source: String,
-    /// The compiled CEL program
-    program: Program,
+    /// The compiled CEL program (wrapped in Arc for thread-safe sharing)
+    program: Arc<Program>,
 }
 
 impl std::fmt::Debug for CelExpression {
@@ -81,7 +85,7 @@ impl CelExpression {
 
         Ok(Self {
             source: expression_owned,
-            program,
+            program: Arc::new(program),
         })
     }
 
@@ -177,22 +181,19 @@ impl CelExpression {
         timeout_duration: Duration,
     ) -> CelResult<EvalResult> {
         let source = self.source.clone();
+        let program = Arc::clone(&self.program);
         let ctx_data = context.clone();
         let duration_ms = timeout_duration.as_millis() as u64;
 
-        // Spawn blocking evaluation in a separate thread
+        // Spawn blocking evaluation in a separate thread.
+        // The Program is wrapped in Arc and is Send+Sync, so we can share it
+        // across threads without re-parsing.
         let eval_future = tokio::task::spawn_blocking(move || {
-            // Re-parse in the blocking thread since Program is not Send
-            let program = Program::compile(&source).map_err(|e| CelError::ParseError {
-                expression: source.clone(),
-                message: e.to_string(),
-            })?;
-
             let cel_ctx = ctx_data.to_cel_context();
             let result = program
                 .execute(&cel_ctx)
                 .map_err(|e| CelError::EvaluationError {
-                    expression: source,
+                    expression: source.clone(),
                     message: e.to_string(),
                 })?;
 

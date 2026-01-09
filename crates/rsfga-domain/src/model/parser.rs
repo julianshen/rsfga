@@ -17,8 +17,8 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{char, multispace1, space0, space1},
-    combinator::{all_consuming, map, opt, recognize, success, value},
-    error::{context, ContextError, ParseError},
+    combinator::{all_consuming, map, map_res, opt, recognize, success, value},
+    error::{context, ContextError, FromExternalError, ParseError},
     multi::{many0, many1, separated_list1},
     sequence::{delimited, pair, preceded, terminated, tuple},
     IResult,
@@ -440,12 +440,15 @@ fn parse_condition_parameter<'a, E: ParseError<&'a str> + ContextError<&'a str>>
 }
 
 /// Parse condition definition: condition name(params) { expression }
-fn parse_condition_definition<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
+fn parse_condition_definition<
+    'a,
+    E: ParseError<&'a str> + ContextError<&'a str> + FromExternalError<&'a str, &'static str>,
+>(
     input: &'a str,
 ) -> IResult<&'a str, Condition, E> {
     context(
         "condition definition",
-        map(
+        map_res(
             tuple((
                 tag("condition"),
                 space1,
@@ -480,9 +483,7 @@ fn parse_condition_definition<'a, E: ParseError<&'a str> + ContextError<&'a str>
                 &str,
                 _,
             )| {
-                // unwrap is safe because we validate in Condition::with_parameters
                 Condition::with_parameters(name, params.unwrap_or_default(), expression.trim())
-                    .expect("condition parsing should produce valid condition")
             },
         ),
     )(input)
@@ -491,7 +492,10 @@ fn parse_condition_definition<'a, E: ParseError<&'a str> + ContextError<&'a str>
 // ============ Model Parser ============
 
 /// Parse a model element (either a condition or a type definition)
-fn parse_model_element<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
+fn parse_model_element<
+    'a,
+    E: ParseError<&'a str> + ContextError<&'a str> + FromExternalError<&'a str, &'static str>,
+>(
     input: &'a str,
 ) -> IResult<&'a str, ModelElement, E> {
     alt((
@@ -507,7 +511,10 @@ enum ModelElement {
 }
 
 /// Parse a complete authorization model
-fn parse_model<'a, E: ParseError<&'a str> + ContextError<&'a str>>(
+fn parse_model<
+    'a,
+    E: ParseError<&'a str> + ContextError<&'a str> + FromExternalError<&'a str, &'static str>,
+>(
     input: &'a str,
 ) -> IResult<&'a str, AuthorizationModel, E> {
     context(

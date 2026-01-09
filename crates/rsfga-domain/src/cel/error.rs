@@ -3,6 +3,9 @@
 use thiserror::Error;
 
 /// Errors that can occur during CEL expression parsing and evaluation
+///
+/// All variant fields are accessible wherever this enum is visible,
+/// as enum variant fields inherit the visibility of the enum in Rust.
 #[derive(Debug, Error)]
 pub enum CelError {
     /// Failed to parse the CEL expression
