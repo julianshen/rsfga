@@ -31,4 +31,13 @@ pub enum CelError {
         /// Actual type received
         actual: String,
     },
+
+    /// Evaluation timed out
+    #[error("CEL evaluation timed out after {duration_ms}ms")]
+    Timeout {
+        /// The expression that timed out
+        expression: String,
+        /// Duration in milliseconds before timeout
+        duration_ms: u64,
+    },
 }

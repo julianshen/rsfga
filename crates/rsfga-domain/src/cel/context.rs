@@ -22,7 +22,7 @@ use cel_interpreter::{Context, Value};
 /// let result = expr.evaluate(&ctx)?;
 /// assert_eq!(result.as_bool(), Some(true));
 /// ```
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct CelContext {
     variables: HashMap<String, CelValue>,
 }
