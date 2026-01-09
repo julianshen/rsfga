@@ -16,7 +16,7 @@
         "serayuzgur.crates",
         "vadimcn.vscode-lldb",
         "fill-labs.dependi",
-        "GitHub.copilot"
+        "anthropic.claude-code"
       ],
       "settings": {
         "rust-analyzer.check.command": "clippy",
