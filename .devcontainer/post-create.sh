@@ -13,9 +13,10 @@ rustup component add clippy rustfmt
 
 echo "==> Installing cargo tools..."
 # Install each tool separately with explicit error handling
-cargo install cargo-tarpaulin || echo "Warning: cargo-tarpaulin installation failed"
-cargo install cargo-audit || echo "Warning: cargo-audit installation failed"
-cargo install cargo-watch || echo "Warning: cargo-watch installation failed"
+# Using --locked to match CI workflow and ensure reproducible builds
+cargo install --locked cargo-tarpaulin || echo "Warning: cargo-tarpaulin installation failed"
+cargo install --locked cargo-audit || echo "Warning: cargo-audit installation failed"
+cargo install --locked cargo-watch || echo "Warning: cargo-watch installation failed"
 # Note: cargo-udeps requires nightly Rust. Install manually if needed:
 # rustup install nightly && cargo +nightly install cargo-udeps
 
