@@ -58,7 +58,8 @@ serde_json = "1.0"
 nom = "7.1"
 
 # CEL (Common Expression Language) - for conditional authorization
-cel-interpreter = { version = "0.14.0", features = ["json"] }
+# Note: Version 0.10 is the latest available on crates.io as of 2026-01
+cel-interpreter = { version = "0.10", features = ["json"] }
 
 # Caching
 moka = { version = "0.12", features = ["future"] }
