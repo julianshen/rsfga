@@ -456,11 +456,11 @@ fn parse_brace_balanced_expression<'a, E: ParseError<&'a str>>(
 
     while let Some((idx, ch)) = chars.next() {
         // Handle string literals - braces inside strings don't count
-        if in_string.is_some() {
+        if let Some(quote_char) = in_string {
             if ch == '\\' {
                 // Skip escaped character
                 chars.next();
-            } else if Some(ch) == in_string {
+            } else if ch == quote_char {
                 // End of string
                 in_string = None;
             }

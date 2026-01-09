@@ -180,6 +180,7 @@ impl CelResult {
     }
 
     /// Get the result as a boolean, if it is one
+    #[must_use]
     pub fn as_bool(&self) -> Option<bool> {
         match &self.value {
             Value::Bool(b) => Some(*b),
@@ -188,6 +189,7 @@ impl CelResult {
     }
 
     /// Get the result as an integer, if it is one
+    #[must_use]
     pub fn as_int(&self) -> Option<i64> {
         match &self.value {
             Value::Int(i) => Some(*i),
@@ -196,6 +198,7 @@ impl CelResult {
     }
 
     /// Get the result as a string, if it is one
+    #[must_use]
     pub fn as_string(&self) -> Option<&str> {
         match &self.value {
             Value::String(s) => Some(s.as_ref()),
@@ -207,11 +210,13 @@ impl CelResult {
     ///
     /// Returns true only if the value is a boolean true.
     /// Any other value (including non-booleans) returns false.
+    #[must_use]
     pub fn is_truthy(&self) -> bool {
         self.as_bool().unwrap_or(false)
     }
 
     /// Get the raw cel_interpreter Value
+    #[must_use]
     pub fn raw(&self) -> &Value {
         &self.value
     }
