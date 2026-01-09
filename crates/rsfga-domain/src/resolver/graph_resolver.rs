@@ -27,7 +27,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::timeout;
 
 use crate::error::{DomainError, DomainResult};
-use crate::model::Userset;
+use crate::model::{TypeConstraint, Userset};
 
 use super::config::ResolverConfig;
 use super::context::TraversalContext;
@@ -207,7 +207,7 @@ where
         &self,
         request: CheckRequest,
         userset: Userset,
-        type_constraints: Vec<String>,
+        type_constraints: Vec<TypeConstraint>,
         object_type: String,
         object_id: String,
         ctx: TraversalContext,
@@ -300,7 +300,7 @@ where
     fn resolve_direct(
         &self,
         request: CheckRequest,
-        type_constraints: Vec<String>,
+        type_constraints: Vec<TypeConstraint>,
         object_type: String,
         object_id: String,
         ctx: TraversalContext,
@@ -450,7 +450,7 @@ where
         &self,
         request: CheckRequest,
         children: Vec<Userset>,
-        type_constraints: Vec<String>,
+        type_constraints: Vec<TypeConstraint>,
         object_type: String,
         object_id: String,
         ctx: TraversalContext,
@@ -531,7 +531,7 @@ where
         &self,
         request: CheckRequest,
         children: Vec<Userset>,
-        type_constraints: Vec<String>,
+        type_constraints: Vec<TypeConstraint>,
         object_type: String,
         object_id: String,
         ctx: TraversalContext,
@@ -586,7 +586,7 @@ where
         request: CheckRequest,
         base: Userset,
         subtract: Userset,
-        type_constraints: Vec<String>,
+        type_constraints: Vec<TypeConstraint>,
         object_type: String,
         object_id: String,
         ctx: TraversalContext,
@@ -683,7 +683,11 @@ where
     /// Type constraints are strings like:
     /// - "user" - direct user type
     /// - "group#member" - userset reference
-    fn user_matches_type_constraints(&self, user: &str, type_constraints: &[String]) -> bool {
+    fn user_matches_type_constraints(
+        &self,
+        user: &str,
+        type_constraints: &[TypeConstraint],
+    ) -> bool {
         // Parse user to get type (and optional relation for userset references)
         let (user_type, user_relation) = if let Some((obj, rel)) = user.split_once('#') {
             // Userset reference like "group:eng#member" -> type="group", relation="member"
@@ -705,7 +709,11 @@ where
 
     /// Checks if a tuple type reference (e.g., "user" or "group#member") matches
     /// any of the type constraints.
-    fn type_matches_constraints(&self, type_ref: &str, type_constraints: &[String]) -> bool {
+    fn type_matches_constraints(
+        &self,
+        type_ref: &str,
+        type_constraints: &[TypeConstraint],
+    ) -> bool {
         // type_ref is either "user" or "group#member"
         let (user_type, user_relation) = if let Some((type_part, rel)) = type_ref.split_once('#') {
             (type_part, Some(rel))
@@ -721,17 +729,18 @@ where
         &self,
         user_type: &str,
         user_relation: Option<&str>,
-        type_constraints: &[String],
+        type_constraints: &[TypeConstraint],
     ) -> bool {
         for constraint in type_constraints {
-            if let Some((constraint_type, constraint_rel)) = constraint.split_once('#') {
+            let type_name = &constraint.type_name;
+            if let Some((constraint_type, constraint_rel)) = type_name.split_once('#') {
                 // Constraint is a userset reference like "group#member"
                 if user_type == constraint_type && user_relation == Some(constraint_rel) {
                     return true;
                 }
             } else {
                 // Constraint is a direct type like "user"
-                if user_type == constraint && user_relation.is_none() {
+                if user_type == type_name && user_relation.is_none() {
                     return true;
                 }
             }

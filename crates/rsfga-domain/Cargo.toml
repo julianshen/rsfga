@@ -30,6 +30,9 @@ moka = { workspace = true }
 # Parsing (for DSL)
 nom = { workspace = true }
 
+# CEL (Common Expression Language) - for conditional authorization
+cel-interpreter = { workspace = true }
+
 # Tracing
 tracing = { workspace = true }
 
