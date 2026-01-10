@@ -38,3 +38,4 @@ proptest = { workspace = true }
 mockall = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 sqlx = { workspace = true, features = ["chrono", "runtime-tokio"] }
+futures = { workspace = true }

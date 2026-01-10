@@ -39,13 +39,6 @@ impl DataStore for MemoryDataStore {
         validate_store_id(id)?;
         validate_store_name(name)?;
 
-        // Check if store already exists
-        if self.stores.contains_key(id) {
-            return Err(StorageError::StoreAlreadyExists {
-                store_id: id.to_string(),
-            });
-        }
-
         let now = chrono::Utc::now();
         let store = Store {
             id: id.to_string(),
@@ -54,8 +47,21 @@ impl DataStore for MemoryDataStore {
             updated_at: now,
         };
 
-        self.stores.insert(id.to_string(), store.clone());
-        self.tuples.insert(id.to_string(), Vec::new());
+        // Use atomic entry API to prevent race condition between check and insert
+        use dashmap::mapref::entry::Entry;
+        match self.stores.entry(id.to_string()) {
+            Entry::Occupied(_) => {
+                return Err(StorageError::StoreAlreadyExists {
+                    store_id: id.to_string(),
+                });
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(store.clone());
+            }
+        }
+
+        // Use entry API to avoid overwriting if another task already initialized tuples
+        self.tuples.entry(id.to_string()).or_default();
 
         Ok(store)
     }
@@ -1465,5 +1471,63 @@ mod tests {
         };
         let result = store.read_tuples("test-store", &filter).await.unwrap();
         assert_eq!(result.len(), 3); // All alice tuples have time_bound
+    }
+
+    // Test: Concurrent create_store calls should not cause race condition
+    // This test verifies that the atomic entry API is working correctly
+    #[tokio::test]
+    async fn test_concurrent_create_store_no_race_condition() {
+        let store = Arc::new(MemoryDataStore::new());
+        let store_id = "concurrent-test-store";
+        let num_tasks = 100;
+
+        // Spawn many concurrent tasks trying to create the same store
+        let handles: Vec<_> = (0..num_tasks)
+            .map(|i| {
+                let store = Arc::clone(&store);
+                let name = format!("Store {}", i);
+                tokio::spawn(async move { store.create_store(store_id, &name).await })
+            })
+            .collect();
+
+        // Wait for all tasks to complete
+        let results: Vec<_> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        // Partition into successes and failures using owned values
+        let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(|r| r.is_ok());
+
+        // Exactly one task should succeed
+        assert_eq!(
+            successes.len(),
+            1,
+            "Expected exactly one successful create_store, got {}",
+            successes.len()
+        );
+
+        // All other tasks should fail with StoreAlreadyExists
+        assert_eq!(
+            failures.len(),
+            num_tasks - 1,
+            "Expected {} failures, got {}",
+            num_tasks - 1,
+            failures.len()
+        );
+
+        for failure in failures {
+            assert!(
+                matches!(failure, Err(StorageError::StoreAlreadyExists { .. })),
+                "Expected StoreAlreadyExists error, got {:?}",
+                failure
+            );
+        }
+
+        // Verify only one store exists
+        let stores = store.list_stores().await.unwrap();
+        assert_eq!(stores.len(), 1, "Expected exactly one store in the list");
+        assert_eq!(stores[0].id, store_id);
     }
 }

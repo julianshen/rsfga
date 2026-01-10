@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use futures::future::join_all;
+use futures::stream::{self, StreamExt};
 use rsfga_domain::cache::CheckCache;
 use rsfga_domain::resolver::{CheckRequest, GraphResolver, ModelReader, TupleReader};
 
@@ -16,6 +16,10 @@ use super::types::{
 /// Maximum number of singleflight retries when a leader is dropped.
 /// This prevents unbounded recursion in edge cases.
 const MAX_SINGLEFLIGHT_RETRIES: u32 = 3;
+
+/// Default maximum concurrent checks within a batch.
+/// This prevents resource exhaustion when processing large batches.
+pub const DEFAULT_BATCH_CONCURRENCY: usize = 10;
 
 /// Key for identifying unique checks (used for deduplication).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -44,6 +48,9 @@ impl CheckKey {
 /// 2. Singleflight: Concurrent requests across batches share results
 ///
 /// Cache integration is handled at the API layer.
+///
+/// Concurrency is bounded by `max_concurrency` to prevent resource exhaustion
+/// when processing large batches.
 pub struct BatchCheckHandler<T, M>
 where
     T: TupleReader,
@@ -56,6 +63,8 @@ where
     cache: Arc<CheckCache>,
     /// Singleflight for deduplicating concurrent requests.
     singleflight: Arc<Singleflight<CheckKey>>,
+    /// Maximum concurrent checks to execute in parallel.
+    max_concurrency: usize,
 }
 
 impl<T, M> BatchCheckHandler<T, M>
@@ -63,12 +72,28 @@ where
     T: TupleReader + 'static,
     M: ModelReader + 'static,
 {
-    /// Creates a new batch check handler.
+    /// Creates a new batch check handler with default concurrency limit.
     pub fn new(resolver: Arc<GraphResolver<T, M>>, cache: Arc<CheckCache>) -> Self {
+        Self::with_concurrency(resolver, cache, DEFAULT_BATCH_CONCURRENCY)
+    }
+
+    /// Creates a new batch check handler with a custom concurrency limit.
+    ///
+    /// # Arguments
+    ///
+    /// * `resolver` - The graph resolver for executing checks
+    /// * `cache` - Cache for storing check results
+    /// * `max_concurrency` - Maximum concurrent checks to execute in parallel
+    pub fn with_concurrency(
+        resolver: Arc<GraphResolver<T, M>>,
+        cache: Arc<CheckCache>,
+        max_concurrency: usize,
+    ) -> Self {
         Self {
             resolver,
             cache,
             singleflight: Arc::new(Singleflight::new()),
+            max_concurrency: max_concurrency.max(1), // Ensure at least 1
         }
     }
 
@@ -140,15 +165,38 @@ where
         }
 
         // Execute unique checks in parallel with singleflight (Stage 2: Cross-request dedup)
-        // Reuse keys from unique_entries instead of recreating them
-        let check_futures: Vec<_> = unique_entries
+        // Use buffer_unordered to limit concurrent executions and prevent resource exhaustion
+        // Clone data to avoid lifetime issues with async closures
+        let check_data: Vec<_> = unique_entries
             .into_iter()
-            .map(|(check, key)| {
-                self.execute_check_with_singleflight(&request.store_id, check, key, 0)
-            })
+            .enumerate()
+            .map(|(idx, (check, key))| (idx, check.clone(), key))
             .collect();
 
-        let unique_results: Vec<BatchCheckItemResult> = join_all(check_futures).await;
+        let store_id = request.store_id.clone();
+        let unique_results: Vec<BatchCheckItemResult> = {
+            let mut unordered_results: Vec<_> = stream::iter(check_data)
+                .map(|(idx, check, key)| {
+                    let store_id = store_id.clone();
+                    async move {
+                        let result = self
+                            .execute_check_with_singleflight_owned(&store_id, check, key, 0)
+                            .await;
+                        (idx, result)
+                    }
+                })
+                .buffer_unordered(self.max_concurrency)
+                .collect()
+                .await;
+
+            // Sort results back into their original order
+            unordered_results.sort_by_key(|(idx, _)| *idx);
+
+            unordered_results
+                .into_iter()
+                .map(|(_, result)| result)
+                .collect()
+        };
 
         // Map results back to original positions
         let results: Vec<BatchCheckItemResult> = position_to_unique
@@ -157,6 +205,20 @@ where
             .collect();
 
         Ok(BatchCheckResponse { results })
+    }
+
+    /// Execute a single check with singleflight deduplication (owned version).
+    ///
+    /// This version takes owned `BatchCheckItem` to work with async closures in streams.
+    async fn execute_check_with_singleflight_owned(
+        &self,
+        store_id: &str,
+        check: BatchCheckItem,
+        key: CheckKey,
+        retry_count: u32,
+    ) -> BatchCheckItemResult {
+        self.execute_check_with_singleflight(store_id, &check, key, retry_count)
+            .await
     }
 
     /// Execute a single check with singleflight deduplication.
