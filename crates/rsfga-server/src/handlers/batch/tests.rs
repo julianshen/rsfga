@@ -1518,3 +1518,97 @@ fn test_default_batch_concurrency_value() {
         "Default concurrency should be reasonable (<=100)"
     );
 }
+
+/// Test: Handler respects custom concurrency limit at runtime.
+///
+/// Verifies that when configured with a low concurrency limit,
+/// the handler never exceeds that limit during batch execution.
+#[tokio::test]
+async fn test_batch_handler_respects_runtime_concurrency() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    struct ConcurrencyTrackingReader {
+        concurrent_count: Arc<AtomicUsize>,
+        max_concurrent: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl TupleReader for ConcurrencyTrackingReader {
+        async fn read_tuples(
+            &self,
+            _store_id: &str,
+            _object_type: &str,
+            _object_id: &str,
+            _relation: &str,
+        ) -> DomainResult<Vec<StoredTupleRef>> {
+            // Increment concurrent count
+            let current = self.concurrent_count.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_concurrent.fetch_max(current, Ordering::SeqCst);
+
+            // Sleep to force overlap between checks
+            tokio::time::sleep(Duration::from_millis(10)).await;
+
+            // Decrement concurrent count
+            self.concurrent_count.fetch_sub(1, Ordering::SeqCst);
+            Ok(vec![])
+        }
+
+        async fn store_exists(&self, _store_id: &str) -> DomainResult<bool> {
+            Ok(true)
+        }
+    }
+
+    let concurrent_count = Arc::new(AtomicUsize::new(0));
+    let max_concurrent = Arc::new(AtomicUsize::new(0));
+    let tuple_reader = ConcurrencyTrackingReader {
+        concurrent_count,
+        max_concurrent: max_concurrent.clone(),
+    };
+    let model_reader = MockModelReader::new().with_type(TypeDefinition {
+        type_name: "document".to_string(),
+        relations: vec![RelationDefinition {
+            name: "viewer".to_string(),
+            type_constraints: vec!["user".into()],
+            rewrite: Userset::This,
+        }],
+    });
+
+    let resolver = Arc::new(GraphResolver::new(
+        Arc::new(tuple_reader),
+        Arc::new(model_reader),
+    ));
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+
+    // Configure handler with a low concurrency limit of 2
+    let concurrency_limit = 2;
+    let handler = BatchCheckHandler::with_concurrency(resolver, cache, concurrency_limit);
+
+    // Create batch with 20 unique checks (much more than concurrency limit)
+    let checks: Vec<BatchCheckItem> = (0..20)
+        .map(|i| BatchCheckItem {
+            user: format!("user:user{}", i),
+            relation: "viewer".to_string(),
+            object: format!("document:doc{}", i),
+        })
+        .collect();
+
+    let request = BatchCheckRequest::new("store1", checks);
+    let _response = handler.check(request).await.unwrap();
+
+    // Verify that max concurrent never exceeded the limit
+    let observed_max = max_concurrent.load(Ordering::SeqCst);
+    assert!(
+        observed_max <= concurrency_limit,
+        "Max concurrent {} exceeded limit {}",
+        observed_max,
+        concurrency_limit
+    );
+
+    // Also verify that some parallelism did occur (max > 1)
+    assert!(
+        observed_max > 1,
+        "Expected some parallelism (max > 1), but got {}",
+        observed_max
+    );
+}

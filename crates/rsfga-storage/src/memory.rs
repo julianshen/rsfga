@@ -60,7 +60,8 @@ impl DataStore for MemoryDataStore {
             }
         }
 
-        self.tuples.insert(id.to_string(), Vec::new());
+        // Use entry API to avoid overwriting if another task already initialized tuples
+        self.tuples.entry(id.to_string()).or_default();
 
         Ok(store)
     }
@@ -1496,9 +1497,8 @@ mod tests {
             .map(|r| r.unwrap())
             .collect();
 
-        // Count successes and failures
-        let successes: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
-        let failures: Vec<_> = results.iter().filter(|r| r.is_err()).collect();
+        // Partition into successes and failures using owned values
+        let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter().partition(|r| r.is_ok());
 
         // Exactly one task should succeed
         assert_eq!(

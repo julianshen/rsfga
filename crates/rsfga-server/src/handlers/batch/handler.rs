@@ -174,34 +174,29 @@ where
             .collect();
 
         let store_id = request.store_id.clone();
-        let unique_results: Vec<BatchCheckItemResult> = stream::iter(check_data)
-            .map(|(idx, check, key)| {
-                let store_id = store_id.clone();
-                async move {
-                    let result = self
-                        .execute_check_with_singleflight_owned(&store_id, check, key, 0)
-                        .await;
-                    (idx, result)
-                }
-            })
-            .buffer_unordered(self.max_concurrency)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .fold(Vec::new(), |mut acc, (idx, result)| {
-                // Ensure vec is large enough
-                if acc.len() <= idx {
-                    acc.resize(
-                        idx + 1,
-                        BatchCheckItemResult {
-                            allowed: false,
-                            error: None,
-                        },
-                    );
-                }
-                acc[idx] = result;
-                acc
-            });
+        let unique_results: Vec<BatchCheckItemResult> = {
+            let mut unordered_results: Vec<_> = stream::iter(check_data)
+                .map(|(idx, check, key)| {
+                    let store_id = store_id.clone();
+                    async move {
+                        let result = self
+                            .execute_check_with_singleflight_owned(&store_id, check, key, 0)
+                            .await;
+                        (idx, result)
+                    }
+                })
+                .buffer_unordered(self.max_concurrency)
+                .collect()
+                .await;
+
+            // Sort results back into their original order
+            unordered_results.sort_by_key(|(idx, _)| *idx);
+
+            unordered_results
+                .into_iter()
+                .map(|(_, result)| result)
+                .collect()
+        };
 
         // Map results back to original positions
         let results: Vec<BatchCheckItemResult> = position_to_unique
