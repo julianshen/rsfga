@@ -19,6 +19,7 @@
 //! - **Timeout Handling**: Configurable timeout (default 30s) prevents
 //!   hanging on pathological graphs.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use std::sync::Arc;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::timeout;
 
+use crate::cel::{CelContext, CelExpression, CelValue};
 use crate::error::{DomainError, DomainResult};
 use crate::model::{TypeConstraint, Userset};
 
@@ -228,6 +230,7 @@ where
                         relation,
                         object: request.object,
                         contextual_tuples: request.contextual_tuples,
+                        context: request.context,
                     };
                     let new_ctx = ctx.increment_depth();
                     self.resolve_check(new_request, new_ctx).await
@@ -319,7 +322,20 @@ where
 
                     // Check for direct match or type wildcard
                     if self.user_matches(&request.user, &ct.user) {
-                        return Ok(CheckResult { allowed: true });
+                        // Evaluate condition if present
+                        let condition_ok = self
+                            .evaluate_condition(
+                                &request.store_id,
+                                ct.condition_name.as_deref(),
+                                ct.condition_context.as_ref(),
+                                &request.context,
+                            )
+                            .await?;
+                        if condition_ok {
+                            return Ok(CheckResult { allowed: true });
+                        }
+                        // Condition failed, continue checking other tuples
+                        continue;
                     }
 
                     // Check for userset reference in contextual tuple (e.g., "team:eng#member")
@@ -331,12 +347,25 @@ where
                             relation: user_rel.to_string(),
                             object: user_obj.to_string(),
                             contextual_tuples: request.contextual_tuples.clone(),
+                            context: request.context.clone(),
                         };
 
                         let new_ctx = ctx.increment_depth();
                         let result = self.resolve_check(userset_request, new_ctx.clone()).await?;
                         if result.allowed {
-                            return Ok(CheckResult { allowed: true });
+                            // Evaluate condition if present
+                            let condition_ok = self
+                                .evaluate_condition(
+                                    &request.store_id,
+                                    ct.condition_name.as_deref(),
+                                    ct.condition_context.as_ref(),
+                                    &request.context,
+                                )
+                                .await?;
+                            if condition_ok {
+                                return Ok(CheckResult { allowed: true });
+                            }
+                            // Condition failed, continue checking other tuples
                         }
                     }
                 }
@@ -376,7 +405,20 @@ where
 
                 // Check for direct match or wildcard match (handled by user_matches)
                 if self.user_matches(&request.user, &tuple_user) {
-                    return Ok(CheckResult { allowed: true });
+                    // Evaluate condition if present
+                    let condition_ok = self
+                        .evaluate_condition(
+                            &request.store_id,
+                            tuple.condition_name.as_deref(),
+                            tuple.condition_context.as_ref(),
+                            &request.context,
+                        )
+                        .await?;
+                    if condition_ok {
+                        return Ok(CheckResult { allowed: true });
+                    }
+                    // Condition failed, continue checking other tuples
+                    continue;
                 }
 
                 // Check for userset reference (e.g., group:eng#member)
@@ -389,12 +431,25 @@ where
                         relation: userset_relation.clone(),
                         object: userset_object,
                         contextual_tuples: request.contextual_tuples.clone(),
+                        context: request.context.clone(),
                     };
 
                     let new_ctx = ctx.increment_depth();
                     let result = self.resolve_check(userset_request, new_ctx).await?;
                     if result.allowed {
-                        return Ok(CheckResult { allowed: true });
+                        // Evaluate condition if present
+                        let condition_ok = self
+                            .evaluate_condition(
+                                &request.store_id,
+                                tuple.condition_name.as_deref(),
+                                tuple.condition_context.as_ref(),
+                                &request.context,
+                            )
+                            .await?;
+                        if condition_ok {
+                            return Ok(CheckResult { allowed: true });
+                        }
+                        // Condition failed, continue checking other tuples
                     }
                 }
             }
@@ -430,6 +485,7 @@ where
                 relation: computed_userset.to_string(),
                 object: parent_object,
                 contextual_tuples: request.contextual_tuples.clone(),
+                context: request.context.clone(),
             };
 
             let new_ctx = ctx.increment_depth();
@@ -757,5 +813,108 @@ where
             });
         }
         Ok((parts[0], parts[1]))
+    }
+
+    /// Evaluates a condition for a tuple.
+    ///
+    /// Returns `true` if:
+    /// - The tuple has no condition (unconditional access)
+    /// - The condition evaluates to true
+    ///
+    /// Returns `false` if:
+    /// - The condition evaluates to false
+    ///
+    /// Returns `Err` if:
+    /// - The condition is not found in the model
+    /// - The condition expression fails to parse or evaluate
+    async fn evaluate_condition(
+        &self,
+        store_id: &str,
+        condition_name: Option<&str>,
+        tuple_condition_context: Option<&HashMap<String, serde_json::Value>>,
+        request_context: &HashMap<String, serde_json::Value>,
+    ) -> DomainResult<bool> {
+        // If no condition, tuple grants access unconditionally
+        let condition_name = match condition_name {
+            Some(name) => name,
+            None => return Ok(true),
+        };
+
+        // Get the authorization model to find the condition definition
+        let model = self.model_reader.get_model(store_id).await?;
+        let condition =
+            model
+                .find_condition(condition_name)
+                .ok_or_else(|| DomainError::ResolverError {
+                    message: format!("condition not found: {}", condition_name),
+                })?;
+
+        // Parse the CEL expression
+        let expr = CelExpression::parse(&condition.expression).map_err(|e| {
+            DomainError::ResolverError {
+                message: format!(
+                    "failed to parse condition expression '{}': {}",
+                    condition.expression, e
+                ),
+            }
+        })?;
+
+        // Build the CEL context
+        let mut cel_ctx = CelContext::new();
+
+        // Build the "context" map from request context + tuple condition context
+        let mut context_map: HashMap<String, CelValue> = HashMap::new();
+
+        // First, add tuple condition context (lower priority)
+        if let Some(tuple_ctx) = tuple_condition_context {
+            for (key, value) in tuple_ctx {
+                context_map.insert(key.clone(), json_to_cel_value(value));
+            }
+        }
+
+        // Then, add request context (higher priority - overwrites tuple context)
+        for (key, value) in request_context {
+            context_map.insert(key.clone(), json_to_cel_value(value));
+        }
+
+        cel_ctx.set_map("context", context_map);
+
+        // Evaluate the expression
+        let result = expr
+            .evaluate_bool(&cel_ctx)
+            .map_err(|e| DomainError::ResolverError {
+                message: format!("condition evaluation failed: {}", e),
+            })?;
+
+        Ok(result)
+    }
+}
+
+/// Converts a serde_json::Value to a CelValue.
+fn json_to_cel_value(value: &serde_json::Value) -> CelValue {
+    match value {
+        serde_json::Value::Null => CelValue::Null,
+        serde_json::Value::Bool(b) => CelValue::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                CelValue::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                CelValue::Float(f)
+            } else {
+                // Fallback for very large unsigned integers
+                CelValue::Null
+            }
+        }
+        serde_json::Value::String(s) => CelValue::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            CelValue::List(arr.iter().map(json_to_cel_value).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            let map: HashMap<String, CelValue> = obj
+                .iter()
+                .map(|(k, v)| (k.clone(), json_to_cel_value(v)))
+                .collect();
+            CelValue::Map(map)
+        }
     }
 }

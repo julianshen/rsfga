@@ -59,11 +59,7 @@ impl BenchTupleReader {
         user_id: &str,
     ) {
         let key = format!("{}:{}:{}:{}", store_id, object_type, object_id, relation);
-        let tuple = StoredTupleRef {
-            user_type: user_type.to_string(),
-            user_id: user_id.to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTupleRef::new(user_type, user_id, None);
         self.tuples.entry(key).or_default().push(tuple);
     }
 }

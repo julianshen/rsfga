@@ -7,8 +7,9 @@
 //! - Contextual tuples
 //! - Safety features (depth limits, cycle detection, timeouts)
 //! - Type constraints
+//! - CEL condition evaluation
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,7 +17,7 @@ use async_trait::async_trait;
 
 use super::mocks::{MockModelReader, MockTupleReader};
 use crate::error::{DomainError, DomainResult};
-use crate::model::{RelationDefinition, TypeDefinition, Userset};
+use crate::model::{Condition, RelationDefinition, TypeDefinition, Userset};
 use crate::resolver::{
     CheckRequest, CheckResult, ContextualTuple, GraphResolver, ResolverConfig, StoredTupleRef,
     TupleReader,
@@ -62,6 +63,7 @@ async fn test_check_returns_true_for_direct_tuple_assignment() {
         relation: "viewer".to_string(),
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -102,6 +104,7 @@ async fn test_check_returns_false_when_no_tuple_exists() {
         relation: "viewer".to_string(),
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -150,6 +153,7 @@ async fn test_check_handles_multiple_stores_independently() {
         relation: "viewer".to_string(),
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
     let result1 = resolver.check(&request1).await.unwrap();
     assert!(result1.allowed, "Store1 should allow access");
@@ -161,6 +165,7 @@ async fn test_check_handles_multiple_stores_independently() {
         relation: "viewer".to_string(),
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
     let result2 = resolver.check(&request2).await.unwrap();
     assert!(!result2.allowed, "Store2 should deny access (no tuple)");
@@ -182,6 +187,7 @@ async fn test_check_validates_input_parameters() {
         relation: "viewer".to_string(),
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
     let result = resolver.check(&request).await;
     assert!(matches!(result, Err(DomainError::InvalidUserFormat { .. })));
@@ -193,6 +199,7 @@ async fn test_check_validates_input_parameters() {
         relation: "".to_string(),
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
     let result = resolver.check(&request).await;
     assert!(matches!(
@@ -207,6 +214,7 @@ async fn test_check_validates_input_parameters() {
         relation: "viewer".to_string(),
         object: "".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
     let result = resolver.check(&request).await;
     assert!(matches!(
@@ -231,6 +239,7 @@ async fn test_check_rejects_invalid_user_format() {
         relation: "viewer".to_string(),
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
     let result = resolver.check(&request).await;
     assert!(matches!(result, Err(DomainError::InvalidUserFormat { .. })));
@@ -252,6 +261,7 @@ async fn test_check_rejects_invalid_object_format() {
         relation: "viewer".to_string(),
         object: "readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
     let result = resolver.check(&request).await;
     assert!(matches!(
@@ -266,6 +276,7 @@ async fn test_check_rejects_invalid_object_format() {
         relation: "viewer".to_string(),
         object: ":readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
     let result = resolver.check(&request).await;
     assert!(matches!(
@@ -280,6 +291,7 @@ async fn test_check_rejects_invalid_object_format() {
         relation: "viewer".to_string(),
         object: "document:".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
     let result = resolver.check(&request).await;
     assert!(matches!(
@@ -326,6 +338,7 @@ async fn test_can_resolve_this_relation() {
         relation: "owner".to_string(),
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -399,6 +412,7 @@ async fn test_can_resolve_relation_from_parent_object() {
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -501,6 +515,7 @@ async fn test_resolves_nested_parent_relationships() {
         relation: "admin".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -565,6 +580,7 @@ async fn test_handles_missing_parent_gracefully() {
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -629,6 +645,7 @@ async fn test_union_returns_true_if_any_branch_is_true() {
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -690,6 +707,7 @@ async fn test_union_returns_false_if_all_branches_are_false() {
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -753,6 +771,7 @@ async fn test_union_executes_branches_in_parallel() {
         relation: "combined".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -811,6 +830,7 @@ async fn test_union_handles_errors_in_branches() {
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     // Should succeed because owner branch is true
@@ -878,6 +898,7 @@ async fn test_union_returns_cycle_error_when_all_branches_cycle() {
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     // Should return CycleDetected error, not allowed: false
@@ -988,6 +1009,7 @@ async fn test_union_returns_false_when_one_branch_false_and_other_depth_limit() 
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     // Should return false, NOT DepthLimitExceeded error
@@ -1062,6 +1084,7 @@ async fn test_union_returns_depth_limit_error_when_all_branches_hit_depth_limit(
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     // Should return DepthLimitExceeded or CycleDetected (path-termination error)
@@ -1142,6 +1165,7 @@ async fn test_intersection_returns_true_only_if_all_branches_are_true() {
         relation: "can_edit".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1208,6 +1232,7 @@ async fn test_intersection_returns_false_if_any_branch_is_false() {
         relation: "can_edit".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1279,6 +1304,7 @@ async fn test_intersection_executes_branches_in_parallel() {
         relation: "all_required".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1343,6 +1369,7 @@ async fn test_exclusion_returns_true_if_base_true_and_subtract_false() {
         relation: "can_view".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1402,6 +1429,7 @@ async fn test_exclusion_returns_false_if_base_is_false() {
         relation: "can_view".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1468,6 +1496,7 @@ async fn test_exclusion_returns_false_if_subtract_is_true() {
         relation: "can_view".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1541,6 +1570,7 @@ async fn test_exclusion_returns_false_when_base_false_despite_subtract_cycle() {
         relation: "can_view".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     // Should return false (base is false), not CycleDetected error
@@ -1624,6 +1654,7 @@ async fn test_exclusion_returns_false_when_subtract_true_despite_base_cycle() {
         relation: "can_view".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     // Should return false (subtract is true), not CycleDetected error
@@ -1707,6 +1738,7 @@ async fn test_exclusion_returns_cycle_error_when_both_branches_cycle() {
         relation: "can_view".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     // Should return CycleDetected error since both branches cycle
@@ -1784,6 +1816,7 @@ async fn test_exclusion_propagates_error_when_base_true_and_subtract_errors() {
         relation: "can_view".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     // Should return CycleDetected error since we need subtract but it cycles
@@ -1853,7 +1886,10 @@ async fn test_contextual_tuple_resolves_userset_reference() {
             user: "team:eng#member".to_string(),
             relation: "viewer".to_string(),
             object: "document:readme".to_string(),
+            condition_name: None,
+            condition_context: None,
         }]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1917,7 +1953,10 @@ async fn test_contextual_tuple_userset_not_member_denied() {
             user: "team:eng#member".to_string(),
             relation: "viewer".to_string(),
             object: "document:readme".to_string(),
+            condition_name: None,
+            condition_context: None,
         }]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2002,6 +2041,7 @@ async fn test_depth_limit_prevents_stack_overflow() {
         relation: "viewer".to_string(),
         object: "level29:obj".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await;
@@ -2082,6 +2122,7 @@ async fn test_returns_depth_limit_exceeded_error() {
         relation: "viewer".to_string(),
         object: "type29:obj".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await;
@@ -2175,6 +2216,7 @@ async fn test_cycle_detection_prevents_infinite_loops() {
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await;
@@ -2282,6 +2324,7 @@ async fn test_cycle_detection_doesnt_false_positive_on_valid_dags() {
         relation: "admin".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2375,6 +2418,7 @@ async fn test_returns_timeout_error_with_context() {
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await;
@@ -2418,6 +2462,7 @@ async fn test_empty_union_returns_false() {
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2454,6 +2499,7 @@ async fn test_empty_intersection_returns_true() {
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2534,6 +2580,7 @@ async fn test_depth_limit_at_boundary_24_succeeds() {
         relation: "viewer".to_string(),
         object: "level24:obj".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2577,6 +2624,7 @@ async fn test_contextual_tuple_overrides_stored_tuple() {
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request_without).await.unwrap();
@@ -2592,7 +2640,10 @@ async fn test_contextual_tuple_overrides_stored_tuple() {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
+            condition_name: None,
+            condition_context: None,
         }]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request_with).await.unwrap();
@@ -2634,11 +2685,12 @@ async fn test_contextual_tuple_does_not_conflict_with_stored() {
         user: "user:alice".to_string(),
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
-        contextual_tuples: Arc::new(vec![ContextualTuple {
-            user: "user:alice".to_string(),
-            relation: "viewer".to_string(),
-            object: "document:doc1".to_string(),
-        }]),
+        contextual_tuples: Arc::new(vec![ContextualTuple::new(
+            "user:alice",
+            "viewer",
+            "document:doc1",
+        )]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let request_bob = CheckRequest {
@@ -2647,6 +2699,7 @@ async fn test_contextual_tuple_does_not_conflict_with_stored() {
         relation: "viewer".to_string(),
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result_alice = resolver.check(&request_alice).await.unwrap();
@@ -2709,6 +2762,7 @@ async fn test_wildcard_in_requesting_user_is_rejected() {
         relation: "viewer".to_string(),
         object: "document:secret".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2758,6 +2812,7 @@ async fn test_type_constraints_enforced_for_stored_tuples() {
         relation: "viewer".to_string(),
         object: "document:secret".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2802,7 +2857,10 @@ async fn test_type_constraints_enforced_for_contextual_tuples() {
             user: "bot:scraper".to_string(), // Type "bot" not allowed
             relation: "viewer".to_string(),
             object: "document:secret".to_string(),
+            condition_name: None,
+            condition_context: None,
         }]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2873,6 +2931,7 @@ async fn test_type_constraints_allow_userset_references() {
         relation: "viewer".to_string(),
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2920,6 +2979,7 @@ async fn test_empty_type_constraints_allows_any_type() {
         relation: "viewer".to_string(),
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(std::collections::HashMap::new()),
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -3000,6 +3060,7 @@ proptest! {
                 relation: relation.clone(),
                 object: object.clone(),
                 contextual_tuples: Arc::new(vec![]),
+                context: Arc::new(std::collections::HashMap::new()),
             };
 
             // Should not panic - may return Ok or Err, but should never panic
@@ -3050,6 +3111,7 @@ proptest! {
                 relation: relation.clone(),
                 object: object.clone(),
                 contextual_tuples: Arc::new(vec![]),
+                context: Arc::new(std::collections::HashMap::new()),
             };
 
             // Use a timeout to ensure termination
@@ -3107,6 +3169,7 @@ proptest! {
                 relation: "viewer".to_string(),
                 object: format!("document:{}", object_id),
                 contextual_tuples: Arc::new(vec![]),
+                context: Arc::new(std::collections::HashMap::new()),
             };
 
             let result = resolver.check(&request).await.unwrap();
@@ -3159,6 +3222,7 @@ proptest! {
                 relation: "viewer".to_string(),
                 object: format!("document:{}", object_id),
                 contextual_tuples: Arc::new(vec![]),
+                context: Arc::new(std::collections::HashMap::new()),
             };
 
             let result_before = resolver.check(&request).await.unwrap();
@@ -3226,6 +3290,7 @@ proptest! {
                 relation: "viewer".to_string(),
                 object: format!("document:{}", other_object),
                 contextual_tuples: Arc::new(vec![]),
+                context: Arc::new(std::collections::HashMap::new()),
             };
 
             let result_before = resolver.check(&request).await.unwrap();
@@ -3244,4 +3309,537 @@ proptest! {
             "Deleting tuple for object_id={} should not affect access to other_object={}",
             object_id, other_object);
     }
+}
+
+// ========== Section 10: CEL Condition Evaluation ==========
+
+/// Test: Check evaluates tuple condition with context.
+///
+/// When a tuple has a condition attached, the condition's CEL expression
+/// must be evaluated against the check request's context. Access is only
+/// granted if the condition evaluates to true.
+#[tokio::test]
+async fn test_check_evaluates_tuple_condition_with_context() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    // Set up store
+    tuple_reader.add_store("store1").await;
+
+    // Add a condition definition: is_enabled requires context.enabled == true
+    let condition = Condition::new("is_enabled", "context.enabled == true").unwrap();
+    model_reader.add_condition("store1", condition).await;
+
+    // Add type definition with viewer relation
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Add tuple with condition: user:alice is viewer of document:readme IF is_enabled
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "readme",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "is_enabled",
+            None, // No tuple-specific condition context
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Create context with enabled = true
+    let mut context = HashMap::new();
+    context.insert("enabled".to_string(), serde_json::Value::Bool(true));
+
+    let request = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:readme".to_string(),
+        vec![],
+        context,
+    );
+
+    let result = resolver.check(&request).await.unwrap();
+    assert!(
+        result.allowed,
+        "Condition evaluates to true, access should be granted"
+    );
+}
+
+/// Test: Check returns false when condition evaluates to false.
+///
+/// This is the core test for condition evaluation - a matching tuple with
+/// a condition that evaluates to false should deny access.
+#[tokio::test]
+async fn test_check_returns_false_when_condition_evaluates_false() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Add condition: is_enabled requires context.enabled == true
+    let condition = Condition::new("is_enabled", "context.enabled == true").unwrap();
+    model_reader.add_condition("store1", condition).await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Tuple with condition
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "readme",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "is_enabled",
+            None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Context with enabled = false - condition should fail
+    let mut context = HashMap::new();
+    context.insert("enabled".to_string(), serde_json::Value::Bool(false));
+
+    let request = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:readme".to_string(),
+        vec![],
+        context,
+    );
+
+    let result = resolver.check(&request).await.unwrap();
+    assert!(
+        !result.allowed,
+        "Condition evaluates to false, access should be denied"
+    );
+}
+
+/// Test: Check without required context returns error.
+///
+/// When a condition references a variable that's not in the context,
+/// the check should return an error indicating the evaluation failure.
+#[tokio::test]
+async fn test_check_without_required_context_returns_error() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Condition that requires "enabled" variable
+    let condition = Condition::new("is_enabled", "context.enabled == true").unwrap();
+    model_reader.add_condition("store1", condition).await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "readme",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "is_enabled",
+            None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Empty context - required variable "enabled" is missing
+    let request = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:readme".to_string(),
+        vec![],
+        HashMap::new(),
+    );
+
+    let result = resolver.check(&request).await;
+    assert!(
+        result.is_err(),
+        "Check should fail when required context variable is missing"
+    );
+    let error = result.unwrap_err();
+    match error {
+        DomainError::ResolverError { message } => {
+            assert!(
+                message.contains("condition evaluation failed"),
+                "Error should indicate condition evaluation failed: {}",
+                message
+            );
+        }
+        _ => panic!("Expected ResolverError but got: {:?}", error),
+    }
+}
+
+/// Test: Check returns true when condition evaluates true.
+///
+/// Verifies that access is granted when a tuple's condition evaluates to true.
+#[tokio::test]
+async fn test_check_returns_true_when_condition_evaluates_true() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Condition checking if level >= required_level
+    let condition = Condition::new("level_check", "context.level >= 5").unwrap();
+    model_reader.add_condition("store1", condition).await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "readme",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "level_check",
+            None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Context with level = 10 (should pass >= 5 check)
+    let mut context = HashMap::new();
+    context.insert("level".to_string(), serde_json::json!(10));
+
+    let request = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:readme".to_string(),
+        vec![],
+        context,
+    );
+
+    let result = resolver.check(&request).await.unwrap();
+    assert!(
+        result.allowed,
+        "Condition evaluates to true (level 10 >= 5), access should be granted"
+    );
+}
+
+/// Test: Condition evaluation respects tuple's condition params.
+///
+/// Tuple-specific condition context should be merged with request context,
+/// with request context taking priority.
+#[tokio::test]
+async fn test_condition_evaluation_respects_tuple_condition_params() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Condition that checks department match
+    let condition =
+        Condition::new("dept_match", "context.user_dept == context.required_dept").unwrap();
+    model_reader.add_condition("store1", condition).await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Tuple with condition params: requires "engineering" department
+    let mut tuple_context = HashMap::new();
+    tuple_context.insert(
+        "required_dept".to_string(),
+        serde_json::json!("engineering"),
+    );
+
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "readme",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "dept_match",
+            Some(tuple_context),
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Request context with matching department
+    let mut context = HashMap::new();
+    context.insert("user_dept".to_string(), serde_json::json!("engineering"));
+
+    let request = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:readme".to_string(),
+        vec![],
+        context,
+    );
+
+    let result = resolver.check(&request).await.unwrap();
+    assert!(
+        result.allowed,
+        "Departments match (engineering == engineering), access should be granted"
+    );
+
+    // Request with non-matching department
+    let mut context2 = HashMap::new();
+    context2.insert("user_dept".to_string(), serde_json::json!("sales"));
+
+    let request2 = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:readme".to_string(),
+        vec![],
+        context2,
+    );
+
+    let result2 = resolver.check(&request2).await.unwrap();
+    assert!(
+        !result2.allowed,
+        "Departments don't match (sales != engineering), access should be denied"
+    );
+}
+
+/// Test: Contextual tuples with conditions work.
+///
+/// Conditions on contextual tuples should also be evaluated.
+#[tokio::test]
+async fn test_contextual_tuples_with_conditions_work() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Condition for time-based access
+    let condition = Condition::new("is_active", "context.active == true").unwrap();
+    model_reader.add_condition("store1", condition).await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // No stored tuples - using contextual tuple only
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Contextual tuple with condition
+    let contextual_tuple = ContextualTuple::with_condition(
+        "user:alice",
+        "viewer",
+        "document:readme",
+        "is_active",
+        None,
+    );
+
+    // Context with active = true
+    let mut context = HashMap::new();
+    context.insert("active".to_string(), serde_json::Value::Bool(true));
+
+    let request = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:readme".to_string(),
+        vec![contextual_tuple.clone()],
+        context,
+    );
+
+    let result = resolver.check(&request).await.unwrap();
+    assert!(
+        result.allowed,
+        "Contextual tuple condition is true, access should be granted"
+    );
+
+    // Context with active = false
+    let mut context2 = HashMap::new();
+    context2.insert("active".to_string(), serde_json::Value::Bool(false));
+
+    let request2 = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:readme".to_string(),
+        vec![contextual_tuple],
+        context2,
+    );
+
+    let result2 = resolver.check(&request2).await.unwrap();
+    assert!(
+        !result2.allowed,
+        "Contextual tuple condition is false, access should be denied"
+    );
+}
+
+/// Test: Multiple tuples where only one has passing condition.
+///
+/// When there are multiple matching tuples, access should be granted
+/// if ANY tuple's condition passes.
+#[tokio::test]
+async fn test_check_with_multiple_tuples_evaluates_all() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Two conditions
+    let condition1 = Condition::new("is_admin", "context.role == \"admin\"").unwrap();
+    let condition2 = Condition::new("is_owner", "context.is_owner == true").unwrap();
+    model_reader.add_condition("store1", condition1).await;
+    model_reader.add_condition("store1", condition2).await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Two tuples with different conditions
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1", "document", "readme", "viewer", "user", "alice", None, "is_admin", None,
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1", "document", "readme", "viewer", "user", "alice", None, "is_owner", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Context where only is_owner passes
+    let mut context = HashMap::new();
+    context.insert("role".to_string(), serde_json::json!("user")); // not admin
+    context.insert("is_owner".to_string(), serde_json::json!(true)); // is owner
+
+    let request = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:readme".to_string(),
+        vec![],
+        context,
+    );
+
+    let result = resolver.check(&request).await.unwrap();
+    assert!(
+        result.allowed,
+        "At least one condition (is_owner) passes, access should be granted"
+    );
+
+    // Context where neither condition passes
+    let mut context2 = HashMap::new();
+    context2.insert("role".to_string(), serde_json::json!("user"));
+    context2.insert("is_owner".to_string(), serde_json::json!(false));
+
+    let request2 = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:readme".to_string(),
+        vec![],
+        context2,
+    );
+
+    let result2 = resolver.check(&request2).await.unwrap();
+    assert!(
+        !result2.allowed,
+        "No conditions pass, access should be denied"
+    );
 }
