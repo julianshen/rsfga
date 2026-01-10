@@ -14,21 +14,21 @@
 //!
 //! # Usage
 //!
+//! Use the unified `init_observability` function from the parent module to
+//! initialize both logging and tracing together:
+//!
 //! ```ignore
-//! use rsfga_api::observability::tracing::{init_tracing, TracingConfig};
+//! use rsfga_api::observability::{init_observability, LoggingConfig, TracingConfig};
 //!
-//! // Initialize with default Jaeger endpoint (localhost:6831)
-//! init_tracing(TracingConfig::default())?;
-//!
-//! // Or specify a custom endpoint
-//! init_tracing(TracingConfig::new("jaeger.example.com:6831"))?;
+//! init_observability(
+//!     LoggingConfig::json(),
+//!     Some(TracingConfig::default()),
+//! )?;
 //! ```
 
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_jaeger::config::agent::AgentPipeline;
 use opentelemetry_sdk::trace::Tracer;
-use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
 
 /// Configuration for OpenTelemetry tracing with Jaeger export.
 #[derive(Debug, Clone)]
@@ -85,51 +85,14 @@ pub enum TracingError {
     SubscriberInit(String),
 }
 
-/// Initialize OpenTelemetry tracing with Jaeger export.
-///
-/// This function sets up the tracing subscriber to export spans to Jaeger.
-/// It should be called once at application startup.
-///
-/// # Arguments
-///
-/// * `config` - Tracing configuration specifying the Jaeger endpoint
-///
-/// # Returns
-///
-/// Returns `Ok(())` on success, or an error if initialization fails.
-///
-/// # Example
-///
-/// ```ignore
-/// use rsfga_api::observability::tracing::{init_tracing, TracingConfig};
-///
-/// init_tracing(TracingConfig::default())?;
-/// ```
-pub fn init_tracing(config: TracingConfig) -> Result<(), TracingError> {
-    if !config.enabled {
-        return Ok(());
-    }
-
-    // Create the Jaeger exporter pipeline
-    let tracer = create_jaeger_tracer(&config)?;
-
-    // Create the OpenTelemetry layer for tracing
-    let telemetry_layer = OpenTelemetryLayer::new(tracer);
-
-    // Build the subscriber with the OpenTelemetry layer
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    Registry::default()
-        .with(filter)
-        .with(telemetry_layer)
-        .try_init()
-        .map_err(|e| TracingError::SubscriberInit(e.to_string()))?;
-
-    Ok(())
-}
-
 /// Create a Jaeger tracer with the given configuration.
-fn create_jaeger_tracer(config: &TracingConfig) -> Result<Tracer, TracingError> {
+///
+/// This function is used internally by `init_observability` to create the tracer
+/// that will be composed with the logging layer.
+///
+/// The tracer provider is registered globally so that `shutdown_tracing()` can
+/// properly flush pending spans.
+pub fn create_jaeger_tracer(config: &TracingConfig) -> Result<Tracer, TracingError> {
     let pipeline = opentelemetry_jaeger::new_agent_pipeline()
         .with_service_name(&config.service_name)
         .with_endpoint(&config.jaeger_endpoint);
@@ -143,31 +106,11 @@ fn build_tracer(pipeline: AgentPipeline) -> Result<Tracer, TracingError> {
         .build_batch(opentelemetry_sdk::runtime::Tokio)
         .map_err(|e| TracingError::JaegerInit(e.to_string()))?;
 
+    // Register globally so shutdown_tracing() can flush spans
+    opentelemetry::global::set_tracer_provider(provider.clone());
+
     let tracer = provider.tracer("rsfga");
     Ok(tracer)
-}
-
-/// Create an OpenTelemetry layer for use in test scenarios.
-///
-/// This creates a layer that can be composed with other tracing layers
-/// for testing purposes, without affecting the global subscriber.
-///
-/// # Arguments
-///
-/// * `config` - Tracing configuration
-///
-/// # Returns
-///
-/// Returns the OpenTelemetry layer wrapped in an Option (None if disabled).
-pub fn create_test_tracing_layer(
-    config: &TracingConfig,
-) -> Result<Option<OpenTelemetryLayer<Registry, Tracer>>, TracingError> {
-    if !config.enabled {
-        return Ok(None);
-    }
-
-    let tracer = create_jaeger_tracer(config)?;
-    Ok(Some(OpenTelemetryLayer::new(tracer)))
 }
 
 /// Shutdown OpenTelemetry and flush any pending spans.
@@ -208,19 +151,11 @@ mod tests {
         assert!(!config.enabled);
     }
 
-    #[test]
-    fn test_init_tracing_when_disabled() {
-        // When tracing is disabled, init should succeed without doing anything
-        let config = TracingConfig::disabled();
-        let result = init_tracing(config);
-        assert!(result.is_ok());
-    }
-
     // Note: Testing actual Jaeger export requires a running Jaeger instance.
     // The integration test below is marked as ignored and should be run
     // manually with a Jaeger instance available.
 
-    /// Test: Tracing spans are exported to Jaeger
+    /// Test: Tracing spans are exported to Jaeger (manual verification required)
     ///
     /// This test verifies that spans created with the tracing crate
     /// are properly exported to a Jaeger backend.
@@ -230,9 +165,11 @@ mod tests {
     /// 2. Run: cargo test test_tracing_spans_exported_to_jaeger -- --ignored
     /// 3. Check Jaeger UI at http://localhost:16686
     #[tokio::test]
-    #[ignore = "requires running Jaeger instance"]
+    #[ignore = "requires running Jaeger instance - manual verification"]
     async fn test_tracing_spans_exported_to_jaeger() {
         use tracing::{info, info_span};
+        use tracing_opentelemetry::OpenTelemetryLayer;
+        use tracing_subscriber::{layer::SubscriberExt, Registry};
 
         // Note: This test uses a fresh config each time, but since the global
         // subscriber can only be set once, this test must run in isolation.
@@ -252,9 +189,6 @@ mod tests {
             let _guard = span.enter();
 
             info!("Performing test operation");
-
-            // Simulate some work
-            std::thread::sleep(std::time::Duration::from_millis(10));
         });
 
         // Give time for the span to be exported

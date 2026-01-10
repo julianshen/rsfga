@@ -101,6 +101,7 @@ impl LoggingConfig {
 /// // Development: Text format with DEBUG level
 /// init_logging(LoggingConfig::text().with_level(tracing::Level::DEBUG));
 /// ```
+#[allow(dead_code)]
 pub fn init_logging(config: LoggingConfig) {
     // Build the filter from RUST_LOG env var or use default level
     let filter = EnvFilter::try_from_default_env()

@@ -18,9 +18,10 @@ use super::state::AppState;
 use crate::observability::{metrics_handler, MetricsState};
 use crate::utils::{format_user, parse_object, parse_user, MAX_BATCH_SIZE};
 
-/// Creates the HTTP router with all OpenFGA-compatible endpoints.
-pub fn create_router<S: DataStore>(state: AppState<S>) -> Router {
-    let shared_state = Arc::new(state);
+/// Private helper for common API routes.
+///
+/// This consolidates all OpenFGA-compatible routes in one place to avoid duplication.
+fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
     Router::new()
         // Store management
         .route("/stores", post(create_store::<S>))
@@ -34,6 +35,12 @@ pub fn create_router<S: DataStore>(state: AppState<S>) -> Router {
         .route("/stores/:store_id/write", post(write_tuples::<S>))
         .route("/stores/:store_id/read", post(read_tuples::<S>))
         .route("/stores/:store_id/list-objects", post(list_objects::<S>))
+}
+
+/// Creates the HTTP router with all OpenFGA-compatible endpoints.
+pub fn create_router<S: DataStore>(state: AppState<S>) -> Router {
+    let shared_state = Arc::new(state);
+    api_routes::<S>()
         // Health and readiness checks
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check::<S>))
@@ -55,23 +62,12 @@ pub fn create_router_with_observability<S: DataStore>(
     state: AppState<S>,
     metrics_state: MetricsState,
 ) -> Router {
-    // Create the base API router with readiness check
-    let api_router = Router::new()
-        // Store management
-        .route("/stores", post(create_store::<S>))
-        .route("/stores", get(list_stores::<S>))
-        .route("/stores/:store_id", get(get_store::<S>))
-        .route("/stores/:store_id", delete(delete_store::<S>))
-        // Authorization operations
-        .route("/stores/:store_id/check", post(check::<S>))
-        .route("/stores/:store_id/batch-check", post(batch_check::<S>))
-        .route("/stores/:store_id/expand", post(expand::<S>))
-        .route("/stores/:store_id/write", post(write_tuples::<S>))
-        .route("/stores/:store_id/read", post(read_tuples::<S>))
-        .route("/stores/:store_id/list-objects", post(list_objects::<S>))
-        // Readiness check (needs storage access)
+    let shared_state = Arc::new(state);
+
+    // Create the API router with readiness check
+    let api_router = api_routes::<S>()
         .route("/ready", get(readiness_check::<S>))
-        .with_state(Arc::new(state));
+        .with_state(shared_state);
 
     // Create observability router (metrics, health)
     let observability_router = Router::new()
@@ -161,6 +157,9 @@ async fn health_check() -> impl IntoResponse {
 /// - Storage backend connectivity (by attempting to list stores)
 ///
 /// Returns 200 if ready, 503 if dependencies are unavailable.
+///
+/// Note: Error details are logged but not exposed in the response
+/// to avoid leaking internal implementation details.
 async fn readiness_check<S: DataStore>(State(state): State<Arc<AppState<S>>>) -> impl IntoResponse {
     // Check storage connectivity by attempting to list stores
     match state.storage.list_stores().await {
@@ -174,13 +173,14 @@ async fn readiness_check<S: DataStore>(State(state): State<Arc<AppState<S>>>) ->
             })),
         ),
         Err(e) => {
+            // Log the full error for debugging, but don't expose it
             error!("Readiness check failed: storage unavailable: {}", e);
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(serde_json::json!({
                     "status": "not_ready",
                     "checks": {
-                        "storage": format!("error: {}", e)
+                        "storage": "unavailable"
                     }
                 })),
             )

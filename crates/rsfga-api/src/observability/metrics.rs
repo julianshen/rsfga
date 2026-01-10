@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use axum::{extract::State, response::IntoResponse};
+use axum::{extract::State, http::header::CONTENT_TYPE, response::IntoResponse};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
 /// Shared state containing the Prometheus handle for metrics rendering.
@@ -37,6 +37,13 @@ impl MetricsState {
     }
 }
 
+/// Error type for metrics initialization.
+#[derive(Debug, thiserror::Error)]
+pub enum MetricsError {
+    #[error("failed to install Prometheus recorder: recorder already installed")]
+    AlreadyInstalled,
+}
+
 /// Initializes the Prometheus metrics recorder.
 ///
 /// This must be called once at application startup before any metrics are recorded.
@@ -45,24 +52,24 @@ impl MetricsState {
 /// # Example
 ///
 /// ```ignore
-/// let metrics_state = init_metrics();
+/// let metrics_state = init_metrics()?;
 /// // Metrics are now being collected
 /// let prometheus_output = metrics_state.render();
 /// ```
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if called more than once (the metrics recorder can only be installed once).
-pub fn init_metrics() -> MetricsState {
+/// Returns an error if the recorder is already installed.
+pub fn init_metrics() -> Result<MetricsState, MetricsError> {
     let builder = PrometheusBuilder::new();
     let handle = builder
         .install_recorder()
-        .expect("failed to install Prometheus recorder");
+        .map_err(|_| MetricsError::AlreadyInstalled)?;
 
     // Register default metrics
     register_default_metrics();
 
-    MetricsState::new(handle)
+    Ok(MetricsState::new(handle))
 }
 
 /// Registers default application metrics.
@@ -102,11 +109,14 @@ fn register_default_metrics() {
     );
 }
 
+/// Prometheus exposition format content type.
+const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
 /// Handler for the `/metrics` endpoint.
 ///
-/// Returns Prometheus metrics in text format.
+/// Returns Prometheus metrics in text format with proper content-type header.
 pub async fn metrics_handler(State(state): State<MetricsState>) -> impl IntoResponse {
-    state.render()
+    ([(CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)], state.render())
 }
 
 /// Records an HTTP request metric.
