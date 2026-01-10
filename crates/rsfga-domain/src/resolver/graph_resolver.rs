@@ -19,6 +19,7 @@
 //! - **Timeout Handling**: Configurable timeout (default 30s) prevents
 //!   hanging on pathological graphs.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use std::sync::Arc;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::timeout;
 
+use crate::cel::{CelContext, CelExpression, CelValue};
 use crate::error::{DomainError, DomainResult};
 use crate::model::{TypeConstraint, Userset};
 
@@ -228,6 +230,7 @@ where
                         relation,
                         object: request.object,
                         contextual_tuples: request.contextual_tuples,
+                        context: request.context,
                     };
                     let new_ctx = ctx.increment_depth();
                     self.resolve_check(new_request, new_ctx).await
@@ -319,7 +322,20 @@ where
 
                     // Check for direct match or type wildcard
                     if self.user_matches(&request.user, &ct.user) {
-                        return Ok(CheckResult { allowed: true });
+                        // Evaluate condition if present
+                        let condition_ok = self
+                            .evaluate_condition(
+                                &request.store_id,
+                                ct.condition_name.as_deref(),
+                                ct.condition_context.as_ref(),
+                                &request.context,
+                            )
+                            .await?;
+                        if condition_ok {
+                            return Ok(CheckResult { allowed: true });
+                        }
+                        // Condition failed, continue checking other tuples
+                        continue;
                     }
 
                     // Check for userset reference in contextual tuple (e.g., "team:eng#member")
@@ -331,12 +347,25 @@ where
                             relation: user_rel.to_string(),
                             object: user_obj.to_string(),
                             contextual_tuples: request.contextual_tuples.clone(),
+                            context: request.context.clone(),
                         };
 
                         let new_ctx = ctx.increment_depth();
                         let result = self.resolve_check(userset_request, new_ctx.clone()).await?;
                         if result.allowed {
-                            return Ok(CheckResult { allowed: true });
+                            // Evaluate condition if present
+                            let condition_ok = self
+                                .evaluate_condition(
+                                    &request.store_id,
+                                    ct.condition_name.as_deref(),
+                                    ct.condition_context.as_ref(),
+                                    &request.context,
+                                )
+                                .await?;
+                            if condition_ok {
+                                return Ok(CheckResult { allowed: true });
+                            }
+                            // Condition failed, continue checking other tuples
                         }
                     }
                 }
@@ -376,7 +405,20 @@ where
 
                 // Check for direct match or wildcard match (handled by user_matches)
                 if self.user_matches(&request.user, &tuple_user) {
-                    return Ok(CheckResult { allowed: true });
+                    // Evaluate condition if present
+                    let condition_ok = self
+                        .evaluate_condition(
+                            &request.store_id,
+                            tuple.condition_name.as_deref(),
+                            tuple.condition_context.as_ref(),
+                            &request.context,
+                        )
+                        .await?;
+                    if condition_ok {
+                        return Ok(CheckResult { allowed: true });
+                    }
+                    // Condition failed, continue checking other tuples
+                    continue;
                 }
 
                 // Check for userset reference (e.g., group:eng#member)
@@ -389,12 +431,25 @@ where
                         relation: userset_relation.clone(),
                         object: userset_object,
                         contextual_tuples: request.contextual_tuples.clone(),
+                        context: request.context.clone(),
                     };
 
                     let new_ctx = ctx.increment_depth();
                     let result = self.resolve_check(userset_request, new_ctx).await?;
                     if result.allowed {
-                        return Ok(CheckResult { allowed: true });
+                        // Evaluate condition if present
+                        let condition_ok = self
+                            .evaluate_condition(
+                                &request.store_id,
+                                tuple.condition_name.as_deref(),
+                                tuple.condition_context.as_ref(),
+                                &request.context,
+                            )
+                            .await?;
+                        if condition_ok {
+                            return Ok(CheckResult { allowed: true });
+                        }
+                        // Condition failed, continue checking other tuples
                     }
                 }
             }
@@ -430,6 +485,7 @@ where
                 relation: computed_userset.to_string(),
                 object: parent_object,
                 contextual_tuples: request.contextual_tuples.clone(),
+                context: request.context.clone(),
             };
 
             let new_ctx = ctx.increment_depth();
@@ -757,5 +813,183 @@ where
             });
         }
         Ok((parts[0], parts[1]))
+    }
+
+    /// Evaluates a condition for a tuple.
+    ///
+    /// This is the **check-time** validation for conditions. Condition existence
+    /// is verified here rather than at tuple write-time, which allows:
+    /// - Tuples to reference conditions not yet defined in the model
+    /// - Flexible deployment ordering (tuples before model updates)
+    /// - Model updates without requiring tuple rewrites
+    ///
+    /// See also: `rsfga_storage::traits::validate_tuple` for write-time validation.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(true)` if the tuple has no condition, or the condition evaluates to true
+    /// - `Ok(false)` if the condition evaluates to false
+    /// - `Err` if the condition is not found in the model, or the expression fails
+    ///
+    /// # Context Precedence
+    ///
+    /// When building the CEL evaluation context, tuple context takes precedence
+    /// over request context. See the context merging logic below for details.
+    async fn evaluate_condition(
+        &self,
+        store_id: &str,
+        condition_name: Option<&str>,
+        tuple_condition_context: Option<&HashMap<String, serde_json::Value>>,
+        request_context: &HashMap<String, serde_json::Value>,
+    ) -> DomainResult<bool> {
+        // If no condition, tuple grants access unconditionally
+        let condition_name = match condition_name {
+            Some(name) => name,
+            None => return Ok(true),
+        };
+
+        // Get the authorization model to find the condition definition
+        let model = self.model_reader.get_model(store_id).await?;
+        let condition =
+            model
+                .find_condition(condition_name)
+                .ok_or_else(|| DomainError::ResolverError {
+                    message: format!("condition not found: {}", condition_name),
+                })?;
+
+        // Parse the CEL expression
+        // TODO: PERFORMANCE - CEL expressions are parsed on every condition evaluation.
+        // This is a performance bottleneck for frequently checked tuples. Consider:
+        // 1. Caching parsed CelExpression in Condition struct (parse in Condition::new)
+        // 2. Using an LRU cache keyed by expression string
+        // 3. Pre-parsing expressions when AuthorizationModel is loaded
+        // See: https://github.com/julianshen/rsfga/issues/82
+        let expr = CelExpression::parse(&condition.expression).map_err(|e| {
+            DomainError::ResolverError {
+                message: format!(
+                    "failed to parse condition expression '{}': {}",
+                    condition.expression, e
+                ),
+            }
+        })?;
+
+        // Build the CEL context
+        let mut cel_ctx = CelContext::new();
+
+        // ==========================================================================
+        // SECURITY-CRITICAL: Context Merging with Tuple Precedence
+        // ==========================================================================
+        //
+        // Build the "context" map from request context + tuple condition context.
+        // Per OpenFGA spec: tuple condition context takes precedence over request context.
+        //
+        // WHY THIS MATTERS FOR SECURITY:
+        //
+        // When a tuple is written with condition context (e.g., {"max_amount": 1000}),
+        // this establishes a trust boundary. If request context could override this,
+        // a malicious caller could bypass the intended restriction by passing
+        // {"max_amount": 999999} in the request.
+        //
+        // Example attack prevented by this design:
+        //   - Admin writes tuple: (user:alice, can_transfer, account:corp, {max_amount: 1000})
+        //   - Malicious caller sends check with context: {max_amount: 999999}
+        //   - If request took precedence, alice could transfer unlimited amounts
+        //   - With tuple precedence, the 1000 limit is enforced regardless
+        //
+        // IMPLEMENTATION:
+        // 1. Load request context first (lower priority)
+        // 2. Apply tuple context second (overwrites any conflicting keys)
+        //
+        // This follows the principle: "constraints written by administrators
+        // cannot be weakened by API callers"
+        // ==========================================================================
+        let mut context_map: HashMap<String, CelValue> = HashMap::new();
+
+        // First, add request context (lower priority)
+        context_map.extend(
+            request_context
+                .iter()
+                .map(|(k, v)| (k.clone(), json_to_cel_value(v))),
+        );
+
+        // Then, add tuple condition context (higher priority - overwrites request context)
+        if let Some(tuple_ctx) = tuple_condition_context {
+            context_map.extend(
+                tuple_ctx
+                    .iter()
+                    .map(|(k, v)| (k.clone(), json_to_cel_value(v))),
+            );
+        }
+
+        cel_ctx.set_map("context", context_map);
+
+        // Evaluate the expression with timeout to prevent DoS from expensive expressions
+        let result = expr
+            .evaluate_bool_with_timeout(&cel_ctx, self.config.timeout)
+            .await
+            .map_err(|e| DomainError::ResolverError {
+                message: format!("condition evaluation failed: {}", e),
+            })?;
+
+        Ok(result)
+    }
+}
+
+/// Converts a serde_json::Value to a CelValue for CEL expression evaluation.
+///
+/// # Type Mapping
+///
+/// | JSON Type | CelValue Type | Notes |
+/// |-----------|---------------|-------|
+/// | null | Null | |
+/// | boolean | Bool | |
+/// | number (fits i64) | Int | Most common integer case |
+/// | number (fits u64, not i64) | UInt | Large positive integers |
+/// | number (other) | Float | Floating point numbers |
+/// | string | String | |
+/// | array | List | Recursively converts elements |
+/// | object | Map | Recursively converts values |
+///
+/// # Number Handling
+///
+/// Numbers are converted in priority order: i64 → u64 → f64.
+/// This ensures large positive integers (> i64::MAX) are properly handled
+/// as unsigned integers rather than being silently converted to null or
+/// losing precision via floating point conversion.
+///
+/// # Edge Cases
+///
+/// - Very large numbers that don't fit in f64 will become Null (extremely rare)
+/// - Nested structures are recursively converted
+fn json_to_cel_value(value: &serde_json::Value) -> CelValue {
+    match value {
+        serde_json::Value::Null => CelValue::Null,
+        serde_json::Value::Bool(b) => CelValue::Bool(*b),
+        serde_json::Value::Number(n) => {
+            // Try i64 first (most common case for integers)
+            if let Some(i) = n.as_i64() {
+                CelValue::Int(i)
+            // Try u64 for large positive integers that don't fit in i64
+            } else if let Some(u) = n.as_u64() {
+                CelValue::UInt(u)
+            // Fall back to f64 for floating point numbers
+            } else if let Some(f) = n.as_f64() {
+                CelValue::Float(f)
+            } else {
+                // This should never happen with valid JSON numbers
+                CelValue::Null
+            }
+        }
+        serde_json::Value::String(s) => CelValue::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            CelValue::List(arr.iter().map(json_to_cel_value).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            let map: HashMap<String, CelValue> = obj
+                .iter()
+                .map(|(k, v)| (k.clone(), json_to_cel_value(v)))
+                .collect();
+            CelValue::Map(map)
+        }
     }
 }

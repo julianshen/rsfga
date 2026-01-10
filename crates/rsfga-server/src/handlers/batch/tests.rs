@@ -364,6 +364,8 @@ async fn test_executes_unique_checks_only_once() {
                 user_type: "user".to_string(),
                 user_id: "alice".to_string(),
                 user_relation: None,
+                condition_name: None,
+                condition_context: None,
             }])
         }
 
@@ -435,6 +437,8 @@ async fn test_maps_results_back_to_original_positions() {
                     user_type: "user".to_string(),
                     user_id: "alice".to_string(),
                     user_relation: None,
+                    condition_name: None,
+                    condition_context: None,
                 }])
             } else {
                 Ok(vec![])
@@ -562,6 +566,8 @@ async fn test_concurrent_requests_for_same_check_share_result() {
                 user_type: "user".to_string(),
                 user_id: "alice".to_string(),
                 user_relation: None,
+                condition_name: None,
+                condition_context: None,
             }])
         }
 
@@ -657,6 +663,8 @@ async fn test_singleflight_groups_expire_after_completion() {
                 user_type: "user".to_string(),
                 user_id: "alice".to_string(),
                 user_relation: None,
+                condition_name: None,
+                condition_context: None,
             }])
         }
 
@@ -740,6 +748,8 @@ async fn test_errors_dont_poison_singleflight_group() {
                     user_type: "user".to_string(),
                     user_id: "alice".to_string(),
                     user_relation: None,
+                    condition_name: None,
+                    condition_context: None,
                 }])
             }
         }
@@ -891,6 +901,8 @@ async fn test_unique_checks_execute_in_parallel() {
                 user_type: "user".to_string(),
                 user_id: "alice".to_string(),
                 user_relation: None,
+                condition_name: None,
+                condition_context: None,
             }])
         }
 
@@ -1000,6 +1012,8 @@ async fn test_batch_processes_faster_than_sequential() {
                 user_type: "user".to_string(),
                 user_id: "alice".to_string(),
                 user_relation: None,
+                condition_name: None,
+                condition_context: None,
             }])
         }
 
@@ -1136,7 +1150,7 @@ async fn test_parallel_execution_uses_all_available_concurrency() {
         "Checks should execute in parallel, max concurrent was {}",
         max
     );
-    // TODO: When explicit concurrency limits are added (e.g., MAX_CONCURRENT = 32),
+    // TODO(#86): When explicit concurrency limits are added (e.g., MAX_CONCURRENT = 32),
     // add assertion: assert!(max <= MAX_CONCURRENT, "Should respect limit");
 }
 
@@ -1164,6 +1178,8 @@ async fn test_handles_partial_failures_gracefully() {
                     user_type: "user".to_string(),
                     user_id: "alice".to_string(),
                     user_relation: None,
+                    condition_name: None,
+                    condition_context: None,
                 }])
             }
         }
@@ -1271,6 +1287,8 @@ async fn test_batch_of_max_identical_checks_executes_only_once() {
                 user_type: "user".to_string(),
                 user_id: "alice".to_string(),
                 user_relation: None,
+                condition_name: None,
+                condition_context: None,
             }])
         }
 
@@ -1348,6 +1366,8 @@ async fn test_batch_throughput_target() {
                 user_type: "user".to_string(),
                 user_id: "alice".to_string(),
                 user_relation: None,
+                condition_name: None,
+                condition_context: None,
             }])
         }
 

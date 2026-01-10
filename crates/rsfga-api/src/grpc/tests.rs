@@ -59,14 +59,7 @@ async fn test_check_rpc_works_correctly() {
     storage
         .write_tuple(
             "test-store",
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "readme".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "alice".to_string(),
-                user_relation: None,
-            },
+            StoredTuple::new("document", "readme", "viewer", "user", "alice", None),
         )
         .await
         .unwrap();
@@ -129,14 +122,7 @@ async fn test_batch_check_rpc_works_correctly() {
     storage
         .write_tuple(
             "test-store",
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc1".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "alice".to_string(),
-                user_relation: None,
-            },
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
         )
         .await
         .unwrap();
@@ -261,28 +247,14 @@ async fn test_read_rpc_works_correctly() {
     storage
         .write_tuple(
             "test-store",
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc1".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "alice".to_string(),
-                user_relation: None,
-            },
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
         )
         .await
         .unwrap();
     storage
         .write_tuple(
             "test-store",
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc2".to_string(),
-                relation: "editor".to_string(),
-                user_type: "user".to_string(),
-                user_id: "bob".to_string(),
-                user_relation: None,
-            },
+            StoredTuple::new("document", "doc2", "editor", "user", "bob", None),
         )
         .await
         .unwrap();

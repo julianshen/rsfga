@@ -36,6 +36,8 @@ pub enum CelValue {
     Bool(bool),
     /// A 64-bit signed integer
     Int(i64),
+    /// A 64-bit unsigned integer (for large positive values that don't fit in i64)
+    UInt(u64),
     /// A 64-bit floating point number
     Float(f64),
     /// A string value
@@ -64,6 +66,11 @@ impl CelContext {
     /// Set an integer variable
     pub fn set_int(&mut self, name: impl Into<String>, value: i64) {
         self.variables.insert(name.into(), CelValue::Int(value));
+    }
+
+    /// Set an unsigned integer variable
+    pub fn set_uint(&mut self, name: impl Into<String>, value: u64) {
+        self.variables.insert(name.into(), CelValue::UInt(value));
     }
 
     /// Set a float variable
@@ -138,6 +145,7 @@ fn cel_value_to_value(v: &CelValue) -> Value {
     match v {
         CelValue::Bool(b) => Value::Bool(*b),
         CelValue::Int(i) => Value::Int(*i),
+        CelValue::UInt(u) => Value::UInt(*u),
         CelValue::Float(f) => Value::Float(*f),
         CelValue::String(s) => Value::String(s.clone().into()),
         CelValue::List(list) => Value::List(

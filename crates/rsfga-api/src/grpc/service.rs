@@ -62,6 +62,9 @@ fn tuple_key_to_stored(tk: &TupleKey) -> Option<StoredTuple> {
         user_type: user_type.to_string(),
         user_id: user_id.to_string(),
         user_relation: user_relation.map(|s| s.to_string()),
+        // TODO(#84): Parse condition from request when API support is added
+        condition_name: None,
+        condition_context: None,
     })
 }
 
@@ -98,6 +101,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             object_id: Some(object_id.to_string()),
             relation: Some(tuple_key.relation),
             user: Some(tuple_key.user),
+            condition_name: None,
         };
 
         let tuples = self
@@ -253,6 +257,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 } else {
                     None
                 },
+                condition_name: None,
             }
         } else {
             TupleFilter::default()
@@ -378,7 +383,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // TODO: UpdateStore requires storage layer support (update_store method)
+        // TODO(#85): UpdateStore requires storage layer support (update_store method)
         // Currently returns UNIMPLEMENTED as the storage trait doesn't have update_store.
         // This will be implemented when storage layer adds update_store support.
         Err(Status::unimplemented(
@@ -627,6 +632,7 @@ impl<S: DataStore> OpenFgaGrpcService<S> {
             object_id: Some(object_id.to_string()),
             relation: Some(tuple_key.relation.clone()),
             user: Some(tuple_key.user.clone()),
+            condition_name: None,
         };
 
         match self.storage.read_tuples(store_id, &filter).await {

@@ -242,6 +242,7 @@ async fn check<S: DataStore>(
         object_id: Some(object_id.to_string()),
         relation: Some(body.tuple_key.relation.clone()),
         user: Some(body.tuple_key.user.clone()),
+        condition_name: None,
     };
 
     let tuples = state.storage.read_tuples(&store_id, &filter).await?;
@@ -371,6 +372,7 @@ async fn process_single_check<S: DataStore>(
         object_id: Some(object_id.to_string()),
         relation: Some(item.tuple_key.relation.clone()),
         user: Some(item.tuple_key.user.clone()),
+        condition_name: None,
     };
 
     match storage.read_tuples(store_id, &filter).await {
@@ -538,6 +540,9 @@ fn parse_tuple_fields(
         user_type: user_type.to_string(),
         user_id: user_id.to_string(),
         user_relation: user_relation.map(|s| s.to_string()),
+        // TODO(#84): Parse condition from request when API support is added
+        condition_name: None,
+        condition_context: None,
     })
 }
 
@@ -613,6 +618,7 @@ async fn read_tuples<S: DataStore>(
             } else {
                 None
             },
+            condition_name: None,
         }
     } else {
         TupleFilter::default()

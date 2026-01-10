@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 
 use crate::error::{DomainError, DomainResult};
-use crate::model::{AuthorizationModel, RelationDefinition, TypeDefinition};
+use crate::model::{AuthorizationModel, Condition, RelationDefinition, TypeDefinition};
 use crate::resolver::{ModelReader, StoredTupleRef, TupleReader};
 
 /// Mock tuple reader for testing.
@@ -40,11 +40,7 @@ impl MockTupleReader {
         user_relation: Option<&str>,
     ) {
         let key = format!("{}:{}:{}:{}", store_id, object_type, object_id, relation);
-        let tuple = StoredTupleRef {
-            user_type: user_type.to_string(),
-            user_id: user_id.to_string(),
-            user_relation: user_relation.map(|s| s.to_string()),
-        };
+        let tuple = StoredTupleRef::new(user_type, user_id, user_relation.map(|s| s.to_string()));
         self.tuples
             .write()
             .await
@@ -67,6 +63,36 @@ impl MockTupleReader {
         if let Some(tuples) = self.tuples.write().await.get_mut(&key) {
             tuples.retain(|t| t.user_type != user_type || t.user_id != user_id);
         }
+    }
+
+    /// Adds a tuple with a condition.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_tuple_with_condition(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        object_id: &str,
+        relation: &str,
+        user_type: &str,
+        user_id: &str,
+        user_relation: Option<&str>,
+        condition_name: &str,
+        condition_context: Option<HashMap<String, serde_json::Value>>,
+    ) {
+        let key = format!("{}:{}:{}:{}", store_id, object_type, object_id, relation);
+        let tuple = StoredTupleRef::with_condition(
+            user_type,
+            user_id,
+            user_relation.map(|s| s.to_string()),
+            condition_name,
+            condition_context,
+        );
+        self.tuples
+            .write()
+            .await
+            .entry(key)
+            .or_default()
+            .push(tuple);
     }
 }
 
@@ -97,12 +123,14 @@ impl TupleReader for MockTupleReader {
 /// Mock model reader for testing.
 pub struct MockModelReader {
     type_definitions: RwLock<HashMap<String, TypeDefinition>>,
+    conditions: RwLock<HashMap<String, Vec<Condition>>>,
 }
 
 impl MockModelReader {
     pub fn new() -> Self {
         Self {
             type_definitions: RwLock::new(HashMap::new()),
+            conditions: RwLock::new(HashMap::new()),
         }
     }
 
@@ -110,12 +138,28 @@ impl MockModelReader {
         let key = format!("{}:{}", store_id, type_def.type_name);
         self.type_definitions.write().await.insert(key, type_def);
     }
+
+    /// Adds a condition definition to the store's model.
+    pub async fn add_condition(&self, store_id: &str, condition: Condition) {
+        self.conditions
+            .write()
+            .await
+            .entry(store_id.to_string())
+            .or_default()
+            .push(condition);
+    }
 }
 
 #[async_trait]
 impl ModelReader for MockModelReader {
-    async fn get_model(&self, _store_id: &str) -> DomainResult<AuthorizationModel> {
-        Ok(AuthorizationModel::new("1.1"))
+    async fn get_model(&self, store_id: &str) -> DomainResult<AuthorizationModel> {
+        let mut model = AuthorizationModel::new("1.1");
+        if let Some(conditions) = self.conditions.read().await.get(store_id) {
+            for condition in conditions {
+                model.add_condition(condition.clone());
+            }
+        }
+        Ok(model)
     }
 
     async fn get_type_definition(

@@ -197,6 +197,10 @@ impl DataStore for MemoryDataStore {
                             && user_filter.as_ref().map_or(true, |(ut, ui, ur)| {
                                 &t.user_type == ut && &t.user_id == ui && &t.user_relation == ur
                             })
+                            && filter
+                                .condition_name
+                                .as_ref()
+                                .map_or(true, |cn| t.condition_name.as_ref() == Some(cn))
                     })
                     .cloned()
                     .collect()
@@ -246,6 +250,10 @@ impl DataStore for MemoryDataStore {
                             && user_filter.as_ref().map_or(true, |(ut, ui, ur)| {
                                 &t.user_type == ut && &t.user_id == ui && &t.user_relation == ur
                             })
+                            && filter
+                                .condition_name
+                                .as_ref()
+                                .map_or(true, |cn| t.condition_name.as_ref() == Some(cn))
                     })
                     .cloned()
                     .collect()
@@ -345,14 +353,7 @@ mod tests {
         let store = MemoryDataStore::new();
         store.create_store("test-store", "Test").await.unwrap();
 
-        let tuple = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
         // Use write_tuple (singular) convenience method
         store.write_tuple("test-store", tuple).await.unwrap();
@@ -370,14 +371,7 @@ mod tests {
         let store = MemoryDataStore::new();
         store.create_store("test-store", "Test").await.unwrap();
 
-        let tuple = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
         store
             .write_tuples("test-store", vec![tuple.clone()], vec![])
@@ -400,14 +394,7 @@ mod tests {
         let store = MemoryDataStore::new();
         store.create_store("test-store", "Test").await.unwrap();
 
-        let tuple = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
         store
             .write_tuples("test-store", vec![tuple], vec![])
@@ -434,30 +421,9 @@ mod tests {
         store.create_store("test-store", "Test").await.unwrap();
 
         let tuples = vec![
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc1".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "alice".to_string(),
-                user_relation: None,
-            },
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc2".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "bob".to_string(),
-                user_relation: None,
-            },
-            StoredTuple {
-                object_type: "folder".to_string(),
-                object_id: "folder1".to_string(),
-                relation: "owner".to_string(),
-                user_type: "user".to_string(),
-                user_id: "charlie".to_string(),
-                user_relation: None,
-            },
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+            StoredTuple::new("document", "doc2", "viewer", "user", "bob", None),
+            StoredTuple::new("folder", "folder1", "owner", "user", "charlie", None),
         ];
 
         store
@@ -479,30 +445,9 @@ mod tests {
         store.create_store("test-store", "Test").await.unwrap();
 
         let tuples = vec![
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc1".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "alice".to_string(),
-                user_relation: None,
-            },
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc2".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "bob".to_string(),
-                user_relation: None,
-            },
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc3".to_string(),
-                relation: "editor".to_string(),
-                user_type: "user".to_string(),
-                user_id: "alice".to_string(),
-                user_relation: None,
-            },
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+            StoredTuple::new("document", "doc2", "viewer", "user", "bob", None),
+            StoredTuple::new("document", "doc3", "editor", "user", "alice", None),
         ];
 
         store
@@ -527,30 +472,9 @@ mod tests {
         store.create_store("test-store", "Test").await.unwrap();
 
         let tuples = vec![
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc1".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "alice".to_string(),
-                user_relation: None,
-            },
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc1".to_string(),
-                relation: "editor".to_string(),
-                user_type: "user".to_string(),
-                user_id: "bob".to_string(),
-                user_relation: None,
-            },
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc2".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "charlie".to_string(),
-                user_relation: None,
-            },
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+            StoredTuple::new("document", "doc1", "editor", "user", "bob", None),
+            StoredTuple::new("document", "doc2", "viewer", "user", "charlie", None),
         ];
 
         store
@@ -576,30 +500,9 @@ mod tests {
         store.create_store("test-store", "Test").await.unwrap();
 
         let tuples = vec![
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc1".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "alice".to_string(),
-                user_relation: None,
-            },
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc1".to_string(),
-                relation: "editor".to_string(),
-                user_type: "user".to_string(),
-                user_id: "bob".to_string(),
-                user_relation: None,
-            },
-            StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "doc2".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "charlie".to_string(),
-                user_relation: None,
-            },
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+            StoredTuple::new("document", "doc1", "editor", "user", "bob", None),
+            StoredTuple::new("document", "doc2", "viewer", "user", "charlie", None),
         ];
 
         store
@@ -623,14 +526,7 @@ mod tests {
         let store = MemoryDataStore::new();
         store.create_store("test-store", "Test").await.unwrap();
 
-        let tuple = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
         store
             .write_tuples("test-store", vec![tuple.clone()], vec![])
@@ -661,14 +557,7 @@ mod tests {
         let store = MemoryDataStore::new();
         store.create_store("test-store", "Test").await.unwrap();
 
-        let tuple = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
         // Delete a tuple that doesn't exist - should succeed
         let result = store.delete_tuple("test-store", tuple.clone()).await;
@@ -711,6 +600,8 @@ mod tests {
                     user_type: "user".to_string(),
                     user_id: format!("user{}", i),
                     user_relation: None,
+                    condition_name: None,
+                    condition_context: None,
                 };
                 store.write_tuple("test-store", tuple).await.unwrap();
             }));
@@ -746,6 +637,8 @@ mod tests {
                 user_type: "user".to_string(),
                 user_id: format!("user{}", i),
                 user_relation: None,
+                condition_name: None,
+                condition_context: None,
             };
             store.write_tuple("test-store", tuple).await.unwrap();
         }
@@ -764,6 +657,8 @@ mod tests {
                     user_type: "user".to_string(),
                     user_id: format!("user{}", i),
                     user_relation: None,
+                    condition_name: None,
+                    condition_context: None,
                 };
                 store.write_tuple("test-store", tuple).await.unwrap();
             }));
@@ -822,23 +717,16 @@ mod tests {
         store.create_store("test-store", "Test").await.unwrap();
 
         // Create tuples with and without user_relation
-        let tuple_without = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "group".to_string(),
-            user_id: "eng".to_string(),
-            user_relation: None,
-        };
+        let tuple_without = StoredTuple::new("document", "doc1", "viewer", "group", "eng", None);
 
-        let tuple_with = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "group".to_string(),
-            user_id: "eng".to_string(),
-            user_relation: Some("member".to_string()),
-        };
+        let tuple_with = StoredTuple::new(
+            "document",
+            "doc1",
+            "viewer",
+            "group",
+            "eng",
+            Some("member".to_string()),
+        );
 
         // Both should be stored (they're different due to user_relation)
         store
@@ -865,14 +753,7 @@ mod tests {
         let store = MemoryDataStore::new();
         store.create_store("test-store", "Test").await.unwrap();
 
-        let tuple = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
         store.write_tuple("test-store", tuple).await.unwrap();
 
@@ -912,14 +793,7 @@ mod tests {
     async fn test_write_to_nonexistent_store_fails() {
         let store = MemoryDataStore::new();
 
-        let tuple = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
         let result = store.write_tuple("nonexistent", tuple).await;
         assert!(matches!(result, Err(StorageError::StoreNotFound { .. })));
@@ -931,14 +805,7 @@ mod tests {
         let store = MemoryDataStore::new();
         store.create_store("test-store", "Test").await.unwrap();
 
-        let tuple = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
         // Write the same tuple twice
         store
@@ -974,6 +841,8 @@ mod tests {
                 user_type: "user".to_string(),
                 user_id: format!("user{}", i),
                 user_relation: None,
+                condition_name: None,
+                condition_context: None,
             };
             store.write_tuple("test-store", tuple).await.unwrap();
         }
@@ -1073,6 +942,8 @@ mod tests {
                 user_type: "user".to_string(),
                 user_id: format!("user{}", i),
                 user_relation: None,
+                condition_name: None,
+                condition_context: None,
             };
             store.write_tuple("test-store", tuple).await.unwrap();
         }
@@ -1153,24 +1024,17 @@ mod tests {
         store.create_store("test-store", "Test").await.unwrap();
 
         // Direct user format
-        let tuple1 = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        };
+        let tuple1 = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
         // Userset format
-        let tuple2 = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc2".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "group".to_string(),
-            user_id: "engineering".to_string(),
-            user_relation: Some("member".to_string()),
-        };
+        let tuple2 = StoredTuple::new(
+            "document",
+            "doc2",
+            "viewer",
+            "group",
+            "engineering",
+            Some("member".to_string()),
+        );
 
         store
             .write_tuples("test-store", vec![tuple1, tuple2], vec![])
@@ -1213,5 +1077,393 @@ mod tests {
             .read_tuples_paginated("test-store", &filter, &pagination)
             .await;
         assert!(matches!(result, Err(StorageError::InvalidFilter { .. })));
+    }
+
+    // ==========================================================================
+    // Section 4: Tuple Storage with Conditions
+    // ==========================================================================
+
+    // Test: Can write tuple with condition name
+    #[tokio::test]
+    async fn test_can_write_tuple_with_condition_name() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuple = StoredTuple::with_condition(
+            "document",
+            "doc1",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "time_bound",
+            None,
+        );
+
+        store.write_tuple("test-store", tuple).await.unwrap();
+
+        let tuples = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(tuples.len(), 1);
+        assert_eq!(tuples[0].condition_name, Some("time_bound".to_string()));
+    }
+
+    // Test: Can read tuple with condition
+    #[tokio::test]
+    async fn test_can_read_tuple_with_condition() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let mut context = std::collections::HashMap::new();
+        context.insert(
+            "expires_at".to_string(),
+            serde_json::json!("2024-12-31T23:59:59Z"),
+        );
+
+        let tuple = StoredTuple::with_condition(
+            "document",
+            "doc1",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "time_bound",
+            Some(context.clone()),
+        );
+
+        store.write_tuple("test-store", tuple).await.unwrap();
+
+        // Read it back
+        let filter = TupleFilter {
+            object_type: Some("document".to_string()),
+            object_id: Some("doc1".to_string()),
+            ..Default::default()
+        };
+        let tuples = store.read_tuples("test-store", &filter).await.unwrap();
+
+        assert_eq!(tuples.len(), 1);
+        assert_eq!(tuples[0].condition_name, Some("time_bound".to_string()));
+        assert!(tuples[0].condition_context.is_some());
+        let read_context = tuples[0].condition_context.as_ref().unwrap();
+        assert_eq!(
+            read_context.get("expires_at"),
+            Some(&serde_json::json!("2024-12-31T23:59:59Z"))
+        );
+    }
+
+    // Test: Condition parameters stored in tuple
+    #[tokio::test]
+    async fn test_condition_parameters_stored_in_tuple() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let mut context = std::collections::HashMap::new();
+        context.insert("max_uses".to_string(), serde_json::json!(10));
+        context.insert("region".to_string(), serde_json::json!("us-west-2"));
+        context.insert("is_active".to_string(), serde_json::json!(true));
+
+        let tuple = StoredTuple::with_condition(
+            "resource",
+            "resource1",
+            "access",
+            "user",
+            "bob",
+            None,
+            "usage_limit",
+            Some(context),
+        );
+
+        store.write_tuple("test-store", tuple).await.unwrap();
+
+        let tuples = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(tuples.len(), 1);
+
+        let stored_context = tuples[0].condition_context.as_ref().unwrap();
+        assert_eq!(stored_context.get("max_uses"), Some(&serde_json::json!(10)));
+        assert_eq!(
+            stored_context.get("region"),
+            Some(&serde_json::json!("us-west-2"))
+        );
+        assert_eq!(
+            stored_context.get("is_active"),
+            Some(&serde_json::json!(true))
+        );
+    }
+
+    // Test: InMemoryStore stores condition data correctly
+    #[tokio::test]
+    async fn test_inmemory_store_stores_condition_data() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Write tuples with and without conditions
+        let tuple_no_condition = StoredTuple::new("doc", "d1", "viewer", "user", "alice", None);
+
+        let mut context = std::collections::HashMap::new();
+        context.insert("key".to_string(), serde_json::json!("value"));
+        let tuple_with_condition = StoredTuple::with_condition(
+            "doc",
+            "d2",
+            "viewer",
+            "user",
+            "bob",
+            None,
+            "cond1",
+            Some(context),
+        );
+
+        let tuple_condition_only = StoredTuple::with_condition(
+            "doc", "d3", "viewer", "user", "charlie", None, "cond2", None,
+        );
+
+        store
+            .write_tuples(
+                "test-store",
+                vec![
+                    tuple_no_condition.clone(),
+                    tuple_with_condition.clone(),
+                    tuple_condition_only.clone(),
+                ],
+                vec![],
+            )
+            .await
+            .unwrap();
+
+        let tuples = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(tuples.len(), 3);
+
+        // Verify each tuple's condition data
+        let d1 = tuples.iter().find(|t| t.object_id == "d1").unwrap();
+        assert!(d1.condition_name.is_none());
+        assert!(d1.condition_context.is_none());
+
+        let d2 = tuples.iter().find(|t| t.object_id == "d2").unwrap();
+        assert_eq!(d2.condition_name, Some("cond1".to_string()));
+        assert!(d2.condition_context.is_some());
+        assert_eq!(
+            d2.condition_context.as_ref().unwrap().get("key"),
+            Some(&serde_json::json!("value"))
+        );
+
+        let d3 = tuples.iter().find(|t| t.object_id == "d3").unwrap();
+        assert_eq!(d3.condition_name, Some("cond2".to_string()));
+        assert!(d3.condition_context.is_none());
+    }
+
+    // Test: Tuples with same fields but different conditions are stored separately
+    #[tokio::test]
+    async fn test_tuples_with_different_conditions_stored_separately() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Same user/object/relation but different conditions
+        let tuple1 = StoredTuple::new("doc", "d1", "viewer", "user", "alice", None);
+
+        let tuple2 = StoredTuple::with_condition(
+            "doc", "d1", "viewer", "user", "alice", None, "cond1", None,
+        );
+
+        store
+            .write_tuples("test-store", vec![tuple1, tuple2], vec![])
+            .await
+            .unwrap();
+
+        let tuples = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+
+        // Both tuples should be stored since they have different condition_name
+        assert_eq!(tuples.len(), 2);
+
+        let without_cond = tuples.iter().find(|t| t.condition_name.is_none()).unwrap();
+        let with_cond = tuples
+            .iter()
+            .find(|t| t.condition_name == Some("cond1".to_string()))
+            .unwrap();
+
+        assert_eq!(without_cond.object_id, "d1");
+        assert_eq!(with_cond.object_id, "d1");
+    }
+
+    // Test: Can query tuples by condition name using TupleFilter
+    #[tokio::test]
+    async fn test_can_query_tuples_by_condition_name() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Write tuples with different conditions
+        let tuple_no_cond = StoredTuple::new("doc", "d1", "viewer", "user", "alice", None);
+        let tuple_time_bound = StoredTuple::with_condition(
+            "doc",
+            "d2",
+            "viewer",
+            "user",
+            "bob",
+            None,
+            "time_bound",
+            None,
+        );
+        let tuple_region = StoredTuple::with_condition(
+            "doc",
+            "d3",
+            "viewer",
+            "user",
+            "charlie",
+            None,
+            "region_check",
+            None,
+        );
+        let tuple_time_bound2 = StoredTuple::with_condition(
+            "doc",
+            "d4",
+            "editor",
+            "user",
+            "dave",
+            None,
+            "time_bound",
+            None,
+        );
+
+        store
+            .write_tuples(
+                "test-store",
+                vec![
+                    tuple_no_cond,
+                    tuple_time_bound,
+                    tuple_region,
+                    tuple_time_bound2,
+                ],
+                vec![],
+            )
+            .await
+            .unwrap();
+
+        // Query for tuples with "time_bound" condition
+        let filter = TupleFilter {
+            condition_name: Some("time_bound".to_string()),
+            ..Default::default()
+        };
+        let tuples = store.read_tuples("test-store", &filter).await.unwrap();
+        assert_eq!(tuples.len(), 2);
+        assert!(tuples
+            .iter()
+            .all(|t| t.condition_name == Some("time_bound".to_string())));
+
+        // Query for tuples with "region_check" condition
+        let filter = TupleFilter {
+            condition_name: Some("region_check".to_string()),
+            ..Default::default()
+        };
+        let tuples = store.read_tuples("test-store", &filter).await.unwrap();
+        assert_eq!(tuples.len(), 1);
+        assert_eq!(tuples[0].user_id, "charlie");
+
+        // Query for non-existent condition
+        let filter = TupleFilter {
+            condition_name: Some("nonexistent".to_string()),
+            ..Default::default()
+        };
+        let tuples = store.read_tuples("test-store", &filter).await.unwrap();
+        assert!(tuples.is_empty());
+
+        // Query without condition filter returns all
+        let tuples = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(tuples.len(), 4);
+    }
+
+    // Test: Can combine condition filter with other filters
+    #[tokio::test]
+    async fn test_can_combine_condition_filter_with_other_filters() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Write tuples with various attributes and conditions
+        let tuples = vec![
+            StoredTuple::with_condition(
+                "doc",
+                "d1",
+                "viewer",
+                "user",
+                "alice",
+                None,
+                "time_bound",
+                None,
+            ),
+            StoredTuple::with_condition(
+                "doc",
+                "d1",
+                "editor",
+                "user",
+                "alice",
+                None,
+                "time_bound",
+                None,
+            ),
+            StoredTuple::with_condition(
+                "doc",
+                "d2",
+                "viewer",
+                "user",
+                "alice",
+                None,
+                "time_bound",
+                None,
+            ),
+            StoredTuple::with_condition(
+                "doc",
+                "d1",
+                "viewer",
+                "user",
+                "bob",
+                None,
+                "region_check",
+                None,
+            ),
+        ];
+
+        store
+            .write_tuples("test-store", tuples, vec![])
+            .await
+            .unwrap();
+
+        // Combine condition filter with object filter
+        let filter = TupleFilter {
+            object_type: Some("doc".to_string()),
+            object_id: Some("d1".to_string()),
+            condition_name: Some("time_bound".to_string()),
+            ..Default::default()
+        };
+        let result = store.read_tuples("test-store", &filter).await.unwrap();
+        assert_eq!(result.len(), 2); // viewer and editor for alice on d1 with time_bound
+
+        // Combine condition filter with relation filter
+        let filter = TupleFilter {
+            relation: Some("viewer".to_string()),
+            condition_name: Some("time_bound".to_string()),
+            ..Default::default()
+        };
+        let result = store.read_tuples("test-store", &filter).await.unwrap();
+        assert_eq!(result.len(), 2); // d1 and d2 viewers with time_bound
+
+        // Combine condition filter with user filter
+        let filter = TupleFilter {
+            user: Some("user:alice".to_string()),
+            condition_name: Some("time_bound".to_string()),
+            ..Default::default()
+        };
+        let result = store.read_tuples("test-store", &filter).await.unwrap();
+        assert_eq!(result.len(), 3); // All alice tuples have time_bound
     }
 }
