@@ -23,11 +23,11 @@
 //! ```
 
 use config::{Config, ConfigError, Environment, File, FileFormat};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Server configuration.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct ServerConfig {
     /// Server settings
     #[serde(default)]
@@ -51,7 +51,7 @@ pub struct ServerConfig {
 }
 
 /// Server network settings.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ServerSettings {
     /// Host to bind to
     #[serde(default = "default_host")]
@@ -98,7 +98,7 @@ fn default_max_connections() -> usize {
 }
 
 /// Storage backend settings.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct StorageSettings {
     /// Storage backend type: "memory" or "postgres"
     #[serde(default = "default_storage_backend")]
@@ -140,7 +140,7 @@ fn default_connection_timeout() -> u64 {
 }
 
 /// Logging settings.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct LoggingSettings {
     /// Log level: "trace", "debug", "info", "warn", "error"
     #[serde(default = "default_log_level")]
@@ -165,7 +165,7 @@ fn default_log_level() -> String {
 }
 
 /// Metrics settings.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct MetricsSettings {
     /// Enable metrics endpoint
     #[serde(default = "default_true")]
@@ -194,7 +194,7 @@ fn default_metrics_path() -> String {
 }
 
 /// Tracing settings (OpenTelemetry/Jaeger).
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct TracingSettings {
     /// Enable distributed tracing
     #[serde(default)]
@@ -329,8 +329,14 @@ impl ServerConfig {
             });
         }
 
-        // Validate postgres requires database_url
-        if self.storage.backend == "postgres" && self.storage.database_url.is_none() {
+        // Validate postgres requires non-empty database_url
+        if self.storage.backend == "postgres"
+            && self
+                .storage
+                .database_url
+                .as_deref()
+                .map_or(true, |s| s.trim().is_empty())
+        {
             return Err(ConfigLoadError::Invalid {
                 message: "storage.database_url is required when backend is 'postgres'".to_string(),
             });
@@ -348,93 +354,6 @@ impl ServerConfig {
         }
 
         Ok(())
-    }
-}
-
-// Implement Serialize for Config::try_from to work
-impl serde::Serialize for ServerConfig {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("ServerConfig", 5)?;
-        state.serialize_field("server", &self.server)?;
-        state.serialize_field("storage", &self.storage)?;
-        state.serialize_field("logging", &self.logging)?;
-        state.serialize_field("metrics", &self.metrics)?;
-        state.serialize_field("tracing", &self.tracing)?;
-        state.end()
-    }
-}
-
-impl serde::Serialize for ServerSettings {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("ServerSettings", 4)?;
-        state.serialize_field("host", &self.host)?;
-        state.serialize_field("port", &self.port)?;
-        state.serialize_field("request_timeout_secs", &self.request_timeout_secs)?;
-        state.serialize_field("max_connections", &self.max_connections)?;
-        state.end()
-    }
-}
-
-impl serde::Serialize for StorageSettings {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("StorageSettings", 4)?;
-        state.serialize_field("backend", &self.backend)?;
-        state.serialize_field("database_url", &self.database_url)?;
-        state.serialize_field("pool_size", &self.pool_size)?;
-        state.serialize_field("connection_timeout_secs", &self.connection_timeout_secs)?;
-        state.end()
-    }
-}
-
-impl serde::Serialize for LoggingSettings {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("LoggingSettings", 2)?;
-        state.serialize_field("level", &self.level)?;
-        state.serialize_field("json", &self.json)?;
-        state.end()
-    }
-}
-
-impl serde::Serialize for MetricsSettings {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("MetricsSettings", 2)?;
-        state.serialize_field("enabled", &self.enabled)?;
-        state.serialize_field("path", &self.path)?;
-        state.end()
-    }
-}
-
-impl serde::Serialize for TracingSettings {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("TracingSettings", 3)?;
-        state.serialize_field("enabled", &self.enabled)?;
-        state.serialize_field("jaeger_endpoint", &self.jaeger_endpoint)?;
-        state.serialize_field("service_name", &self.service_name)?;
-        state.end()
     }
 }
 
@@ -544,6 +463,24 @@ storage:
         let mut config = ServerConfig::default();
         config.storage.backend = "postgres".to_string();
         config.storage.database_url = None;
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("database_url"));
+
+        // Test postgres with empty database_url
+        let mut config = ServerConfig::default();
+        config.storage.backend = "postgres".to_string();
+        config.storage.database_url = Some("".to_string());
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("database_url"));
+
+        // Test postgres with whitespace-only database_url
+        let mut config = ServerConfig::default();
+        config.storage.backend = "postgres".to_string();
+        config.storage.database_url = Some("   ".to_string());
         let result = config.validate();
         assert!(result.is_err());
         let err = result.unwrap_err();
