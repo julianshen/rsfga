@@ -1264,16 +1264,16 @@ condition time_bound_access(current_time: timestamp, expires_at: timestamp) {
 - [x] Test: Can query tuples by condition name
 - [x] Test: Can combine condition filter with other filters (bonus)
 
-#### Section 5: Check with Condition Evaluation
+#### Section 5: Check with Condition Evaluation ✅ COMPLETE
 
-- [ ] Test: Check evaluates tuple condition with context
-- [ ] Test: Check returns false when condition evaluates false
-- [ ] Test: Check returns true when condition evaluates true
-- [ ] Test: Check without required context returns error (not false)
-- [ ] Test: Check with multiple conditions evaluates all
-- [ ] Test: Condition evaluation respects tuple's condition params
-- [ ] Test: Contextual tuples with conditions work
-- [ ] Test: Batch check evaluates conditions correctly
+- [x] Test: Check evaluates tuple condition with context
+- [x] Test: Check returns false when condition evaluates false
+- [x] Test: Check returns true when condition evaluates true
+- [x] Test: Check without required context returns error (not false)
+- [x] Test: Check with multiple conditions evaluates all
+- [x] Test: Condition evaluation respects tuple's condition params
+- [x] Test: Contextual tuples with conditions work
+- [x] Test: Batch check evaluates conditions correctly
 
 #### Section 6: API Integration
 

@@ -868,15 +868,19 @@ where
         let mut context_map: HashMap<String, CelValue> = HashMap::new();
 
         // First, add request context (lower priority)
-        for (k, v) in request_context {
-            context_map.insert(k.clone(), json_to_cel_value(v));
-        }
+        context_map.extend(
+            request_context
+                .iter()
+                .map(|(k, v)| (k.clone(), json_to_cel_value(v))),
+        );
 
         // Then, add tuple condition context (higher priority - overwrites request context)
         if let Some(tuple_ctx) = tuple_condition_context {
-            for (k, v) in tuple_ctx {
-                context_map.insert(k.clone(), json_to_cel_value(v));
-            }
+            context_map.extend(
+                tuple_ctx
+                    .iter()
+                    .map(|(k, v)| (k.clone(), json_to_cel_value(v))),
+            );
         }
 
         cel_ctx.set_map("context", context_map);

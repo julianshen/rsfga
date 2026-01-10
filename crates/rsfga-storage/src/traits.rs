@@ -134,6 +134,21 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
             });
         }
     }
+    if let Some(ref condition_name) = tuple.condition_name {
+        if condition_name.is_empty() {
+            return Err(StorageError::InvalidInput {
+                message: "condition_name cannot be empty if provided".to_string(),
+            });
+        }
+        if condition_name.len() > MAX_FIELD_LENGTH {
+            return Err(StorageError::InvalidInput {
+                message: format!(
+                    "condition_name exceeds maximum length of {} characters",
+                    MAX_FIELD_LENGTH
+                ),
+            });
+        }
+    }
     Ok(())
 }
 
