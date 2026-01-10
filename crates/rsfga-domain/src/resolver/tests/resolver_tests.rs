@@ -3587,8 +3587,9 @@ async fn test_check_returns_true_when_condition_evaluates_true() {
 
 /// Test: Condition evaluation respects tuple's condition params.
 ///
-/// Tuple-specific condition context should be merged with request context,
-/// with request context taking priority.
+/// Tuple-specific condition context is merged with request context.
+/// Per OpenFGA spec, tuple context takes precedence over request context
+/// for overlapping keys (see test_tuple_context_takes_precedence_over_request).
 #[tokio::test]
 async fn test_condition_evaluation_respects_tuple_condition_params() {
     let tuple_reader = Arc::new(MockTupleReader::new());
@@ -3841,5 +3842,78 @@ async fn test_check_with_multiple_tuples_evaluates_all() {
     assert!(
         !result2.allowed,
         "No conditions pass, access should be denied"
+    );
+}
+
+/// Test: Tuple context takes precedence over request context for overlapping keys.
+///
+/// Per OpenFGA spec: "If you provide a context value in the request context
+/// that is also written/persisted in the relationship tuple, then the context
+/// values written in the relationship tuple take precedence."
+#[tokio::test]
+async fn test_tuple_context_takes_precedence_over_request() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Condition that checks if department is "engineering"
+    let condition =
+        Condition::new("dept_check", "context.department == \"engineering\"").unwrap();
+    model_reader.add_condition("store1", condition).await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Tuple with condition context: department = "engineering"
+    let mut tuple_context = HashMap::new();
+    tuple_context.insert("department".to_string(), serde_json::json!("engineering"));
+
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "readme",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "dept_check",
+            Some(tuple_context),
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Request context tries to override department to "sales"
+    // Per OpenFGA spec, tuple context should take precedence
+    let mut request_context = HashMap::new();
+    request_context.insert("department".to_string(), serde_json::json!("sales"));
+
+    let request = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:readme".to_string(),
+        vec![],
+        request_context,
+    );
+
+    let result = resolver.check(&request).await.unwrap();
+    assert!(
+        result.allowed,
+        "Tuple context (department=engineering) takes precedence over request context \
+         (department=sales), so condition should pass"
     );
 }

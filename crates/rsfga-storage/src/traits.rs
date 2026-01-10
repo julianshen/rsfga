@@ -245,10 +245,9 @@ pub fn parse_user_filter(user: &str) -> StorageResult<(String, String, Option<St
 /// When a condition is specified, the tuple is only considered valid
 /// if the condition evaluates to true during authorization checks.
 ///
-/// Note: Hash is implemented manually to exclude condition_context (since
-/// HashMap and serde_json::Value don't implement Hash). Two tuples with the
-/// same key fields but different contexts are considered equal for storage
-/// deduplication purposes.
+/// Note: Hash is implemented manually because HashMap<String, serde_json::Value>
+/// doesn't implement Hash. The condition_context is included in both PartialEq
+/// and Hash - tuples with different contexts are distinct and both stored.
 #[derive(Debug, Clone)]
 pub struct StoredTuple {
     pub object_type: String,
@@ -343,10 +342,11 @@ impl std::hash::Hash for StoredTuple {
         self.user_id.hash(state);
         self.user_relation.hash(state);
         self.condition_name.hash(state);
-        // Hash condition_context by serializing to canonical JSON string
-        // This ensures consistent hashing even though serde_json::Value doesn't implement Hash
+        // Hash condition_context by serializing to canonical JSON string with sorted keys
+        // Using BTreeMap ensures deterministic key ordering for consistent hashing
         if let Some(ref ctx) = self.condition_context {
-            if let Ok(json_str) = serde_json::to_string(ctx) {
+            let sorted: std::collections::BTreeMap<_, _> = ctx.iter().collect();
+            if let Ok(json_str) = serde_json::to_string(&sorted) {
                 json_str.hash(state);
             }
         }
