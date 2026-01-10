@@ -15,10 +15,13 @@ use tracing::error;
 use rsfga_storage::{DataStore, StorageError};
 
 use super::state::AppState;
+use crate::observability::{metrics_handler, MetricsState};
 use crate::utils::{format_user, parse_object, parse_user, MAX_BATCH_SIZE};
 
-/// Creates the HTTP router with all OpenFGA-compatible endpoints.
-pub fn create_router<S: DataStore>(state: AppState<S>) -> Router {
+/// Private helper for common API routes.
+///
+/// This consolidates all OpenFGA-compatible routes in one place to avoid duplication.
+fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
     Router::new()
         // Store management
         .route("/stores", post(create_store::<S>))
@@ -32,9 +35,48 @@ pub fn create_router<S: DataStore>(state: AppState<S>) -> Router {
         .route("/stores/:store_id/write", post(write_tuples::<S>))
         .route("/stores/:store_id/read", post(read_tuples::<S>))
         .route("/stores/:store_id/list-objects", post(list_objects::<S>))
-        // Health check
+}
+
+/// Creates the HTTP router with all OpenFGA-compatible endpoints.
+pub fn create_router<S: DataStore>(state: AppState<S>) -> Router {
+    let shared_state = Arc::new(state);
+    api_routes::<S>()
+        // Health and readiness checks
         .route("/health", get(health_check))
-        .with_state(Arc::new(state))
+        .route("/ready", get(readiness_check::<S>))
+        .with_state(shared_state)
+}
+
+/// Creates the HTTP router with observability endpoints.
+///
+/// This includes all OpenFGA-compatible endpoints plus:
+/// - `/metrics` - Prometheus metrics endpoint
+/// - `/health` - Basic health check
+/// - `/ready` - Readiness check (validates dependencies)
+///
+/// # Arguments
+///
+/// * `state` - Application state with storage backend
+/// * `metrics_state` - Metrics state for Prometheus endpoint
+pub fn create_router_with_observability<S: DataStore>(
+    state: AppState<S>,
+    metrics_state: MetricsState,
+) -> Router {
+    let shared_state = Arc::new(state);
+
+    // Create the API router with readiness check
+    let api_router = api_routes::<S>()
+        .route("/ready", get(readiness_check::<S>))
+        .with_state(shared_state);
+
+    // Create observability router (metrics, health)
+    let observability_router = Router::new()
+        .route("/metrics", get(metrics_handler))
+        .route("/health", get(health_check))
+        .with_state(metrics_state);
+
+    // Merge routers
+    api_router.merge(observability_router)
 }
 
 // ============================================================
@@ -98,11 +140,52 @@ impl From<StorageError> for ApiError {
 type ApiResult<T> = Result<T, ApiError>;
 
 // ============================================================
-// Health Check
+// Health and Readiness Checks
 // ============================================================
 
+/// Basic health check - returns 200 if the server is running.
+///
+/// This is a liveness probe that indicates the server process is alive.
+/// It does NOT check dependencies.
 async fn health_check() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
+}
+
+/// Readiness check - validates that all dependencies are accessible.
+///
+/// This is a readiness probe that checks:
+/// - Storage backend connectivity (by attempting to list stores)
+///
+/// Returns 200 if ready, 503 if dependencies are unavailable.
+///
+/// Note: Error details are logged but not exposed in the response
+/// to avoid leaking internal implementation details.
+async fn readiness_check<S: DataStore>(State(state): State<Arc<AppState<S>>>) -> impl IntoResponse {
+    // Check storage connectivity by attempting to list stores
+    match state.storage.list_stores().await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "ready",
+                "checks": {
+                    "storage": "ok"
+                }
+            })),
+        ),
+        Err(e) => {
+            // Log the full error for debugging, but don't expose it
+            error!("Readiness check failed: storage unavailable: {}", e);
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "status": "not_ready",
+                    "checks": {
+                        "storage": "unavailable"
+                    }
+                })),
+            )
+        }
+    }
 }
 
 // ============================================================

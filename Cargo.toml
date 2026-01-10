@@ -67,10 +67,12 @@ moka = { version = "0.12", features = ["future"] }
 # Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry = "0.22"
 metrics = "0.22"
 metrics-exporter-prometheus = "0.13"
 opentelemetry = "0.21"
-opentelemetry-jaeger = "0.20"
+opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
+opentelemetry-jaeger = { version = "0.20", features = ["rt-tokio"] }
 
 # Error handling
 thiserror = "1.0"

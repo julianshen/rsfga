@@ -40,6 +40,17 @@ anyhow = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+
+# Metrics
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+
+# OpenTelemetry (for Jaeger export)
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-jaeger = { workspace = true }
 
 # Utilities
 uuid = { workspace = true }
@@ -48,5 +59,4 @@ uuid = { workspace = true }
 proptest = { workspace = true }
 mockall = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
-tracing-subscriber = { workspace = true }
 futures = { workspace = true }

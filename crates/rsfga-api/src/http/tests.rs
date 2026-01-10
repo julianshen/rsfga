@@ -6,12 +6,14 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use metrics_exporter_prometheus::PrometheusBuilder;
 use tower::ServiceExt; // for oneshot
 
 use rsfga_storage::{DataStore, MemoryDataStore};
 
-use super::routes::create_router;
+use super::routes::{create_router, create_router_with_observability};
 use super::state::AppState;
+use crate::observability::MetricsState;
 
 /// Helper to create a test app with in-memory storage.
 fn test_app() -> axum::Router {
@@ -390,4 +392,111 @@ async fn test_validation_errors_return_400_with_details() {
     // Should have error details
     assert!(json.get("code").is_some());
     assert!(json.get("message").is_some());
+}
+
+// ============================================================
+// Observability Tests (Milestone 1.9, Section 1)
+// ============================================================
+
+/// Test: Metrics endpoint exposes Prometheus metrics
+///
+/// Verifies that the /metrics endpoint returns Prometheus-formatted metrics.
+#[tokio::test]
+async fn test_metrics_endpoint_exposes_prometheus_metrics() {
+    // Create metrics state with a fresh recorder
+    // Note: We use build_recorder() instead of install_recorder() to avoid
+    // conflicts with other tests that may install their own recorder.
+    let builder = PrometheusBuilder::new();
+    let handle = builder.build_recorder().handle();
+    let metrics_state = MetricsState::new(handle);
+
+    // Create app with observability
+    let storage = Arc::new(MemoryDataStore::new());
+    let state = AppState::new(storage);
+    let app = create_router_with_observability(state, metrics_state);
+
+    // Request the metrics endpoint
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should return 200 OK
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Body should be valid Prometheus format (text/plain with optional # comments)
+    let body = axum::body::to_bytes(response.into_body(), 65536)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8_lossy(&body);
+
+    // Prometheus output is either empty or contains metric lines
+    // An empty response is valid when no metrics have been recorded
+    assert!(
+        body_str.is_empty() || body_str.contains("# ") || body_str.contains('\n'),
+        "Metrics output should be valid Prometheus format"
+    );
+}
+
+/// Test: Health check endpoint returns 200
+///
+/// Verifies the health endpoint returns 200 OK with status information.
+#[tokio::test]
+async fn test_health_check_endpoint_returns_200() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Should have status field
+    assert_eq!(json["status"], "ok");
+}
+
+/// Test: Readiness check validates dependencies
+///
+/// Verifies the readiness endpoint returns 200 OK when storage is accessible.
+#[tokio::test]
+async fn test_readiness_check_validates_dependencies() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should return 200 OK when storage is accessible
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Should have status and checks fields
+    assert_eq!(json["status"], "ready");
+    assert_eq!(json["checks"]["storage"], "ok");
 }
