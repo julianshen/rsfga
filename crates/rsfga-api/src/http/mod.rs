@@ -20,7 +20,10 @@
 mod routes;
 mod state;
 
-pub use routes::{create_router, create_router_with_observability};
+pub use routes::{
+    create_router, create_router_with_body_limit, create_router_with_observability,
+    create_router_with_observability_and_limit, DEFAULT_BODY_LIMIT,
+};
 pub use state::AppState;
 
 #[cfg(test)]

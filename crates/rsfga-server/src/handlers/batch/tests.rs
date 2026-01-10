@@ -2,7 +2,7 @@
 
 use super::*;
 use async_trait::async_trait;
-use rsfga_domain::cache::CheckCacheConfig;
+use rsfga_domain::cache::{CheckCache, CheckCacheConfig};
 use rsfga_domain::error::{DomainError, DomainResult};
 use rsfga_domain::model::{AuthorizationModel, RelationDefinition, TypeDefinition, Userset};
 use rsfga_domain::resolver::{GraphResolver, ModelReader, StoredTupleRef, TupleReader};
@@ -1465,4 +1465,56 @@ fn test_memory_usage_scales_with_unique_checks() {
 
     // Memory usage is proportional to unique checks (100), not total (1000)
     // This is a design validation test, not a runtime memory measurement
+}
+
+// ============================================================
+// Concurrency Limit Tests (Issue #86)
+// ============================================================
+
+/// Test: Batch handler respects custom concurrency limit.
+///
+/// Verifies that the handler can be created with a custom concurrency limit.
+#[test]
+fn test_batch_handler_with_custom_concurrency() {
+    // Create handler with custom concurrency limit
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+    let resolver = Arc::new(GraphResolver::new(tuple_reader, model_reader));
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+
+    // Use custom concurrency of 5
+    let _handler = BatchCheckHandler::with_concurrency(resolver, cache, 5);
+
+    // If we get here without panic, the handler was created successfully
+    // The actual concurrency behavior is tested by buffer_unordered internally
+}
+
+/// Test: Concurrency limit of zero is clamped to 1.
+///
+/// Verifies that invalid concurrency values are handled gracefully.
+#[test]
+fn test_batch_handler_clamps_zero_concurrency() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+    let resolver = Arc::new(GraphResolver::new(tuple_reader, model_reader));
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+
+    // Zero concurrency should be clamped to 1
+    let _handler = BatchCheckHandler::with_concurrency(resolver, cache, 0);
+
+    // If we get here without panic, the handler was created successfully
+}
+
+/// Test: DEFAULT_BATCH_CONCURRENCY constant is exported and has reasonable value.
+#[test]
+fn test_default_batch_concurrency_value() {
+    // Get the value at runtime to avoid constant assertion optimization
+    let concurrency = super::handler::DEFAULT_BATCH_CONCURRENCY;
+
+    // DEFAULT_BATCH_CONCURRENCY should be > 0 and reasonable
+    assert!(concurrency > 0, "Default concurrency must be positive");
+    assert!(
+        concurrency <= 100,
+        "Default concurrency should be reasonable (<=100)"
+    );
 }

@@ -84,11 +84,16 @@ pub async fn post_json(
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    // Parse JSON, allowing empty responses (e.g., 404 Not Found with no body)
+    // Parse JSON, allowing empty or non-JSON responses (e.g., 413 Payload Too Large)
     let json: serde_json::Value = if body.is_empty() {
         serde_json::json!({})
     } else {
-        serde_json::from_slice(&body).expect("Failed to parse JSON response")
+        serde_json::from_slice(&body).unwrap_or_else(|_| {
+            // For non-JSON responses (like plain text error messages), wrap in JSON
+            serde_json::json!({
+                "raw_body": String::from_utf8_lossy(&body).to_string()
+            })
+        })
     };
     (status, json)
 }

@@ -30,7 +30,7 @@ futures = "0.3"
 # HTTP server
 axum = "0.7"
 tower = "0.4"
-tower-http = { version = "0.5", features = ["trace", "cors", "compression-gzip"] }
+tower-http = { version = "0.5", features = ["trace", "cors", "compression-gzip", "limit"] }
 hyper = "1.1"
 
 # gRPC

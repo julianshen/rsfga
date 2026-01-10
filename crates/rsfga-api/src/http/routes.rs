@@ -10,6 +10,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use tower_http::limit::RequestBodyLimitLayer;
 use tracing::error;
 
 use rsfga_storage::{DataStore, StorageError};
@@ -17,6 +18,10 @@ use rsfga_storage::{DataStore, StorageError};
 use super::state::AppState;
 use crate::observability::{metrics_handler, MetricsState};
 use crate::utils::{format_user, parse_object, parse_user, MAX_BATCH_SIZE};
+
+/// Default request body size limit (1MB).
+/// This prevents memory exhaustion from oversized payloads.
+pub const DEFAULT_BODY_LIMIT: usize = 1024 * 1024;
 
 /// Private helper for common API routes.
 ///
@@ -38,13 +43,30 @@ fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
 }
 
 /// Creates the HTTP router with all OpenFGA-compatible endpoints.
+///
+/// Applies the default body size limit (1MB) to protect against oversized payloads.
 pub fn create_router<S: DataStore>(state: AppState<S>) -> Router {
+    create_router_with_body_limit(state, DEFAULT_BODY_LIMIT)
+}
+
+/// Creates the HTTP router with a custom body size limit.
+///
+/// # Arguments
+///
+/// * `state` - Application state with storage backend
+/// * `body_limit` - Maximum request body size in bytes
+pub fn create_router_with_body_limit<S: DataStore>(
+    state: AppState<S>,
+    body_limit: usize,
+) -> Router {
     let shared_state = Arc::new(state);
     api_routes::<S>()
         // Health and readiness checks
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check::<S>))
         .with_state(shared_state)
+        // Apply body size limit layer
+        .layer(RequestBodyLimitLayer::new(body_limit))
 }
 
 /// Creates the HTTP router with observability endpoints.
@@ -54,6 +76,8 @@ pub fn create_router<S: DataStore>(state: AppState<S>) -> Router {
 /// - `/health` - Basic health check
 /// - `/ready` - Readiness check (validates dependencies)
 ///
+/// Applies the default body size limit (1MB) to protect against oversized payloads.
+///
 /// # Arguments
 ///
 /// * `state` - Application state with storage backend
@@ -62,14 +86,31 @@ pub fn create_router_with_observability<S: DataStore>(
     state: AppState<S>,
     metrics_state: MetricsState,
 ) -> Router {
+    create_router_with_observability_and_limit(state, metrics_state, DEFAULT_BODY_LIMIT)
+}
+
+/// Creates the HTTP router with observability endpoints and custom body size limit.
+///
+/// # Arguments
+///
+/// * `state` - Application state with storage backend
+/// * `metrics_state` - Metrics state for Prometheus endpoint
+/// * `body_limit` - Maximum request body size in bytes
+pub fn create_router_with_observability_and_limit<S: DataStore>(
+    state: AppState<S>,
+    metrics_state: MetricsState,
+    body_limit: usize,
+) -> Router {
     let shared_state = Arc::new(state);
 
     // Create the API router with readiness check
     let api_router = api_routes::<S>()
         .route("/ready", get(readiness_check::<S>))
-        .with_state(shared_state);
+        .with_state(shared_state)
+        // Apply body size limit layer to API routes only
+        .layer(RequestBodyLimitLayer::new(body_limit));
 
-    // Create observability router (metrics, health)
+    // Create observability router (metrics, health) - no body limit needed
     let observability_router = Router::new()
         .route("/metrics", get(metrics_handler))
         .route("/health", get(health_check))

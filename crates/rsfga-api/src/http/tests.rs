@@ -11,7 +11,9 @@ use tower::ServiceExt; // for oneshot
 
 use rsfga_storage::{DataStore, MemoryDataStore};
 
-use super::routes::{create_router, create_router_with_observability};
+use super::routes::{
+    create_router, create_router_with_body_limit, create_router_with_observability,
+};
 use super::state::AppState;
 use crate::observability::MetricsState;
 
@@ -499,4 +501,89 @@ async fn test_readiness_check_validates_dependencies() {
     // Should have status and checks fields
     assert_eq!(json["status"], "ready");
     assert_eq!(json["checks"]["storage"], "ok");
+}
+
+// ============================================================
+// Payload Size Limit Tests (Issue #70)
+// ============================================================
+
+/// Test: Requests within body limit succeed
+///
+/// Verifies that normal-sized requests are processed correctly.
+#[tokio::test]
+async fn test_requests_within_body_limit_succeed() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(storage);
+    // Use a small limit for testing (1KB)
+    let app = create_router_with_body_limit(state, 1024);
+
+    // Small request (well within 1KB limit)
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/check")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "tuple_key": {
+                            "user": "user:alice",
+                            "relation": "viewer",
+                            "object": "document:readme"
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should succeed
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// Test: Requests exceeding body limit are rejected
+///
+/// Verifies that oversized requests return 413 Payload Too Large.
+#[tokio::test]
+async fn test_requests_exceeding_body_limit_rejected() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(storage);
+    // Use a very small limit (100 bytes) for testing
+    let app = create_router_with_body_limit(state, 100);
+
+    // Large request (exceeds 100 bytes limit)
+    let large_payload = r#"{
+        "tuple_key": {
+            "user": "user:alice",
+            "relation": "viewer",
+            "object": "document:readme"
+        },
+        "authorization_model_id": "some-very-long-model-id-that-makes-the-request-exceed-the-limit"
+    }"#;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/check")
+                .header("content-type", "application/json")
+                .body(Body::from(large_payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should return 413 Payload Too Large
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
