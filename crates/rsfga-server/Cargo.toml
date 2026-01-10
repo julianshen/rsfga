@@ -15,6 +15,10 @@ tokio = { workspace = true }
 rsfga-domain = { path = "../rsfga-domain" }
 rsfga-storage = { path = "../rsfga-storage" }
 
+# Configuration
+config = { workspace = true }
+serde = { workspace = true }
+
 # Error handling
 thiserror = { workspace = true }
 anyhow = { workspace = true }
@@ -31,3 +35,5 @@ proptest = { workspace = true }
 mockall = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 async-trait = { workspace = true }
+tempfile = { workspace = true }
+serial_test = { workspace = true }
