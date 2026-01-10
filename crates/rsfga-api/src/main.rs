@@ -66,13 +66,12 @@ async fn main() -> anyhow::Result<()> {
 
     info!(version = env!("CARGO_PKG_VERSION"), "Starting RSFGA server");
 
-    // Initialize metrics
-    let metrics_state = if config.metrics.enabled {
-        info!("Metrics enabled at {}", config.metrics.path);
-        init_metrics()?
-    } else {
-        init_metrics()?
-    };
+    // Initialize metrics (always enabled - config.metrics.enabled reserved for future use)
+    // Note: metrics.path is currently hardcoded to /metrics in the router
+    let metrics_state = init_metrics()?;
+    if config.metrics.enabled {
+        info!("Metrics enabled at /metrics");
+    }
 
     // Create storage backend based on configuration
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
@@ -86,11 +85,9 @@ async fn main() -> anyhow::Result<()> {
             run_server(router, addr).await
         }
         "postgres" => {
-            let database_url = config
-                .storage
-                .database_url
-                .as_ref()
-                .expect("database_url required for postgres backend");
+            let database_url = config.storage.database_url.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("storage.database_url is required for postgres backend")
+            })?;
 
             info!("Connecting to PostgreSQL database");
             let pg_config = PostgresConfig {

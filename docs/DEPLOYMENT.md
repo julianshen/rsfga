@@ -380,6 +380,13 @@ CREATE TABLE IF NOT EXISTS tuples (
 -- Create unique index
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tuples_unique
 ON tuples (store_id, object_type, object_id, relation, user_type, user_id, COALESCE(user_relation, ''));
+
+-- Create performance indexes
+CREATE INDEX IF NOT EXISTS idx_tuples_store ON tuples(store_id);
+CREATE INDEX IF NOT EXISTS idx_tuples_object ON tuples(store_id, object_type, object_id);
+CREATE INDEX IF NOT EXISTS idx_tuples_user ON tuples(store_id, user_type, user_id);
+CREATE INDEX IF NOT EXISTS idx_tuples_relation ON tuples(store_id, object_type, object_id, relation);
+CREATE INDEX IF NOT EXISTS idx_tuples_store_relation ON tuples(store_id, relation);
 ```
 
 ## Health Checks

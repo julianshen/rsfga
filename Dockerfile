@@ -21,7 +21,7 @@
 FROM rust:1.75-bookworm AS builder
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     protobuf-compiler \
     libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -82,10 +82,11 @@ RUN ls -la target/release/rsfga
 # -----------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
+# Install runtime dependencies (including curl for health check)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for security

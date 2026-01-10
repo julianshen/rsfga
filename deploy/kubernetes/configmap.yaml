@@ -12,11 +12,12 @@ data:
       host: "0.0.0.0"
       port: 8080
       request_timeout_secs: 30
-      max_connections: 10000
+      max_connections: 1000
 
     storage:
       backend: postgres
-      pool_size: 10
+      # Pool size should be ~2-5% of max_connections for reasonable DB load
+      pool_size: 20
       connection_timeout_secs: 5
 
     logging:

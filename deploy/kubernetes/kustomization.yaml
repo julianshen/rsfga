@@ -6,7 +6,12 @@ namespace: rsfga
 resources:
   - namespace.yaml
   - configmap.yaml
-  - secret.yaml
+  # Note: secret.yaml is excluded by default to prevent deploying placeholder credentials.
+  # Create your own secret before deploying:
+  #   kubectl create secret generic rsfga-secrets -n rsfga \
+  #     --from-literal=database-url='postgres://user:password@host:5432/rsfga'
+  # Or include secret.yaml and edit it first:
+  #   - secret.yaml
   - deployment.yaml
   - service.yaml
 
@@ -16,5 +21,5 @@ commonLabels:
   app.kubernetes.io/managed-by: kustomize
 
 images:
-  - name: rsfga
+  - name: ghcr.io/julianshen/rsfga
     newTag: v0.1.0

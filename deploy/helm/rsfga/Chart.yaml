@@ -13,13 +13,13 @@ keywords:
   - rbac
   - abac
 
-home: https://github.com/your-org/rsfga
+home: https://github.com/julianshen/rsfga
 sources:
-  - https://github.com/your-org/rsfga
+  - https://github.com/julianshen/rsfga
 
 maintainers:
-  - name: RSFGA Contributors
-    email: maintainers@example.com
+  - name: Julian Shen
+    url: https://github.com/julianshen
 
 annotations:
   artifacthub.io/license: Apache-2.0
