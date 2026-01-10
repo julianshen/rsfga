@@ -1,0 +1,42 @@
+# Build artifacts
+target/
+*.rlib
+*.rmeta
+
+# Version control
+.git/
+.gitignore
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation (not needed for binary build)
+docs/
+*.md
+!README.md
+
+# Test files
+tests/
+*.test
+coverage/
+
+# Local configuration
+*.local*
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/

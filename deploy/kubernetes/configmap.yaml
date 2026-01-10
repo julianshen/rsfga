@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rsfga-config
+  namespace: rsfga
+  labels:
+    app.kubernetes.io/name: rsfga
+    app.kubernetes.io/component: configuration
+data:
+  config.yaml: |
+    server:
+      host: "0.0.0.0"
+      port: 8080
+      request_timeout_secs: 30
+      max_connections: 10000
+
+    storage:
+      backend: postgres
+      pool_size: 10
+      connection_timeout_secs: 5
+
+    logging:
+      level: info
+      json: true
+
+    metrics:
+      enabled: true
+      path: /metrics
+
+    tracing:
+      enabled: false
+      jaeger_endpoint: "jaeger-collector.observability:6831"
+      service_name: rsfga

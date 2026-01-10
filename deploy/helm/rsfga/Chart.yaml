@@ -1,0 +1,26 @@
+apiVersion: v2
+name: rsfga
+description: High-performance OpenFGA-compatible authorization server
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - authorization
+  - permissions
+  - openfga
+  - zanzibar
+  - rbac
+  - abac
+
+home: https://github.com/your-org/rsfga
+sources:
+  - https://github.com/your-org/rsfga
+
+maintainers:
+  - name: RSFGA Contributors
+    email: maintainers@example.com
+
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/category: security

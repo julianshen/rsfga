@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rsfga.fullname" . }}
+  labels:
+    {{- include "rsfga.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    server:
+      host: {{ .Values.config.server.host | quote }}
+      port: {{ .Values.config.server.port }}
+      request_timeout_secs: {{ .Values.config.server.requestTimeoutSecs }}
+      max_connections: {{ .Values.config.server.maxConnections }}
+
+    storage:
+      backend: {{ .Values.config.storage.backend | quote }}
+      pool_size: {{ .Values.config.storage.poolSize }}
+      connection_timeout_secs: {{ .Values.config.storage.connectionTimeoutSecs }}
+
+    logging:
+      level: {{ .Values.config.logging.level | quote }}
+      json: {{ .Values.config.logging.json }}
+
+    metrics:
+      enabled: {{ .Values.config.metrics.enabled }}
+      path: {{ .Values.config.metrics.path | quote }}
+
+    tracing:
+      enabled: {{ .Values.config.tracing.enabled }}
+      jaeger_endpoint: {{ .Values.config.tracing.jaegerEndpoint | quote }}
+      service_name: {{ .Values.config.tracing.serviceName | quote }}
