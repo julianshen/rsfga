@@ -1,0 +1,10 @@
+# Prometheus configuration for RSFGA local development
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'rsfga'
+    static_configs:
+      - targets: ['rsfga:8080']
+    metrics_path: /metrics

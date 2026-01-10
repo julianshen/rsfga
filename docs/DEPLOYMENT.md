@@ -102,46 +102,51 @@ docker run -d \
 
 ### Docker Compose
 
-Create a `docker-compose.yaml`:
+A `docker-compose.yaml` is provided in the repository root for local development and testing.
 
-```yaml
-version: '3.8'
-
-services:
-  rsfga:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      - RSFGA_STORAGE__BACKEND=postgres
-      - RSFGA_STORAGE__DATABASE_URL=postgres://rsfga:changeme@postgres:5432/rsfga
-      - RSFGA_LOGGING__JSON=true
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  postgres:
-    image: postgres:14
-    environment:
-      - POSTGRES_USER=rsfga
-      - POSTGRES_PASSWORD=changeme
-      - POSTGRES_DB=rsfga
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rsfga"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  postgres_data:
-```
-
-Run with:
+**Start with PostgreSQL backend (recommended):**
 
 ```bash
+# Build and start RSFGA with PostgreSQL
 docker-compose up -d
+
+# View logs
+docker-compose logs -f rsfga
+
+# Test the API
+curl http://localhost:8080/health
+```
+
+**Start with in-memory backend (quick testing):**
+
+```bash
+# Start RSFGA with in-memory storage on port 8081
+docker-compose --profile memory up -d rsfga-memory
+
+# Test the API
+curl http://localhost:8081/health
+```
+
+**Start with full observability stack:**
+
+```bash
+# Start with Jaeger and Prometheus
+docker-compose --profile observability up -d
+
+# Access services:
+# - RSFGA: http://localhost:8080
+# - Jaeger UI: http://localhost:16686
+# - Prometheus: http://localhost:9090
+```
+
+**Stop and cleanup:**
+
+```bash
+# Stop all services
+docker-compose down
+
+# Stop and remove volumes (full cleanup)
+docker-compose down -v
 ```
 
 ## Kubernetes
