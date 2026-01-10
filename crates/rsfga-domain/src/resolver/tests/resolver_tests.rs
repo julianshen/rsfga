@@ -3504,11 +3504,7 @@ async fn test_check_without_required_context_returns_error() {
     );
 
     let result = resolver.check(&request).await;
-    assert!(
-        result.is_err(),
-        "Check should fail when required context variable is missing"
-    );
-    let error = result.unwrap_err();
+    let error = result.expect_err("Check should fail when required context variable is missing");
     match error {
         DomainError::ResolverError { message } => {
             assert!(
@@ -4088,11 +4084,7 @@ async fn test_check_returns_error_for_nonexistent_condition() {
     );
 
     let result = resolver.check(&request).await;
-    assert!(
-        result.is_err(),
-        "Should return error when condition is not found in model"
-    );
-    let err = result.unwrap_err();
+    let err = result.expect_err("Should return error when condition is not found in model");
     assert!(
         err.to_string().contains("condition not found"),
         "Error message should indicate condition not found: {}",
@@ -4166,8 +4158,7 @@ async fn test_check_returns_error_for_invalid_cel_expression() {
 
     let result = resolver.check(&request).await;
     // Either the condition creation fails (preferred) or the check fails
-    if result.is_err() {
-        let err = result.unwrap_err();
+    if let Err(err) = result {
         assert!(
             err.to_string().contains("failed to parse")
                 || err.to_string().contains("condition evaluation failed"),
