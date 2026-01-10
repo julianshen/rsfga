@@ -903,12 +903,17 @@ fn json_to_cel_value(value: &serde_json::Value) -> CelValue {
         serde_json::Value::Null => CelValue::Null,
         serde_json::Value::Bool(b) => CelValue::Bool(*b),
         serde_json::Value::Number(n) => {
+            // Try i64 first (most common case for integers)
             if let Some(i) = n.as_i64() {
                 CelValue::Int(i)
+            // Try u64 for large positive integers that don't fit in i64
+            } else if let Some(u) = n.as_u64() {
+                CelValue::UInt(u)
+            // Fall back to f64 for floating point numbers
             } else if let Some(f) = n.as_f64() {
                 CelValue::Float(f)
             } else {
-                // Fallback for very large unsigned integers
+                // This should never happen with valid JSON numbers
                 CelValue::Null
             }
         }
