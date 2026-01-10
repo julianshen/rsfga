@@ -6,6 +6,7 @@
 //! - Write handler for tuple operations
 //! - Read handler for tuple queries
 //! - ListObjects handler
+//! - Configuration management
 //!
 //! # Architecture
 //!
@@ -13,6 +14,7 @@
 //! ┌─────────────────────────────────────────────┐
 //! │               rsfga-server                   │
 //! ├─────────────────────────────────────────────┤
+//! │  config.rs   - Configuration management     │
 //! │  handlers/   - Request handlers             │
 //! │    check.rs       - Single check            │
 //! │    batch_check.rs - Batch checks            │
@@ -21,6 +23,8 @@
 //! └─────────────────────────────────────────────┘
 //! ```
 
+pub mod config;
 pub mod handlers;
 
-// Re-exports will be added when handlers are implemented
+// Re-exports for convenience
+pub use config::{ConfigLoadError, ServerConfig};
