@@ -15,6 +15,7 @@ use tracing::error;
 use rsfga_storage::{DataStore, StorageError};
 
 use super::state::AppState;
+use crate::observability::{metrics_handler, MetricsState};
 use crate::utils::{format_user, parse_object, parse_user, MAX_BATCH_SIZE};
 
 /// Creates the HTTP router with all OpenFGA-compatible endpoints.
@@ -35,6 +36,47 @@ pub fn create_router<S: DataStore>(state: AppState<S>) -> Router {
         // Health check
         .route("/health", get(health_check))
         .with_state(Arc::new(state))
+}
+
+/// Creates the HTTP router with observability endpoints.
+///
+/// This includes all OpenFGA-compatible endpoints plus:
+/// - `/metrics` - Prometheus metrics endpoint
+/// - `/health` - Basic health check
+/// - `/ready` - Readiness check (validates dependencies)
+///
+/// # Arguments
+///
+/// * `state` - Application state with storage backend
+/// * `metrics_state` - Metrics state for Prometheus endpoint
+pub fn create_router_with_observability<S: DataStore>(
+    state: AppState<S>,
+    metrics_state: MetricsState,
+) -> Router {
+    // Create the base API router
+    let api_router = Router::new()
+        // Store management
+        .route("/stores", post(create_store::<S>))
+        .route("/stores", get(list_stores::<S>))
+        .route("/stores/:store_id", get(get_store::<S>))
+        .route("/stores/:store_id", delete(delete_store::<S>))
+        // Authorization operations
+        .route("/stores/:store_id/check", post(check::<S>))
+        .route("/stores/:store_id/batch-check", post(batch_check::<S>))
+        .route("/stores/:store_id/expand", post(expand::<S>))
+        .route("/stores/:store_id/write", post(write_tuples::<S>))
+        .route("/stores/:store_id/read", post(read_tuples::<S>))
+        .route("/stores/:store_id/list-objects", post(list_objects::<S>))
+        .with_state(Arc::new(state));
+
+    // Create observability router
+    let observability_router = Router::new()
+        .route("/metrics", get(metrics_handler))
+        .route("/health", get(health_check))
+        .with_state(metrics_state);
+
+    // Merge routers
+    api_router.merge(observability_router)
 }
 
 // ============================================================

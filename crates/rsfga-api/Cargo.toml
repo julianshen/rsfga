@@ -41,6 +41,10 @@ anyhow = { workspace = true }
 # Tracing
 tracing = { workspace = true }
 
+# Metrics
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+
 # Utilities
 uuid = { workspace = true }
 
