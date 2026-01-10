@@ -71,10 +71,7 @@ pub fn init_metrics() -> MetricsState {
 /// recording happens in the middleware and handlers.
 fn register_default_metrics() {
     // Describe HTTP metrics
-    metrics::describe_counter!(
-        "rsfga_http_requests_total",
-        "Total number of HTTP requests"
-    );
+    metrics::describe_counter!("rsfga_http_requests_total", "Total number of HTTP requests");
     metrics::describe_histogram!(
         "rsfga_http_request_duration_seconds",
         "HTTP request duration in seconds"

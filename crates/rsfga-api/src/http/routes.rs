@@ -161,9 +161,7 @@ async fn health_check() -> impl IntoResponse {
 /// - Storage backend connectivity (by attempting to list stores)
 ///
 /// Returns 200 if ready, 503 if dependencies are unavailable.
-async fn readiness_check<S: DataStore>(
-    State(state): State<Arc<AppState<S>>>,
-) -> impl IntoResponse {
+async fn readiness_check<S: DataStore>(State(state): State<Arc<AppState<S>>>) -> impl IntoResponse {
     // Check storage connectivity by attempting to list stores
     match state.storage.list_stores().await {
         Ok(_) => (

@@ -259,7 +259,11 @@ mod tests {
 
         // Use the subscriber for this test
         tracing::subscriber::with_default(subscriber, || {
-            info!(user = "alice", action = "check", "Permission check performed");
+            info!(
+                user = "alice",
+                action = "check",
+                "Permission check performed"
+            );
         });
 
         // Get the captured output
