@@ -65,14 +65,7 @@ async fn test_check_endpoint_returns_200() {
     storage
         .write_tuple(
             "test-store",
-            rsfga_storage::StoredTuple {
-                object_type: "document".to_string(),
-                object_id: "readme".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "alice".to_string(),
-                user_relation: None,
-            },
+            rsfga_storage::StoredTuple::new("document", "readme", "viewer", "user", "alice", None),
         )
         .await
         .unwrap();

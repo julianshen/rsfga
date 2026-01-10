@@ -157,6 +157,10 @@ pub struct TupleFilter {
     /// # Errors
     /// Invalid formats will result in `StorageError::InvalidFilter` when the filter is applied.
     pub user: Option<String>,
+    /// Filter by condition name.
+    ///
+    /// When set, only returns tuples that have this specific condition attached.
+    pub condition_name: Option<String>,
 }
 
 /// Parse user filter string into (user_type, user_id, Option<user_relation>).
@@ -221,7 +225,16 @@ pub fn parse_user_filter(user: &str) -> StorageResult<(String, String, Option<St
 }
 
 /// A stored tuple.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Tuples can optionally have a condition name and condition context.
+/// When a condition is specified, the tuple is only considered valid
+/// if the condition evaluates to true during authorization checks.
+///
+/// Note: Hash is implemented manually to exclude condition_context (since
+/// HashMap and serde_json::Value don't implement Hash). Two tuples with the
+/// same key fields but different contexts are considered equal for storage
+/// deduplication purposes.
+#[derive(Debug, Clone)]
 pub struct StoredTuple {
     pub object_type: String,
     pub object_id: String,
@@ -229,6 +242,93 @@ pub struct StoredTuple {
     pub user_type: String,
     pub user_id: String,
     pub user_relation: Option<String>,
+    /// Optional condition name that must be satisfied for this tuple.
+    pub condition_name: Option<String>,
+    /// Optional condition context (parameters) as JSON key-value pairs.
+    /// Only meaningful when condition_name is set.
+    pub condition_context: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+impl StoredTuple {
+    /// Creates a new StoredTuple without condition.
+    pub fn new(
+        object_type: impl Into<String>,
+        object_id: impl Into<String>,
+        relation: impl Into<String>,
+        user_type: impl Into<String>,
+        user_id: impl Into<String>,
+        user_relation: Option<String>,
+    ) -> Self {
+        Self {
+            object_type: object_type.into(),
+            object_id: object_id.into(),
+            relation: relation.into(),
+            user_type: user_type.into(),
+            user_id: user_id.into(),
+            user_relation,
+            condition_name: None,
+            condition_context: None,
+        }
+    }
+
+    /// Creates a new StoredTuple with a condition.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_condition(
+        object_type: impl Into<String>,
+        object_id: impl Into<String>,
+        relation: impl Into<String>,
+        user_type: impl Into<String>,
+        user_id: impl Into<String>,
+        user_relation: Option<String>,
+        condition_name: impl Into<String>,
+        condition_context: Option<std::collections::HashMap<String, serde_json::Value>>,
+    ) -> Self {
+        Self {
+            object_type: object_type.into(),
+            object_id: object_id.into(),
+            relation: relation.into(),
+            user_type: user_type.into(),
+            user_id: user_id.into(),
+            user_relation,
+            condition_name: Some(condition_name.into()),
+            condition_context,
+        }
+    }
+
+    /// Returns the tuple key (excludes condition context for comparison).
+    fn key(&self) -> (&str, &str, &str, &str, &str, Option<&str>, Option<&str>) {
+        (
+            &self.object_type,
+            &self.object_id,
+            &self.relation,
+            &self.user_type,
+            &self.user_id,
+            self.user_relation.as_deref(),
+            self.condition_name.as_deref(),
+        )
+    }
+}
+
+impl PartialEq for StoredTuple {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for StoredTuple {}
+
+impl std::hash::Hash for StoredTuple {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.object_type.hash(state);
+        self.object_id.hash(state);
+        self.relation.hash(state);
+        self.user_type.hash(state);
+        self.user_id.hash(state);
+        self.user_relation.hash(state);
+        self.condition_name.hash(state);
+        // Note: condition_context is intentionally excluded from hash
+        // as HashMap<String, serde_json::Value> doesn't implement Hash
+    }
 }
 
 /// Store metadata.
@@ -407,14 +507,7 @@ mod tests {
         // Verify the method exists with correct signature by checking
         // that the code compiles. Uses a helper async fn to verify signature.
         async fn _verify_signature<T: DataStore>(store: &T) {
-            let tuple = StoredTuple {
-                object_type: "doc".to_string(),
-                object_id: "1".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "alice".to_string(),
-                user_relation: None,
-            };
+            let tuple = StoredTuple::new("doc", "1", "viewer", "user", "alice", None);
             let _: StorageResult<()> = store.write_tuple("store", tuple).await;
         }
     }
@@ -434,14 +527,7 @@ mod tests {
     fn test_delete_tuple_method_signature() {
         // Verify the method exists with correct signature
         async fn _verify_signature<T: DataStore>(store: &T) {
-            let tuple = StoredTuple {
-                object_type: "doc".to_string(),
-                object_id: "1".to_string(),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: "alice".to_string(),
-                user_relation: None,
-            };
+            let tuple = StoredTuple::new("doc", "1", "viewer", "user", "alice", None);
             let _: StorageResult<()> = store.delete_tuple("store", tuple).await;
         }
     }
@@ -475,14 +561,7 @@ mod tests {
     // Test: StoredTuple fields are correct
     #[test]
     fn test_stored_tuple_struct() {
-        let tuple = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
         assert_eq!(tuple.object_type, "document");
         assert_eq!(tuple.object_id, "doc1");
@@ -490,6 +569,33 @@ mod tests {
         assert_eq!(tuple.user_type, "user");
         assert_eq!(tuple.user_id, "alice");
         assert!(tuple.user_relation.is_none());
+        assert!(tuple.condition_name.is_none());
+        assert!(tuple.condition_context.is_none());
+    }
+
+    // Test: StoredTuple with condition
+    #[test]
+    fn test_stored_tuple_with_condition() {
+        let mut context = std::collections::HashMap::new();
+        context.insert(
+            "expires_at".to_string(),
+            serde_json::json!("2024-12-31T23:59:59Z"),
+        );
+
+        let tuple = StoredTuple::with_condition(
+            "document",
+            "doc1",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "time_bound",
+            Some(context),
+        );
+
+        assert_eq!(tuple.object_type, "document");
+        assert_eq!(tuple.condition_name, Some("time_bound".to_string()));
+        assert!(tuple.condition_context.is_some());
     }
 
     // Test: TupleFilter default is empty

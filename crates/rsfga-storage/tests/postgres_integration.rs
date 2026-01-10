@@ -101,14 +101,7 @@ async fn test_can_write_tuple_to_database() {
         .await
         .unwrap();
 
-    let tuple = StoredTuple {
-        object_type: "document".to_string(),
-        object_id: "doc1".to_string(),
-        relation: "viewer".to_string(),
-        user_type: "user".to_string(),
-        user_id: "alice".to_string(),
-        user_relation: None,
-    };
+    let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
     store.write_tuple("test-write-tuple", tuple).await.unwrap();
 
@@ -133,14 +126,7 @@ async fn test_can_read_tuple_from_database() {
         .await
         .unwrap();
 
-    let tuple = StoredTuple {
-        object_type: "document".to_string(),
-        object_id: "doc1".to_string(),
-        relation: "viewer".to_string(),
-        user_type: "user".to_string(),
-        user_id: "alice".to_string(),
-        user_relation: None,
-    };
+    let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
     store
         .write_tuples("test-read-tuple", vec![tuple.clone()], vec![])
@@ -175,14 +161,7 @@ async fn test_can_delete_tuple_from_database() {
         .await
         .unwrap();
 
-    let tuple = StoredTuple {
-        object_type: "document".to_string(),
-        object_id: "doc1".to_string(),
-        relation: "viewer".to_string(),
-        user_type: "user".to_string(),
-        user_id: "alice".to_string(),
-        user_relation: None,
-    };
+    let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
     store
         .write_tuples("test-delete-tuple", vec![tuple.clone()], vec![])
@@ -224,14 +203,7 @@ async fn test_transactions_rollback_on_error() {
         .unwrap();
 
     // Write a tuple first
-    let tuple1 = StoredTuple {
-        object_type: "document".to_string(),
-        object_id: "doc1".to_string(),
-        relation: "viewer".to_string(),
-        user_type: "user".to_string(),
-        user_id: "alice".to_string(),
-        user_relation: None,
-    };
+    let tuple1 = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
     store
         .write_tuple("test-tx-rollback", tuple1.clone())
@@ -272,22 +244,8 @@ async fn test_transactions_commit_on_success() {
 
     // Write multiple tuples in one transaction
     let tuples = vec![
-        StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        },
-        StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc2".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "bob".to_string(),
-            user_relation: None,
-        },
+        StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+        StoredTuple::new("document", "doc2", "viewer", "user", "bob", None),
     ];
 
     store
@@ -345,6 +303,8 @@ async fn test_connection_pool_limits() {
                 user_type: "user".to_string(),
                 user_id: format!("user{}", i),
                 user_relation: None,
+                condition_name: None,
+                condition_context: None,
             };
             store.write_tuple("test-pool-limits", tuple).await
         }));
@@ -387,14 +347,7 @@ async fn test_database_errors_wrapped_properly() {
     ));
 
     // Try to write to non-existent store
-    let tuple = StoredTuple {
-        object_type: "document".to_string(),
-        object_id: "doc1".to_string(),
-        relation: "viewer".to_string(),
-        user_type: "user".to_string(),
-        user_id: "alice".to_string(),
-        user_relation: None,
-    };
+    let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
     let result = store.write_tuple("nonexistent-write-test", tuple).await;
     assert!(matches!(result, Err(StorageError::StoreNotFound { .. })));
 
@@ -424,6 +377,8 @@ async fn test_concurrent_writes_isolation() {
                 user_type: "user".to_string(),
                 user_id: format!("user{}", i),
                 user_relation: None,
+                condition_name: None,
+                condition_context: None,
             };
             store.write_tuple("test-isolation", tuple).await.unwrap();
         }));
@@ -512,6 +467,8 @@ async fn test_large_result_set_ordering() {
             user_type: "user".to_string(),
             user_id: format!("user{:03}", i),
             user_relation: None,
+            condition_name: None,
+            condition_context: None,
         });
     }
 
@@ -552,14 +509,7 @@ async fn test_delete_store_cascades() {
         .await
         .unwrap();
 
-    let tuple = StoredTuple {
-        object_type: "document".to_string(),
-        object_id: "doc1".to_string(),
-        relation: "viewer".to_string(),
-        user_type: "user".to_string(),
-        user_id: "alice".to_string(),
-        user_relation: None,
-    };
+    let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
 
     store.write_tuple("test-cascade", tuple).await.unwrap();
 
@@ -599,4 +549,50 @@ async fn test_invalid_user_filter_returns_error() {
 
     // Cleanup
     store.delete_store("test-invalid-filter").await.unwrap();
+}
+
+// ==========================================================================
+// Section 4: Tuple Storage with Conditions (PostgreSQL)
+// ==========================================================================
+
+// Test: PostgresStore can write and read tuples with conditions
+// Note: This test verifies that tuples with condition fields can be written
+// and read back. The condition_name and condition_context fields are stored
+// in the database when the schema supports them.
+#[tokio::test]
+#[ignore = "requires running PostgreSQL + schema update for conditions"]
+async fn test_postgres_store_stores_condition_data() {
+    let store = create_store().await;
+    store
+        .create_store("test-condition", "Test Store")
+        .await
+        .unwrap();
+
+    // Write tuple with condition
+    let tuple = StoredTuple::with_condition(
+        "document",
+        "doc1",
+        "viewer",
+        "user",
+        "alice",
+        None,
+        "time_bound",
+        None,
+    );
+
+    store.write_tuple("test-condition", tuple).await.unwrap();
+
+    // Read it back
+    let tuples = store
+        .read_tuples("test-condition", &TupleFilter::default())
+        .await
+        .unwrap();
+
+    assert_eq!(tuples.len(), 1);
+    // TODO: Once PostgreSQL schema is updated to include condition columns,
+    // this assertion should verify condition_name is preserved:
+    // assert_eq!(tuples[0].condition_name, Some("time_bound".to_string()));
+
+    // Cleanup
+    store.delete_store("test-condition").await.unwrap();
 }

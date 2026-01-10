@@ -68,14 +68,7 @@ async fn run_basic_crud_test<S: DataStore>(store: &S, store_id: &str) {
     assert_eq!(s.id, store_id);
 
     // Write a tuple
-    let tuple = StoredTuple {
-        object_type: "document".to_string(),
-        object_id: "doc1".to_string(),
-        relation: "viewer".to_string(),
-        user_type: "user".to_string(),
-        user_id: "alice".to_string(),
-        user_relation: None,
-    };
+    let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
     store.write_tuple(store_id, tuple.clone()).await.unwrap();
 
     // Read tuples
@@ -108,30 +101,9 @@ async fn run_filter_test<S: DataStore>(store: &S, store_id: &str) {
 
     // Write multiple tuples
     let tuples = vec![
-        StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        },
-        StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "doc1".to_string(),
-            relation: "editor".to_string(),
-            user_type: "user".to_string(),
-            user_id: "bob".to_string(),
-            user_relation: None,
-        },
-        StoredTuple {
-            object_type: "folder".to_string(),
-            object_id: "folder1".to_string(),
-            relation: "owner".to_string(),
-            user_type: "user".to_string(),
-            user_id: "alice".to_string(),
-            user_relation: None,
-        },
+        StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+        StoredTuple::new("document", "doc1", "editor", "user", "bob", None),
+        StoredTuple::new("folder", "folder1", "owner", "user", "alice", None),
     ];
 
     store.write_tuples(store_id, tuples, vec![]).await.unwrap();
@@ -206,14 +178,7 @@ async fn test_can_swap_storage_implementations() {
     async fn use_store(store: Arc<dyn DataStore>, store_id: &str) -> usize {
         store.create_store(store_id, "Swap Test").await.unwrap();
 
-        let tuple = StoredTuple {
-            object_type: "doc".to_string(),
-            object_id: "1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "test".to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTuple::new("doc", "1", "viewer", "user", "test", None);
         store.write_tuple(store_id, tuple).await.unwrap();
 
         let tuples = store
@@ -241,14 +206,7 @@ async fn test_can_swap_to_postgres_implementation() {
     async fn use_store(store: Arc<dyn DataStore>, store_id: &str) -> usize {
         store.create_store(store_id, "Swap Test").await.unwrap();
 
-        let tuple = StoredTuple {
-            object_type: "doc".to_string(),
-            object_id: "1".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "test".to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTuple::new("doc", "1", "viewer", "user", "test", None);
         store.write_tuple(store_id, tuple).await.unwrap();
 
         let tuples = store
@@ -289,6 +247,8 @@ async fn test_large_dataset_performance_memory() {
             user_type: "user".to_string(),
             user_id: format!("user{}", i % 100), // 100 unique users
             user_relation: None,
+            condition_name: None,
+            condition_context: None,
         });
     }
 
@@ -367,6 +327,8 @@ async fn test_large_dataset_performance_postgres() {
             user_type: "user".to_string(),
             user_id: format!("user{}", i % 100), // 100 unique users
             user_relation: None,
+            condition_name: None,
+            condition_context: None,
         });
     }
 
@@ -445,14 +407,14 @@ async fn test_storage_survives_restart_postgres() {
 
         store.create_store(store_id, "Restart Test").await.unwrap();
 
-        let tuple = StoredTuple {
-            object_type: "document".to_string(),
-            object_id: "persistent-doc".to_string(),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: "persistent-user".to_string(),
-            user_relation: None,
-        };
+        let tuple = StoredTuple::new(
+            "document",
+            "persistent-doc",
+            "viewer",
+            "user",
+            "persistent-user",
+            None,
+        );
         store.write_tuple(store_id, tuple).await.unwrap();
 
         // Verify data exists
@@ -511,6 +473,8 @@ async fn test_concurrent_access_across_threads() {
                     user_type: "user".to_string(),
                     user_id: format!("user-{}", i),
                     user_relation: None,
+                    condition_name: None,
+                    condition_context: None,
                 };
                 store
                     .write_tuple("integration-concurrent", tuple)
@@ -556,6 +520,8 @@ async fn run_pagination_test<S: DataStore>(store: &S, store_id: &str) {
             user_type: "user".to_string(),
             user_id: format!("user{}", i),
             user_relation: None,
+            condition_name: None,
+            condition_context: None,
         })
         .collect();
 

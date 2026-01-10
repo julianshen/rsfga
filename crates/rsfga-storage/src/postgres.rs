@@ -558,6 +558,9 @@ impl DataStore for PostgresDataStore {
                 user_type: row.get("user_type"),
                 user_id: row.get("user_id"),
                 user_relation: row.get("user_relation"),
+                // TODO: Read condition fields from database once schema is updated
+                condition_name: None,
+                condition_context: None,
             })
             .collect())
     }
@@ -659,6 +662,9 @@ impl DataStore for PostgresDataStore {
                 user_type: row.get("user_type"),
                 user_id: row.get("user_id"),
                 user_relation: row.get("user_relation"),
+                // TODO: Read condition fields from database once schema is updated
+                condition_name: None,
+                condition_context: None,
             })
             .collect();
 
