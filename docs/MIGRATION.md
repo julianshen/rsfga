@@ -44,7 +44,7 @@ metrics:
   path: /metrics
 
 tracing:
-  enabled: true
+  enabled: false  # default is false; set to true to enable Jaeger tracing
   jaeger_endpoint: "localhost:6831"
   service_name: rsfga
 ```

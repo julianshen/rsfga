@@ -208,7 +208,7 @@ See [docs/MIGRATION.md](docs/MIGRATION.md) for detailed migration instructions.
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                         Clients                              │
 │              (HTTP REST / gRPC / SDK)                        │
@@ -301,7 +301,7 @@ RSFGA_LOGGING__LEVEL=debug
 
 ## Project Structure
 
-```
+```text
 rsfga/
 ├── crates/
 │   ├── rsfga-api/          # HTTP & gRPC API layer
