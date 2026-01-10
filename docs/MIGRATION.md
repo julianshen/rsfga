@@ -80,11 +80,13 @@ cargo run --release -- --config config.yaml
 
 ### Step 3: Deploy RSFGA
 
+> **Note**: Docker and Kubernetes deployment is being developed in Milestone 1.9, Section 4. The examples below show the expected deployment pattern once complete.
+
 #### Docker Deployment
 
 ```bash
-# Build Docker image
-docker build -t rsfga:latest .
+# Build Docker image (requires Dockerfile - coming in M1.9 Section 4)
+docker build -t rsfga:v1.9.0 .
 
 # Run container
 docker run -d \
@@ -92,10 +94,19 @@ docker run -d \
   -p 8080:8080 \
   -v $(pwd)/config.yaml:/app/config.yaml \
   -e RSFGA_STORAGE__DATABASE_URL="postgres://..." \
-  rsfga:latest
+  rsfga:v1.9.0
 ```
 
 #### Kubernetes Deployment
+
+```bash
+# First, create the ConfigMap from your config file
+kubectl create configmap rsfga-config --from-file=config.yaml
+
+# Create the secret for database credentials
+kubectl create secret generic rsfga-secrets \
+  --from-literal=database-url='postgres://user:password@host:5432/rsfga'
+```
 
 ```yaml
 apiVersion: apps/v1
@@ -114,7 +125,7 @@ spec:
     spec:
       containers:
       - name: rsfga
-        image: rsfga:latest
+        image: rsfga:v1.9.0  # Use specific version, not :latest
         ports:
         - containerPort: 8080
         env:
@@ -268,18 +279,18 @@ Since both use the same API, rollback is as simple as updating the endpoint.
 
 ### Connection Refused
 
-```
+```text
 Error: Connection refused
 ```
 
 **Solution**: Verify RSFGA is running and accessible:
 ```bash
-curl http://rsfga:8080/healthz
+curl http://rsfga:8080/health
 ```
 
 ### Database Connection Failed
 
-```
+```text
 Error: Failed to connect to database
 ```
 
@@ -291,7 +302,7 @@ RSFGA_STORAGE__DATABASE_URL="postgres://user:password@host:5432/db"
 
 ### Model Not Found
 
-```
+```text
 Error: Authorization model not found
 ```
 

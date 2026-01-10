@@ -41,7 +41,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/julianshen/rsfga.git
+git clone https://github.com/your-org/rsfga.git
 cd rsfga
 
 # Build in release mode
@@ -71,9 +71,12 @@ metrics:
   path: /metrics
 EOF
 
-# Run the server
-cargo run --release -- --config config.yaml
+# Run the server (binary will be available after M1.9 Deployment section)
+# For now, use the library crates directly in your application
+cargo build --release
 ```
+
+> **Note**: The standalone server binary is being developed in Milestone 1.9, Section 4 (Deployment). Currently, RSFGA is used as library crates integrated into your application.
 
 **With PostgreSQL (for production):**
 
@@ -105,8 +108,8 @@ tracing:
   service_name: rsfga
 EOF
 
-# Run the server
-cargo run --release -- --config config.yaml
+# Build the server (standalone binary coming in M1.9 Section 4)
+cargo build --release
 ```
 
 ### Basic Usage
@@ -267,7 +270,7 @@ logging:
 
 metrics:
   enabled: true
-  path: /metrics
+  path: /metrics  # Note: Currently hardcoded to /metrics in router
 
 tracing:
   enabled: true
@@ -285,16 +288,16 @@ RSFGA_STORAGE__DATABASE_URL="postgres://..."
 RSFGA_LOGGING__LEVEL=debug
 ```
 
-## Performance
+## Performance Targets
 
-| Metric | OpenFGA | RSFGA | Improvement |
-|--------|---------|-------|-------------|
-| Check throughput | 483 req/s | 1000+ req/s | 2x+ |
-| Batch check | 23 checks/s | 500+ checks/s | 20x+ |
-| Write throughput | 59 req/s | 150+ req/s | 2.5x |
-| Check p95 latency | 22ms | <20ms | -10% |
+| Metric | OpenFGA Baseline | RSFGA Target | Strategy |
+|--------|------------------|--------------|----------|
+| Check throughput | 483 req/s | 1000+ req/s | Async graph traversal, lock-free caching |
+| Batch check | 23 checks/s | 500+ checks/s | Parallel execution, deduplication |
+| Write throughput | 59 req/s | 150+ req/s | Batch processing, async invalidation |
+| Check p95 latency | 22ms | <20ms | Optimized graph resolution |
 
-*Performance validated on equivalent hardware. Results may vary based on workload and configuration.*
+*Note: These are target performance numbers. Validation is pending Milestone 1.7 benchmarking. See [ADR Validation Status](docs/design/ARCHITECTURE_DECISIONS.md#validation-status-summary) for details.*
 
 ## Project Structure
 
