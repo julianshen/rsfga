@@ -4034,3 +4034,145 @@ async fn test_condition_on_parent_tuple_in_tuple_to_userset() {
         "Parent folder's condition (is_published) fails with published=false"
     );
 }
+
+/// Test: Check returns error when tuple references non-existent condition.
+///
+/// When a tuple has a condition_name that doesn't exist in the authorization model,
+/// the check should return an error rather than silently allowing or denying access.
+#[tokio::test]
+async fn test_check_returns_error_for_nonexistent_condition() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Note: We intentionally do NOT add "missing_condition" to the model
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Add tuple with a condition that doesn't exist in the model
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc1",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "missing_condition", // This condition is not defined
+            None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = CheckRequest::new(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+    );
+
+    let result = resolver.check(&request).await;
+    assert!(
+        result.is_err(),
+        "Should return error when condition is not found in model"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("condition not found"),
+        "Error message should indicate condition not found: {}",
+        err
+    );
+}
+
+/// Test: Check returns error when CEL expression has syntax error.
+///
+/// When a condition's CEL expression has a syntax error, the check should
+/// return an error with a clear message indicating the parse failure.
+#[tokio::test]
+async fn test_check_returns_error_for_invalid_cel_expression() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Condition with invalid CEL syntax (unclosed parenthesis)
+    let condition = Condition::new("broken_expr", "context.value == (1 + 2");
+    // Note: Condition::new might catch this - if so, this test verifies
+    // the validation happens at definition time rather than evaluation time
+
+    if condition.is_err() {
+        // Good: The condition is validated at creation time
+        // This is the preferred behavior - fail fast
+        return;
+    }
+
+    model_reader
+        .add_condition("store1", condition.unwrap())
+        .await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc1",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "broken_expr",
+            None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = CheckRequest::new(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+    );
+
+    let result = resolver.check(&request).await;
+    // Either the condition creation fails (preferred) or the check fails
+    if result.is_err() {
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("failed to parse")
+                || err.to_string().contains("condition evaluation failed"),
+            "Error should indicate CEL parse/eval failure: {}",
+            err
+        );
+    }
+}

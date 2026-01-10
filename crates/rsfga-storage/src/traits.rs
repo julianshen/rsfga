@@ -49,9 +49,32 @@ pub fn validate_store_name(name: &str) -> StorageResult<()> {
     Ok(())
 }
 
-/// Validate a stored tuple.
+/// Validate a stored tuple at the storage layer.
+///
+/// This performs **structural validation** only:
+/// - Field presence (required fields must not be empty)
+/// - Field length (no field exceeds MAX_FIELD_LENGTH)
+///
+/// # Validation Strategy
+///
+/// Condition names are validated in two stages:
+///
+/// 1. **Write-time (this function)**: Validates that `condition_name` is non-empty
+///    if provided and doesn't exceed length limits. Does NOT verify the condition
+///    exists in the authorization model.
+///
+/// 2. **Check-time (graph_resolver)**: When evaluating permissions, the resolver
+///    looks up the condition by name. If not found, returns an error. This allows
+///    tuples to be written before conditions are defined, supporting flexible
+///    deployment ordering.
+///
+/// This two-stage approach matches OpenFGA's behavior where:
+/// - Tuples can reference conditions not yet in the model
+/// - Errors surface at authorization check time, not write time
+/// - Model updates don't require tuple rewrites
 ///
 /// # Errors
+///
 /// Returns `StorageError::InvalidInput` if any field is empty or too long.
 pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
     if tuple.object_type.is_empty() {

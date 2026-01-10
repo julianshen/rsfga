@@ -817,16 +817,24 @@ where
 
     /// Evaluates a condition for a tuple.
     ///
-    /// Returns `true` if:
-    /// - The tuple has no condition (unconditional access)
-    /// - The condition evaluates to true
+    /// This is the **check-time** validation for conditions. Condition existence
+    /// is verified here rather than at tuple write-time, which allows:
+    /// - Tuples to reference conditions not yet defined in the model
+    /// - Flexible deployment ordering (tuples before model updates)
+    /// - Model updates without requiring tuple rewrites
     ///
-    /// Returns `false` if:
-    /// - The condition evaluates to false
+    /// See also: `rsfga_storage::traits::validate_tuple` for write-time validation.
     ///
-    /// Returns `Err` if:
-    /// - The condition is not found in the model
-    /// - The condition expression fails to parse or evaluate
+    /// # Returns
+    ///
+    /// - `Ok(true)` if the tuple has no condition, or the condition evaluates to true
+    /// - `Ok(false)` if the condition evaluates to false
+    /// - `Err` if the condition is not found in the model, or the expression fails
+    ///
+    /// # Context Precedence
+    ///
+    /// When building the CEL evaluation context, tuple context takes precedence
+    /// over request context. See the context merging logic below for details.
     async fn evaluate_condition(
         &self,
         store_id: &str,
@@ -850,6 +858,12 @@ where
                 })?;
 
         // Parse the CEL expression
+        // TODO: PERFORMANCE - CEL expressions are parsed on every condition evaluation.
+        // This is a performance bottleneck for frequently checked tuples. Consider:
+        // 1. Caching parsed CelExpression in Condition struct (parse in Condition::new)
+        // 2. Using an LRU cache keyed by expression string
+        // 3. Pre-parsing expressions when AuthorizationModel is loaded
+        // See: https://github.com/julianshen/rsfga/issues/XX (create issue for tracking)
         let expr = CelExpression::parse(&condition.expression).map_err(|e| {
             DomainError::ResolverError {
                 message: format!(
@@ -862,9 +876,33 @@ where
         // Build the CEL context
         let mut cel_ctx = CelContext::new();
 
-        // Build the "context" map from request context + tuple condition context
-        // Per OpenFGA spec: tuple condition context takes precedence over request context
-        // This prevents callers from bypassing tuple-scoped parameters
+        // ==========================================================================
+        // SECURITY-CRITICAL: Context Merging with Tuple Precedence
+        // ==========================================================================
+        //
+        // Build the "context" map from request context + tuple condition context.
+        // Per OpenFGA spec: tuple condition context takes precedence over request context.
+        //
+        // WHY THIS MATTERS FOR SECURITY:
+        //
+        // When a tuple is written with condition context (e.g., {"max_amount": 1000}),
+        // this establishes a trust boundary. If request context could override this,
+        // a malicious caller could bypass the intended restriction by passing
+        // {"max_amount": 999999} in the request.
+        //
+        // Example attack prevented by this design:
+        //   - Admin writes tuple: (user:alice, can_transfer, account:corp, {max_amount: 1000})
+        //   - Malicious caller sends check with context: {max_amount: 999999}
+        //   - If request took precedence, alice could transfer unlimited amounts
+        //   - With tuple precedence, the 1000 limit is enforced regardless
+        //
+        // IMPLEMENTATION:
+        // 1. Load request context first (lower priority)
+        // 2. Apply tuple context second (overwrites any conflicting keys)
+        //
+        // This follows the principle: "constraints written by administrators
+        // cannot be weakened by API callers"
+        // ==========================================================================
         let mut context_map: HashMap<String, CelValue> = HashMap::new();
 
         // First, add request context (lower priority)
@@ -897,7 +935,32 @@ where
     }
 }
 
-/// Converts a serde_json::Value to a CelValue.
+/// Converts a serde_json::Value to a CelValue for CEL expression evaluation.
+///
+/// # Type Mapping
+///
+/// | JSON Type | CelValue Type | Notes |
+/// |-----------|---------------|-------|
+/// | null | Null | |
+/// | boolean | Bool | |
+/// | number (fits i64) | Int | Most common integer case |
+/// | number (fits u64, not i64) | UInt | Large positive integers |
+/// | number (other) | Float | Floating point numbers |
+/// | string | String | |
+/// | array | List | Recursively converts elements |
+/// | object | Map | Recursively converts values |
+///
+/// # Number Handling
+///
+/// Numbers are converted in priority order: i64 → u64 → f64.
+/// This ensures large positive integers (> i64::MAX) are properly handled
+/// as unsigned integers rather than being silently converted to null or
+/// losing precision via floating point conversion.
+///
+/// # Edge Cases
+///
+/// - Very large numbers that don't fit in f64 will become Null (extremely rare)
+/// - Nested structures are recursively converted
 fn json_to_cel_value(value: &serde_json::Value) -> CelValue {
     match value {
         serde_json::Value::Null => CelValue::Null,
