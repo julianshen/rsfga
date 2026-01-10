@@ -124,7 +124,10 @@ async fn main() -> anyhow::Result<()> {
         }
         "mysql" => {
             let database_url = config.storage.database_url.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("storage.database_url is required for mysql backend")
+                anyhow::anyhow!(
+                    "storage.database_url is required for {} backend",
+                    config.storage.backend
+                )
             })?;
 
             info!("Connecting to MySQL database");

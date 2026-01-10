@@ -225,11 +225,23 @@ impl MySQLDataStore {
                 "CREATE {} INDEX {} ON {} {}",
                 unique_clause, index_name, table_name, columns
             );
-            sqlx::query(&query).execute(&self.pool).await.map_err(|e| {
-                StorageError::QueryError {
-                    message: format!("Failed to create index {}: {}", index_name, e),
+            if let Err(e) = sqlx::query(&query).execute(&self.pool).await {
+                // Handle TOCTOU race: ignore duplicate index error (1061 = ER_DUP_KEYNAME)
+                // This can happen if concurrent migrations try to create the same index
+                let is_duplicate_index = if let sqlx::Error::Database(ref db_err) = e {
+                    db_err
+                        .try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>()
+                        .is_some_and(|mysql_err| mysql_err.number() == 1061)
+                } else {
+                    false
+                };
+
+                if !is_duplicate_index {
+                    return Err(StorageError::QueryError {
+                        message: format!("Failed to create index {}: {}", index_name, e),
+                    });
                 }
-            })?;
+            }
         }
 
         Ok(())
@@ -264,12 +276,16 @@ impl DataStore for MySQLDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                // MySQL error code 1062 is duplicate entry (ER_DUP_ENTRY)
-                if db_err.code().as_deref() == Some("23000") {
-                    return StorageError::StoreAlreadyExists {
-                        store_id: id.to_string(),
-                    };
+            if let sqlx::Error::Database(db_err) = &e {
+                // Check for MySQL-specific duplicate entry error (1062 = ER_DUP_ENTRY)
+                if let Some(mysql_err) =
+                    db_err.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>()
+                {
+                    if mysql_err.number() == 1062 {
+                        return StorageError::StoreAlreadyExists {
+                            store_id: id.to_string(),
+                        };
+                    }
                 }
             }
             StorageError::QueryError {

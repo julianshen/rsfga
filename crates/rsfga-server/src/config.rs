@@ -490,37 +490,36 @@ storage:
         let err = result.unwrap_err();
         assert!(err.to_string().contains("database_url"));
 
-        // Test mysql without database_url
-        let mut config = ServerConfig::default();
-        config.storage.backend = "mysql".to_string();
-        config.storage.database_url = None;
-        let result = config.validate();
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("database_url"));
+        // Test mysql and cockroachdb backend validation using data-driven approach
+        let test_cases = [
+            ("mysql", None, true),
+            ("mysql", Some("mysql://localhost/rsfga".to_string()), false),
+            ("cockroachdb", None, true),
+            (
+                "cockroachdb",
+                Some("postgresql://root@localhost:26257/rsfga".to_string()),
+                false,
+            ),
+        ];
 
-        // Test mysql with valid database_url
-        let mut config = ServerConfig::default();
-        config.storage.backend = "mysql".to_string();
-        config.storage.database_url = Some("mysql://localhost/rsfga".to_string());
-        let result = config.validate();
-        assert!(result.is_ok());
+        for (backend, url, should_err) in test_cases {
+            let mut config = ServerConfig::default();
+            config.storage.backend = backend.to_string();
+            config.storage.database_url = url;
+            let result = config.validate();
 
-        // Test cockroachdb without database_url
-        let mut config = ServerConfig::default();
-        config.storage.backend = "cockroachdb".to_string();
-        config.storage.database_url = None;
-        let result = config.validate();
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("database_url"));
-
-        // Test cockroachdb with valid database_url
-        let mut config = ServerConfig::default();
-        config.storage.backend = "cockroachdb".to_string();
-        config.storage.database_url = Some("postgresql://root@localhost:26257/rsfga".to_string());
-        let result = config.validate();
-        assert!(result.is_ok());
+            if should_err {
+                assert!(result.is_err(), "Expected error for backend '{}'", backend);
+                let err = result.unwrap_err();
+                assert!(
+                    err.to_string().contains("database_url"),
+                    "Error for '{}' should contain 'database_url'",
+                    backend
+                );
+            } else {
+                assert!(result.is_ok(), "Expected ok for backend '{}'", backend);
+            }
+        }
 
         // Test invalid log level
         let mut config = ServerConfig::default();

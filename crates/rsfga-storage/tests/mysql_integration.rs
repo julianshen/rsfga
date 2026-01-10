@@ -231,10 +231,10 @@ async fn test_can_delete_tuple_from_database() {
 // Section 7.3: Transaction Tests
 // ==========================================================================
 
-// Test: Transactions rollback on error
+// Test: Failed writes to non-existent stores are isolated and don't affect existing data
 #[tokio::test]
 #[ignore = "requires running MySQL"]
-async fn test_transactions_rollback_on_error() {
+async fn test_failed_write_is_isolated() {
     let store = create_store().await;
     store
         .create_store("test-tx-rollback", "Test Store")
