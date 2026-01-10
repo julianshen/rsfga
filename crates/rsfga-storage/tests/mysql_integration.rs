@@ -532,6 +532,64 @@ async fn test_concurrent_access_across_threads() {
 // Section 7.7: Large Dataset Performance Tests
 // ==========================================================================
 
+// Test: Batch insert with 1000+ tuples validates chunking works
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_batch_insert_large_batch_chunking() {
+    let store = create_store().await;
+    store
+        .create_store("test-batch-chunking", "Batch Chunking Test")
+        .await
+        .unwrap();
+
+    // Generate 1500 tuples - this exceeds WRITE_BATCH_SIZE (1000) and will be chunked
+    // into two batches: 1000 + 500
+    let tuples: Vec<StoredTuple> = (0..1500)
+        .map(|i| StoredTuple {
+            object_type: "document".to_string(),
+            object_id: format!("batch-doc-{}", i),
+            relation: "viewer".to_string(),
+            user_type: "user".to_string(),
+            user_id: format!("batch-user-{}", i % 50), // 50 unique users
+            user_relation: None,
+            condition_name: None,
+            condition_context: None,
+        })
+        .collect();
+
+    // Write all tuples in one call - should be chunked internally
+    store
+        .write_tuples("test-batch-chunking", tuples, vec![])
+        .await
+        .expect("Large batch write should succeed with chunking");
+
+    // Verify all tuples were written
+    let all_tuples = store
+        .read_tuples("test-batch-chunking", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        all_tuples.len(),
+        1500,
+        "All 1500 tuples should be written across chunks"
+    );
+
+    // Verify we can filter and get expected results
+    let filter = TupleFilter {
+        object_type: Some("document".to_string()),
+        relation: Some("viewer".to_string()),
+        ..Default::default()
+    };
+    let filtered = store
+        .read_tuples("test-batch-chunking", &filter)
+        .await
+        .unwrap();
+    assert_eq!(filtered.len(), 1500);
+
+    // Cleanup
+    store.delete_store("test-batch-chunking").await.unwrap();
+}
+
 // Test: Large dataset performance (10k+ tuples)
 #[tokio::test]
 #[ignore = "requires running MySQL"]

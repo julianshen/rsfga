@@ -4,6 +4,12 @@
 //! TiDB is also compatible as it uses the MySQL wire protocol.
 
 use async_trait::async_trait;
+
+/// Maximum number of tuples to insert in a single batch INSERT statement.
+/// MySQL has a limit on the number of placeholders (~65535). With 7 columns
+/// per tuple, this gives us room for ~9000 tuples, but we use 1000 for safety
+/// and to avoid excessively large queries that may cause timeouts.
+const WRITE_BATCH_SIZE: usize = 1000;
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 use sqlx::Row;
 use tracing::{debug, instrument};
@@ -474,8 +480,11 @@ impl DataStore for MySQLDataStore {
                 message: format!("Failed to begin transaction: {}", e),
             })?;
 
-        // Delete tuples one by one (MySQL doesn't support UNNEST)
-        // For better performance with large batches, consider using temp tables
+        // Delete tuples one by one (MySQL doesn't support UNNEST for bulk deletes)
+        // Performance note: For large delete batches (100+ tuples), this is O(n) database
+        // round trips within the transaction. Consider optimizing with temp tables or
+        // batch DELETE with IN clauses for production workloads with frequent large deletes.
+        // See GitHub issue for tracking: https://github.com/julianshen/rsfga/issues/93
         for tuple in &deletes {
             sqlx::query(
                 r#"
@@ -503,15 +512,16 @@ impl DataStore for MySQLDataStore {
             })?;
         }
 
-        // Insert tuples using batch INSERT with multiple VALUES
-        // ON DUPLICATE KEY UPDATE id = id is a no-op for idempotency
-        if !writes.is_empty() {
-            // Build batch insert query
+        // Insert tuples using batch INSERT with multiple VALUES, chunked to avoid
+        // exceeding MySQL's placeholder limit (~65535) and to prevent timeout issues.
+        // ON DUPLICATE KEY UPDATE id = id is a no-op for idempotency.
+        for chunk in writes.chunks(WRITE_BATCH_SIZE) {
+            // Build batch insert query for this chunk
             let mut query = String::from(
                 "INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation) VALUES ",
             );
 
-            let placeholders: Vec<String> = writes
+            let placeholders: Vec<String> = chunk
                 .iter()
                 .map(|_| "(?, ?, ?, ?, ?, ?, ?)".to_string())
                 .collect();
@@ -520,7 +530,7 @@ impl DataStore for MySQLDataStore {
 
             let mut query_builder = sqlx::query(&query);
 
-            for tuple in &writes {
+            for tuple in chunk {
                 query_builder = query_builder
                     .bind(store_id)
                     .bind(&tuple.object_type)
