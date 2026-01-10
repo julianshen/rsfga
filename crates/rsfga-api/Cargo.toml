@@ -40,6 +40,7 @@ anyhow = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 # Metrics
 metrics = { workspace = true }
@@ -52,5 +53,4 @@ uuid = { workspace = true }
 proptest = { workspace = true }
 mockall = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
-tracing-subscriber = { workspace = true }
 futures = { workspace = true }
