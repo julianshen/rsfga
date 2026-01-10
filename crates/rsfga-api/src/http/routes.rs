@@ -540,7 +540,7 @@ fn parse_tuple_fields(
         user_type: user_type.to_string(),
         user_id: user_id.to_string(),
         user_relation: user_relation.map(|s| s.to_string()),
-        // TODO: Parse condition from request when API support is added
+        // TODO(#84): Parse condition from request when API support is added
         condition_name: None,
         condition_context: None,
     })

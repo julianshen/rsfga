@@ -1150,7 +1150,7 @@ async fn test_parallel_execution_uses_all_available_concurrency() {
         "Checks should execute in parallel, max concurrent was {}",
         max
     );
-    // TODO: When explicit concurrency limits are added (e.g., MAX_CONCURRENT = 32),
+    // TODO(#86): When explicit concurrency limits are added (e.g., MAX_CONCURRENT = 32),
     // add assertion: assert!(max <= MAX_CONCURRENT, "Should respect limit");
 }
 

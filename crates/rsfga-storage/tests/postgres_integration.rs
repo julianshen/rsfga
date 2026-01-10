@@ -589,7 +589,7 @@ async fn test_postgres_store_stores_condition_data() {
         .unwrap();
 
     assert_eq!(tuples.len(), 1);
-    // TODO: Once PostgreSQL schema is updated to include condition columns,
+    // TODO(#83): Once PostgreSQL schema is updated to include condition columns,
     // this assertion should verify condition_name is preserved:
     // assert_eq!(tuples[0].condition_name, Some("time_bound".to_string()));
 

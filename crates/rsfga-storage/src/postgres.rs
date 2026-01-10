@@ -498,7 +498,7 @@ impl DataStore for PostgresDataStore {
         }
 
         // Condition filtering is not yet supported in PostgreSQL
-        // TODO: Implement once schema is updated to include condition columns
+        // TODO(#83): Implement once schema is updated to include condition columns
         if filter.condition_name.is_some() {
             return Err(StorageError::QueryError {
                 message: "Filtering by condition_name is not yet supported in PostgreSQL storage"
@@ -567,7 +567,7 @@ impl DataStore for PostgresDataStore {
                 user_type: row.get("user_type"),
                 user_id: row.get("user_id"),
                 user_relation: row.get("user_relation"),
-                // TODO: Read condition fields from database once schema is updated
+                // TODO(#83): Read condition fields from database once schema is updated
                 condition_name: None,
                 condition_context: None,
             })
@@ -601,7 +601,7 @@ impl DataStore for PostgresDataStore {
         }
 
         // Condition filtering is not yet supported in PostgreSQL
-        // TODO: Implement once schema is updated to include condition columns
+        // TODO(#83): Implement once schema is updated to include condition columns
         if filter.condition_name.is_some() {
             return Err(StorageError::QueryError {
                 message: "Filtering by condition_name is not yet supported in PostgreSQL storage"
@@ -680,7 +680,7 @@ impl DataStore for PostgresDataStore {
                 user_type: row.get("user_type"),
                 user_id: row.get("user_id"),
                 user_relation: row.get("user_relation"),
-                // TODO: Read condition fields from database once schema is updated
+                // TODO(#83): Read condition fields from database once schema is updated
                 condition_name: None,
                 condition_context: None,
             })
