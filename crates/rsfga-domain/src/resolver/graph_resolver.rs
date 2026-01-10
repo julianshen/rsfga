@@ -863,7 +863,7 @@ where
         // 1. Caching parsed CelExpression in Condition struct (parse in Condition::new)
         // 2. Using an LRU cache keyed by expression string
         // 3. Pre-parsing expressions when AuthorizationModel is loaded
-        // See: https://github.com/julianshen/rsfga/issues/XX (create issue for tracking)
+        // See: https://github.com/julianshen/rsfga/issues/82
         let expr = CelExpression::parse(&condition.expression).map_err(|e| {
             DomainError::ResolverError {
                 message: format!(
