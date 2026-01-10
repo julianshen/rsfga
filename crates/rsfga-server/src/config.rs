@@ -628,6 +628,9 @@ storage:
         //
         // This is the standard approach for most production services,
         // as hot-reload introduces complexity and potential for inconsistent state.
-        assert!(true, "Hot-reload is not supported - restart server to reload config");
+        assert!(
+            true,
+            "Hot-reload is not supported - restart server to reload config"
+        );
     }
 }
