@@ -1474,11 +1474,16 @@ Phase 1 completion status:
 
 ---
 
-### Milestone 1.11: MySQL/MariaDB Storage Backend
+### Milestone 1.11: MySQL/MariaDB/TiDB Storage Backend
 
 **Branch**: `feature/milestone-1.11-mysql-storage`
 
-**Objective**: Add MySQL/MariaDB as an alternative storage backend. TiDB compatible (MySQL wire protocol).
+**Objective**: Add MySQL/MariaDB/TiDB as an alternative storage backend.
+
+**Supported Databases**:
+- MySQL 8.0+
+- MariaDB 10.5+
+- TiDB (MySQL-compatible distributed SQL database)
 
 #### Section 1: MySQL Configuration and Connection
 
@@ -1621,7 +1626,7 @@ Phase 1 completion status:
 - Milestone 1.8: Testing & Benchmarking ✅ COMPLETE
 - Milestone 1.9: Production Readiness ✅ COMPLETE (20 tests)
 - Milestone 1.10: CEL Condition Evaluation ✅ COMPLETE (188 tests)
-- Milestone 1.11: MySQL/MariaDB Storage Backend 🏗️ IN PROGRESS (39/45 tests)
+- Milestone 1.11: MySQL/MariaDB/TiDB Storage Backend 🏗️ IN PROGRESS (39/45 tests)
 - Milestone 1.12: CockroachDB Storage Backend ⏸️ PENDING
 
 **Phase 1 Status**: 🏗️ IN PROGRESS
@@ -1632,7 +1637,7 @@ Phase 1 completion status:
 - Section 3: Documentation ✅ COMPLETE (5 tests)
 - Section 4: Deployment ✅ COMPLETE (5 tests)
 
-**Milestone 1.11 Summary** (MySQL/MariaDB Storage Backend):
+**Milestone 1.11 Summary** (MySQL/MariaDB/TiDB Storage Backend):
 - Section 1: MySQL Configuration and Connection ✅ COMPLETE (8 tests)
 - Section 2: MySQL Migrations ✅ COMPLETE (5 tests)
 - Section 3: Store Operations ✅ COMPLETE (9 tests)

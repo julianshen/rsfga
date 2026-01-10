@@ -1801,11 +1801,16 @@ Create benchmark report comparing RSFGA vs OpenFGA:
 
 ---
 
-### Milestone 1.11: MySQL/MariaDB Storage Backend
+### Milestone 1.11: MySQL/MariaDB/TiDB Storage Backend
 
-**Goal**: Add MySQL/MariaDB support as a storage backend alternative to PostgreSQL
+**Goal**: Add MySQL/MariaDB/TiDB support as a storage backend alternative to PostgreSQL
 
 **Why**: Many organizations use MySQL/MariaDB as their primary database. TiDB (MySQL-compatible) enables distributed SQL.
+
+**Supported Databases**:
+- MySQL 8.0+
+- MariaDB 10.5+
+- TiDB (MySQL-compatible distributed SQL database)
 
 #### Section 1: MySQL Configuration and Connection
 - [ ] MySQLConfig struct with database_url, max_connections, min_connections, connect_timeout_secs
