@@ -38,6 +38,31 @@ Each ADR follows this structure:
 | ADR-015 | Rust Edition/MSRV | ✅ Accepted | 2024-01-03 | Every 6 months |
 | ADR-016 | Dependency Policy | ✅ Accepted | 2024-01-03 | Security audit |
 
+## Validation Status Summary
+
+This section tracks the validation status of each ADR's criteria.
+
+| ADR | Validation Status | Notes |
+|-----|------------------|-------|
+| ADR-001 | ⏳ Pending M1.7 | Async overhead benchmarks needed |
+| ADR-002 | ⏳ Pending M1.7 | DashMap vs Mutex benchmarks needed |
+| ADR-003 | ⏳ Pending M1.7 | Parallel traversal benchmarks needed |
+| ADR-004 | ✅ Validated | Storage abstraction working in M1.3 |
+| ADR-005 | ⏳ Pending M1.7 | Deduplication effectiveness benchmarks needed |
+| ADR-006 | 🚧 Deferred | gRPC streaming deferred to future phase |
+| ADR-007 | ✅ Validated | Async invalidation implemented in M1.5 |
+| ADR-008 | ✅ Validated | SQLx connection pooling working in M1.3 |
+| ADR-009 | ✅ Validated | Error handling patterns in use |
+| ADR-010 | ✅ Validated | Observability stack complete in M1.9 |
+| ADR-011 | ✅ Validated | Test coverage >90% maintained |
+| ADR-012 | ⏳ Pending M1.7 | Storage schema performance benchmarks needed |
+| ADR-013 | 📋 Proposed | Phase 2 - not yet started |
+| ADR-014 | 📋 Proposed | Phase 3 - not yet started |
+| ADR-015 | ✅ Validated | Rust 1.75+ Edition 2021 in use |
+| ADR-016 | ✅ Validated | Dependency policy enforced via cargo-deny |
+
+**Note**: Performance-related validations (ADR-001, 002, 003, 005, 012) require benchmarking in Milestone 1.7. These will be updated with actual measurements once benchmarking is complete.
+
 ---
 
 ## ADR-001: Asynchronous Runtime Selection
