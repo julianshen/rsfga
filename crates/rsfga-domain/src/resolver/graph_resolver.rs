@@ -863,25 +863,28 @@ where
         let mut cel_ctx = CelContext::new();
 
         // Build the "context" map from request context + tuple condition context
+        // Per OpenFGA spec: tuple condition context takes precedence over request context
+        // This prevents callers from bypassing tuple-scoped parameters
         let mut context_map: HashMap<String, CelValue> = HashMap::new();
 
-        // First, add tuple condition context (lower priority)
-        if let Some(tuple_ctx) = tuple_condition_context {
-            for (key, value) in tuple_ctx {
-                context_map.insert(key.clone(), json_to_cel_value(value));
-            }
+        // First, add request context (lower priority)
+        for (k, v) in request_context {
+            context_map.insert(k.clone(), json_to_cel_value(v));
         }
 
-        // Then, add request context (higher priority - overwrites tuple context)
-        for (key, value) in request_context {
-            context_map.insert(key.clone(), json_to_cel_value(value));
+        // Then, add tuple condition context (higher priority - overwrites request context)
+        if let Some(tuple_ctx) = tuple_condition_context {
+            for (k, v) in tuple_ctx {
+                context_map.insert(k.clone(), json_to_cel_value(v));
+            }
         }
 
         cel_ctx.set_map("context", context_map);
 
-        // Evaluate the expression
+        // Evaluate the expression with timeout to prevent DoS from expensive expressions
         let result = expr
-            .evaluate_bool(&cel_ctx)
+            .evaluate_bool_with_timeout(&cel_ctx, self.config.timeout)
+            .await
             .map_err(|e| DomainError::ResolverError {
                 message: format!("condition evaluation failed: {}", e),
             })?;

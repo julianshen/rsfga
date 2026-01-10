@@ -311,7 +311,9 @@ impl StoredTuple {
 
 impl PartialEq for StoredTuple {
     fn eq(&self, other: &Self) -> bool {
-        self.key() == other.key()
+        // Include condition_context in equality check to prevent data loss
+        // when tuples have same key but different condition parameters
+        self.key() == other.key() && self.condition_context == other.condition_context
     }
 }
 
@@ -326,8 +328,13 @@ impl std::hash::Hash for StoredTuple {
         self.user_id.hash(state);
         self.user_relation.hash(state);
         self.condition_name.hash(state);
-        // Note: condition_context is intentionally excluded from hash
-        // as HashMap<String, serde_json::Value> doesn't implement Hash
+        // Hash condition_context by serializing to canonical JSON string
+        // This ensures consistent hashing even though serde_json::Value doesn't implement Hash
+        if let Some(ref ctx) = self.condition_context {
+            if let Ok(json_str) = serde_json::to_string(ctx) {
+                json_str.hash(state);
+            }
+        }
     }
 }
 

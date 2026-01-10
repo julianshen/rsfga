@@ -497,6 +497,15 @@ impl DataStore for PostgresDataStore {
             });
         }
 
+        // Condition filtering is not yet supported in PostgreSQL
+        // TODO: Implement once schema is updated to include condition columns
+        if filter.condition_name.is_some() {
+            return Err(StorageError::QueryError {
+                message: "Filtering by condition_name is not yet supported in PostgreSQL storage"
+                    .to_string(),
+            });
+        }
+
         // Parse user filter upfront to validate and extract components
         let user_filter = if let Some(ref user) = filter.user {
             Some(parse_user_filter(user)?)
@@ -588,6 +597,15 @@ impl DataStore for PostgresDataStore {
         if !store_exists {
             return Err(StorageError::StoreNotFound {
                 store_id: store_id.to_string(),
+            });
+        }
+
+        // Condition filtering is not yet supported in PostgreSQL
+        // TODO: Implement once schema is updated to include condition columns
+        if filter.condition_name.is_some() {
+            return Err(StorageError::QueryError {
+                message: "Filtering by condition_name is not yet supported in PostgreSQL storage"
+                    .to_string(),
             });
         }
 
