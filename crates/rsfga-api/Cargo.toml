@@ -7,6 +7,10 @@ authors.workspace = true
 license.workspace = true
 description = "HTTP and gRPC API layer for RSFGA"
 
+[[bin]]
+name = "rsfga"
+path = "src/main.rs"
+
 [build-dependencies]
 tonic-build = { workspace = true }
 prost-build = { workspace = true }
@@ -54,6 +58,9 @@ opentelemetry-jaeger = { workspace = true }
 
 # Utilities
 uuid = { workspace = true }
+
+# CLI
+clap = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

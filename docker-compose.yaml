@@ -1,0 +1,109 @@
+# Docker Compose for local development and testing
+#
+# Usage:
+#   docker-compose up -d          # Start all services
+#   docker-compose up -d rsfga    # Start RSFGA with PostgreSQL
+#   docker-compose up -d rsfga-memory  # Start RSFGA with in-memory storage
+#   docker-compose logs -f rsfga  # View logs
+#   docker-compose down           # Stop all services
+#   docker-compose down -v        # Stop and remove volumes
+
+version: '3.8'
+
+services:
+  # RSFGA with PostgreSQL backend (production-like)
+  rsfga:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - RSFGA_SERVER__HOST=0.0.0.0
+      - RSFGA_SERVER__PORT=8080
+      - RSFGA_STORAGE__BACKEND=postgres
+      - RSFGA_STORAGE__DATABASE_URL=postgres://rsfga:rsfga@postgres:5432/rsfga
+      - RSFGA_STORAGE__POOL_SIZE=10
+      - RSFGA_LOGGING__LEVEL=info
+      - RSFGA_LOGGING__JSON=false
+      - RSFGA_METRICS__ENABLED=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # RSFGA with in-memory storage (for quick testing)
+  rsfga-memory:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8080"
+    environment:
+      - RSFGA_SERVER__HOST=0.0.0.0
+      - RSFGA_SERVER__PORT=8080
+      - RSFGA_STORAGE__BACKEND=memory
+      - RSFGA_LOGGING__LEVEL=debug
+      - RSFGA_LOGGING__JSON=false
+      - RSFGA_METRICS__ENABLED=true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    profiles:
+      - memory
+
+  # PostgreSQL database
+  postgres:
+    image: postgres:14-alpine
+    environment:
+      - POSTGRES_USER=rsfga
+      - POSTGRES_PASSWORD=rsfga
+      - POSTGRES_DB=rsfga
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rsfga -d rsfga"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Jaeger for distributed tracing (optional)
+  jaeger:
+    image: jaegertracing/all-in-one:1.53
+    ports:
+      - "6831:6831/udp"   # Jaeger agent (compact thrift)
+      - "16686:16686"     # Jaeger UI
+      - "14268:14268"     # Jaeger collector HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    profiles:
+      - observability
+
+  # Prometheus for metrics scraping (optional)
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    profiles:
+      - observability
+
+volumes:
+  postgres_data:

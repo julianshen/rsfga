@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rsfga
+  labels:
+    app.kubernetes.io/name: rsfga
+    app.kubernetes.io/component: authorization

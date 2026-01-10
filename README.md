@@ -21,7 +21,8 @@
 | CEL Condition Evaluation | ✅ Complete |
 | Observability (Metrics, Tracing, Logging) | ✅ Complete |
 | Configuration Management | ✅ Complete |
-| Documentation | 🏗️ In Progress |
+| Documentation | ✅ Complete |
+| Deployment (Docker, K8s, Helm) | ✅ Complete |
 
 ## Why RSFGA?
 
@@ -304,13 +305,17 @@ RSFGA_LOGGING__LEVEL=debug
 ```text
 rsfga/
 ├── crates/
-│   ├── rsfga-api/          # HTTP & gRPC API layer
+│   ├── rsfga-api/          # HTTP & gRPC API layer + server binary
 │   ├── rsfga-server/       # Request handlers & business logic
 │   ├── rsfga-domain/       # Graph resolver, type system, cache
 │   ├── rsfga-storage/      # Storage abstraction & backends
 │   └── compatibility-tests/ # OpenFGA compatibility tests
+├── deploy/
+│   ├── kubernetes/         # Kubernetes manifests
+│   └── helm/rsfga/         # Helm chart
 ├── docs/
 │   └── design/             # Architecture & design documents
+├── Dockerfile              # Multi-stage Docker build
 ├── CLAUDE.md               # Development guide (TDD methodology)
 └── plan.md                 # Implementation plan
 ```
@@ -321,6 +326,7 @@ rsfga/
 - [Architecture](docs/design/ARCHITECTURE.md) - System design and components
 - [Architecture Decisions](docs/design/ARCHITECTURE_DECISIONS.md) - ADRs with rationale
 - [Migration Guide](docs/MIGRATION.md) - Migrating from OpenFGA
+- [Deployment Guide](docs/DEPLOYMENT.md) - Docker, Kubernetes, Helm deployment
 - [Data Models](docs/design/DATA_MODELS.md) - Data structures and schemas
 
 ## Development
