@@ -470,3 +470,33 @@ async fn test_health_check_endpoint_returns_200() {
     // Should have status field
     assert_eq!(json["status"], "ok");
 }
+
+/// Test: Readiness check validates dependencies
+///
+/// Verifies the readiness endpoint returns 200 OK when storage is accessible.
+#[tokio::test]
+async fn test_readiness_check_validates_dependencies() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should return 200 OK when storage is accessible
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Should have status and checks fields
+    assert_eq!(json["status"], "ready");
+    assert_eq!(json["checks"]["storage"], "ok");
+}
