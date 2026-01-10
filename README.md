@@ -273,7 +273,7 @@ metrics:
   path: /metrics  # Note: Currently hardcoded to /metrics in router
 
 tracing:
-  enabled: true
+  enabled: false  # default is false; set to true to enable Jaeger tracing
   jaeger_endpoint: "localhost:6831"
   service_name: rsfga
 ```

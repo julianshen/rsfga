@@ -295,6 +295,7 @@ Error: Failed to connect to database
 ```
 
 **Solution**: Check database URL and credentials:
+
 ```bash
 # Verify connection string
 RSFGA_STORAGE__DATABASE_URL="postgres://user:password@host:5432/db"
