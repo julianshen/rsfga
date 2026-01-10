@@ -1474,6 +1474,130 @@ Phase 1 completion status:
 
 ---
 
+### Milestone 1.11: MySQL/MariaDB Storage Backend
+
+**Branch**: `feature/milestone-1.11-mysql-storage`
+
+**Objective**: Add MySQL/MariaDB as an alternative storage backend. TiDB compatible (MySQL wire protocol).
+
+#### Section 1: MySQL Configuration and Connection
+
+- [x] Test: MySQLConfig struct exists with database_url, max_connections, min_connections, connect_timeout_secs
+- [x] Test: MySQLConfig default values are reasonable
+- [x] Test: MySQLConfig Debug implementation hides credentials
+- [x] Test: MySQLDataStore can connect to MySQL database
+- [x] Test: MySQLDataStore connection pool limits work correctly
+- [x] Test: MySQLDataStore from_url creates store with URL
+- [x] Test: MySQLDataStore from_config creates store with config
+- [x] Test: Connection errors are properly wrapped in StorageError::ConnectionError
+
+#### Section 2: MySQL Migrations
+
+- [x] Test: run_migrations creates stores table
+- [x] Test: run_migrations creates tuples table with AUTO_INCREMENT
+- [x] Test: Unique index handles NULL user_relation correctly (generated column)
+- [x] Test: Query indexes are created for common patterns
+- [x] Test: Migration is idempotent (can run multiple times)
+
+#### Section 3: Store Operations
+
+- [x] Test: create_store creates store with given ID and name
+- [x] Test: create_store returns StoreAlreadyExists for duplicate ID
+- [x] Test: get_store retrieves existing store
+- [x] Test: get_store returns StoreNotFound for non-existent store
+- [x] Test: delete_store removes store
+- [x] Test: delete_store returns StoreNotFound for non-existent store
+- [x] Test: delete_store cascades to remove tuples
+- [x] Test: list_stores returns all stores
+- [x] Test: list_stores_paginated respects page_size and continuation_token
+
+#### Section 4: Tuple Write Operations
+
+- [x] Test: write_tuple writes single tuple to database
+- [x] Test: write_tuples writes multiple tuples atomically
+- [x] Test: write_tuples deletes tuples in same transaction
+- [x] Test: write_tuples returns StoreNotFound for non-existent store
+- [x] Test: Duplicate tuple write is idempotent (no error)
+- [x] Test: Transaction rollback on error
+
+#### Section 5: Tuple Read Operations
+
+- [x] Test: read_tuples returns all tuples for store
+- [x] Test: read_tuples filters by object_type
+- [x] Test: read_tuples filters by object_id
+- [x] Test: read_tuples filters by relation
+- [x] Test: read_tuples filters by user
+- [x] Test: read_tuples returns StoreNotFound for non-existent store
+- [x] Test: read_tuples_paginated respects page_size
+- [x] Test: read_tuples_paginated continuation_token works correctly
+
+#### Section 6: DataStore Trait Implementation
+
+- [x] Test: MySQLDataStore implements DataStore trait
+- [x] Test: MySQLDataStore is Send + Sync
+- [x] Test: supports_transactions returns false (internal transaction only)
+
+#### Section 7: Integration Tests
+
+- [ ] Test: Same behavior as InMemoryStore for basic CRUD
+- [ ] Test: Same behavior as InMemoryStore for filters
+- [ ] Test: Same behavior as PostgresDataStore for all operations
+- [ ] Test: Large dataset performance (10k+ tuples)
+- [ ] Test: Concurrent access from multiple connections
+- [ ] Test: Storage survives application restart
+
+**Validation Criteria**:
+- [ ] All unit tests pass
+- [ ] Integration tests pass against MySQL 8.0+
+- [ ] Configuration supports mysql backend
+- [ ] Server starts with MySQL backend
+
+**Deliverables**:
+- `crates/rsfga-storage/src/mysql.rs` - MySQL DataStore implementation
+- Updated configuration to support mysql backend
+- Integration tests for MySQL
+
+---
+
+### Milestone 1.12: CockroachDB Storage Backend
+
+**Branch**: `feature/milestone-1.12-cockroachdb-storage`
+
+**Objective**: Add CockroachDB support leveraging PostgreSQL wire protocol compatibility.
+
+#### Section 1: CockroachDB Configuration
+
+- [ ] Test: CockroachConfig with PostgreSQL-compatible URL
+- [ ] Test: Connection via PostgreSQL protocol
+- [ ] Test: Connection pool configuration
+
+#### Section 2: CockroachDB-Specific Migrations
+
+- [ ] Test: Tables with CockroachDB-compatible types
+- [ ] Test: unique_rowid() for primary key (instead of BIGSERIAL)
+- [ ] Test: Compatible unique index syntax
+
+#### Section 3: DataStore Implementation
+
+- [ ] Test: All store operations work
+- [ ] Test: All tuple operations work
+- [ ] Test: Pagination works correctly
+
+#### Section 4: Integration and Compatibility
+
+- [ ] Test: Same behavior as PostgresDataStore
+- [ ] Test: Backend swapping works
+
+**Validation Criteria**:
+- [ ] All tests pass against CockroachDB
+- [ ] Configuration supports cockroachdb backend
+
+**Deliverables**:
+- CockroachDB-specific migrations (if needed)
+- Integration tests for CockroachDB
+
+---
+
 ## Current Status
 
 **Phase 0**: ✅ Compatibility Test Suite - COMPLETE (194 tests)
@@ -1497,8 +1621,10 @@ Phase 1 completion status:
 - Milestone 1.8: Testing & Benchmarking ✅ COMPLETE
 - Milestone 1.9: Production Readiness ✅ COMPLETE (20 tests)
 - Milestone 1.10: CEL Condition Evaluation ✅ COMPLETE (188 tests)
+- Milestone 1.11: MySQL/MariaDB Storage Backend 🏗️ IN PROGRESS (39/45 tests)
+- Milestone 1.12: CockroachDB Storage Backend ⏸️ PENDING
 
-**Phase 1 Status**: ✅ COMPLETE - All milestones finished!
+**Phase 1 Status**: 🏗️ IN PROGRESS
 
 **Milestone 1.9 Summary**:
 - Section 1: Observability ✅ COMPLETE (5 tests)
@@ -1506,4 +1632,16 @@ Phase 1 completion status:
 - Section 3: Documentation ✅ COMPLETE (5 tests)
 - Section 4: Deployment ✅ COMPLETE (5 tests)
 
-**Next**: Phase 2 - Precomputation Engine (optional/future)
+**Milestone 1.11 Summary** (MySQL/MariaDB Storage Backend):
+- Section 1: MySQL Configuration and Connection ✅ COMPLETE (8 tests)
+- Section 2: MySQL Migrations ✅ COMPLETE (5 tests)
+- Section 3: Store Operations ✅ COMPLETE (9 tests)
+- Section 4: Tuple Write Operations ✅ COMPLETE (6 tests)
+- Section 5: Tuple Read Operations ✅ COMPLETE (8 tests)
+- Section 6: DataStore Trait Implementation ✅ COMPLETE (3 tests)
+- Section 7: Integration Tests ⏸️ PENDING (6 tests)
+
+**Milestone 1.12 Summary** (CockroachDB Storage Backend):
+- Section 1-4: ⏸️ PENDING
+
+**Next**: Complete Milestone 1.11 Section 7 (MySQL integration tests), then Milestone 1.12 (CockroachDB)
