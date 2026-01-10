@@ -441,11 +441,13 @@ impl serde::Serialize for TracingSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
     /// Test: Can load config from YAML file
     #[test]
+    #[serial]
     fn test_can_load_config_from_yaml_file() {
         // Create a temp YAML config file
         let mut file = NamedTempFile::new().unwrap();
@@ -493,6 +495,7 @@ tracing:
 
     /// Test: Can override config with env vars
     #[test]
+    #[serial]
     fn test_can_override_config_with_env_vars() {
         // Create a temp config file with base values
         let mut file = NamedTempFile::new().unwrap();
@@ -593,6 +596,7 @@ storage:
 
     /// Test: from_env loads defaults with env overrides
     #[test]
+    #[serial]
     fn test_from_env_loads_defaults_with_env_overrides() {
         // Set an env var
         std::env::set_var("RSFGA_SERVER__HOST", "192.168.1.1");
