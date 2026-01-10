@@ -22,7 +22,9 @@ use tracing::{error, info, Level};
 use rsfga_api::http::{create_router_with_observability, AppState};
 use rsfga_api::observability::{init_metrics, init_observability, LoggingConfig, TracingConfig};
 use rsfga_server::ServerConfig;
-use rsfga_storage::{MemoryDataStore, PostgresConfig, PostgresDataStore};
+use rsfga_storage::{
+    MemoryDataStore, MySQLConfig, MySQLDataStore, PostgresConfig, PostgresDataStore,
+};
 
 /// RSFGA - High-Performance OpenFGA-Compatible Authorization Server
 #[derive(Parser, Debug)]
@@ -84,12 +86,21 @@ async fn main() -> anyhow::Result<()> {
             let router = create_router_with_observability(state, metrics_state);
             run_server(router, addr).await
         }
-        "postgres" => {
+        "postgres" | "cockroachdb" => {
             let database_url = config.storage.database_url.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("storage.database_url is required for postgres backend")
+                anyhow::anyhow!(
+                    "storage.database_url is required for {} backend",
+                    config.storage.backend
+                )
             })?;
 
-            info!("Connecting to PostgreSQL database");
+            let backend_name = if config.storage.backend == "cockroachdb" {
+                "CockroachDB"
+            } else {
+                "PostgreSQL"
+            };
+
+            info!("Connecting to {} database", backend_name);
             let pg_config = PostgresConfig {
                 database_url: database_url.clone(),
                 max_connections: config.storage.pool_size,
@@ -98,7 +109,34 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let storage = PostgresDataStore::from_config(&pg_config).await?;
-            info!("PostgreSQL connection established");
+            info!("{} connection established", backend_name);
+
+            // Run database migrations
+            info!("Running database migrations");
+            storage.run_migrations().await?;
+            info!("Database migrations complete");
+
+            let storage = Arc::new(storage);
+
+            let state = AppState { storage };
+            let router = create_router_with_observability(state, metrics_state);
+            run_server(router, addr).await
+        }
+        "mysql" => {
+            let database_url = config.storage.database_url.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("storage.database_url is required for mysql backend")
+            })?;
+
+            info!("Connecting to MySQL database");
+            let mysql_config = MySQLConfig {
+                database_url: database_url.clone(),
+                max_connections: config.storage.pool_size,
+                min_connections: 1,
+                connect_timeout_secs: config.storage.connection_timeout_secs,
+            };
+
+            let storage = MySQLDataStore::from_config(&mysql_config).await?;
+            info!("MySQL connection established");
 
             // Run database migrations
             info!("Running database migrations");

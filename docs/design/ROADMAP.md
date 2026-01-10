@@ -1801,6 +1801,127 @@ Create benchmark report comparing RSFGA vs OpenFGA:
 
 ---
 
+### Milestone 1.11: MySQL/MariaDB Storage Backend
+
+**Goal**: Add MySQL/MariaDB support as a storage backend alternative to PostgreSQL
+
+**Why**: Many organizations use MySQL/MariaDB as their primary database. TiDB (MySQL-compatible) enables distributed SQL.
+
+#### Section 1: MySQL Configuration and Connection
+- [ ] MySQLConfig struct with database_url, max_connections, min_connections, connect_timeout_secs
+- [ ] MySQLConfig default values and Debug (hides credentials)
+- [ ] MySQLDataStore connection and pool limits
+- [ ] from_url and from_config constructors
+- [ ] Connection errors wrapped in StorageError::ConnectionError
+
+#### Section 2: MySQL Migrations
+- [ ] run_migrations creates stores table
+- [ ] run_migrations creates tuples table with AUTO_INCREMENT
+- [ ] Generated column for NULL user_relation in unique index
+- [ ] Query indexes for common patterns
+- [ ] Migration idempotency
+
+**MySQL Schema**:
+```sql
+CREATE TABLE stores (
+    id VARCHAR(255) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE tuples (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    store_id VARCHAR(255) NOT NULL,
+    object_type VARCHAR(255) NOT NULL,
+    object_id VARCHAR(255) NOT NULL,
+    relation VARCHAR(255) NOT NULL,
+    user_type VARCHAR(255) NOT NULL,
+    user_id VARCHAR(255) NOT NULL,
+    user_relation VARCHAR(255) DEFAULT NULL,
+    user_relation_key VARCHAR(255) AS (COALESCE(user_relation, '')) STORED,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE,
+    UNIQUE KEY idx_tuples_unique (store_id, object_type, object_id, relation, user_type, user_id, user_relation_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+#### Section 3: Store Operations
+- [ ] create_store, get_store, delete_store (with cascade)
+- [ ] list_stores and list_stores_paginated
+- [ ] StoreAlreadyExists and StoreNotFound errors
+
+#### Section 4: Tuple Write Operations
+- [ ] write_tuple and write_tuples (atomic)
+- [ ] Batch INSERT with multiple VALUES (replaces UNNEST)
+- [ ] ON DUPLICATE KEY UPDATE for idempotency (replaces ON CONFLICT)
+- [ ] Transaction rollback on error
+
+#### Section 5: Tuple Read Operations
+- [ ] read_tuples with all filter combinations
+- [ ] read_tuples_paginated with continuation_token
+- [ ] StoreNotFound error handling
+
+#### Section 6: DataStore Trait Implementation
+- [ ] MySQLDataStore implements DataStore trait
+- [ ] Send + Sync bounds satisfied
+- [ ] Transaction method stubs (internal transactions only)
+
+#### Section 7: Integration Tests
+- [ ] Same behavior as InMemoryStore and PostgresDataStore
+- [ ] Large dataset performance (10k+ tuples)
+- [ ] Concurrent access from multiple connections
+
+**Key SQL Adaptations (PostgreSQL → MySQL)**:
+| PostgreSQL | MySQL |
+|------------|-------|
+| `UNNEST(ARRAY[...])` | Multiple VALUES: `INSERT ... VALUES (...), (...)` |
+| `ON CONFLICT DO NOTHING` | `ON DUPLICATE KEY UPDATE id = id` |
+| `BIGSERIAL` | `BIGINT AUTO_INCREMENT` |
+| `COALESCE` in unique index | Generated column: `AS (COALESCE(...)) STORED` |
+| `TIMESTAMP WITH TIME ZONE` | `TIMESTAMP` |
+
+**Deliverables**:
+- MySQL/MariaDB DataStore implementation
+- MySQL migrations
+- Integration tests
+- Configuration support (`RSFGA_STORAGE__BACKEND=mysql`)
+
+---
+
+### Milestone 1.12: CockroachDB Storage Backend
+
+**Goal**: Add CockroachDB support leveraging PostgreSQL wire protocol compatibility
+
+**Why**: CockroachDB provides distributed SQL with automatic sharding and geo-replication.
+
+#### Section 1: CockroachDB Configuration
+- [ ] CockroachConfig with PostgreSQL-compatible URL
+- [ ] Connection via PostgreSQL protocol
+- [ ] Connection pool configuration
+
+#### Section 2: CockroachDB-Specific Migrations
+- [ ] Tables with CockroachDB-compatible types
+- [ ] `unique_rowid()` for primary key (instead of BIGSERIAL)
+- [ ] Compatible unique index syntax
+
+#### Section 3: DataStore Implementation
+- [ ] All store and tuple operations
+- [ ] Pagination works correctly
+- [ ] Transaction handling
+
+#### Section 4: Integration and Compatibility
+- [ ] Same behavior as PostgresDataStore
+- [ ] Backend swapping works
+
+**Deliverables**:
+- CockroachDB DataStore implementation (minimal PostgreSQL adaptation)
+- CockroachDB-specific migrations
+- Integration tests
+- Configuration support (`RSFGA_STORAGE__BACKEND=cockroachdb`)
+
+---
+
 ## Phase 2: Precomputed Check (Milestone 2)
 
 **Goal**: Sub-millisecond check operations using precomputed results
