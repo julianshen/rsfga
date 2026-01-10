@@ -344,9 +344,16 @@ impl std::hash::Hash for StoredTuple {
         self.condition_name.hash(state);
         // Hash condition_context by serializing to canonical JSON string with sorted keys
         // Using BTreeMap ensures deterministic key ordering for consistent hashing
-        if let Some(ref ctx) = self.condition_context {
-            let sorted: std::collections::BTreeMap<_, _> = ctx.iter().collect();
-            if let Ok(json_str) = serde_json::to_string(&sorted) {
+        // We use explicit discriminant to maintain Hash/PartialEq contract
+        match &self.condition_context {
+            None => {
+                0u8.hash(state);
+            }
+            Some(ctx) => {
+                1u8.hash(state);
+                let sorted: std::collections::BTreeMap<_, _> = ctx.iter().collect();
+                let json_str = serde_json::to_string(&sorted)
+                    .expect("serde_json::Value should always be serializable");
                 json_str.hash(state);
             }
         }

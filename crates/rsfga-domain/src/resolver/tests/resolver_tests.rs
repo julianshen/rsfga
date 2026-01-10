@@ -3916,3 +3916,121 @@ async fn test_tuple_context_takes_precedence_over_request() {
          (department=sales), so condition should pass"
     );
 }
+
+/// Test: Conditions on parent tuples in TupleToUserset are evaluated.
+///
+/// When resolving a TupleToUserset relation (e.g., document.viewer = folder.viewer),
+/// conditions on the parent tuple should also be evaluated.
+#[tokio::test]
+async fn test_condition_on_parent_tuple_in_tuple_to_userset() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Condition that checks if access is published
+    let condition = Condition::new("is_published", "context.published == true").unwrap();
+    model_reader.add_condition("store1", condition).await;
+
+    // folder type with viewer relation
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // document type: viewer = viewer from parent folder (TupleToUserset)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Parent tuple with condition: alice is viewer of folder1 IF published
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "folder",
+            "folder1",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "is_published",
+            None, // No tuple context, relies on request context
+        )
+        .await;
+
+    // Link document to folder
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "parent", "folder", "folder1", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Request with published=true - should grant access
+    let mut context = HashMap::new();
+    context.insert("published".to_string(), serde_json::json!(true));
+
+    let request = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+        context,
+    );
+
+    let result = resolver.check(&request).await.unwrap();
+    assert!(
+        result.allowed,
+        "Parent folder's condition (is_published) passes with published=true"
+    );
+
+    // Request with published=false - should deny access
+    let mut context2 = HashMap::new();
+    context2.insert("published".to_string(), serde_json::json!(false));
+
+    let request2 = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+        context2,
+    );
+
+    let result2 = resolver.check(&request2).await.unwrap();
+    assert!(
+        !result2.allowed,
+        "Parent folder's condition (is_published) fails with published=false"
+    );
+}
