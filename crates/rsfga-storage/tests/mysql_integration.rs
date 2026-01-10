@@ -590,6 +590,139 @@ async fn test_batch_insert_large_batch_chunking() {
     store.delete_store("test-batch-chunking").await.unwrap();
 }
 
+// Test: Batch delete with 1000+ tuples validates chunking works
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_batch_delete_large_batch_chunking() {
+    let store = create_store().await;
+    store
+        .create_store("test-batch-delete", "Batch Delete Test")
+        .await
+        .unwrap();
+
+    // Generate 1500 tuples
+    let tuples: Vec<StoredTuple> = (0..1500)
+        .map(|i| StoredTuple {
+            object_type: "document".to_string(),
+            object_id: format!("delete-doc-{}", i),
+            relation: "viewer".to_string(),
+            user_type: "user".to_string(),
+            user_id: format!("delete-user-{}", i % 50),
+            user_relation: None,
+            condition_name: None,
+            condition_context: None,
+        })
+        .collect();
+
+    // Write all tuples
+    store
+        .write_tuples("test-batch-delete", tuples.clone(), vec![])
+        .await
+        .unwrap();
+
+    // Verify all tuples were written
+    let all_tuples = store
+        .read_tuples("test-batch-delete", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(all_tuples.len(), 1500);
+
+    // Now delete all tuples in one batch call - should be chunked internally
+    store
+        .write_tuples("test-batch-delete", vec![], tuples)
+        .await
+        .expect("Large batch delete should succeed with chunking");
+
+    // Verify all tuples were deleted
+    let remaining = store
+        .read_tuples("test-batch-delete", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        remaining.len(),
+        0,
+        "All 1500 tuples should be deleted across chunks"
+    );
+
+    // Cleanup
+    store.delete_store("test-batch-delete").await.unwrap();
+}
+
+// Test: Batch delete with user_relation (userset) tuples
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_batch_delete_with_user_relation() {
+    let store = create_store().await;
+    store
+        .create_store("test-batch-delete-userset", "Batch Delete Userset Test")
+        .await
+        .unwrap();
+
+    // Mix of tuples with and without user_relation
+    let tuples = vec![
+        StoredTuple::new("doc", "1", "viewer", "user", "alice", None),
+        StoredTuple::new(
+            "doc",
+            "2",
+            "viewer",
+            "group",
+            "eng",
+            Some("member".to_string()),
+        ),
+        StoredTuple::new(
+            "doc",
+            "3",
+            "editor",
+            "group",
+            "admin",
+            Some("member".to_string()),
+        ),
+        StoredTuple::new("doc", "4", "viewer", "user", "bob", None),
+    ];
+
+    // Write all tuples
+    store
+        .write_tuples("test-batch-delete-userset", tuples.clone(), vec![])
+        .await
+        .unwrap();
+
+    // Delete specific tuples (mix of with/without user_relation)
+    let to_delete = vec![
+        StoredTuple::new(
+            "doc",
+            "2",
+            "viewer",
+            "group",
+            "eng",
+            Some("member".to_string()),
+        ),
+        StoredTuple::new("doc", "4", "viewer", "user", "bob", None),
+    ];
+
+    store
+        .write_tuples("test-batch-delete-userset", vec![], to_delete)
+        .await
+        .unwrap();
+
+    // Verify correct tuples remain
+    let remaining = store
+        .read_tuples("test-batch-delete-userset", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(remaining.len(), 2);
+
+    // Check the right ones remain
+    let ids: Vec<_> = remaining.iter().map(|t| t.object_id.as_str()).collect();
+    assert!(ids.contains(&"1"));
+    assert!(ids.contains(&"3"));
+
+    // Cleanup
+    store
+        .delete_store("test-batch-delete-userset")
+        .await
+        .unwrap();
+}
+
 // Test: Large dataset performance (10k+ tuples)
 #[tokio::test]
 #[ignore = "requires running MySQL"]

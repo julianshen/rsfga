@@ -480,36 +480,43 @@ impl DataStore for MySQLDataStore {
                 message: format!("Failed to begin transaction: {}", e),
             })?;
 
-        // Delete tuples one by one (MySQL doesn't support UNNEST for bulk deletes)
-        // Performance note: For large delete batches (100+ tuples), this is O(n) database
-        // round trips within the transaction. Consider optimizing with temp tables or
-        // batch DELETE with IN clauses for production workloads with frequent large deletes.
-        // See GitHub issue for tracking: https://github.com/julianshen/rsfga/issues/93
-        for tuple in &deletes {
-            sqlx::query(
-                r#"
-                DELETE FROM tuples
-                WHERE store_id = ?
-                  AND object_type = ?
-                  AND object_id = ?
-                  AND relation = ?
-                  AND user_type = ?
-                  AND user_id = ?
-                  AND COALESCE(user_relation, '') = COALESCE(?, '')
-                "#,
-            )
-            .bind(store_id)
-            .bind(&tuple.object_type)
-            .bind(&tuple.object_id)
-            .bind(&tuple.relation)
-            .bind(&tuple.user_type)
-            .bind(&tuple.user_id)
-            .bind(&tuple.user_relation)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to delete tuple: {}", e),
-            })?;
+        // Batch delete using tuple comparison with IN clause.
+        // This reduces N deletes from N round trips to ceil(N/BATCH_SIZE) round trips.
+        // We use `user_relation_key` (generated column) for NULL-safe comparison.
+        for chunk in deletes.chunks(WRITE_BATCH_SIZE) {
+            // Build batch DELETE query with tuple comparison
+            let mut query = String::from(
+                "DELETE FROM tuples WHERE store_id = ? AND (object_type, object_id, relation, user_type, user_id, user_relation_key) IN (",
+            );
+
+            let placeholders: Vec<String> = chunk
+                .iter()
+                .map(|_| "(?, ?, ?, ?, ?, ?)".to_string())
+                .collect();
+            query.push_str(&placeholders.join(", "));
+            query.push(')');
+
+            let mut query_builder = sqlx::query(&query);
+            query_builder = query_builder.bind(store_id);
+
+            for tuple in chunk {
+                // Use empty string for NULL user_relation to match generated column
+                let user_relation_key = tuple.user_relation.as_deref().unwrap_or("");
+                query_builder = query_builder
+                    .bind(&tuple.object_type)
+                    .bind(&tuple.object_id)
+                    .bind(&tuple.relation)
+                    .bind(&tuple.user_type)
+                    .bind(&tuple.user_id)
+                    .bind(user_relation_key);
+            }
+
+            query_builder
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to batch delete tuples: {}", e),
+                })?;
         }
 
         // Insert tuples using batch INSERT with multiple VALUES, chunked to avoid
