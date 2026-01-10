@@ -3858,8 +3858,7 @@ async fn test_tuple_context_takes_precedence_over_request() {
     tuple_reader.add_store("store1").await;
 
     // Condition that checks if department is "engineering"
-    let condition =
-        Condition::new("dept_check", "context.department == \"engineering\"").unwrap();
+    let condition = Condition::new("dept_check", "context.department == \"engineering\"").unwrap();
     model_reader.add_condition("store1", condition).await;
 
     model_reader
