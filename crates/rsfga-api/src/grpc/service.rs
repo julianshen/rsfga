@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
 
+use rsfga_domain::cel::global_cache;
 use rsfga_storage::{DataStore, DateTime, StorageError, StoredTuple, TupleFilter, Utc};
 
 use crate::utils::{format_user, parse_object, parse_user, MAX_BATCH_SIZE};
@@ -502,9 +503,12 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // TODO(#110): When model persistence is implemented, invalidate CEL cache:
-        // rsfga_domain::cel::global_cache().invalidate_all();
-        // This ensures cached CEL expressions from the old model are not reused.
+        // TODO: Persist the authorization model to storage when implemented
+
+        // Invalidate CEL expression cache to ensure stale expressions from
+        // previous models are not reused. This is critical for security:
+        // old condition expressions must not be evaluated against new models.
+        global_cache().invalidate_all();
 
         Ok(Response::new(WriteAuthorizationModelResponse {
             authorization_model_id: uuid::Uuid::new_v4().to_string(),
