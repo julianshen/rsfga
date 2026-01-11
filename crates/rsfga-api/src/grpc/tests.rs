@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tonic::Request;
 
+use rsfga_domain::cel::global_cache;
 use rsfga_storage::{DataStore, MemoryDataStore, StoredTuple};
 
 use crate::proto::openfga::v1::open_fga_service_server::OpenFgaService;
@@ -398,4 +399,70 @@ async fn test_grpc_errors_map_correctly_to_status_codes() {
     let response = service.batch_check(request).await;
     assert!(response.is_err());
     assert_eq!(response.unwrap_err().code(), tonic::Code::InvalidArgument);
+}
+
+/// Test: WriteAuthorizationModel invalidates CEL cache
+///
+/// Verifies that writing a new authorization model clears the CEL expression
+/// cache to prevent stale expressions from being used with new models.
+/// This is critical for security: old condition expressions must not be
+/// evaluated against updated authorization models.
+#[tokio::test]
+async fn test_write_authorization_model_invalidates_cel_cache() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Populate the CEL cache with some expressions
+    let cache = global_cache();
+    cache.get_or_parse("request.ip == '192.168.1.1'").unwrap();
+    cache
+        .get_or_parse("request.time > timestamp('2024-01-01T00:00:00Z')")
+        .unwrap();
+    assert!(
+        cache.entry_count() >= 2,
+        "Cache should have at least 2 entries"
+    );
+
+    // Call write_authorization_model
+    let request = Request::new(WriteAuthorizationModelRequest {
+        store_id: "test-store".to_string(),
+        type_definitions: vec![],
+        schema_version: String::new(),
+        conditions: Default::default(),
+    });
+
+    let response = service.write_authorization_model(request).await;
+    assert!(response.is_ok(), "write_authorization_model should succeed");
+
+    // Verify the CEL cache was invalidated
+    assert_eq!(
+        cache.entry_count(),
+        0,
+        "CEL cache should be empty after write_authorization_model"
+    );
+}
+
+/// Test: WriteAuthorizationModel returns error for non-existent store
+///
+/// Verifies that write_authorization_model validates the store exists
+/// before attempting to update the model.
+#[tokio::test]
+async fn test_write_authorization_model_validates_store_exists() {
+    let service = test_service();
+
+    let request = Request::new(WriteAuthorizationModelRequest {
+        store_id: "nonexistent-store".to_string(),
+        type_definitions: vec![],
+        schema_version: String::new(),
+        conditions: Default::default(),
+    });
+
+    let response = service.write_authorization_model(request).await;
+    assert!(response.is_err());
+    assert_eq!(response.unwrap_err().code(), tonic::Code::NotFound);
 }
