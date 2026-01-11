@@ -798,3 +798,292 @@ async fn test_pagination_mysql() {
     let store = create_mysql_store().await;
     run_pagination_test(&store, "integration-pagination-mysql").await;
 }
+
+// ============================================================================
+// Test: UpdateStore functionality across implementations
+// ============================================================================
+
+/// Helper function to run update_store test against any DataStore implementation.
+async fn run_update_store_test<S: DataStore>(store: &S, store_id: &str) {
+    // Create a store
+    let created = store.create_store(store_id, "Original Name").await.unwrap();
+    assert_eq!(created.name, "Original Name");
+    let original_created_at = created.created_at;
+
+    // Update the store name
+    let updated = store.update_store(store_id, "Updated Name").await.unwrap();
+
+    // Verify the update
+    assert_eq!(updated.id, store_id);
+    assert_eq!(updated.name, "Updated Name");
+    assert_eq!(updated.created_at, original_created_at); // created_at should not change
+    assert!(updated.updated_at >= created.updated_at); // updated_at should be >= original
+
+    // Verify the update persisted by fetching the store again
+    let fetched = store.get_store(store_id).await.unwrap();
+    assert_eq!(fetched.name, "Updated Name");
+    assert_eq!(fetched.created_at, original_created_at);
+
+    // Clean up
+    store.delete_store(store_id).await.unwrap();
+}
+
+/// Helper function to test update_store on non-existent store.
+async fn run_update_store_not_found_test<S: DataStore>(store: &S) {
+    use rsfga_storage::StorageError;
+
+    let result = store
+        .update_store("non-existent-store-id", "New Name")
+        .await;
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        StorageError::StoreNotFound { store_id } => {
+            assert_eq!(store_id, "non-existent-store-id");
+        }
+        e => panic!("Expected StoreNotFound, got {:?}", e),
+    }
+}
+
+/// Helper function to test multiple sequential updates.
+async fn run_update_store_multiple_test<S: DataStore>(store: &S, store_id: &str) {
+    store.create_store(store_id, "Name v1").await.unwrap();
+
+    // Update multiple times
+    let v2 = store.update_store(store_id, "Name v2").await.unwrap();
+    assert_eq!(v2.name, "Name v2");
+
+    let v3 = store.update_store(store_id, "Name v3").await.unwrap();
+    assert_eq!(v3.name, "Name v3");
+    assert!(v3.updated_at >= v2.updated_at);
+
+    let v4 = store.update_store(store_id, "Name v4").await.unwrap();
+    assert_eq!(v4.name, "Name v4");
+    assert!(v4.updated_at >= v3.updated_at);
+
+    // Verify final state
+    let final_store = store.get_store(store_id).await.unwrap();
+    assert_eq!(final_store.name, "Name v4");
+
+    // Clean up
+    store.delete_store(store_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_update_store_memory() {
+    let store = create_memory_store();
+    run_update_store_test(&store, "integration-update-memory").await;
+}
+
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_update_store_postgres() {
+    let store = create_postgres_store().await;
+    run_update_store_test(&store, "integration-update-postgres").await;
+}
+
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_update_store_mysql() {
+    let store = create_mysql_store().await;
+    run_update_store_test(&store, "integration-update-mysql").await;
+}
+
+#[tokio::test]
+async fn test_update_store_not_found_memory() {
+    let store = create_memory_store();
+    run_update_store_not_found_test(&store).await;
+}
+
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_update_store_not_found_postgres() {
+    let store = create_postgres_store().await;
+    run_update_store_not_found_test(&store).await;
+}
+
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_update_store_not_found_mysql() {
+    let store = create_mysql_store().await;
+    run_update_store_not_found_test(&store).await;
+}
+
+#[tokio::test]
+async fn test_update_store_multiple_memory() {
+    let store = create_memory_store();
+    run_update_store_multiple_test(&store, "integration-update-multi-memory").await;
+}
+
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_update_store_multiple_postgres() {
+    let store = create_postgres_store().await;
+    run_update_store_multiple_test(&store, "integration-update-multi-postgres").await;
+}
+
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_update_store_multiple_mysql() {
+    let store = create_mysql_store().await;
+    run_update_store_multiple_test(&store, "integration-update-multi-mysql").await;
+}
+
+/// Test concurrent updates to the same store (race condition test).
+#[tokio::test]
+async fn test_update_store_concurrent_memory() {
+    let store = Arc::new(create_memory_store());
+    let store_id = "integration-update-concurrent";
+
+    store.create_store(store_id, "Initial Name").await.unwrap();
+
+    let mut handles = Vec::new();
+
+    // Spawn 10 concurrent update tasks
+    for i in 0..10 {
+        let store = Arc::clone(&store);
+        let store_id = store_id.to_string();
+        handles.push(tokio::spawn(async move {
+            store
+                .update_store(&store_id, &format!("Name from task {}", i))
+                .await
+        }));
+    }
+
+    // All updates should succeed (no panics or errors)
+    for handle in handles {
+        let result = handle.await.unwrap();
+        assert!(result.is_ok(), "Concurrent update failed: {:?}", result);
+    }
+
+    // Verify the store has some valid name (one of the updates won)
+    let final_store = store.get_store(store_id).await.unwrap();
+    assert!(final_store.name.starts_with("Name from task "));
+
+    // Clean up
+    store.delete_store(store_id).await.unwrap();
+}
+
+/// Test that invalid store_id is rejected.
+#[tokio::test]
+async fn test_update_store_validates_store_id() {
+    use rsfga_storage::StorageError;
+
+    let store = create_memory_store();
+
+    // Empty store_id should fail validation
+    let result = store.update_store("", "New Name").await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        StorageError::InvalidInput { message } => {
+            assert!(
+                message.contains("store_id"),
+                "Error message should mention store_id: {}",
+                message
+            );
+        }
+        e => panic!("Expected InvalidInput, got {:?}", e),
+    }
+
+    // Store id with only whitespace should fail
+    let result = store.update_store("   ", "New Name").await;
+    assert!(result.is_err());
+}
+
+/// Test that invalid store name is rejected.
+#[tokio::test]
+async fn test_update_store_validates_name() {
+    use rsfga_storage::StorageError;
+
+    let store = create_memory_store();
+    let store_id = "integration-validate-name";
+
+    store.create_store(store_id, "Valid Name").await.unwrap();
+
+    // Empty name should fail validation
+    let result = store.update_store(store_id, "").await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        StorageError::InvalidInput { message } => {
+            assert!(
+                message.contains("name"),
+                "Error message should mention name: {}",
+                message
+            );
+        }
+        e => panic!("Expected InvalidInput, got {:?}", e),
+    }
+
+    // Clean up
+    store.delete_store(store_id).await.unwrap();
+}
+
+/// Test that store_id exceeding max length (255 chars) is rejected.
+#[tokio::test]
+async fn test_update_store_rejects_long_store_id() {
+    use rsfga_storage::StorageError;
+
+    let store = create_memory_store();
+    let long_store_id = "x".repeat(256); // Exceeds 255 char limit
+
+    let result = store.update_store(&long_store_id, "Valid Name").await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        StorageError::InvalidInput { message } => {
+            assert!(
+                message.contains("store_id") && message.contains("maximum length"),
+                "Error message should mention store_id and maximum length: {}",
+                message
+            );
+        }
+        e => panic!("Expected InvalidInput, got {:?}", e),
+    }
+}
+
+/// Test that store name exceeding max length (255 chars) is rejected.
+#[tokio::test]
+async fn test_update_store_rejects_long_name() {
+    use rsfga_storage::StorageError;
+
+    let store = create_memory_store();
+    let store_id = "integration-long-name-test";
+    let long_name = "x".repeat(256); // Exceeds 255 char limit
+
+    store.create_store(store_id, "Valid Name").await.unwrap();
+
+    let result = store.update_store(store_id, &long_name).await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        StorageError::InvalidInput { message } => {
+            assert!(
+                message.contains("name") && message.contains("maximum length"),
+                "Error message should mention name and maximum length: {}",
+                message
+            );
+        }
+        e => panic!("Expected InvalidInput, got {:?}", e),
+    }
+
+    // Clean up
+    store.delete_store(store_id).await.unwrap();
+}
+
+/// Test that exactly 255 character values are accepted (boundary test).
+#[tokio::test]
+async fn test_update_store_accepts_max_length_values() {
+    let store = create_memory_store();
+    let store_id = "integration-max-len-test";
+    let max_length_name = "x".repeat(255); // Exactly 255 chars - should work
+
+    store.create_store(store_id, "Initial Name").await.unwrap();
+
+    // Update with max length name should succeed
+    let result = store.update_store(store_id, &max_length_name).await;
+    assert!(result.is_ok(), "255 char name should be accepted");
+
+    let updated = result.unwrap();
+    assert_eq!(updated.name.len(), 255);
+
+    // Clean up
+    store.delete_store(store_id).await.unwrap();
+}

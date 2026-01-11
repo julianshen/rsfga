@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use tracing::instrument;
 
 use crate::error::{StorageError, StorageResult};
 use crate::traits::{
@@ -83,6 +84,29 @@ impl DataStore for MemoryDataStore {
         }
         self.tuples.remove(id);
         Ok(())
+    }
+
+    #[instrument(skip(self), fields(store_id = %id))]
+    async fn update_store(&self, id: &str, name: &str) -> StorageResult<Store> {
+        // Validate inputs
+        validate_store_id(id)?;
+        validate_store_name(name)?;
+
+        // Capture timestamp before acquiring lock to minimize lock hold time
+        let now = chrono::Utc::now();
+
+        // Get and update the store
+        let mut entry = self
+            .stores
+            .get_mut(id)
+            .ok_or_else(|| StorageError::StoreNotFound {
+                store_id: id.to_string(),
+            })?;
+
+        entry.name = name.to_string();
+        entry.updated_at = now;
+
+        Ok(entry.clone())
     }
 
     async fn list_stores(&self) -> StorageResult<Vec<Store>> {

@@ -268,6 +268,41 @@ impl DataStore for PostgresDataStore {
     }
 
     #[instrument(skip(self))]
+    async fn update_store(&self, id: &str, name: &str) -> StorageResult<Store> {
+        // Validate inputs
+        validate_store_id(id)?;
+        validate_store_name(name)?;
+
+        let row = sqlx::query(
+            r#"
+            UPDATE stores
+            SET name = $2, updated_at = NOW()
+            WHERE id = $1
+            RETURNING id, name, created_at, updated_at
+            "#,
+        )
+        .bind(id)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to update store: {}", e),
+        })?;
+
+        match row {
+            Some(row) => Ok(Store {
+                id: row.get("id"),
+                name: row.get("name"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            }),
+            None => Err(StorageError::StoreNotFound {
+                store_id: id.to_string(),
+            }),
+        }
+    }
+
+    #[instrument(skip(self))]
     async fn list_stores(&self) -> StorageResult<Vec<Store>> {
         let rows = sqlx::query(
             r#"

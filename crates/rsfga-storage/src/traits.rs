@@ -427,6 +427,23 @@ pub trait DataStore: Send + Sync + 'static {
     /// Deletes a store.
     async fn delete_store(&self, id: &str) -> StorageResult<()>;
 
+    /// Updates a store's metadata (name).
+    ///
+    /// Returns the updated store with the new `updated_at` timestamp.
+    ///
+    /// # Atomicity
+    ///
+    /// Implementations must ensure atomicity: the returned `Store` reflects the
+    /// state immediately after the update. For database backends, this typically
+    /// requires using transactions or `RETURNING` clauses to prevent race
+    /// conditions between the update and subsequent read.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
+    /// Returns `StorageError::InvalidInput` if the new name is invalid.
+    async fn update_store(&self, id: &str, name: &str) -> StorageResult<Store>;
+
     /// Lists all stores.
     async fn list_stores(&self) -> StorageResult<Vec<Store>>;
 

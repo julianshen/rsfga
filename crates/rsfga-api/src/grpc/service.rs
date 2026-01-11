@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
 
-use rsfga_storage::{DataStore, StorageError, StoredTuple, TupleFilter};
+use rsfga_storage::{DataStore, DateTime, StorageError, StoredTuple, TupleFilter, Utc};
 
 use crate::utils::{format_user, parse_object, parse_user, MAX_BATCH_SIZE};
 
@@ -66,6 +66,14 @@ fn tuple_key_to_stored(tk: &TupleKey) -> Option<StoredTuple> {
         condition_name: None,
         condition_context: None,
     })
+}
+
+/// Converts a chrono DateTime<Utc> to a prost_types::Timestamp.
+fn datetime_to_timestamp(dt: DateTime<Utc>) -> prost_types::Timestamp {
+    prost_types::Timestamp {
+        seconds: dt.timestamp(),
+        nanos: dt.timestamp_subsec_nanos() as i32,
+    }
 }
 
 #[tonic::async_trait]
@@ -359,14 +367,8 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         Ok(Response::new(CreateStoreResponse {
             id: store.id,
             name: store.name,
-            created_at: Some(prost_types::Timestamp {
-                seconds: store.created_at.timestamp(),
-                nanos: store.created_at.timestamp_subsec_nanos() as i32,
-            }),
-            updated_at: Some(prost_types::Timestamp {
-                seconds: store.updated_at.timestamp(),
-                nanos: store.updated_at.timestamp_subsec_nanos() as i32,
-            }),
+            created_at: Some(datetime_to_timestamp(store.created_at)),
+            updated_at: Some(datetime_to_timestamp(store.updated_at)),
         }))
     }
 
@@ -376,19 +378,18 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
     ) -> Result<Response<UpdateStoreResponse>, Status> {
         let req = request.into_inner();
 
-        // Validate store exists
-        let _ = self
+        let store = self
             .storage
-            .get_store(&req.store_id)
+            .update_store(&req.store_id, &req.name)
             .await
             .map_err(storage_error_to_status)?;
 
-        // TODO(#85): UpdateStore requires storage layer support (update_store method)
-        // Currently returns UNIMPLEMENTED as the storage trait doesn't have update_store.
-        // This will be implemented when storage layer adds update_store support.
-        Err(Status::unimplemented(
-            "update_store is not yet implemented - storage layer support required",
-        ))
+        Ok(Response::new(UpdateStoreResponse {
+            id: store.id,
+            name: store.name,
+            created_at: Some(datetime_to_timestamp(store.created_at)),
+            updated_at: Some(datetime_to_timestamp(store.updated_at)),
+        }))
     }
 
     async fn delete_store(
@@ -420,14 +421,8 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         Ok(Response::new(GetStoreResponse {
             id: store.id,
             name: store.name,
-            created_at: Some(prost_types::Timestamp {
-                seconds: store.created_at.timestamp(),
-                nanos: store.created_at.timestamp_subsec_nanos() as i32,
-            }),
-            updated_at: Some(prost_types::Timestamp {
-                seconds: store.updated_at.timestamp(),
-                nanos: store.updated_at.timestamp_subsec_nanos() as i32,
-            }),
+            created_at: Some(datetime_to_timestamp(store.created_at)),
+            updated_at: Some(datetime_to_timestamp(store.updated_at)),
         }))
     }
 
@@ -446,14 +441,8 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .map(|s| Store {
                 id: s.id,
                 name: s.name,
-                created_at: Some(prost_types::Timestamp {
-                    seconds: s.created_at.timestamp(),
-                    nanos: s.created_at.timestamp_subsec_nanos() as i32,
-                }),
-                updated_at: Some(prost_types::Timestamp {
-                    seconds: s.updated_at.timestamp(),
-                    nanos: s.updated_at.timestamp_subsec_nanos() as i32,
-                }),
+                created_at: Some(datetime_to_timestamp(s.created_at)),
+                updated_at: Some(datetime_to_timestamp(s.updated_at)),
                 deleted_at: None,
             })
             .collect();

@@ -1,6 +1,6 @@
 {
   "name": "RSFGA Development",
-  "imagge": "mcr.microsoft.com/devcontainers/rust:1",
+  "image": "mcr.microsoft.com/devcontainers/rust:1",
   "features": {
     "ghcr.io/devcontainers/features/rust:1": {},
     "ghcr.io/devcontainers/features/github-cli:1": {},

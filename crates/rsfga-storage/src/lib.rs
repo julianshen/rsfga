@@ -34,3 +34,6 @@ pub use traits::{
     parse_user_filter, validate_store_id, validate_store_name, validate_tuple, DataStore,
     PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter,
 };
+
+// Re-export chrono types for timestamp handling
+pub use chrono::{DateTime, Utc};
