@@ -665,7 +665,10 @@ async fn test_cockroachdb_basic_consistency() {
     store.delete_store("test-crdb-consistency").await.unwrap();
 }
 
-/// Test: Large batch operations on CockroachDB
+/// Test: Large batch operations on CockroachDB (1000+ tuples)
+///
+/// CockroachDB uses PostgreSQL wire protocol and benefits from batched writes.
+/// This test validates that batch operations perform well at scale.
 #[tokio::test]
 #[ignore = "requires running CockroachDB"]
 async fn test_large_batch_on_cockroachdb() {
@@ -675,15 +678,16 @@ async fn test_large_batch_on_cockroachdb() {
         .await
         .unwrap();
 
-    // Generate 500 tuples (smaller than MySQL due to different characteristics)
-    let tuples: Vec<StoredTuple> = (0..500)
+    // Generate 1000 tuples to validate batch performance
+    // CockroachDB handles this well via PostgreSQL protocol batching
+    let tuples: Vec<StoredTuple> = (0..1000)
         .map(|i| {
             StoredTuple::new(
                 "document",
                 format!("doc{}", i),
                 "viewer",
                 "user",
-                format!("user{}", i % 50),
+                format!("user{}", i % 100),
                 None,
             )
         })
@@ -698,8 +702,82 @@ async fn test_large_batch_on_cockroachdb() {
         .read_tuples("test-crdb-large-batch", &TupleFilter::default())
         .await
         .unwrap();
-    assert_eq!(result.len(), 500);
+    assert_eq!(result.len(), 1000);
 
     // Cleanup
     store.delete_store("test-crdb-large-batch").await.unwrap();
+}
+
+// ==========================================================================
+// Section 4.9: Large Dataset Performance Test (10k+ tuples)
+// ==========================================================================
+
+/// Test: Large dataset performance (10k+ tuples)
+///
+/// CockroachDB excels at distributed workloads. This test validates
+/// that it handles large datasets similar to PostgreSQL.
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_large_dataset_performance_cockroachdb() {
+    let store = create_store().await;
+    store
+        .create_store("test-crdb-large-dataset", "Large Dataset Test")
+        .await
+        .unwrap();
+
+    // Generate 10,000 tuples for performance validation
+    let tuples: Vec<StoredTuple> = (0..10_000)
+        .map(|i| {
+            StoredTuple::new(
+                "document",
+                format!("doc{}", i),
+                "viewer",
+                "user",
+                format!("user{}", i % 500),
+                None,
+            )
+        })
+        .collect();
+
+    let start = std::time::Instant::now();
+    store
+        .write_tuples("test-crdb-large-dataset", tuples, vec![])
+        .await
+        .expect("Large dataset write should succeed");
+    let write_duration = start.elapsed();
+
+    // Read all tuples
+    let start = std::time::Instant::now();
+    let result = store
+        .read_tuples("test-crdb-large-dataset", &TupleFilter::default())
+        .await
+        .unwrap();
+    let read_duration = start.elapsed();
+
+    assert_eq!(result.len(), 10_000);
+
+    // Log performance (not asserted to avoid flaky tests)
+    eprintln!(
+        "CockroachDB 10k tuples: write={:?}, read={:?}",
+        write_duration, read_duration
+    );
+
+    // Test filtered query performance
+    let filter = TupleFilter {
+        user: Some("user:user42".to_string()),
+        ..Default::default()
+    };
+    let start = std::time::Instant::now();
+    let filtered = store
+        .read_tuples("test-crdb-large-dataset", &filter)
+        .await
+        .unwrap();
+    let filter_duration = start.elapsed();
+
+    // user42 appears at indices 42, 542, 1042, ... (every 500)
+    assert_eq!(filtered.len(), 20);
+    eprintln!("CockroachDB filtered query: {:?}", filter_duration);
+
+    // Cleanup
+    store.delete_store("test-crdb-large-dataset").await.unwrap();
 }
