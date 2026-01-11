@@ -18,7 +18,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Build environment
 # -----------------------------------------------------------------------------
-FROM rust:1.92-bookworm AS builder
+FROM rust:1.85-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
