@@ -56,13 +56,51 @@ jobs:
             # On PR: pr-123
             type=ref,event=pr
 
+      # For PRs: Build single platform and load locally for smoke test
+      - name: Build Docker image (PR - single platform)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Smoke test: verify container starts and health endpoint responds
+      - name: Smoke test - Health check
+        if: github.event_name == 'pull_request'
+        run: |
+          # Start container in background
+          docker run -d --name smoke-test -p 8080:8080 ${{ env.IMAGE_NAME }}:test
+
+          # Wait for container to be ready (max 30 seconds)
+          for i in {1..30}; do
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              echo "Health check passed!"
+              docker logs smoke-test
+              docker stop smoke-test
+              exit 0
+            fi
+            echo "Waiting for container to be ready... ($i/30)"
+            sleep 1
+          done
+
+          echo "Health check failed after 30 seconds"
+          docker logs smoke-test
+          docker stop smoke-test
+          exit 1
+
+      # For main/tags: Build multi-platform and push to registry
       - name: Build and push Docker image
+        if: github.event_name != 'pull_request'
         id: push
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
