@@ -555,13 +555,10 @@ async fn test_invalid_user_filter_returns_error() {
 // Section 4: Tuple Storage with Conditions (PostgreSQL)
 // ==========================================================================
 
-// Test: PostgresStore can write and read tuples with conditions
-// Note: This test verifies that tuples with condition fields can be written
-// and read back. The condition_name and condition_context fields are stored
-// in the database when the schema supports them.
+// Test: PostgresStore can write and read tuples with condition_name
 #[tokio::test]
-#[ignore = "requires running PostgreSQL + schema update for conditions"]
-async fn test_postgres_store_stores_condition_data() {
+#[ignore = "requires running PostgreSQL"]
+async fn test_postgres_store_stores_condition_name() {
     let store = create_store().await;
     store
         .create_store("test-condition", "Test Store")
@@ -589,10 +586,177 @@ async fn test_postgres_store_stores_condition_data() {
         .unwrap();
 
     assert_eq!(tuples.len(), 1);
-    // TODO(#83): Once PostgreSQL schema is updated to include condition columns,
-    // this assertion should verify condition_name is preserved:
-    // assert_eq!(tuples[0].condition_name, Some("time_bound".to_string()));
+    assert_eq!(tuples[0].condition_name, Some("time_bound".to_string()));
+    assert!(tuples[0].condition_context.is_none());
 
     // Cleanup
     store.delete_store("test-condition").await.unwrap();
+}
+
+// Test: PostgresStore can write and read tuples with condition_context (JSONB)
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_postgres_store_stores_condition_context() {
+    let store = create_store().await;
+    store
+        .create_store("test-condition-ctx", "Test Store")
+        .await
+        .unwrap();
+
+    // Write tuple with condition and context
+    let mut context = std::collections::HashMap::new();
+    context.insert("ip".to_string(), serde_json::json!("192.168.1.1"));
+    context.insert(
+        "allowed_hours".to_string(),
+        serde_json::json!([9, 10, 11, 12, 13, 14, 15, 16, 17]),
+    );
+
+    let tuple = StoredTuple::with_condition(
+        "document",
+        "doc1",
+        "viewer",
+        "user",
+        "alice",
+        None,
+        "ip_and_time_check",
+        Some(context.clone()),
+    );
+
+    store
+        .write_tuple("test-condition-ctx", tuple)
+        .await
+        .unwrap();
+
+    // Read it back
+    let tuples = store
+        .read_tuples("test-condition-ctx", &TupleFilter::default())
+        .await
+        .unwrap();
+
+    assert_eq!(tuples.len(), 1);
+    assert_eq!(
+        tuples[0].condition_name,
+        Some("ip_and_time_check".to_string())
+    );
+
+    let read_context = tuples[0]
+        .condition_context
+        .as_ref()
+        .expect("condition_context should be present");
+    assert_eq!(
+        read_context.get("ip"),
+        Some(&serde_json::json!("192.168.1.1"))
+    );
+    assert_eq!(
+        read_context.get("allowed_hours"),
+        Some(&serde_json::json!([9, 10, 11, 12, 13, 14, 15, 16, 17]))
+    );
+
+    // Cleanup
+    store.delete_store("test-condition-ctx").await.unwrap();
+}
+
+// Test: PostgresStore can filter tuples by condition_name
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_postgres_store_filters_by_condition_name() {
+    let store = create_store().await;
+    store
+        .create_store("test-filter-cond", "Test Store")
+        .await
+        .unwrap();
+
+    // Write tuples with different conditions
+    let tuple1 = StoredTuple::with_condition(
+        "document",
+        "doc1",
+        "viewer",
+        "user",
+        "alice",
+        None,
+        "time_bound",
+        None,
+    );
+    let tuple2 = StoredTuple::with_condition(
+        "document", "doc2", "viewer", "user", "bob", None, "ip_check", None,
+    );
+    let tuple3 = StoredTuple::new("document", "doc3", "viewer", "user", "charlie", None);
+
+    store.write_tuple("test-filter-cond", tuple1).await.unwrap();
+    store.write_tuple("test-filter-cond", tuple2).await.unwrap();
+    store.write_tuple("test-filter-cond", tuple3).await.unwrap();
+
+    // Filter by condition_name = "time_bound"
+    let filter = TupleFilter {
+        condition_name: Some("time_bound".to_string()),
+        ..Default::default()
+    };
+    let tuples = store
+        .read_tuples("test-filter-cond", &filter)
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1);
+    assert_eq!(tuples[0].user_id, "alice");
+
+    // Filter by condition_name = "ip_check"
+    let filter = TupleFilter {
+        condition_name: Some("ip_check".to_string()),
+        ..Default::default()
+    };
+    let tuples = store
+        .read_tuples("test-filter-cond", &filter)
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1);
+    assert_eq!(tuples[0].user_id, "bob");
+
+    // Cleanup
+    store.delete_store("test-filter-cond").await.unwrap();
+}
+
+// Test: PostgresStore updates condition on conflict (upsert behavior)
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_postgres_store_updates_condition_on_conflict() {
+    let store = create_store().await;
+    store
+        .create_store("test-upsert-cond", "Test Store")
+        .await
+        .unwrap();
+
+    // Write tuple without condition
+    let tuple1 = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
+    store.write_tuple("test-upsert-cond", tuple1).await.unwrap();
+
+    // Read it back - should have no condition
+    let tuples = store
+        .read_tuples("test-upsert-cond", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1);
+    assert!(tuples[0].condition_name.is_none());
+
+    // Write same tuple WITH condition (upsert)
+    let tuple2 = StoredTuple::with_condition(
+        "document",
+        "doc1",
+        "viewer",
+        "user",
+        "alice",
+        None,
+        "new_condition",
+        None,
+    );
+    store.write_tuple("test-upsert-cond", tuple2).await.unwrap();
+
+    // Read it back - should now have condition
+    let tuples = store
+        .read_tuples("test-upsert-cond", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1);
+    assert_eq!(tuples[0].condition_name, Some("new_condition".to_string()));
+
+    // Cleanup
+    store.delete_store("test-upsert-cond").await.unwrap();
 }

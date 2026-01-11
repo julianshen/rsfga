@@ -119,6 +119,8 @@ impl PostgresDataStore {
                 user_type VARCHAR(255) NOT NULL,
                 user_id VARCHAR(255) NOT NULL,
                 user_relation VARCHAR(255),
+                condition_name VARCHAR(256),
+                condition_context JSONB,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                 FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
             )
@@ -128,6 +130,33 @@ impl PostgresDataStore {
         .await
         .map_err(|e| StorageError::QueryError {
             message: format!("Failed to create tuples table: {}", e),
+        })?;
+
+        // Add condition columns if they don't exist (for existing databases)
+        // These are idempotent migrations that add columns only if missing.
+        sqlx::query(
+            r#"
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'tuples' AND column_name = 'condition_name'
+                ) THEN
+                    ALTER TABLE tuples ADD COLUMN condition_name VARCHAR(256);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'tuples' AND column_name = 'condition_context'
+                ) THEN
+                    ALTER TABLE tuples ADD COLUMN condition_context JSONB;
+                END IF;
+            END $$;
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to add condition columns: {}", e),
         })?;
 
         // Create unique index to enforce tuple uniqueness (handles NULL user_relation correctly)
@@ -151,6 +180,8 @@ impl PostgresDataStore {
             "CREATE INDEX IF NOT EXISTS idx_tuples_relation ON tuples(store_id, object_type, object_id, relation)",
             // Additional index for queries filtering by relation without object_type
             "CREATE INDEX IF NOT EXISTS idx_tuples_store_relation ON tuples(store_id, relation)",
+            // Index for condition_name queries (e.g., finding all tuples with a specific condition)
+            "CREATE INDEX IF NOT EXISTS idx_tuples_condition ON tuples(store_id, condition_name) WHERE condition_name IS NOT NULL",
         ];
 
         for index_sql in indexes {
@@ -472,15 +503,26 @@ impl DataStore for PostgresDataStore {
             let user_ids: Vec<&str> = writes.iter().map(|t| t.user_id.as_str()).collect();
             let user_relations: Vec<Option<&str>> =
                 writes.iter().map(|t| t.user_relation.as_deref()).collect();
+            let condition_names: Vec<Option<&str>> =
+                writes.iter().map(|t| t.condition_name.as_deref()).collect();
+            // Serialize condition_context to JSON strings for JSONB insertion
+            let condition_contexts: Vec<Option<serde_json::Value>> = writes
+                .iter()
+                .map(|t| {
+                    t.condition_context
+                        .as_ref()
+                        .map(|ctx| serde_json::json!(ctx))
+                })
+                .collect();
 
             sqlx::query(
                 r#"
-                INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation)
-                SELECT $1, object_type, object_id, relation, user_type, user_id, user_relation
-                FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
-                AS t(object_type, object_id, relation, user_type, user_id, user_relation)
+                INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
+                SELECT $1, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context
+                FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
+                AS t(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
                 ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, (COALESCE(user_relation, '')))
-                DO NOTHING
+                DO UPDATE SET condition_name = EXCLUDED.condition_name, condition_context = EXCLUDED.condition_context
                 "#,
             )
             .bind(store_id)
@@ -490,6 +532,8 @@ impl DataStore for PostgresDataStore {
             .bind(&user_types)
             .bind(&user_ids)
             .bind(&user_relations)
+            .bind(&condition_names)
+            .bind(&condition_contexts)
             .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError {
@@ -532,15 +576,6 @@ impl DataStore for PostgresDataStore {
             });
         }
 
-        // Condition filtering is not yet supported in PostgreSQL
-        // TODO(#83): Implement once schema is updated to include condition columns
-        if filter.condition_name.is_some() {
-            return Err(StorageError::QueryError {
-                message: "Filtering by condition_name is not yet supported in PostgreSQL storage"
-                    .to_string(),
-            });
-        }
-
         // Parse user filter upfront to validate and extract components
         let user_filter = if let Some(ref user) = filter.user {
             Some(parse_user_filter(user)?)
@@ -550,7 +585,7 @@ impl DataStore for PostgresDataStore {
 
         // Use sqlx::QueryBuilder for safe dynamic query construction
         let mut builder: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "SELECT object_type, object_id, relation, user_type, user_id, user_relation FROM tuples WHERE store_id = ",
+            "SELECT object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context FROM tuples WHERE store_id = ",
         );
         builder.push_bind(store_id);
 
@@ -582,6 +617,11 @@ impl DataStore for PostgresDataStore {
             }
         }
 
+        if let Some(ref condition_name) = filter.condition_name {
+            builder.push(" AND condition_name = ");
+            builder.push_bind(condition_name);
+        }
+
         builder.push(" ORDER BY created_at DESC");
 
         let rows =
@@ -595,16 +635,19 @@ impl DataStore for PostgresDataStore {
 
         Ok(rows
             .into_iter()
-            .map(|row| StoredTuple {
-                object_type: row.get("object_type"),
-                object_id: row.get("object_id"),
-                relation: row.get("relation"),
-                user_type: row.get("user_type"),
-                user_id: row.get("user_id"),
-                user_relation: row.get("user_relation"),
-                // TODO(#83): Read condition fields from database once schema is updated
-                condition_name: None,
-                condition_context: None,
+            .map(|row| {
+                let condition_context: Option<serde_json::Value> = row.get("condition_context");
+                StoredTuple {
+                    object_type: row.get("object_type"),
+                    object_id: row.get("object_id"),
+                    relation: row.get("relation"),
+                    user_type: row.get("user_type"),
+                    user_id: row.get("user_id"),
+                    user_relation: row.get("user_relation"),
+                    condition_name: row.get("condition_name"),
+                    condition_context: condition_context
+                        .and_then(|v| serde_json::from_value(v).ok()),
+                }
             })
             .collect())
     }
@@ -635,15 +678,6 @@ impl DataStore for PostgresDataStore {
             });
         }
 
-        // Condition filtering is not yet supported in PostgreSQL
-        // TODO(#83): Implement once schema is updated to include condition columns
-        if filter.condition_name.is_some() {
-            return Err(StorageError::QueryError {
-                message: "Filtering by condition_name is not yet supported in PostgreSQL storage"
-                    .to_string(),
-            });
-        }
-
         // Parse user filter upfront to validate and extract components
         let user_filter = if let Some(ref user) = filter.user {
             Some(parse_user_filter(user)?)
@@ -660,7 +694,7 @@ impl DataStore for PostgresDataStore {
 
         // Use sqlx::QueryBuilder for safe dynamic query construction
         let mut builder: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "SELECT object_type, object_id, relation, user_type, user_id, user_relation FROM tuples WHERE store_id = ",
+            "SELECT object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context FROM tuples WHERE store_id = ",
         );
         builder.push_bind(store_id);
 
@@ -692,6 +726,11 @@ impl DataStore for PostgresDataStore {
             }
         }
 
+        if let Some(ref condition_name) = filter.condition_name {
+            builder.push(" AND condition_name = ");
+            builder.push_bind(condition_name);
+        }
+
         builder.push(" ORDER BY created_at DESC LIMIT ");
         builder.push_bind(page_size);
         builder.push(" OFFSET ");
@@ -708,16 +747,19 @@ impl DataStore for PostgresDataStore {
 
         let items: Vec<StoredTuple> = rows
             .into_iter()
-            .map(|row| StoredTuple {
-                object_type: row.get("object_type"),
-                object_id: row.get("object_id"),
-                relation: row.get("relation"),
-                user_type: row.get("user_type"),
-                user_id: row.get("user_id"),
-                user_relation: row.get("user_relation"),
-                // TODO(#83): Read condition fields from database once schema is updated
-                condition_name: None,
-                condition_context: None,
+            .map(|row| {
+                let condition_context: Option<serde_json::Value> = row.get("condition_context");
+                StoredTuple {
+                    object_type: row.get("object_type"),
+                    object_id: row.get("object_id"),
+                    relation: row.get("relation"),
+                    user_type: row.get("user_type"),
+                    user_id: row.get("user_id"),
+                    user_relation: row.get("user_relation"),
+                    condition_name: row.get("condition_name"),
+                    condition_context: condition_context
+                        .and_then(|v| serde_json::from_value(v).ok()),
+                }
             })
             .collect();
 
