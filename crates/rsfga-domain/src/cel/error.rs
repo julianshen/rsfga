@@ -6,7 +6,7 @@ use thiserror::Error;
 ///
 /// All variant fields are accessible wherever this enum is visible,
 /// as enum variant fields inherit the visibility of the enum in Rust.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum CelError {
     /// Failed to parse the CEL expression
     #[error("Failed to parse CEL expression: {message}")]

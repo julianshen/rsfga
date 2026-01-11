@@ -16,34 +16,35 @@
 //!
 //! # Thread Safety
 //!
-//! The cache uses DashMap for lock-free concurrent access.
+//! The cache uses moka for lock-free concurrent access with LRU eviction.
 
-use dashmap::DashMap;
+use moka::sync::Cache;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::error::CelError;
 use super::expression::CelExpression;
 use super::CelResult;
 
 /// Configuration for the CEL expression cache.
 ///
-/// # ⚠️ Implementation Status
+/// # Bounded Cache Behavior
 ///
-/// **Note**: `max_capacity` and `ttl` are reserved for future use with bounded
-/// caching (e.g., Moka LRU). The current DashMap implementation does **not**
-/// enforce these limits. For cache invalidation, use [`CelExpressionCache::invalidate_all`]
-/// when authorization models are updated.
+/// The cache enforces both capacity and TTL limits:
+/// - When `max_capacity` is reached, least-recently-used entries are evicted
+/// - Entries expire after `ttl` and are removed on next access or background sweep
 #[derive(Debug, Clone)]
 pub struct CelCacheConfig {
     /// Maximum number of expressions to cache.
     ///
-    /// **⚠️ Not currently enforced.** Reserved for future LRU implementation.
+    /// When this limit is reached, least-recently-used entries are evicted.
     /// Default: 10,000 (expressions are small, typically <1KB each)
     pub max_capacity: u64,
     /// Time-to-live for cached expressions.
     ///
-    /// **⚠️ Not currently enforced.** Reserved for future TTL-based eviction.
-    /// Use [`CelExpressionCache::invalidate_all`] to clear cache on model updates.
+    /// Entries are evicted after this duration, ensuring stale expressions
+    /// don't persist indefinitely. For immediate invalidation on model updates,
+    /// use [`CelExpressionCache::invalidate_all`].
     /// Default: 1 hour
     pub ttl: Duration,
 }
@@ -51,25 +52,23 @@ pub struct CelCacheConfig {
 impl Default for CelCacheConfig {
     fn default() -> Self {
         Self {
-            // Not enforced - reserved for future LRU implementation
             max_capacity: 10_000,
-            // Not enforced - reserved for future TTL eviction
             ttl: Duration::from_secs(3600),
         }
     }
 }
 
-/// Thread-safe cache for parsed CEL expressions.
+/// Thread-safe cache for parsed CEL expressions with LRU eviction.
 ///
 /// This cache stores compiled CEL programs keyed by their source expression string.
 /// Since `CelExpression` contains an `Arc<Program>`, cloning cached entries is cheap.
 ///
-/// # Implementation Note
+/// # Bounded Memory
 ///
-/// Uses DashMap for simple, lock-free concurrent access. For production workloads
-/// with millions of unique expressions, consider using Moka with LRU eviction.
-/// Current implementation doesn't enforce max_capacity or TTL - suitable for
-/// typical authorization models with <10K unique conditions.
+/// Unlike simple HashMap-based caches, this implementation:
+/// - Enforces `max_capacity` with LRU eviction
+/// - Supports TTL-based expiration
+/// - Provides O(1) concurrent access
 ///
 /// # ⚠️ Clone Not Implemented
 ///
@@ -92,7 +91,7 @@ impl Default for CelCacheConfig {
 /// let expr2 = cache.get_or_parse("x > 5")?;
 /// ```
 pub struct CelExpressionCache {
-    cache: DashMap<String, Arc<CelExpression>>,
+    cache: Cache<String, Arc<CelExpression>>,
     #[allow(dead_code)]
     config: CelCacheConfig,
 }
@@ -100,10 +99,12 @@ pub struct CelExpressionCache {
 impl CelExpressionCache {
     /// Creates a new CEL expression cache with the given configuration.
     pub fn new(config: CelCacheConfig) -> Self {
-        Self {
-            cache: DashMap::new(),
-            config,
-        }
+        let cache = Cache::builder()
+            .max_capacity(config.max_capacity)
+            .time_to_live(config.ttl)
+            .build();
+
+        Self { cache, config }
     }
 
     /// Gets a cached expression or parses and caches it.
@@ -121,35 +122,33 @@ impl CelExpressionCache {
     /// * `Ok(Arc<CelExpression>)` - The parsed expression (cached or fresh)
     /// * `Err(CelError)` - If parsing fails
     pub fn get_or_parse(&self, expression: &str) -> CelResult<Arc<CelExpression>> {
-        // Try to get from cache first (fast path - no lock contention)
-        if let Some(cached) = self.cache.get(expression) {
-            return Ok(Arc::clone(cached.value()));
+        // Fast path: check cache first without allocation
+        if let Some(expr) = self.cache.get(expression) {
+            return Ok(expr);
         }
 
-        // Slow path: Use the entry API to ensure that parsing and insertion are
-        // atomic, preventing race conditions where multiple threads could parse
-        // the same expression and return different Arc instances.
-        use dashmap::mapref::entry::Entry;
-        match self.cache.entry(expression.to_string()) {
-            Entry::Occupied(entry) => {
-                // Another thread inserted the expression while we were checking.
-                // Return the existing, cached Arc.
-                Ok(Arc::clone(entry.get()))
-            }
-            Entry::Vacant(entry) => {
-                // The entry is vacant, and we hold the lock.
-                // Parse the expression and insert it into the cache.
+        // Slow path: use try_get_with for atomic get-or-insert with fallible initialization.
+        // This ensures that when multiple threads request the same expression
+        // concurrently, only ONE thread parses it and all others get the same Arc.
+        self.cache
+            .try_get_with(expression.to_string(), || {
                 let parsed = CelExpression::parse(expression)?;
-                let arc_expr = Arc::new(parsed);
-                entry.insert(Arc::clone(&arc_expr));
-                Ok(arc_expr)
-            }
-        }
+                Ok(Arc::new(parsed))
+            })
+            .map_err(|e: Arc<CelError>| (*e).clone())
     }
 
     /// Returns the number of cached expressions.
-    pub fn entry_count(&self) -> usize {
-        self.cache.len()
+    ///
+    /// Note: This count may be approximate due to concurrent modifications
+    /// and pending evictions.
+    pub fn entry_count(&self) -> u64 {
+        self.cache.entry_count()
+    }
+
+    /// Returns the maximum capacity of the cache.
+    pub fn max_capacity(&self) -> u64 {
+        self.cache.policy().max_capacity().unwrap_or(0)
     }
 
     /// Invalidates all cached expressions.
@@ -157,12 +156,20 @@ impl CelExpressionCache {
     /// This should be called when authorization models are updated,
     /// as condition expressions may have changed.
     pub fn invalidate_all(&self) {
-        self.cache.clear();
+        self.cache.invalidate_all();
     }
 
     /// Invalidates a specific expression from the cache.
     pub fn invalidate(&self, expression: &str) {
-        self.cache.remove(expression);
+        self.cache.invalidate(expression);
+    }
+
+    /// Runs pending maintenance tasks (eviction, expiration).
+    ///
+    /// Moka performs maintenance lazily, but this can be called to
+    /// force immediate cleanup. Useful in tests.
+    pub fn run_pending_tasks(&self) {
+        self.cache.run_pending_tasks();
     }
 }
 
@@ -193,6 +200,7 @@ mod tests {
     fn test_cache_creation() {
         let cache = CelExpressionCache::new(CelCacheConfig::default());
         assert_eq!(cache.entry_count(), 0);
+        assert_eq!(cache.max_capacity(), 10_000);
     }
 
     #[test]
@@ -201,6 +209,7 @@ mod tests {
 
         // First parse
         let expr1 = cache.get_or_parse("x > 5").unwrap();
+        cache.run_pending_tasks(); // Ensure insertion is visible
         assert_eq!(cache.entry_count(), 1);
 
         // Second access should return cached version
@@ -217,6 +226,7 @@ mod tests {
 
         let expr1 = cache.get_or_parse("x > 5").unwrap();
         let expr2 = cache.get_or_parse("y < 10").unwrap();
+        cache.run_pending_tasks();
 
         assert_eq!(cache.entry_count(), 2);
         assert!(!Arc::ptr_eq(&expr1, &expr2));
@@ -240,9 +250,11 @@ mod tests {
 
         cache.get_or_parse("x > 5").unwrap();
         cache.get_or_parse("y < 10").unwrap();
+        cache.run_pending_tasks();
         assert_eq!(cache.entry_count(), 2);
 
         cache.invalidate("x > 5");
+        cache.run_pending_tasks();
         assert_eq!(cache.entry_count(), 1);
     }
 
@@ -252,9 +264,11 @@ mod tests {
 
         cache.get_or_parse("x > 5").unwrap();
         cache.get_or_parse("y < 10").unwrap();
+        cache.run_pending_tasks();
         assert_eq!(cache.entry_count(), 2);
 
         cache.invalidate_all();
+        cache.run_pending_tasks();
         assert_eq!(cache.entry_count(), 0);
     }
 
@@ -289,12 +303,13 @@ mod tests {
             handle.join().unwrap();
         }
 
+        cache.run_pending_tasks();
         // All 1000 unique expressions should be cached
         assert_eq!(cache.entry_count(), 1000);
     }
 
     /// Test that concurrent access to the SAME expression returns identical Arc pointers.
-    /// This verifies the race condition fix - all threads must get the same cached instance.
+    /// This verifies the race condition handling - all threads should get the same result.
     #[test]
     fn test_concurrent_identical_expression_returns_same_arc() {
         use std::thread;
@@ -323,7 +338,72 @@ mod tests {
             );
         }
 
+        cache.run_pending_tasks();
         // Only one expression should be cached
         assert_eq!(cache.entry_count(), 1);
+    }
+
+    /// Test that the cache enforces max_capacity with LRU eviction.
+    #[test]
+    fn test_lru_eviction_at_max_capacity() {
+        let config = CelCacheConfig {
+            max_capacity: 5,
+            ttl: Duration::from_secs(3600),
+        };
+        let cache = CelExpressionCache::new(config);
+
+        // Add 5 expressions (at capacity)
+        for i in 0..5 {
+            cache.get_or_parse(&format!("x > {}", i)).unwrap();
+        }
+        cache.run_pending_tasks();
+        assert_eq!(cache.entry_count(), 5);
+
+        // Add one more - should trigger eviction
+        cache.get_or_parse("x > 100").unwrap();
+        cache.run_pending_tasks();
+
+        // Should still be at or below max capacity
+        assert!(
+            cache.entry_count() <= 5,
+            "Cache exceeded max_capacity: {} > 5",
+            cache.entry_count()
+        );
+    }
+
+    /// Test that TTL expiration works.
+    #[test]
+    fn test_ttl_expiration() {
+        let config = CelCacheConfig {
+            max_capacity: 100,
+            ttl: Duration::from_millis(50), // Very short TTL for testing
+        };
+        let cache = CelExpressionCache::new(config);
+
+        cache.get_or_parse("x > 5").unwrap();
+        cache.run_pending_tasks();
+        assert_eq!(cache.entry_count(), 1);
+
+        // Wait for TTL to expire
+        std::thread::sleep(Duration::from_millis(100));
+        cache.run_pending_tasks();
+
+        // Entry should be expired
+        assert_eq!(
+            cache.entry_count(),
+            0,
+            "Entry should have expired after TTL"
+        );
+    }
+
+    /// Test that max_capacity is correctly reported.
+    #[test]
+    fn test_max_capacity_getter() {
+        let config = CelCacheConfig {
+            max_capacity: 500,
+            ttl: Duration::from_secs(60),
+        };
+        let cache = CelExpressionCache::new(config);
+        assert_eq!(cache.max_capacity(), 500);
     }
 }

@@ -423,9 +423,11 @@ async fn test_write_authorization_model_invalidates_cel_cache() {
     cache
         .get_or_parse("request.time > timestamp('2024-01-01T00:00:00Z')")
         .unwrap();
+    cache.run_pending_tasks(); // Ensure entries are visible
     assert!(
         cache.entry_count() >= 2,
-        "Cache should have at least 2 entries"
+        "Cache should have at least 2 entries, got {}",
+        cache.entry_count()
     );
 
     // Call write_authorization_model
@@ -440,6 +442,7 @@ async fn test_write_authorization_model_invalidates_cel_cache() {
     assert!(response.is_ok(), "write_authorization_model should succeed");
 
     // Verify the CEL cache was invalidated
+    cache.run_pending_tasks(); // Ensure invalidation is visible
     assert_eq!(
         cache.entry_count(),
         0,

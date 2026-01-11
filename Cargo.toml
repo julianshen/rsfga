@@ -62,7 +62,7 @@ nom = "7.1"
 cel-interpreter = { version = "0.10", features = ["json"] }
 
 # Caching
-moka = { version = "0.12", features = ["future"] }
+moka = { version = "0.12", features = ["future", "sync"] }
 
 # Observability
 tracing = "0.1"
