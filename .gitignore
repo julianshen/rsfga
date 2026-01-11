@@ -4,9 +4,8 @@
 *.pdb
 
 # Cargo
-Cargo.lock
-# Uncomment the following line if you're building a library
-# Cargo.lock should be committed for binaries but not libraries
+# Note: Cargo.lock IS committed for this project since it's a binary application
+# See: https://doc.rust-lang.org/cargo/faq.html#why-have-cargolock-in-version-control
 
 # IDEs and Editors
 .vscode/
