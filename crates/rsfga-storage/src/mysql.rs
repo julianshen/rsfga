@@ -29,7 +29,12 @@ pub struct MySQLConfig {
     pub max_connections: u32,
     /// Minimum number of connections in the pool.
     pub min_connections: u32,
-    /// Connection timeout in seconds.
+    /// Pool acquire timeout in seconds.
+    ///
+    /// This controls how long to wait when acquiring a connection from the pool,
+    /// including time spent waiting for an available slot and establishing new
+    /// connections. Note: This is passed to SQLx's `acquire_timeout()`, not
+    /// TCP connect timeout.
     pub connect_timeout_secs: u64,
 }
 
@@ -365,7 +370,7 @@ impl DataStore for MySQLDataStore {
             r#"
             SELECT id, name, created_at, updated_at
             FROM stores
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             "#,
         )
         .fetch_all(&self.pool)
@@ -401,7 +406,7 @@ impl DataStore for MySQLDataStore {
             r#"
             SELECT id, name, created_at, updated_at
             FROM stores
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT ? OFFSET ?
             "#,
         )
@@ -640,7 +645,7 @@ impl DataStore for MySQLDataStore {
             }
         }
 
-        builder.push(" ORDER BY created_at DESC");
+        builder.push(" ORDER BY created_at DESC, id DESC");
 
         let rows =
             builder
@@ -748,7 +753,7 @@ impl DataStore for MySQLDataStore {
             }
         }
 
-        builder.push(" ORDER BY created_at DESC LIMIT ");
+        builder.push(" ORDER BY created_at DESC, id DESC LIMIT ");
         builder.push_bind(page_size);
         builder.push(" OFFSET ");
         builder.push_bind(offset);
@@ -790,20 +795,23 @@ impl DataStore for MySQLDataStore {
     }
 
     async fn begin_transaction(&self) -> StorageResult<()> {
-        // Note: Individual transaction control is not supported.
+        // No-op: Individual transaction control is not supported.
+        // Callers MUST check supports_transactions() before calling this method.
         // Transactions are managed internally per write_tuples call.
         // Use write_tuples with both writes and deletes to get atomic behavior.
         Ok(())
     }
 
     async fn commit_transaction(&self) -> StorageResult<()> {
-        // Note: Individual transaction control is not supported.
+        // No-op: Individual transaction control is not supported.
+        // Callers MUST check supports_transactions() before calling this method.
         // Transactions are committed automatically in write_tuples.
         Ok(())
     }
 
     async fn rollback_transaction(&self) -> StorageResult<()> {
-        // Note: Individual transaction control is not supported.
+        // No-op: Individual transaction control is not supported.
+        // Callers MUST check supports_transactions() before calling this method.
         // Transactions are rolled back automatically on error in write_tuples.
         Ok(())
     }
@@ -812,6 +820,7 @@ impl DataStore for MySQLDataStore {
         // Returns false because individual transaction control (begin/commit/rollback)
         // is not supported. However, write_tuples operations are atomic internally.
         // Users should use write_tuples with both writes and deletes for atomic operations.
+        // Callers MUST check this method before calling begin/commit/rollback_transaction.
         false
     }
 }

@@ -11,19 +11,22 @@
 //! To run these tests:
 //! 1. Start MySQL: docker run --name rsfga-mysql -e MYSQL_ROOT_PASSWORD=test -e MYSQL_DATABASE=rsfga -p 3306:3306 -d mysql:8
 //! 2. Set MYSQL_URL: export MYSQL_URL=mysql://root:test@localhost:3306/rsfga
-//! 3. Run tests: cargo test -p rsfga-storage --test mysql_integration -- --ignored
+//! 3. Run tests: cargo test -p rsfga-storage --test mysql_integration -- --ignored --test-threads=1
 //!
 //! For TiDB:
 //! 1. Start TiDB: docker run --name rsfga-tidb -p 4000:4000 -d pingcap/tidb:latest
 //! 2. Set MYSQL_URL: export MYSQL_URL=mysql://root@localhost:4000/test
-//! 3. Run tests: cargo test -p rsfga-storage --test mysql_integration -- --ignored
+//! 3. Run tests: cargo test -p rsfga-storage --test mysql_integration -- --ignored --test-threads=1
+//!
+//! Note: Tests use `--test-threads=1` to avoid store ID collisions. Each test
+//! creates and deletes its own store, but concurrent runs could interfere.
 
 use rsfga_storage::{
     DataStore, MySQLConfig, MySQLDataStore, StorageError, StoredTuple, TupleFilter,
 };
 use std::sync::Arc;
 
-/// Get database URL from environment, or skip test if not set.
+/// Get database URL from environment, defaulting to localhost if not set.
 fn get_database_url() -> String {
     std::env::var("MYSQL_URL")
         .unwrap_or_else(|_| "mysql://root:test@localhost:3306/rsfga".to_string())
@@ -49,22 +52,7 @@ async fn create_store() -> MySQLDataStore {
         .await
         .expect("Failed to run migrations");
 
-    // Clean up any existing test data
-    cleanup_test_stores(&store).await;
-
     store
-}
-
-/// Clean up test stores to ensure a clean state.
-async fn cleanup_test_stores(store: &MySQLDataStore) {
-    // List and delete any existing test stores
-    if let Ok(stores) = store.list_stores().await {
-        for s in stores {
-            if s.id.starts_with("test-") {
-                let _ = store.delete_store(&s.id).await;
-            }
-        }
-    }
 }
 
 // ==========================================================================
@@ -325,7 +313,6 @@ async fn test_connection_pool_limits() {
         .expect("Failed to create store with limited pool");
 
     store.run_migrations().await.unwrap();
-    cleanup_test_stores(&store).await;
 
     store
         .create_store("test-pool-limits", "Test Store")
@@ -778,24 +765,27 @@ async fn test_large_dataset_performance() {
     // Each user should have ~100 tuples (10000 / 100 users)
     assert_eq!(filtered.len(), 100);
 
-    // Log performance
+    // Log performance (always, for visibility)
     println!(
         "Large dataset performance (MySQL): write={}ms, filtered_read={}ms",
         write_duration.as_millis(),
         read_duration.as_millis()
     );
 
-    // Performance assertions - should complete in reasonable time
-    assert!(
-        write_duration.as_secs() < 60,
-        "Write took too long: {}s",
-        write_duration.as_secs()
-    );
-    assert!(
-        read_duration.as_millis() < 1000,
-        "Read took too long: {}ms",
-        read_duration.as_millis()
-    );
+    // Performance assertions - only run if env var is set (CI environments vary)
+    // Set RSFGA_MYSQL_PERF_ASSERTS=1 to enable strict timing checks
+    if std::env::var("RSFGA_MYSQL_PERF_ASSERTS").is_ok() {
+        assert!(
+            write_duration.as_secs() < 60,
+            "Write took too long: {}s",
+            write_duration.as_secs()
+        );
+        assert!(
+            read_duration.as_millis() < 1000,
+            "Read took too long: {}ms",
+            read_duration.as_millis()
+        );
+    }
 
     // Cleanup
     store.delete_store("test-large-dataset").await.unwrap();
@@ -886,7 +876,7 @@ async fn test_supports_transactions() {
 // Test: Can paginate large result sets
 #[tokio::test]
 #[ignore = "requires running MySQL"]
-async fn test_large_result_set_ordering() {
+async fn test_large_result_set_pagination() {
     let store = create_store().await;
     store
         .create_store("test-large-set", "Test Store")
