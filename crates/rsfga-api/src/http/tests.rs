@@ -682,3 +682,162 @@ async fn test_update_store_validates_name() {
     // Should return 400 for invalid name
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+// ============================================================
+// ULID Format Tests (PR #116)
+// ============================================================
+
+/// Test: Created store ID is in ULID format
+///
+/// Verifies that store IDs are generated using ULID format (26 characters,
+/// Crockford Base32) for OpenFGA CLI compatibility.
+#[tokio::test]
+async fn test_created_store_id_is_ulid_format() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": "test-store"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let id = json["id"].as_str().expect("id should be a string");
+
+    // ULID format: 26 characters, Crockford Base32 (0-9, A-Z excluding I, L, O, U)
+    assert_eq!(id.len(), 26, "ULID should be 26 characters");
+    assert!(
+        id.chars().all(|c| c.is_ascii_alphanumeric()),
+        "ULID should only contain alphanumeric characters"
+    );
+    // ULID is uppercase Crockford Base32
+    assert!(
+        id.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()),
+        "ULID should be uppercase"
+    );
+}
+
+// ============================================================
+// Null Handling Tests (PR #116)
+// ============================================================
+
+/// Test: Check endpoint handles null contextual_tuples.tuple_keys
+///
+/// The OpenFGA CLI sends `contextual_tuples: { tuple_keys: null }` instead of
+/// an empty array. This test verifies we handle this gracefully.
+#[tokio::test]
+async fn test_check_handles_null_contextual_tuple_keys() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write a tuple to check against
+    storage
+        .write_tuple(
+            "test-store",
+            rsfga_storage::StoredTuple::new("document", "readme", "viewer", "user", "alice", None),
+        )
+        .await
+        .unwrap();
+
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    // Request with contextual_tuples.tuple_keys: null (as sent by fga CLI)
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/check")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "tuple_key": {
+                            "user": "user:alice",
+                            "relation": "viewer",
+                            "object": "document:readme"
+                        },
+                        "contextual_tuples": {
+                            "tuple_keys": null
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["allowed"], true);
+}
+
+/// Test: Check endpoint handles missing contextual_tuples
+///
+/// Verifies check works when contextual_tuples is entirely omitted.
+#[tokio::test]
+async fn test_check_handles_missing_contextual_tuples() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    storage
+        .write_tuple(
+            "test-store",
+            rsfga_storage::StoredTuple::new("document", "readme", "viewer", "user", "bob", None),
+        )
+        .await
+        .unwrap();
+
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    // Request without contextual_tuples field at all
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/check")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "tuple_key": {
+                            "user": "user:bob",
+                            "relation": "viewer",
+                            "object": "document:readme"
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["allowed"], true);
+}
