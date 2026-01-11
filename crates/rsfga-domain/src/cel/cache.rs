@@ -122,7 +122,12 @@ impl CelExpressionCache {
     /// * `Ok(Arc<CelExpression>)` - The parsed expression (cached or fresh)
     /// * `Err(CelError)` - If parsing fails
     pub fn get_or_parse(&self, expression: &str) -> CelResult<Arc<CelExpression>> {
-        // Use try_get_with for atomic get-or-insert with fallible initialization.
+        // Fast path: check cache first without allocation
+        if let Some(expr) = self.cache.get(expression) {
+            return Ok(expr);
+        }
+
+        // Slow path: use try_get_with for atomic get-or-insert with fallible initialization.
         // This ensures that when multiple threads request the same expression
         // concurrently, only ONE thread parses it and all others get the same Arc.
         self.cache
@@ -137,8 +142,8 @@ impl CelExpressionCache {
     ///
     /// Note: This count may be approximate due to concurrent modifications
     /// and pending evictions.
-    pub fn entry_count(&self) -> usize {
-        self.cache.entry_count() as usize
+    pub fn entry_count(&self) -> u64 {
+        self.cache.entry_count()
     }
 
     /// Returns the maximum capacity of the cache.
