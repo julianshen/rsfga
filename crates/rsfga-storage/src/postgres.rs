@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
+use std::collections::HashMap;
 use tracing::{debug, instrument};
 
 use crate::error::{StorageError, StorageResult};
@@ -10,6 +11,21 @@ use crate::traits::{
     parse_user_filter, validate_store_id, validate_store_name, validate_tuple, DataStore,
     PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter,
 };
+
+/// Parse condition_context JSONB value into a HashMap.
+/// Returns an error if the JSON is present but malformed.
+fn parse_condition_context(
+    value: Option<serde_json::Value>,
+) -> StorageResult<Option<HashMap<String, serde_json::Value>>> {
+    match value {
+        None => Ok(None),
+        Some(v) => serde_json::from_value(v)
+            .map(Some)
+            .map_err(|e| StorageError::QueryError {
+                message: format!("Failed to deserialize condition_context: {}", e),
+            }),
+    }
+}
 
 /// PostgreSQL configuration options.
 #[derive(Clone)]
@@ -119,7 +135,7 @@ impl PostgresDataStore {
                 user_type VARCHAR(255) NOT NULL,
                 user_id VARCHAR(255) NOT NULL,
                 user_relation VARCHAR(255),
-                condition_name VARCHAR(256),
+                condition_name VARCHAR(255),
                 condition_context JSONB,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                 FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
@@ -142,7 +158,7 @@ impl PostgresDataStore {
                     SELECT 1 FROM information_schema.columns
                     WHERE table_name = 'tuples' AND column_name = 'condition_name'
                 ) THEN
-                    ALTER TABLE tuples ADD COLUMN condition_name VARCHAR(256);
+                    ALTER TABLE tuples ADD COLUMN condition_name VARCHAR(255);
                 END IF;
                 IF NOT EXISTS (
                     SELECT 1 FROM information_schema.columns
@@ -515,6 +531,10 @@ impl DataStore for PostgresDataStore {
                 })
                 .collect();
 
+            // Note: ON CONFLICT DO UPDATE intentionally overwrites condition fields.
+            // This matches OpenFGA semantics where a tuple is uniquely identified by
+            // (object, relation, user) - conditions are metadata that can be updated.
+            // Writing the same tuple with a different condition updates the condition.
             sqlx::query(
                 r#"
                 INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
@@ -633,23 +653,21 @@ impl DataStore for PostgresDataStore {
                     message: format!("Failed to read tuples: {}", e),
                 })?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                let condition_context: Option<serde_json::Value> = row.get("condition_context");
-                StoredTuple {
-                    object_type: row.get("object_type"),
-                    object_id: row.get("object_id"),
-                    relation: row.get("relation"),
-                    user_type: row.get("user_type"),
-                    user_id: row.get("user_id"),
-                    user_relation: row.get("user_relation"),
-                    condition_name: row.get("condition_name"),
-                    condition_context: condition_context
-                        .and_then(|v| serde_json::from_value(v).ok()),
-                }
-            })
-            .collect())
+        let mut tuples = Vec::with_capacity(rows.len());
+        for row in rows {
+            let condition_context: Option<serde_json::Value> = row.get("condition_context");
+            tuples.push(StoredTuple {
+                object_type: row.get("object_type"),
+                object_id: row.get("object_id"),
+                relation: row.get("relation"),
+                user_type: row.get("user_type"),
+                user_id: row.get("user_id"),
+                user_relation: row.get("user_relation"),
+                condition_name: row.get("condition_name"),
+                condition_context: parse_condition_context(condition_context)?,
+            });
+        }
+        Ok(tuples)
     }
 
     #[instrument(skip(self, filter, pagination))]
@@ -745,23 +763,20 @@ impl DataStore for PostgresDataStore {
                     message: format!("Failed to read tuples: {}", e),
                 })?;
 
-        let items: Vec<StoredTuple> = rows
-            .into_iter()
-            .map(|row| {
-                let condition_context: Option<serde_json::Value> = row.get("condition_context");
-                StoredTuple {
-                    object_type: row.get("object_type"),
-                    object_id: row.get("object_id"),
-                    relation: row.get("relation"),
-                    user_type: row.get("user_type"),
-                    user_id: row.get("user_id"),
-                    user_relation: row.get("user_relation"),
-                    condition_name: row.get("condition_name"),
-                    condition_context: condition_context
-                        .and_then(|v| serde_json::from_value(v).ok()),
-                }
-            })
-            .collect();
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            let condition_context: Option<serde_json::Value> = row.get("condition_context");
+            items.push(StoredTuple {
+                object_type: row.get("object_type"),
+                object_id: row.get("object_id"),
+                relation: row.get("relation"),
+                user_type: row.get("user_type"),
+                user_id: row.get("user_id"),
+                user_relation: row.get("user_relation"),
+                condition_name: row.get("condition_name"),
+                condition_context: parse_condition_context(condition_context)?,
+            });
+        }
 
         let next_offset = offset + items.len() as i64;
         let continuation_token = if items.len() == page_size as usize {
