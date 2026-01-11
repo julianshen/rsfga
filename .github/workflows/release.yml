@@ -77,12 +77,19 @@ jobs:
           # Start container in background
           docker run -d --name smoke-test -p 8080:8080 ${{ env.IMAGE_NAME }}:test
 
+          # Cleanup function to ensure container is always removed
+          cleanup() {
+            echo "Cleaning up container..."
+            docker logs smoke-test 2>/dev/null || true
+            docker stop smoke-test 2>/dev/null || true
+            docker rm smoke-test 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
           # Wait for container to be ready (max 30 seconds)
           for i in {1..30}; do
             if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
               echo "Health check passed!"
-              docker logs smoke-test
-              docker stop smoke-test
               exit 0
             fi
             echo "Waiting for container to be ready... ($i/30)"
@@ -90,8 +97,6 @@ jobs:
           done
 
           echo "Health check failed after 30 seconds"
-          docker logs smoke-test
-          docker stop smoke-test
           exit 1
 
       # For main/tags: Build multi-platform and push to registry
