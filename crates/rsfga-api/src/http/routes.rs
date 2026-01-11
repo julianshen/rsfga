@@ -266,7 +266,7 @@ async fn create_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Json(body): Json<CreateStoreRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = ulid::Ulid::new().to_string();
     let store = state.storage.create_store(&id, &body.name).await?;
 
     Ok((StatusCode::CREATED, Json(StoreResponse::from(store))))
@@ -337,7 +337,17 @@ pub struct TupleKeyBody {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ContextualTuplesBody {
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub tuple_keys: Vec<TupleKeyBody>,
+}
+
+fn deserialize_null_as_empty_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    let opt = Option::<Vec<T>>::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
 }
 
 /// Response for check operation.

@@ -357,7 +357,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         request: Request<CreateStoreRequest>,
     ) -> Result<Response<CreateStoreResponse>, Status> {
         let req = request.into_inner();
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = ulid::Ulid::new().to_string();
 
         let store = self
             .storage
@@ -511,7 +511,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         global_cache().invalidate_all();
 
         Ok(Response::new(WriteAuthorizationModelResponse {
-            authorization_model_id: uuid::Uuid::new_v4().to_string(),
+            authorization_model_id: ulid::Ulid::new().to_string(),
         }))
     }
 
