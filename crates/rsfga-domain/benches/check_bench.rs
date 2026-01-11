@@ -478,6 +478,55 @@ fn bench_tuple_count_scalability(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark CEL expression cache performance.
+///
+/// This measures the performance improvement from caching parsed CEL expressions.
+/// Without caching: ~10-100 µs per parse (lexing, parsing, AST construction)
+/// With caching: ~100-500 ns per lookup (hash lookup only)
+///
+/// Target: 10-100x speedup for cache hits vs fresh parsing (per cache.rs docs).
+fn bench_cel_cache(c: &mut Criterion) {
+    use rsfga_domain::cel::{CelCacheConfig, CelExpression, CelExpressionCache};
+
+    let mut group = c.benchmark_group("cel_cache");
+    group.throughput(Throughput::Elements(1));
+
+    // Benchmark fresh parsing (no cache)
+    group.bench_function("parse_no_cache", |b| {
+        b.iter(|| {
+            let expr = CelExpression::parse(black_box("request.user.id == 'admin'"));
+            black_box(expr)
+        })
+    });
+
+    // Benchmark cached lookup (cache hit)
+    let cache = CelExpressionCache::new(CelCacheConfig::default());
+    // Pre-warm the cache
+    let _ = cache.get_or_parse("request.user.id == 'admin'");
+
+    group.bench_function("lookup_cached", |b| {
+        b.iter(|| {
+            let expr = cache.get_or_parse(black_box("request.user.id == 'admin'"));
+            black_box(expr)
+        })
+    });
+
+    // Benchmark cache miss (first access to new expression)
+    // Note: Each iteration uses a unique expression to force cache miss
+    let cache_miss = CelExpressionCache::new(CelCacheConfig::default());
+    let mut counter = 0u64;
+    group.bench_function("cache_miss", |b| {
+        b.iter(|| {
+            counter += 1;
+            let expr = format!("x > {}", counter);
+            let result = cache_miss.get_or_parse(black_box(&expr));
+            black_box(result)
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_direct_check,
@@ -485,5 +534,6 @@ criterion_group!(
     bench_repeated_check,
     bench_batch_check,
     bench_tuple_count_scalability,
+    bench_cel_cache,
 );
 criterion_main!(benches);

@@ -25,17 +25,20 @@
 //! ┌─────────────────────────────────────────────┐
 //! │               CEL Module                     │
 //! ├─────────────────────────────────────────────┤
-//! │  CelExpression  - Parsed CEL expression     │
-//! │  CelContext     - Variable bindings         │
-//! │  CelValue       - Type-safe CEL values      │
-//! │  CelError       - CEL-specific errors       │
+//! │  CelExpression      - Parsed CEL expression │
+//! │  CelExpressionCache - Caches parsed exprs   │
+//! │  CelContext         - Variable bindings     │
+//! │  CelValue           - Type-safe CEL values  │
+//! │  CelError           - CEL-specific errors   │
 //! └─────────────────────────────────────────────┘
 //! ```
 
+mod cache;
 mod context;
 mod error;
 mod expression;
 
+pub use cache::{global_cache, CelCacheConfig, CelExpressionCache};
 pub use context::{CelContext, CelResult as EvalResult, CelValue};
 pub use error::CelError;
 pub use expression::CelExpression;
