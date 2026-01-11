@@ -426,10 +426,20 @@ impl DataStore for MySQLDataStore {
 
     #[instrument(skip(self))]
     async fn update_store(&self, id: &str, name: &str) -> StorageResult<Store> {
-        // Validate name
+        // Validate inputs
+        validate_store_id(id)?;
         validate_store_name(name)?;
 
-        // MySQL doesn't support RETURNING, so we need two queries
+        // MySQL doesn't support RETURNING, so we use a transaction to ensure
+        // atomicity between UPDATE and SELECT
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::QueryError {
+                message: format!("Failed to begin transaction: {}", e),
+            })?;
+
         let result = sqlx::query(
             r#"
             UPDATE stores
@@ -439,20 +449,44 @@ impl DataStore for MySQLDataStore {
         )
         .bind(name)
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError {
             message: format!("Failed to update store: {}", e),
         })?;
 
         if result.rows_affected() == 0 {
+            tx.rollback().await.ok();
             return Err(StorageError::StoreNotFound {
                 store_id: id.to_string(),
             });
         }
 
-        // Fetch the updated store
-        self.get_store(id).await
+        // Fetch the updated store within the same transaction
+        let row = sqlx::query(
+            r#"
+            SELECT id, name, created_at, updated_at
+            FROM stores
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to fetch updated store: {}", e),
+        })?;
+
+        tx.commit().await.map_err(|e| StorageError::QueryError {
+            message: format!("Failed to commit transaction: {}", e),
+        })?;
+
+        Ok(Store {
+            id: row.get("id"),
+            name: row.get("name"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        })
     }
 
     #[instrument(skip(self))]

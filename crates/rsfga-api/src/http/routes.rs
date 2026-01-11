@@ -6,7 +6,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{delete, get, post, put},
+    routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -29,11 +29,13 @@ pub const DEFAULT_BODY_LIMIT: usize = 1024 * 1024;
 fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
     Router::new()
         // Store management
-        .route("/stores", post(create_store::<S>))
-        .route("/stores", get(list_stores::<S>))
-        .route("/stores/:store_id", get(get_store::<S>))
-        .route("/stores/:store_id", put(update_store::<S>))
-        .route("/stores/:store_id", delete(delete_store::<S>))
+        .route("/stores", post(create_store::<S>).get(list_stores::<S>))
+        .route(
+            "/stores/:store_id",
+            get(get_store::<S>)
+                .put(update_store::<S>)
+                .delete(delete_store::<S>),
+        )
         // Authorization operations
         .route("/stores/:store_id/check", post(check::<S>))
         .route("/stores/:store_id/batch-check", post(batch_check::<S>))
@@ -249,6 +251,17 @@ pub struct StoreResponse {
     pub updated_at: Option<String>,
 }
 
+impl From<rsfga_storage::Store> for StoreResponse {
+    fn from(store: rsfga_storage::Store) -> Self {
+        Self {
+            id: store.id,
+            name: store.name,
+            created_at: Some(store.created_at.to_rfc3339()),
+            updated_at: Some(store.updated_at.to_rfc3339()),
+        }
+    }
+}
+
 async fn create_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Json(body): Json<CreateStoreRequest>,
@@ -256,15 +269,7 @@ async fn create_store<S: DataStore>(
     let id = uuid::Uuid::new_v4().to_string();
     let store = state.storage.create_store(&id, &body.name).await?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(StoreResponse {
-            id: store.id,
-            name: store.name,
-            created_at: Some(store.created_at.to_rfc3339()),
-            updated_at: Some(store.updated_at.to_rfc3339()),
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(StoreResponse::from(store))))
 }
 
 async fn get_store<S: DataStore>(
@@ -272,30 +277,14 @@ async fn get_store<S: DataStore>(
     Path(store_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     let store = state.storage.get_store(&store_id).await?;
-
-    Ok(Json(StoreResponse {
-        id: store.id,
-        name: store.name,
-        created_at: Some(store.created_at.to_rfc3339()),
-        updated_at: Some(store.updated_at.to_rfc3339()),
-    }))
+    Ok(Json(StoreResponse::from(store)))
 }
 
 async fn list_stores<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
 ) -> ApiResult<impl IntoResponse> {
     let stores = state.storage.list_stores().await?;
-
-    let response: Vec<StoreResponse> = stores
-        .into_iter()
-        .map(|s| StoreResponse {
-            id: s.id,
-            name: s.name,
-            created_at: Some(s.created_at.to_rfc3339()),
-            updated_at: Some(s.updated_at.to_rfc3339()),
-        })
-        .collect();
-
+    let response: Vec<StoreResponse> = stores.into_iter().map(StoreResponse::from).collect();
     Ok(Json(serde_json::json!({ "stores": response })))
 }
 
@@ -311,13 +300,7 @@ async fn update_store<S: DataStore>(
     Json(body): Json<UpdateStoreRequest>,
 ) -> ApiResult<impl IntoResponse> {
     let store = state.storage.update_store(&store_id, &body.name).await?;
-
-    Ok(Json(StoreResponse {
-        id: store.id,
-        name: store.name,
-        created_at: Some(store.created_at.to_rfc3339()),
-        updated_at: Some(store.updated_at.to_rfc3339()),
-    }))
+    Ok(Json(StoreResponse::from(store)))
 }
 
 async fn delete_store<S: DataStore>(

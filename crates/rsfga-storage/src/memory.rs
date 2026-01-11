@@ -86,7 +86,8 @@ impl DataStore for MemoryDataStore {
     }
 
     async fn update_store(&self, id: &str, name: &str) -> StorageResult<Store> {
-        // Validate name
+        // Validate inputs
+        validate_store_id(id)?;
         validate_store_name(name)?;
 
         // Get and update the store

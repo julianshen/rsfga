@@ -269,7 +269,8 @@ impl DataStore for PostgresDataStore {
 
     #[instrument(skip(self))]
     async fn update_store(&self, id: &str, name: &str) -> StorageResult<Store> {
-        // Validate name
+        // Validate inputs
+        validate_store_id(id)?;
         validate_store_name(name)?;
 
         let row = sqlx::query(
