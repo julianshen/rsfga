@@ -12,6 +12,27 @@ use crate::traits::{
     PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter,
 };
 
+/// Maximum size of condition_context JSON in bytes (64 KB).
+/// OpenFGA has a 512 KB overall request limit but no specific context limit.
+/// We use 64 KB as a reasonable per-tuple limit for condition context.
+const MAX_CONDITION_CONTEXT_SIZE: usize = 64 * 1024;
+
+/// Validate condition_context size to prevent DoS via large JSON payloads.
+fn validate_condition_context_size(tuple: &StoredTuple) -> StorageResult<()> {
+    if let Some(ctx) = &tuple.condition_context {
+        let json_size = serde_json::to_string(ctx).map(|s| s.len()).unwrap_or(0);
+        if json_size > MAX_CONDITION_CONTEXT_SIZE {
+            return Err(StorageError::InvalidInput {
+                message: format!(
+                    "condition_context exceeds maximum size of {} bytes (actual: {} bytes)",
+                    MAX_CONDITION_CONTEXT_SIZE, json_size
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Parse condition_context JSONB value into a HashMap.
 /// Returns an error if the JSON is present but malformed.
 fn parse_condition_context(
@@ -437,6 +458,7 @@ impl DataStore for PostgresDataStore {
         validate_store_id(store_id)?;
         for tuple in &writes {
             validate_tuple(tuple)?;
+            validate_condition_context_size(tuple)?;
         }
         for tuple in &deletes {
             validate_tuple(tuple)?;
@@ -531,10 +553,71 @@ impl DataStore for PostgresDataStore {
                 })
                 .collect();
 
-            // Note: ON CONFLICT DO UPDATE intentionally overwrites condition fields.
-            // This matches OpenFGA semantics where a tuple is uniquely identified by
-            // (object, relation, user) - conditions are metadata that can be updated.
-            // Writing the same tuple with a different condition updates the condition.
+            // Check for condition conflicts: tuples that exist with different conditions.
+            // OpenFGA returns 409 Conflict when writing a tuple that exists with a different
+            // condition. You must delete and re-create to change conditions.
+            let conflict_check = sqlx::query(
+                r#"
+                SELECT
+                    t.object_type, t.object_id, t.relation,
+                    t.user_type, t.user_id, t.user_relation,
+                    t.condition_name AS existing_condition,
+                    new.condition_name AS new_condition
+                FROM tuples t
+                INNER JOIN (
+                    SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
+                    AS x(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
+                ) AS new
+                ON t.store_id = $1
+                   AND t.object_type = new.object_type
+                   AND t.object_id = new.object_id
+                   AND t.relation = new.relation
+                   AND t.user_type = new.user_type
+                   AND t.user_id = new.user_id
+                   AND COALESCE(t.user_relation, '') = COALESCE(new.user_relation, '')
+                WHERE (t.condition_name IS DISTINCT FROM new.condition_name)
+                   OR (t.condition_context IS DISTINCT FROM new.condition_context)
+                LIMIT 1
+                "#,
+            )
+            .bind(store_id)
+            .bind(&object_types)
+            .bind(&object_ids)
+            .bind(&relations)
+            .bind(&user_types)
+            .bind(&user_ids)
+            .bind(&user_relations)
+            .bind(&condition_names)
+            .bind(&condition_contexts)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::QueryError {
+                message: format!("Failed to check for condition conflicts: {}", e),
+            })?;
+
+            if let Some(row) = conflict_check {
+                let user = format!(
+                    "{}:{}{}",
+                    row.get::<String, _>("user_type"),
+                    row.get::<String, _>("user_id"),
+                    row.get::<Option<String>, _>("user_relation")
+                        .map(|r| format!("#{}", r))
+                        .unwrap_or_default()
+                );
+                return Err(StorageError::ConditionConflict(Box::new(
+                    crate::error::ConditionConflictError {
+                        object_type: row.get("object_type"),
+                        object_id: row.get("object_id"),
+                        relation: row.get("relation"),
+                        user,
+                        existing_condition: row.get("existing_condition"),
+                        new_condition: row.get("new_condition"),
+                    },
+                )));
+            }
+
+            // Insert with ON CONFLICT DO NOTHING for truly identical tuples (idempotent).
+            // We've already verified no condition conflicts exist above.
             sqlx::query(
                 r#"
                 INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
@@ -542,7 +625,7 @@ impl DataStore for PostgresDataStore {
                 FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
                 AS t(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
                 ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, (COALESCE(user_relation, '')))
-                DO UPDATE SET condition_name = EXCLUDED.condition_name, condition_context = EXCLUDED.condition_context
+                DO NOTHING
                 "#,
             )
             .bind(store_id)

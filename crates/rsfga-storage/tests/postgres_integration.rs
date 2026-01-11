@@ -714,29 +714,33 @@ async fn test_postgres_store_filters_by_condition_name() {
     store.delete_store("test-filter-cond").await.unwrap();
 }
 
-// Test: PostgresStore updates condition on conflict (upsert behavior)
+// Test: PostgresStore returns ConditionConflict when writing tuple with different condition
+// OpenFGA does NOT support upsert for conditions - you must delete and re-create.
 #[tokio::test]
 #[ignore = "requires running PostgreSQL"]
-async fn test_postgres_store_updates_condition_on_conflict() {
+async fn test_postgres_store_condition_conflict_on_different_condition() {
     let store = create_store().await;
     store
-        .create_store("test-upsert-cond", "Test Store")
+        .create_store("test-conflict-cond", "Test Store")
         .await
         .unwrap();
 
     // Write tuple without condition
     let tuple1 = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
-    store.write_tuple("test-upsert-cond", tuple1).await.unwrap();
+    store
+        .write_tuple("test-conflict-cond", tuple1)
+        .await
+        .unwrap();
 
     // Read it back - should have no condition
     let tuples = store
-        .read_tuples("test-upsert-cond", &TupleFilter::default())
+        .read_tuples("test-conflict-cond", &TupleFilter::default())
         .await
         .unwrap();
     assert_eq!(tuples.len(), 1);
     assert!(tuples[0].condition_name.is_none());
 
-    // Write same tuple WITH condition (upsert)
+    // Try to write same tuple WITH condition - should return ConditionConflict
     let tuple2 = StoredTuple::with_condition(
         "document",
         "doc1",
@@ -747,16 +751,118 @@ async fn test_postgres_store_updates_condition_on_conflict() {
         "new_condition",
         None,
     );
-    store.write_tuple("test-upsert-cond", tuple2).await.unwrap();
+    let result = store.write_tuple("test-conflict-cond", tuple2).await;
 
-    // Read it back - should now have condition
+    // Should return ConditionConflict error (409 Conflict in OpenFGA)
+    assert!(
+        matches!(result, Err(StorageError::ConditionConflict { .. })),
+        "Expected ConditionConflict error, got: {:?}",
+        result
+    );
+
+    // Original tuple should still exist with no condition
     let tuples = store
-        .read_tuples("test-upsert-cond", &TupleFilter::default())
+        .read_tuples("test-conflict-cond", &TupleFilter::default())
         .await
         .unwrap();
     assert_eq!(tuples.len(), 1);
-    assert_eq!(tuples[0].condition_name, Some("new_condition".to_string()));
+    assert!(
+        tuples[0].condition_name.is_none(),
+        "Original tuple should be unchanged"
+    );
 
     // Cleanup
-    store.delete_store("test-upsert-cond").await.unwrap();
+    store.delete_store("test-conflict-cond").await.unwrap();
+}
+
+// Test: Writing identical tuple with same condition is idempotent (no error)
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_postgres_store_idempotent_same_condition() {
+    let store = create_store().await;
+    store
+        .create_store("test-idempotent-cond", "Test Store")
+        .await
+        .unwrap();
+
+    // Write tuple with condition
+    let tuple = StoredTuple::with_condition(
+        "document",
+        "doc1",
+        "viewer",
+        "user",
+        "alice",
+        None,
+        "time_bound",
+        None,
+    );
+    store
+        .write_tuple("test-idempotent-cond", tuple.clone())
+        .await
+        .unwrap();
+
+    // Write the same tuple again - should succeed (idempotent)
+    let result = store.write_tuple("test-idempotent-cond", tuple).await;
+    assert!(
+        result.is_ok(),
+        "Writing identical tuple should be idempotent"
+    );
+
+    // Should still have exactly one tuple
+    let tuples = store
+        .read_tuples("test-idempotent-cond", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1);
+    assert_eq!(tuples[0].condition_name, Some("time_bound".to_string()));
+
+    // Cleanup
+    store.delete_store("test-idempotent-cond").await.unwrap();
+}
+
+// Test: condition_context size validation rejects oversized payloads
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_postgres_store_rejects_oversized_condition_context() {
+    let store = create_store().await;
+    store
+        .create_store("test-size-limit", "Test Store")
+        .await
+        .unwrap();
+
+    // Create a large condition_context (> 64KB)
+    let mut large_context = std::collections::HashMap::new();
+    // Each entry is ~100 bytes, need ~650 entries for 65KB
+    for i in 0..700 {
+        large_context.insert(
+            format!("key_{:04}", i),
+            serde_json::json!(format!(
+                "value_{:04}_padding_to_make_it_larger_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                i
+            )),
+        );
+    }
+
+    let tuple = StoredTuple::with_condition(
+        "document",
+        "doc1",
+        "viewer",
+        "user",
+        "alice",
+        None,
+        "oversized",
+        Some(large_context),
+    );
+
+    let result = store.write_tuple("test-size-limit", tuple).await;
+
+    // Should return InvalidInput error due to size limit
+    assert!(
+        matches!(result, Err(StorageError::InvalidInput { .. })),
+        "Expected InvalidInput error for oversized condition_context, got: {:?}",
+        result
+    );
+
+    // Cleanup
+    store.delete_store("test-size-limit").await.unwrap();
 }

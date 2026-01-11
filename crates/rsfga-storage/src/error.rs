@@ -2,6 +2,20 @@
 
 use thiserror::Error;
 
+/// Details for ConditionConflict error (boxed to reduce StorageError size).
+/// OpenFGA does not allow updating conditions on existing tuples.
+/// To change a condition, delete the tuple and re-create it.
+#[derive(Debug, Error)]
+#[error("tuple exists with different condition: {object_type}:{object_id}#{relation}@{user} (existing: {existing_condition:?}, new: {new_condition:?})")]
+pub struct ConditionConflictError {
+    pub object_type: String,
+    pub object_id: String,
+    pub relation: String,
+    pub user: String,
+    pub existing_condition: Option<String>,
+    pub new_condition: Option<String>,
+}
+
 /// Storage-specific errors.
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -34,6 +48,12 @@ pub enum StorageError {
         relation: String,
         user: String,
     },
+
+    /// Tuple exists with different condition (409 Conflict in OpenFGA).
+    /// OpenFGA does not allow updating conditions on existing tuples.
+    /// To change a condition, delete the tuple and re-create it.
+    #[error("{0}")]
+    ConditionConflict(#[source] Box<ConditionConflictError>),
 
     /// Database connection error.
     #[error("database connection error: {message}")]
