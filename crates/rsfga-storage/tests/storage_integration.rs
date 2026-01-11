@@ -1017,3 +1017,73 @@ async fn test_update_store_validates_name() {
     // Clean up
     store.delete_store(store_id).await.unwrap();
 }
+
+/// Test that store_id exceeding max length (255 chars) is rejected.
+#[tokio::test]
+async fn test_update_store_rejects_long_store_id() {
+    use rsfga_storage::StorageError;
+
+    let store = create_memory_store();
+    let long_store_id = "x".repeat(256); // Exceeds 255 char limit
+
+    let result = store.update_store(&long_store_id, "Valid Name").await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        StorageError::InvalidInput { message } => {
+            assert!(
+                message.contains("store_id") && message.contains("maximum length"),
+                "Error message should mention store_id and maximum length: {}",
+                message
+            );
+        }
+        e => panic!("Expected InvalidInput, got {:?}", e),
+    }
+}
+
+/// Test that store name exceeding max length (255 chars) is rejected.
+#[tokio::test]
+async fn test_update_store_rejects_long_name() {
+    use rsfga_storage::StorageError;
+
+    let store = create_memory_store();
+    let store_id = "integration-long-name-test";
+    let long_name = "x".repeat(256); // Exceeds 255 char limit
+
+    store.create_store(store_id, "Valid Name").await.unwrap();
+
+    let result = store.update_store(store_id, &long_name).await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        StorageError::InvalidInput { message } => {
+            assert!(
+                message.contains("name") && message.contains("maximum length"),
+                "Error message should mention name and maximum length: {}",
+                message
+            );
+        }
+        e => panic!("Expected InvalidInput, got {:?}", e),
+    }
+
+    // Clean up
+    store.delete_store(store_id).await.unwrap();
+}
+
+/// Test that exactly 255 character values are accepted (boundary test).
+#[tokio::test]
+async fn test_update_store_accepts_max_length_values() {
+    let store = create_memory_store();
+    let store_id = "integration-max-len-test";
+    let max_length_name = "x".repeat(255); // Exactly 255 chars - should work
+
+    store.create_store(store_id, "Initial Name").await.unwrap();
+
+    // Update with max length name should succeed
+    let result = store.update_store(store_id, &max_length_name).await;
+    assert!(result.is_ok(), "255 char name should be accepted");
+
+    let updated = result.unwrap();
+    assert_eq!(updated.name.len(), 255);
+
+    // Clean up
+    store.delete_store(store_id).await.unwrap();
+}

@@ -431,6 +431,13 @@ pub trait DataStore: Send + Sync + 'static {
     ///
     /// Returns the updated store with the new `updated_at` timestamp.
     ///
+    /// # Atomicity
+    ///
+    /// Implementations must ensure atomicity: the returned `Store` reflects the
+    /// state immediately after the update. For database backends, this typically
+    /// requires using transactions or `RETURNING` clauses to prevent race
+    /// conditions between the update and subsequent read.
+    ///
     /// # Errors
     ///
     /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
