@@ -20,12 +20,16 @@ const MAX_CONDITION_CONTEXT_SIZE: usize = 64 * 1024;
 /// Validate condition_context size to prevent DoS via large JSON payloads.
 fn validate_condition_context_size(tuple: &StoredTuple) -> StorageResult<()> {
     if let Some(ctx) = &tuple.condition_context {
-        let json_size = serde_json::to_string(ctx).map(|s| s.len()).unwrap_or(0);
-        if json_size > MAX_CONDITION_CONTEXT_SIZE {
+        let json_str =
+            serde_json::to_string(ctx).map_err(|e| StorageError::SerializationError {
+                message: format!("Failed to serialize condition_context: {}", e),
+            })?;
+        if json_str.len() > MAX_CONDITION_CONTEXT_SIZE {
             return Err(StorageError::InvalidInput {
                 message: format!(
                     "condition_context exceeds maximum size of {} bytes (actual: {} bytes)",
-                    MAX_CONDITION_CONTEXT_SIZE, json_size
+                    MAX_CONDITION_CONTEXT_SIZE,
+                    json_str.len()
                 ),
             });
         }

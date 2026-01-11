@@ -755,7 +755,7 @@ async fn test_postgres_store_condition_conflict_on_different_condition() {
 
     // Should return ConditionConflict error (409 Conflict in OpenFGA)
     assert!(
-        matches!(result, Err(StorageError::ConditionConflict { .. })),
+        matches!(result, Err(StorageError::ConditionConflict(_))),
         "Expected ConditionConflict error, got: {:?}",
         result
     );
@@ -930,13 +930,34 @@ async fn test_postgres_store_pagination_with_conditions() {
     assert!(page1.continuation_token.is_some());
 
     // Verify conditions are preserved in first page
+    // In our test data, all tuples with condition_name also have condition_context.
+    // This verifies that both fields are correctly persisted and read back through pagination.
     for tuple in &page1.items {
-        // Each tuple should have its condition properly loaded
-        if tuple.condition_name.is_some() {
-            assert!(
-                tuple.condition_context.is_some(),
-                "Tuple with condition_name should have condition_context"
-            );
+        match (&tuple.condition_name, &tuple.condition_context) {
+            (Some(name), Some(ctx)) => {
+                // Tuples with conditions should have both name and context preserved
+                assert!(
+                    name == "time_bound" || name == "ip_check",
+                    "Expected known condition name, got: {}",
+                    name
+                );
+                assert!(
+                    ctx.contains_key("index"),
+                    "Expected context to contain 'index' key"
+                );
+            }
+            (None, None) => {
+                // Tuples without conditions should have neither name nor context
+            }
+            (Some(name), None) => {
+                panic!(
+                    "Test data invariant violated: condition_name '{}' should have context",
+                    name
+                );
+            }
+            (None, Some(_)) => {
+                panic!("Test data invariant violated: condition_context without condition_name");
+            }
         }
     }
 
