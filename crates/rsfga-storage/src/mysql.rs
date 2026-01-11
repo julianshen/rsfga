@@ -64,6 +64,24 @@ impl Default for MySQLConfig {
 /// MySQL implementation of DataStore.
 ///
 /// Supports MySQL 8.0+, MariaDB 10.5+, and TiDB.
+///
+/// # Pagination
+///
+/// This implementation uses OFFSET-based pagination with continuation tokens that
+/// represent the offset position. Limitations to be aware of:
+///
+/// - **Performance**: Large offsets (e.g., page 1000) require scanning all preceding rows
+/// - **Consistency**: Concurrent inserts/deletes may cause duplicates or gaps across pages
+/// - **Ordering**: Results are ordered by `(created_at DESC, id DESC)` for deterministic pagination
+///
+/// For high-volume production use with deep pagination needs, consider cursor-based
+/// pagination using the `id` column as a cursor (not yet implemented).
+///
+/// # Transactions
+///
+/// Individual transaction control (`begin_transaction`, `commit_transaction`, `rollback_transaction`)
+/// is not supported. However, `write_tuples` operations are atomic internally - all writes
+/// and deletes in a single call succeed or fail together.
 pub struct MySQLDataStore {
     pool: MySqlPool,
 }
@@ -205,6 +223,19 @@ impl MySQLDataStore {
 
     /// Helper to create an index if it doesn't exist.
     /// MySQL doesn't have CREATE INDEX IF NOT EXISTS, so we check first.
+    ///
+    /// # Safety
+    ///
+    /// This function uses string formatting to build the CREATE INDEX query because
+    /// SQL identifiers (table names, index names, columns) cannot be parameterized.
+    /// All parameters are validated to contain only safe characters to prevent SQL injection.
+    ///
+    /// # Arguments
+    ///
+    /// * `index_name` - Must contain only alphanumeric characters and underscores
+    /// * `table_name` - Must contain only alphanumeric characters and underscores
+    /// * `columns` - Must contain only alphanumeric chars, underscores, parentheses, commas, spaces
+    /// * `unique` - Whether to create a UNIQUE index
     async fn create_index_if_not_exists(
         &self,
         index_name: &str,
@@ -212,6 +243,35 @@ impl MySQLDataStore {
         columns: &str,
         unique: bool,
     ) -> StorageResult<()> {
+        // Validate identifiers to prevent SQL injection
+        // Only alphanumeric and underscore allowed for names
+        fn is_safe_identifier(s: &str) -> bool {
+            !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+
+        // Columns can also have parentheses, commas, and spaces for composite indexes
+        fn is_safe_columns(s: &str) -> bool {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '(' | ')' | ',' | ' '))
+        }
+
+        if !is_safe_identifier(index_name) {
+            return Err(StorageError::QueryError {
+                message: format!("Invalid index name: {}", index_name),
+            });
+        }
+        if !is_safe_identifier(table_name) {
+            return Err(StorageError::QueryError {
+                message: format!("Invalid table name: {}", table_name),
+            });
+        }
+        if !is_safe_columns(columns) {
+            return Err(StorageError::QueryError {
+                message: format!("Invalid column specification: {}", columns),
+            });
+        }
+
         // Check if index exists
         let exists: bool = sqlx::query_scalar(
             r#"
