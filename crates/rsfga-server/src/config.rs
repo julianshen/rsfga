@@ -100,11 +100,11 @@ fn default_max_connections() -> usize {
 /// Storage backend settings.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct StorageSettings {
-    /// Storage backend type: "memory" or "postgres"
+    /// Storage backend type: "memory", "postgres", "mysql", or "cockroachdb"
     #[serde(default = "default_storage_backend")]
     pub backend: String,
 
-    /// PostgreSQL connection URL (required if backend is "postgres")
+    /// Database connection URL (required if backend is "postgres", "mysql", or "cockroachdb")
     pub database_url: Option<String>,
 
     /// Connection pool size
@@ -319,7 +319,7 @@ impl ServerConfig {
         }
 
         // Validate storage backend
-        let valid_backends = ["memory", "postgres"];
+        let valid_backends = ["memory", "postgres", "mysql", "cockroachdb"];
         if !valid_backends.contains(&self.storage.backend.as_str()) {
             return Err(ConfigLoadError::Invalid {
                 message: format!(
@@ -329,8 +329,9 @@ impl ServerConfig {
             });
         }
 
-        // Validate postgres requires non-empty database_url
-        if self.storage.backend == "postgres"
+        // Validate database backends require non-empty database_url
+        let database_backends = ["postgres", "mysql", "cockroachdb"];
+        if database_backends.contains(&self.storage.backend.as_str())
             && self
                 .storage
                 .database_url
@@ -338,7 +339,10 @@ impl ServerConfig {
                 .map_or(true, |s| s.trim().is_empty())
         {
             return Err(ConfigLoadError::Invalid {
-                message: "storage.database_url is required when backend is 'postgres'".to_string(),
+                message: format!(
+                    "storage.database_url is required when backend is '{}'",
+                    self.storage.backend
+                ),
             });
         }
 
@@ -485,6 +489,37 @@ storage:
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("database_url"));
+
+        // Test mysql and cockroachdb backend validation using data-driven approach
+        let test_cases = [
+            ("mysql", None, true),
+            ("mysql", Some("mysql://localhost/rsfga".to_string()), false),
+            ("cockroachdb", None, true),
+            (
+                "cockroachdb",
+                Some("postgresql://root@localhost:26257/rsfga".to_string()),
+                false,
+            ),
+        ];
+
+        for (backend, url, should_err) in test_cases {
+            let mut config = ServerConfig::default();
+            config.storage.backend = backend.to_string();
+            config.storage.database_url = url;
+            let result = config.validate();
+
+            if should_err {
+                assert!(result.is_err(), "Expected error for backend '{}'", backend);
+                let err = result.unwrap_err();
+                assert!(
+                    err.to_string().contains("database_url"),
+                    "Error for '{}' should contain 'database_url'",
+                    backend
+                );
+            } else {
+                assert!(result.is_ok(), "Expected ok for backend '{}'", backend);
+            }
+        }
 
         // Test invalid log level
         let mut config = ServerConfig::default();
