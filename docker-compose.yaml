@@ -8,8 +8,6 @@
 #   docker-compose down           # Stop all services
 #   docker-compose down -v        # Stop and remove volumes
 
-version: '3.8'
-
 services:
   # RSFGA with PostgreSQL backend (production-like)
   rsfga:
