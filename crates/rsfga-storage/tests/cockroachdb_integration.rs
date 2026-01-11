@@ -9,8 +9,8 @@
 //! - Serializable isolation by default
 //!
 //! To run these tests:
-//! 1. Start CockroachDB: docker run --name rsfga-cockroachdb -p 26257:26257 -d cockroachdb/cockroach:latest start-single-node --insecure
-//! 2. Create database: docker exec -it rsfga-cockroachdb cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS rsfga"
+//! 1. Start CockroachDB: docker run --name rsfga-crdb -p 26257:26257 -d cockroachdb/cockroach:latest start-single-node --insecure
+//! 2. Create database: docker exec -it rsfga-crdb cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS rsfga"
 //! 3. Set COCKROACHDB_URL: export COCKROACHDB_URL=postgresql://root@localhost:26257/rsfga
 //! 4. Run tests: cargo test -p rsfga-storage --test cockroachdb_integration -- --ignored --test-threads=1
 //!
@@ -587,16 +587,14 @@ async fn test_concurrent_writes_on_cockroachdb() {
     for i in 0..20 {
         let store = Arc::clone(&store);
         handles.push(tokio::spawn(async move {
-            let tuple = StoredTuple {
-                object_type: "document".to_string(),
-                object_id: format!("doc{}", i),
-                relation: "viewer".to_string(),
-                user_type: "user".to_string(),
-                user_id: format!("user{}", i),
-                user_relation: None,
-                condition_name: None,
-                condition_context: None,
-            };
+            let tuple = StoredTuple::new(
+                "document",
+                format!("doc{}", i),
+                "viewer",
+                "user",
+                format!("user{}", i),
+                None,
+            );
             store
                 .write_tuple("test-crdb-concurrent", tuple)
                 .await
@@ -623,18 +621,20 @@ async fn test_concurrent_writes_on_cockroachdb() {
 // Section 4.8: CockroachDB-Specific Behavior Tests
 // ==========================================================================
 
-/// Test: CockroachDB serializable isolation (verifies no phantom reads)
+/// Test: Basic write and read consistency on CockroachDB
+///
+/// This test verifies that a batch write is readable afterwards.
+/// It's a basic sanity check, not a comprehensive isolation test.
+/// True isolation testing would require concurrent transactions,
+/// which the DataStore trait doesn't expose.
 #[tokio::test]
 #[ignore = "requires running CockroachDB"]
-async fn test_cockroachdb_serializable_isolation() {
+async fn test_cockroachdb_basic_consistency() {
     let store = create_store().await;
     store
-        .create_store("test-crdb-isolation", "Test Store")
+        .create_store("test-crdb-consistency", "Test Store")
         .await
         .unwrap();
-
-    // CockroachDB uses serializable isolation by default
-    // This test verifies basic consistency under concurrent operations
 
     let tuples: Vec<StoredTuple> = (0..10)
         .map(|i| {
@@ -650,19 +650,19 @@ async fn test_cockroachdb_serializable_isolation() {
         .collect();
 
     store
-        .write_tuples("test-crdb-isolation", tuples, vec![])
+        .write_tuples("test-crdb-consistency", tuples, vec![])
         .await
         .unwrap();
 
     // Read count should be consistent
     let result = store
-        .read_tuples("test-crdb-isolation", &TupleFilter::default())
+        .read_tuples("test-crdb-consistency", &TupleFilter::default())
         .await
         .unwrap();
     assert_eq!(result.len(), 10);
 
     // Cleanup
-    store.delete_store("test-crdb-isolation").await.unwrap();
+    store.delete_store("test-crdb-consistency").await.unwrap();
 }
 
 /// Test: Large batch operations on CockroachDB
@@ -677,15 +677,15 @@ async fn test_large_batch_on_cockroachdb() {
 
     // Generate 500 tuples (smaller than MySQL due to different characteristics)
     let tuples: Vec<StoredTuple> = (0..500)
-        .map(|i| StoredTuple {
-            object_type: "document".to_string(),
-            object_id: format!("doc{}", i),
-            relation: "viewer".to_string(),
-            user_type: "user".to_string(),
-            user_id: format!("user{}", i % 50),
-            user_relation: None,
-            condition_name: None,
-            condition_context: None,
+        .map(|i| {
+            StoredTuple::new(
+                "document",
+                format!("doc{}", i),
+                "viewer",
+                "user",
+                format!("user{}", i % 50),
+                None,
+            )
         })
         .collect();
 
