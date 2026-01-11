@@ -587,3 +587,98 @@ async fn test_requests_exceeding_body_limit_rejected() {
     // Should return 413 Payload Too Large
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+// ============================================================
+// UpdateStore Tests (Issue #85)
+// ============================================================
+
+/// Test: PUT /stores/{store_id} updates the store name
+#[tokio::test]
+async fn test_update_store_updates_name() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Original Name")
+        .await
+        .unwrap();
+
+    let state = AppState::new(Arc::clone(&storage));
+    let app = create_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/stores/test-store")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": "Updated Name"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Response should contain the updated store
+    assert_eq!(json["id"], "test-store");
+    assert_eq!(json["name"], "Updated Name");
+    assert!(json.get("created_at").is_some());
+    assert!(json.get("updated_at").is_some());
+
+    // Verify the store was actually updated in storage
+    let store = storage.get_store("test-store").await.unwrap();
+    assert_eq!(store.name, "Updated Name");
+}
+
+/// Test: PUT /stores/{store_id} returns 404 for non-existent store
+#[tokio::test]
+async fn test_update_store_returns_404_for_nonexistent() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/stores/nonexistent-store")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": "New Name"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Test: PUT /stores/{store_id} validates the name
+#[tokio::test]
+async fn test_update_store_validates_name() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Original Name")
+        .await
+        .unwrap();
+
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    // Empty name should fail validation
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/stores/test-store")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": ""}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should return 400 for invalid name
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

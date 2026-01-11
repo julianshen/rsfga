@@ -425,6 +425,37 @@ impl DataStore for MySQLDataStore {
     }
 
     #[instrument(skip(self))]
+    async fn update_store(&self, id: &str, name: &str) -> StorageResult<Store> {
+        // Validate name
+        validate_store_name(name)?;
+
+        // MySQL doesn't support RETURNING, so we need two queries
+        let result = sqlx::query(
+            r#"
+            UPDATE stores
+            SET name = ?, updated_at = NOW()
+            WHERE id = ?
+            "#,
+        )
+        .bind(name)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to update store: {}", e),
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(StorageError::StoreNotFound {
+                store_id: id.to_string(),
+            });
+        }
+
+        // Fetch the updated store
+        self.get_store(id).await
+    }
+
+    #[instrument(skip(self))]
     async fn list_stores(&self) -> StorageResult<Vec<Store>> {
         let rows = sqlx::query(
             r#"

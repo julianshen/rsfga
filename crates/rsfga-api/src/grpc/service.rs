@@ -376,19 +376,24 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
     ) -> Result<Response<UpdateStoreResponse>, Status> {
         let req = request.into_inner();
 
-        // Validate store exists
-        let _ = self
+        let store = self
             .storage
-            .get_store(&req.store_id)
+            .update_store(&req.store_id, &req.name)
             .await
             .map_err(storage_error_to_status)?;
 
-        // TODO(#85): UpdateStore requires storage layer support (update_store method)
-        // Currently returns UNIMPLEMENTED as the storage trait doesn't have update_store.
-        // This will be implemented when storage layer adds update_store support.
-        Err(Status::unimplemented(
-            "update_store is not yet implemented - storage layer support required",
-        ))
+        Ok(Response::new(UpdateStoreResponse {
+            id: store.id,
+            name: store.name,
+            created_at: Some(prost_types::Timestamp {
+                seconds: store.created_at.timestamp(),
+                nanos: store.created_at.timestamp_subsec_nanos() as i32,
+            }),
+            updated_at: Some(prost_types::Timestamp {
+                seconds: store.updated_at.timestamp(),
+                nanos: store.updated_at.timestamp_subsec_nanos() as i32,
+            }),
+        }))
     }
 
     async fn delete_store(

@@ -6,7 +6,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,7 @@ fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
         .route("/stores", post(create_store::<S>))
         .route("/stores", get(list_stores::<S>))
         .route("/stores/:store_id", get(get_store::<S>))
+        .route("/stores/:store_id", put(update_store::<S>))
         .route("/stores/:store_id", delete(delete_store::<S>))
         // Authorization operations
         .route("/stores/:store_id/check", post(check::<S>))
@@ -296,6 +297,27 @@ async fn list_stores<S: DataStore>(
         .collect();
 
     Ok(Json(serde_json::json!({ "stores": response })))
+}
+
+/// Request body for updating a store.
+#[derive(Debug, Deserialize)]
+pub struct UpdateStoreRequest {
+    pub name: String,
+}
+
+async fn update_store<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(store_id): Path<String>,
+    Json(body): Json<UpdateStoreRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let store = state.storage.update_store(&store_id, &body.name).await?;
+
+    Ok(Json(StoreResponse {
+        id: store.id,
+        name: store.name,
+        created_at: Some(store.created_at.to_rfc3339()),
+        updated_at: Some(store.updated_at.to_rfc3339()),
+    }))
 }
 
 async fn delete_store<S: DataStore>(

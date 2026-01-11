@@ -85,6 +85,24 @@ impl DataStore for MemoryDataStore {
         Ok(())
     }
 
+    async fn update_store(&self, id: &str, name: &str) -> StorageResult<Store> {
+        // Validate name
+        validate_store_name(name)?;
+
+        // Get and update the store
+        let mut entry = self
+            .stores
+            .get_mut(id)
+            .ok_or_else(|| StorageError::StoreNotFound {
+                store_id: id.to_string(),
+            })?;
+
+        entry.name = name.to_string();
+        entry.updated_at = chrono::Utc::now();
+
+        Ok(entry.clone())
+    }
+
     async fn list_stores(&self) -> StorageResult<Vec<Store>> {
         Ok(self.stores.iter().map(|s| s.value().clone()).collect())
     }
