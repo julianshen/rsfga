@@ -22,7 +22,33 @@ This guide covers deploying RSFGA in various environments.
 
 ## Docker
 
-### Building the Image
+### Using Pre-built Images (Recommended)
+
+Pre-built multi-architecture images are available from GitHub Container Registry:
+
+```bash
+# Pull the latest release
+docker pull ghcr.io/julianshen/rsfga:latest
+
+# Or pull a specific version
+docker pull ghcr.io/julianshen/rsfga:v1.0.0
+
+# Run with in-memory storage
+docker run -d \
+  --name rsfga \
+  -p 8080:8080 \
+  ghcr.io/julianshen/rsfga:latest
+```
+
+Available tags:
+- `latest` - Latest stable release
+- `vX.Y.Z` - Specific version (e.g., `v1.0.0`)
+- `vX.Y` - Latest patch for minor version (e.g., `v1.0`)
+- `vX` - Latest minor for major version (e.g., `v1`)
+- `main` - Latest build from main branch
+- `sha-xxxxxxx` - Specific commit
+
+### Building the Image Locally
 
 ```bash
 # Build the Docker image

@@ -18,7 +18,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Build environment
 # -----------------------------------------------------------------------------
-FROM rust:1.75-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -61,6 +61,7 @@ RUN cargo build --release --bin rsfga 2>/dev/null || true
 COPY crates/rsfga-api/src crates/rsfga-api/src
 COPY crates/rsfga-server/src crates/rsfga-server/src
 COPY crates/rsfga-domain/src crates/rsfga-domain/src
+COPY crates/rsfga-domain/benches crates/rsfga-domain/benches
 COPY crates/rsfga-storage/src crates/rsfga-storage/src
 COPY crates/compatibility-tests/src crates/compatibility-tests/src
 

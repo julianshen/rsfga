@@ -1,0 +1,164 @@
+name: Container Image
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Run tests before building container image (for releases)
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    # Skip for PRs since CI workflow already runs tests
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy, rustfmt
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Run tests
+        run: cargo test --workspace --all-features --no-fail-fast --exclude compatibility-tests
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  build-and-push:
+    name: Build and Push Container Image
+    runs-on: ubuntu-latest
+    # Wait for tests to pass before pushing to registry
+    needs: [test]
+    # Always run for PRs (test job is skipped), wait for test job otherwise
+    if: always() && (github.event_name == 'pull_request' || needs.test.result == 'success')
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=auto
+          tags: |
+            # On version tag: v1.2.3 -> v1.2.3, v1.2, v1, latest
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+            # On main branch: main, sha-xxxxxxx
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            # On PR: pr-123
+            type=ref,event=pr
+
+      # For PRs: Build single platform and load locally for smoke test
+      - name: Build Docker image (PR - single platform)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Smoke test: verify container starts and health endpoint responds
+      - name: Smoke test - Health check
+        if: github.event_name == 'pull_request'
+        run: |
+          # Start container in background
+          docker run -d --name smoke-test -p 8080:8080 ${{ env.IMAGE_NAME }}:test
+
+          # Cleanup function to ensure container is always removed
+          cleanup() {
+            echo "Cleaning up container..."
+            docker logs smoke-test 2>/dev/null || true
+            docker stop smoke-test 2>/dev/null || true
+            docker rm smoke-test 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          # Wait for container to be ready (max 30 seconds)
+          for i in {1..30}; do
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              echo "Health check passed!"
+              exit 0
+            fi
+            echo "Waiting for container to be ready... ($i/30)"
+            sleep 1
+          done
+
+          echo "Health check failed after 30 seconds"
+          exit 1
+
+      # For main/tags: Build multi-platform and push to registry
+      - name: Build and push Docker image
+        if: github.event_name != 'pull_request'
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generate artifact attestation
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
