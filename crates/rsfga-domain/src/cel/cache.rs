@@ -26,24 +26,35 @@ use super::expression::CelExpression;
 use super::CelResult;
 
 /// Configuration for the CEL expression cache.
+///
+/// # ⚠️ Implementation Status
+///
+/// **Note**: `max_capacity` and `ttl` are reserved for future use with bounded
+/// caching (e.g., Moka LRU). The current DashMap implementation does **not**
+/// enforce these limits. For cache invalidation, use [`CelExpressionCache::invalidate_all`]
+/// when authorization models are updated.
 #[derive(Debug, Clone)]
 pub struct CelCacheConfig {
     /// Maximum number of expressions to cache.
+    ///
+    /// **⚠️ Not currently enforced.** Reserved for future LRU implementation.
     /// Default: 10,000 (expressions are small, typically <1KB each)
     pub max_capacity: u64,
-    /// Time-to-live for cached expressions (not enforced in current impl).
-    /// Default: 1 hour (expressions don't change at runtime)
+    /// Time-to-live for cached expressions.
+    ///
+    /// **⚠️ Not currently enforced.** Reserved for future TTL-based eviction.
+    /// Use [`CelExpressionCache::invalidate_all`] to clear cache on model updates.
+    /// Default: 1 hour
     pub ttl: Duration,
 }
 
 impl Default for CelCacheConfig {
     fn default() -> Self {
         Self {
+            // Not enforced - reserved for future LRU implementation
             max_capacity: 10_000,
-            // Expressions are immutable once defined in an authorization model,
-            // so a long TTL is appropriate. Note: TTL is not currently enforced;
-            // use invalidate_all() when authorization models are updated.
-            ttl: Duration::from_secs(3600), // 1 hour
+            // Not enforced - reserved for future TTL eviction
+            ttl: Duration::from_secs(3600),
         }
     }
 }
@@ -59,6 +70,13 @@ impl Default for CelCacheConfig {
 /// with millions of unique expressions, consider using Moka with LRU eviction.
 /// Current implementation doesn't enforce max_capacity or TTL - suitable for
 /// typical authorization models with <10K unique conditions.
+///
+/// # ⚠️ Clone Not Implemented
+///
+/// This type intentionally does **not** implement `Clone`. Cloning would require
+/// deep-copying all entries (O(n) complexity), which is expensive. Instead:
+/// - Use `Arc<CelExpressionCache>` for shared ownership across threads
+/// - Use [`global_cache()`] singleton for most use cases
 ///
 /// # Example
 ///
@@ -153,12 +171,6 @@ impl Default for CelExpressionCache {
         Self::new(CelCacheConfig::default())
     }
 }
-
-// NOTE: Clone is intentionally NOT implemented for CelExpressionCache.
-// Cloning a cache would require deep-copying all entries from the DashMap,
-// which is expensive (O(n) where n = number of cached expressions).
-// Instead, use Arc<CelExpressionCache> for shared ownership, or use
-// the global_cache() singleton for most use cases.
 
 // Global singleton for convenience (most use cases need just one cache)
 use std::sync::OnceLock;
@@ -279,5 +291,39 @@ mod tests {
 
         // All 1000 unique expressions should be cached
         assert_eq!(cache.entry_count(), 1000);
+    }
+
+    /// Test that concurrent access to the SAME expression returns identical Arc pointers.
+    /// This verifies the race condition fix - all threads must get the same cached instance.
+    #[test]
+    fn test_concurrent_identical_expression_returns_same_arc() {
+        use std::thread;
+
+        let cache = Arc::new(CelExpressionCache::new(CelCacheConfig::default()));
+        let expression = "shared_expr > 42";
+
+        // Spawn many threads that all request the same expression simultaneously
+        let handles: Vec<_> = (0..100)
+            .map(|_| {
+                let cache_clone = Arc::clone(&cache);
+                thread::spawn(move || cache_clone.get_or_parse(expression).unwrap())
+            })
+            .collect();
+
+        // Collect all returned Arcs
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // All results must be pointer-equal (same Arc instance)
+        let first = &results[0];
+        for (i, result) in results.iter().enumerate().skip(1) {
+            assert!(
+                Arc::ptr_eq(first, result),
+                "Thread {} returned different Arc than thread 0 (race condition detected)",
+                i
+            );
+        }
+
+        // Only one expression should be cached
+        assert_eq!(cache.entry_count(), 1);
     }
 }
