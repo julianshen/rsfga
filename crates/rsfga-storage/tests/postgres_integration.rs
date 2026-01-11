@@ -866,3 +866,139 @@ async fn test_postgres_store_rejects_oversized_condition_context() {
     // Cleanup
     store.delete_store("test-size-limit").await.unwrap();
 }
+
+// Test: Pagination works correctly with condition fields
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_postgres_store_pagination_with_conditions() {
+    use rsfga_storage::PaginationOptions;
+
+    let store = create_store().await;
+    store
+        .create_store("test-paginate-cond", "Test Store")
+        .await
+        .unwrap();
+
+    // Write tuples with various conditions
+    let mut tuples = Vec::new();
+    for i in 0..15 {
+        let condition = if i % 3 == 0 {
+            Some("time_bound".to_string())
+        } else if i % 3 == 1 {
+            Some("ip_check".to_string())
+        } else {
+            None
+        };
+
+        let context = condition.as_ref().map(|_| {
+            let mut ctx = std::collections::HashMap::new();
+            ctx.insert("index".to_string(), serde_json::json!(i));
+            ctx
+        });
+
+        tuples.push(StoredTuple {
+            object_type: "document".to_string(),
+            object_id: format!("doc{:02}", i),
+            relation: "viewer".to_string(),
+            user_type: "user".to_string(),
+            user_id: format!("user{:02}", i),
+            user_relation: None,
+            condition_name: condition,
+            condition_context: context,
+        });
+    }
+
+    store
+        .write_tuples("test-paginate-cond", tuples, vec![])
+        .await
+        .unwrap();
+
+    // Paginate with page size of 5
+    let page1 = store
+        .read_tuples_paginated(
+            "test-paginate-cond",
+            &TupleFilter::default(),
+            &PaginationOptions {
+                page_size: Some(5),
+                continuation_token: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(page1.items.len(), 5);
+    assert!(page1.continuation_token.is_some());
+
+    // Verify conditions are preserved in first page
+    for tuple in &page1.items {
+        // Each tuple should have its condition properly loaded
+        if tuple.condition_name.is_some() {
+            assert!(
+                tuple.condition_context.is_some(),
+                "Tuple with condition_name should have condition_context"
+            );
+        }
+    }
+
+    // Get second page
+    let page2 = store
+        .read_tuples_paginated(
+            "test-paginate-cond",
+            &TupleFilter::default(),
+            &PaginationOptions {
+                page_size: Some(5),
+                continuation_token: page1.continuation_token,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(page2.items.len(), 5);
+    assert!(page2.continuation_token.is_some());
+
+    // Get third page
+    let page3 = store
+        .read_tuples_paginated(
+            "test-paginate-cond",
+            &TupleFilter::default(),
+            &PaginationOptions {
+                page_size: Some(5),
+                continuation_token: page2.continuation_token,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(page3.items.len(), 5);
+    assert!(page3.continuation_token.is_none()); // Last page
+
+    // Verify total count across all pages
+    let all_tuples: Vec<_> = page1
+        .items
+        .into_iter()
+        .chain(page2.items)
+        .chain(page3.items)
+        .collect();
+    assert_eq!(all_tuples.len(), 15);
+
+    // Count tuples by condition type
+    let time_bound_count = all_tuples
+        .iter()
+        .filter(|t| t.condition_name.as_deref() == Some("time_bound"))
+        .count();
+    let ip_check_count = all_tuples
+        .iter()
+        .filter(|t| t.condition_name.as_deref() == Some("ip_check"))
+        .count();
+    let no_condition_count = all_tuples
+        .iter()
+        .filter(|t| t.condition_name.is_none())
+        .count();
+
+    assert_eq!(time_bound_count, 5); // indices 0, 3, 6, 9, 12
+    assert_eq!(ip_check_count, 5); // indices 1, 4, 7, 10, 13
+    assert_eq!(no_condition_count, 5); // indices 2, 5, 8, 11, 14
+
+    // Cleanup
+    store.delete_store("test-paginate-cond").await.unwrap();
+}

@@ -6,8 +6,9 @@ use thiserror::Error;
 /// OpenFGA does not allow updating conditions on existing tuples.
 /// To change a condition, delete the tuple and re-create it.
 #[derive(Debug, Error)]
-#[error("tuple exists with different condition: {object_type}:{object_id}#{relation}@{user} (existing: {existing_condition:?}, new: {new_condition:?})")]
+#[error("tuple exists with different condition in store {store_id}: {object_type}:{object_id}#{relation}@{user} (existing: {existing_condition:?}, new: {new_condition:?})")]
 pub struct ConditionConflictError {
+    pub store_id: String,
     pub object_type: String,
     pub object_id: String,
     pub relation: String,
