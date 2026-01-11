@@ -1801,7 +1801,7 @@ Create benchmark report comparing RSFGA vs OpenFGA:
 
 ---
 
-### Milestone 1.11: MySQL/MariaDB/TiDB Storage Backend
+### Milestone 1.11: MySQL/MariaDB/TiDB Storage Backend ✅ COMPLETE
 
 **Goal**: Add MySQL/MariaDB/TiDB support as a storage backend alternative to PostgreSQL
 
@@ -1813,18 +1813,18 @@ Create benchmark report comparing RSFGA vs OpenFGA:
 - TiDB (MySQL-compatible distributed SQL database)
 
 #### Section 1: MySQL Configuration and Connection
-- [ ] MySQLConfig struct with database_url, max_connections, min_connections, connect_timeout_secs
-- [ ] MySQLConfig default values and Debug (hides credentials)
-- [ ] MySQLDataStore connection and pool limits
-- [ ] from_url and from_config constructors
-- [ ] Connection errors wrapped in StorageError::ConnectionError
+- [x] MySQLConfig struct with database_url, max_connections, min_connections, connect_timeout_secs
+- [x] MySQLConfig default values and Debug (hides credentials)
+- [x] MySQLDataStore connection and pool limits
+- [x] from_url and from_config constructors
+- [x] Connection errors wrapped in StorageError::ConnectionError
 
 #### Section 2: MySQL Migrations
-- [ ] run_migrations creates stores table
-- [ ] run_migrations creates tuples table with AUTO_INCREMENT
-- [ ] Generated column for NULL user_relation in unique index
-- [ ] Query indexes for common patterns
-- [ ] Migration idempotency
+- [x] run_migrations creates stores table
+- [x] run_migrations creates tuples table with AUTO_INCREMENT
+- [x] Generated column for NULL user_relation in unique index
+- [x] Query indexes for common patterns
+- [x] Migration idempotency
 
 **MySQL Schema**:
 ```sql
@@ -1852,30 +1852,30 @@ CREATE TABLE tuples (
 ```
 
 #### Section 3: Store Operations
-- [ ] create_store, get_store, delete_store (with cascade)
-- [ ] list_stores and list_stores_paginated
-- [ ] StoreAlreadyExists and StoreNotFound errors
+- [x] create_store, get_store, delete_store (with cascade)
+- [x] list_stores and list_stores_paginated
+- [x] StoreAlreadyExists and StoreNotFound errors
 
 #### Section 4: Tuple Write Operations
-- [ ] write_tuple and write_tuples (atomic)
-- [ ] Batch INSERT with multiple VALUES (replaces UNNEST)
-- [ ] ON DUPLICATE KEY UPDATE for idempotency (replaces ON CONFLICT)
-- [ ] Transaction rollback on error
+- [x] write_tuple and write_tuples (atomic)
+- [x] Batch INSERT with multiple VALUES (replaces UNNEST)
+- [x] ON DUPLICATE KEY UPDATE for idempotency (replaces ON CONFLICT)
+- [x] Transaction rollback on error
 
 #### Section 5: Tuple Read Operations
-- [ ] read_tuples with all filter combinations
-- [ ] read_tuples_paginated with continuation_token
-- [ ] StoreNotFound error handling
+- [x] read_tuples with all filter combinations
+- [x] read_tuples_paginated with continuation_token
+- [x] StoreNotFound error handling
 
 #### Section 6: DataStore Trait Implementation
-- [ ] MySQLDataStore implements DataStore trait
-- [ ] Send + Sync bounds satisfied
-- [ ] Transaction method stubs (internal transactions only)
+- [x] MySQLDataStore implements DataStore trait
+- [x] Send + Sync bounds satisfied
+- [x] Transaction method stubs (internal transactions only)
 
 #### Section 7: Integration Tests
-- [ ] Same behavior as InMemoryStore and PostgresDataStore
-- [ ] Large dataset performance (10k+ tuples)
-- [ ] Concurrent access from multiple connections
+- [x] Same behavior as InMemoryStore and PostgresDataStore
+- [x] Large dataset performance (10k+ tuples)
+- [x] Concurrent access from multiple connections
 
 **Key SQL Adaptations (PostgreSQL → MySQL)**:
 | PostgreSQL | MySQL |
@@ -1921,11 +1921,13 @@ CockroachDB's BIGSERIAL emulation works correctly with our PostgreSQL migrations
 #### Section 4: Integration and Compatibility
 - [x] Same behavior as PostgresDataStore (reuses same implementation)
 - [x] Backend swapping works (`RSFGA_STORAGE__BACKEND=cockroachdb`)
+- [x] Large batch operations (1000+ tuples)
+- [x] Large dataset performance (10k+ tuples)
 
 **Deliverables**:
 - ✅ CockroachDB support via PostgresDataStore (PostgreSQL compatibility)
 - ✅ PostgreSQL migrations work on CockroachDB
-- ✅ Integration tests (`cockroachdb_integration.rs` - 20 tests)
+- ✅ Integration tests (`cockroachdb_integration.rs` - 21 tests)
 - ✅ Configuration support (`RSFGA_STORAGE__BACKEND=cockroachdb`)
 
 ---
