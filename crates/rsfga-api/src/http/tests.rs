@@ -724,7 +724,8 @@ async fn test_created_store_id_is_ulid_format() {
     );
     // ULID is uppercase Crockford Base32
     assert!(
-        id.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()),
+        id.chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()),
         "ULID should be uppercase"
     );
 }
