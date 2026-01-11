@@ -102,23 +102,30 @@ impl CelExpressionCache {
     /// * `Ok(Arc<CelExpression>)` - The parsed expression (cached or fresh)
     /// * `Err(CelError)` - If parsing fails
     pub fn get_or_parse(&self, expression: &str) -> CelResult<Arc<CelExpression>> {
-        // Try to get from cache first (fast path)
+        // Try to get from cache first (fast path - no lock contention)
         if let Some(cached) = self.cache.get(expression) {
             return Ok(Arc::clone(cached.value()));
         }
 
-        // Parse the expression (slow path)
-        let parsed = CelExpression::parse(expression)?;
-        let arc_expr = Arc::new(parsed);
-
-        // Cache it for future use
-        // Use entry API to handle race condition where another thread
-        // might have inserted while we were parsing
-        self.cache
-            .entry(expression.to_string())
-            .or_insert_with(|| Arc::clone(&arc_expr));
-
-        Ok(arc_expr)
+        // Slow path: Use the entry API to ensure that parsing and insertion are
+        // atomic, preventing race conditions where multiple threads could parse
+        // the same expression and return different Arc instances.
+        use dashmap::mapref::entry::Entry;
+        match self.cache.entry(expression.to_string()) {
+            Entry::Occupied(entry) => {
+                // Another thread inserted the expression while we were checking.
+                // Return the existing, cached Arc.
+                Ok(Arc::clone(entry.get()))
+            }
+            Entry::Vacant(entry) => {
+                // The entry is vacant, and we hold the lock.
+                // Parse the expression and insert it into the cache.
+                let parsed = CelExpression::parse(expression)?;
+                let arc_expr = Arc::new(parsed);
+                entry.insert(Arc::clone(&arc_expr));
+                Ok(arc_expr)
+            }
+        }
     }
 
     /// Returns the number of cached expressions.
@@ -146,18 +153,11 @@ impl Default for CelExpressionCache {
     }
 }
 
-impl Clone for CelExpressionCache {
-    fn clone(&self) -> Self {
-        let new_cache = DashMap::new();
-        for entry in self.cache.iter() {
-            new_cache.insert(entry.key().clone(), Arc::clone(entry.value()));
-        }
-        Self {
-            cache: new_cache,
-            config: self.config.clone(),
-        }
-    }
-}
+// NOTE: Clone is intentionally NOT implemented for CelExpressionCache.
+// Cloning a cache would require deep-copying all entries from the DashMap,
+// which is expensive (O(n) where n = number of cached expressions).
+// Instead, use Arc<CelExpressionCache> for shared ownership, or use
+// the global_cache() singleton for most use cases.
 
 // Global singleton for convenience (most use cases need just one cache)
 use std::sync::OnceLock;
