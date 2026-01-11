@@ -27,7 +27,7 @@ use std::sync::Arc;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::timeout;
 
-use crate::cel::{CelContext, CelExpression, CelValue};
+use crate::cel::{global_cache, CelContext, CelValue};
 use crate::error::{DomainError, DomainResult};
 use crate::model::{TypeConstraint, Userset};
 
@@ -857,21 +857,17 @@ where
                     message: format!("condition not found: {}", condition_name),
                 })?;
 
-        // Parse the CEL expression
-        // TODO: PERFORMANCE - CEL expressions are parsed on every condition evaluation.
-        // This is a performance bottleneck for frequently checked tuples. Consider:
-        // 1. Caching parsed CelExpression in Condition struct (parse in Condition::new)
-        // 2. Using an LRU cache keyed by expression string
-        // 3. Pre-parsing expressions when AuthorizationModel is loaded
+        // Get the parsed CEL expression from cache (or parse and cache it)
+        // PERFORMANCE FIX: CEL expressions are now cached to avoid repeated parsing.
         // See: https://github.com/julianshen/rsfga/issues/82
-        let expr = CelExpression::parse(&condition.expression).map_err(|e| {
-            DomainError::ResolverError {
+        let expr = global_cache()
+            .get_or_parse(&condition.expression)
+            .map_err(|e| DomainError::ResolverError {
                 message: format!(
                     "failed to parse condition expression '{}': {}",
                     condition.expression, e
                 ),
-            }
-        })?;
+            })?;
 
         // Build the CEL context
         let mut cel_ctx = CelContext::new();
