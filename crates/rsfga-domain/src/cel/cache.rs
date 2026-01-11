@@ -41,7 +41,8 @@ impl Default for CelCacheConfig {
         Self {
             max_capacity: 10_000,
             // Expressions are immutable once defined in an authorization model,
-            // so a long TTL is appropriate. We still use TTL to handle model updates.
+            // so a long TTL is appropriate. Note: TTL is not currently enforced;
+            // use invalidate_all() when authorization models are updated.
             ttl: Duration::from_secs(3600), // 1 hour
         }
     }

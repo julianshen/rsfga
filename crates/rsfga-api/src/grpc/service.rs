@@ -513,6 +513,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
+        // TODO: When model persistence is implemented, invalidate CEL cache:
+        // rsfga_domain::cel::global_cache().invalidate_all();
+        // This ensures cached CEL expressions from the old model are not reused.
+
         Ok(Response::new(WriteAuthorizationModelResponse {
             authorization_model_id: uuid::Uuid::new_v4().to_string(),
         }))
