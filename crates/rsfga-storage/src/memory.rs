@@ -348,11 +348,19 @@ impl DataStore for MemoryDataStore {
             });
         }
 
-        // Add model to the store's list
+        // Add model to the store's list (reject duplicate IDs to match DB behavior)
         let mut models = self
             .authorization_models
             .entry(model.store_id.clone())
             .or_default();
+
+        // Check for duplicate ID (DB backends will fail on PK collision)
+        if models.iter().any(|m| m.id == model.id) {
+            return Err(StorageError::QueryError {
+                message: format!("authorization model already exists: {}", model.id),
+            });
+        }
+
         models.push(model.clone());
 
         Ok(model)
@@ -390,12 +398,19 @@ impl DataStore for MemoryDataStore {
             });
         }
 
-        // Return models in reverse order (newest first)
-        let models: Vec<StoredAuthorizationModel> = self
+        // Return models ordered by created_at DESC, id DESC (newest first, deterministic)
+        let mut models: Vec<StoredAuthorizationModel> = self
             .authorization_models
             .get(store_id)
-            .map(|models| models.iter().rev().cloned().collect())
+            .map(|models| models.iter().cloned().collect())
             .unwrap_or_default();
+
+        // Sort by (created_at DESC, id DESC) to match trait contract and DB behavior
+        models.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
 
         Ok(models)
     }
@@ -412,12 +427,19 @@ impl DataStore for MemoryDataStore {
             });
         }
 
-        // Get models in reverse order (newest first)
-        let all_models: Vec<StoredAuthorizationModel> = self
+        // Get models ordered by created_at DESC, id DESC (newest first, deterministic)
+        let mut all_models: Vec<StoredAuthorizationModel> = self
             .authorization_models
             .get(store_id)
-            .map(|models| models.iter().rev().cloned().collect())
+            .map(|models| models.iter().cloned().collect())
             .unwrap_or_default();
+
+        // Sort by (created_at DESC, id DESC) to match trait contract and DB behavior
+        all_models.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
 
         let page_size = pagination.page_size.unwrap_or(100) as usize;
         let offset: usize = pagination
@@ -456,13 +478,27 @@ impl DataStore for MemoryDataStore {
             });
         }
 
-        // Get the last model (newest)
-        self.authorization_models
+        // Get the latest model (newest by created_at DESC, id DESC)
+        let mut models: Vec<StoredAuthorizationModel> = self
+            .authorization_models
             .get(store_id)
-            .and_then(|models| models.last().cloned())
-            .ok_or_else(|| StorageError::ModelNotFound {
+            .map(|models| models.iter().cloned().collect())
+            .unwrap_or_default();
+
+        if models.is_empty() {
+            return Err(StorageError::ModelNotFound {
                 model_id: format!("latest (no models exist for store {})", store_id),
-            })
+            });
+        }
+
+        // Sort by (created_at DESC, id DESC) and return the first (newest)
+        models.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+
+        Ok(models.into_iter().next().unwrap())
     }
 }
 
