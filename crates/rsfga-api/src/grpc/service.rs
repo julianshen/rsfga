@@ -4,13 +4,17 @@ use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
 
+use rsfga_domain::cache::{CheckCache, CheckCacheConfig};
 use rsfga_domain::cel::global_cache;
+use rsfga_domain::resolver::GraphResolver;
+use rsfga_server::handlers::batch::BatchCheckHandler;
 use rsfga_storage::{DataStore, DateTime, StorageError, StoredTuple, TupleFilter, Utc};
 
-use crate::utils::{format_user, parse_object, parse_user, MAX_BATCH_SIZE};
+use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
+use crate::utils::{format_user, parse_object, parse_user};
 
 use crate::proto::openfga::v1::{
-    open_fga_service_server::OpenFgaService, BatchCheckItem, BatchCheckRequest, BatchCheckResponse,
+    open_fga_service_server::OpenFgaService, BatchCheckRequest, BatchCheckResponse,
     BatchCheckSingleResult, CheckError, CheckRequest, CheckResponse, CreateStoreRequest,
     CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse, ErrorCode, ExpandRequest,
     ExpandResponse, GetStoreRequest, GetStoreResponse, ListObjectsRequest, ListObjectsResponse,
@@ -24,14 +28,46 @@ use crate::proto::openfga::v1::{
 };
 
 /// gRPC service implementation for OpenFGA.
+///
+/// This service implements the OpenFGA gRPC API with support for parallel
+/// batch checks through the integrated BatchCheckHandler.
 pub struct OpenFgaGrpcService<S: DataStore> {
     storage: Arc<S>,
+    /// The batch check handler with parallel execution and deduplication.
+    batch_handler: Arc<BatchCheckHandler<DataStoreTupleReader<S>, DataStoreModelReader<S>>>,
 }
 
 impl<S: DataStore> OpenFgaGrpcService<S> {
-    /// Creates a new gRPC service instance.
+    /// Creates a new gRPC service instance with default cache configuration.
     pub fn new(storage: Arc<S>) -> Self {
-        Self { storage }
+        Self::with_cache_config(storage, CheckCacheConfig::default())
+    }
+
+    /// Creates a new gRPC service instance with custom cache configuration.
+    pub fn with_cache_config(storage: Arc<S>, cache_config: CheckCacheConfig) -> Self {
+        // Create adapters to bridge storage to domain traits
+        let tuple_reader = Arc::new(DataStoreTupleReader::new(Arc::clone(&storage)));
+        let model_reader = Arc::new(DataStoreModelReader::new(Arc::clone(&storage)));
+
+        // Create the graph resolver
+        let resolver = Arc::new(GraphResolver::new(
+            Arc::clone(&tuple_reader),
+            Arc::clone(&model_reader),
+        ));
+
+        // Create the check cache
+        let cache = Arc::new(CheckCache::new(cache_config));
+
+        // Create the batch handler
+        let batch_handler = Arc::new(BatchCheckHandler::new(
+            Arc::clone(&resolver),
+            Arc::clone(&cache),
+        ));
+
+        Self {
+            storage,
+            batch_handler,
+        }
     }
 }
 
@@ -45,6 +81,22 @@ fn storage_error_to_status(err: StorageError) -> Status {
         StorageError::InvalidInput { message } => Status::invalid_argument(message),
         StorageError::DuplicateTuple { .. } => Status::already_exists(err.to_string()),
         _ => Status::internal(err.to_string()),
+    }
+}
+
+/// Converts a BatchCheckError to a tonic Status.
+fn batch_check_error_to_status(err: rsfga_server::handlers::batch::BatchCheckError) -> Status {
+    use rsfga_server::handlers::batch::BatchCheckError;
+    match err {
+        BatchCheckError::EmptyBatch => Status::invalid_argument("batch request cannot be empty"),
+        BatchCheckError::BatchTooLarge { size, max } => Status::invalid_argument(format!(
+            "batch size {} exceeds maximum allowed {}",
+            size, max
+        )),
+        BatchCheckError::InvalidCheck { index, message } => {
+            Status::invalid_argument(format!("invalid check at index {}: {}", index, message))
+        }
+        BatchCheckError::DomainError(msg) => Status::internal(format!("check error: {}", msg)),
     }
 }
 
@@ -125,14 +177,14 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         }))
     }
 
-    // NOTE: This implementation performs sequential tuple lookups for simplicity.
-    // In Milestone 1.8 (Server Integration), this will delegate to BatchCheckHandler
-    // in rsfga-server to leverage parallel execution, request deduplication, and
-    // singleflight optimizations. See plan.md for the integration roadmap.
     async fn batch_check(
         &self,
         request: Request<BatchCheckRequest>,
     ) -> Result<Response<BatchCheckResponse>, Status> {
+        use rsfga_server::handlers::batch::{
+            BatchCheckItem as ServerBatchCheckItem, BatchCheckRequest as ServerBatchCheckRequest,
+        };
+
         let req = request.into_inner();
 
         // Validate store exists
@@ -142,24 +194,52 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // Validate batch size
-        if req.checks.is_empty() {
-            return Err(Status::invalid_argument("batch request cannot be empty"));
-        }
-        if req.checks.len() > MAX_BATCH_SIZE {
-            return Err(Status::invalid_argument(format!(
-                "batch size {} exceeds maximum allowed {}",
-                req.checks.len(),
-                MAX_BATCH_SIZE
-            )));
-        }
+        // Store correlation_ids for mapping back to response
+        // We need to maintain the order since BatchCheckHandler returns results in order
+        let correlation_ids: Vec<String> = req
+            .checks
+            .iter()
+            .map(|item| item.correlation_id.clone())
+            .collect();
 
-        // Process each check independently - errors are captured per-item, not propagated
-        // This matches OpenFGA behavior where each check in a batch is independent
+        // Convert gRPC request to server-layer request
+        let server_checks: Vec<ServerBatchCheckItem> = req
+            .checks
+            .into_iter()
+            .filter_map(|item| {
+                item.tuple_key.map(|tk| ServerBatchCheckItem {
+                    user: tk.user,
+                    relation: tk.relation,
+                    object: tk.object,
+                })
+            })
+            .collect();
+
+        let server_request = ServerBatchCheckRequest::new(req.store_id, server_checks);
+
+        // Delegate to BatchCheckHandler for parallel execution with deduplication
+        let server_response = self
+            .batch_handler
+            .check(server_request)
+            .await
+            .map_err(batch_check_error_to_status)?;
+
+        // Convert server response back to gRPC response format
         let mut result_map = std::collections::HashMap::new();
-        for item in req.checks.into_iter() {
-            let result = self.process_batch_check_item(&req.store_id, &item).await;
-            result_map.insert(item.correlation_id, result);
+        for (correlation_id, item_result) in correlation_ids
+            .into_iter()
+            .zip(server_response.results.into_iter())
+        {
+            result_map.insert(
+                correlation_id,
+                BatchCheckSingleResult {
+                    allowed: item_result.allowed,
+                    error: item_result.error.map(|msg| CheckError {
+                        code: ErrorCode::ValidationError as i32,
+                        message: msg,
+                    }),
+                },
+            );
         }
 
         Ok(Response::new(BatchCheckResponse { result: result_map }))
@@ -569,81 +649,5 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             changes: vec![],
             continuation_token: String::new(),
         }))
-    }
-}
-
-impl<S: DataStore> OpenFgaGrpcService<S> {
-    /// Helper to process a single batch check item.
-    /// Returns a result with either allowed status or error - errors are per-item, not propagated.
-    async fn process_batch_check_item(
-        &self,
-        store_id: &str,
-        item: &BatchCheckItem,
-    ) -> BatchCheckSingleResult {
-        let tuple_key = match item.tuple_key.as_ref() {
-            Some(tk) => tk,
-            None => {
-                return BatchCheckSingleResult {
-                    allowed: false,
-                    error: Some(CheckError {
-                        code: ErrorCode::ValidationError as i32,
-                        message: "tuple_key is required".to_string(),
-                    }),
-                };
-            }
-        };
-
-        // Validate object format (required: "type:id")
-        let (object_type, object_id) = match parse_object(&tuple_key.object) {
-            Some((t, i)) => (t, i),
-            None => {
-                return BatchCheckSingleResult {
-                    allowed: false,
-                    error: Some(CheckError {
-                        code: ErrorCode::InvalidObjectFormat as i32,
-                        message: format!(
-                            "invalid object format '{}': expected 'type:id'",
-                            tuple_key.object
-                        ),
-                    }),
-                };
-            }
-        };
-
-        // Validate user format
-        if parse_user(&tuple_key.user).is_none() {
-            return BatchCheckSingleResult {
-                allowed: false,
-                error: Some(CheckError {
-                    code: ErrorCode::ValidationError as i32,
-                    message: format!(
-                        "invalid user format '{}': expected 'type:id' or 'type:id#relation'",
-                        tuple_key.user
-                    ),
-                }),
-            };
-        }
-
-        let filter = TupleFilter {
-            object_type: Some(object_type.to_string()),
-            object_id: Some(object_id.to_string()),
-            relation: Some(tuple_key.relation.clone()),
-            user: Some(tuple_key.user.clone()),
-            condition_name: None,
-        };
-
-        match self.storage.read_tuples(store_id, &filter).await {
-            Ok(tuples) => BatchCheckSingleResult {
-                allowed: !tuples.is_empty(),
-                error: None,
-            },
-            Err(e) => BatchCheckSingleResult {
-                allowed: false,
-                error: Some(CheckError {
-                    code: ErrorCode::ValidationError as i32,
-                    message: format!("storage error: {}", e),
-                }),
-            },
-        }
     }
 }

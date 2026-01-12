@@ -59,6 +59,7 @@ opentelemetry-jaeger = { workspace = true }
 # Utilities
 uuid = { workspace = true }
 ulid = { workspace = true }
+async-trait = { workspace = true }
 
 # CLI
 clap = { workspace = true }

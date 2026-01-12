@@ -451,6 +451,8 @@ mod tests {
     /// suite is in the compatibility-tests crate.
     #[tokio::test]
     async fn test_openfga_compatibility_test_suite() {
+        use rsfga_storage::StoredAuthorizationModel;
+
         let storage = Arc::new(MemoryDataStore::new());
 
         // Create a test store
@@ -460,6 +462,22 @@ mod tests {
             .unwrap();
         assert!(!store.id.is_empty());
         assert_eq!(store.name, "Compatibility Test Store");
+
+        // Set up authorization model (required for GraphResolver)
+        let model_json = r#"{
+            "type_definitions": [
+                {"type": "user"},
+                {"type": "team", "relations": {"member": {}}},
+                {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
+            ]
+        }"#;
+        let model = StoredAuthorizationModel::new(
+            ulid::Ulid::new().to_string(),
+            "compat-store",
+            "1.1",
+            model_json,
+        );
+        storage.write_authorization_model(model).await.unwrap();
 
         let state = AppState::new(Arc::clone(&storage));
         let app = create_router(state);

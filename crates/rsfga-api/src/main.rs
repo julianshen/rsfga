@@ -82,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
         "memory" => {
             info!("Using in-memory storage backend");
             let storage = Arc::new(MemoryDataStore::new());
-            let state = AppState { storage };
+            let state = AppState::new(storage);
             let router = create_router_with_observability(state, metrics_state);
             run_server(router, addr).await
         }
@@ -118,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
 
             let storage = Arc::new(storage);
 
-            let state = AppState { storage };
+            let state = AppState::new(storage);
             let router = create_router_with_observability(state, metrics_state);
             run_server(router, addr).await
         }
@@ -148,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
 
             let storage = Arc::new(storage);
 
-            let state = AppState { storage };
+            let state = AppState::new(storage);
             let router = create_router_with_observability(state, metrics_state);
             run_server(router, addr).await
         }

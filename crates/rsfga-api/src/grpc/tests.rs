@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tonic::Request;
 
 use rsfga_domain::cel::global_cache;
-use rsfga_storage::{DataStore, MemoryDataStore, StoredTuple};
+use rsfga_storage::{DataStore, MemoryDataStore, StoredAuthorizationModel, StoredTuple};
 
 use crate::proto::openfga::v1::open_fga_service_server::OpenFgaService;
 use crate::proto::openfga::v1::*;
@@ -21,6 +21,40 @@ fn test_service() -> OpenFgaGrpcService<MemoryDataStore> {
 /// Helper to create a test service with pre-configured storage.
 fn test_service_with_storage(storage: Arc<MemoryDataStore>) -> OpenFgaGrpcService<MemoryDataStore> {
     OpenFgaGrpcService::new(storage)
+}
+
+/// Helper to create a simple authorization model with document and user types.
+/// This model allows direct tuple assignments (user:X viewer document:Y).
+fn simple_model_json() -> String {
+    r#"{
+        "type_definitions": [
+            {
+                "type": "user"
+            },
+            {
+                "type": "document",
+                "relations": {
+                    "viewer": {},
+                    "editor": {},
+                    "owner": {}
+                }
+            }
+        ]
+    }"#
+    .to_string()
+}
+
+/// Helper to create and write a simple authorization model to a store.
+async fn setup_simple_model(storage: &MemoryDataStore, store_id: &str) -> String {
+    let model = StoredAuthorizationModel::new(
+        ulid::Ulid::new().to_string(),
+        store_id,
+        "1.1",
+        simple_model_json(),
+    );
+    let model_id = model.id.clone();
+    storage.write_authorization_model(model).await.unwrap();
+    model_id
 }
 
 /// Test: gRPC server starts
@@ -118,6 +152,9 @@ async fn test_batch_check_rpc_works_correctly() {
         .create_store("test-store", "Test Store")
         .await
         .unwrap();
+
+    // Set up authorization model (required for GraphResolver)
+    setup_simple_model(&storage, "test-store").await;
 
     // Write tuples
     storage
