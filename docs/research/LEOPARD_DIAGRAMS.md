@@ -158,7 +158,7 @@ sequenceDiagram
             API->>PG: Graph Resolution
             PG-->>API: Result
             API->>L1: Insert (sync)
-            API--)V: SET (async)
+            API-->>V: SET (async, fire-and-forget)
             API-->>C: Result (~1-10ms)
         end
     end

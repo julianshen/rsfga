@@ -32,13 +32,13 @@ Leopard is a specialized indexing system that pre-computes the transitive closur
 
 Leopard uses two specialized set types:
 
-```
+```text
 GROUP2GROUP(ancestor) → {descendant groups}
 MEMBER2GROUP(user) → {groups where user is a direct member}
 ```
 
 To check if user U belongs to group G:
-```
+```text
 (MEMBER2GROUP(U) ∩ GROUP2GROUP(G)) ≠ ∅
 ```
 
@@ -46,7 +46,7 @@ This transforms graph traversal into a set intersection operation.
 
 ### 1.3 Three-Layer Architecture (Original Zanzibar)
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                    Leopard Serving System                    │
 │  ┌─────────────────┐  ┌─────────────────────────────────┐   │
@@ -127,7 +127,7 @@ This transforms graph traversal into a set intersection operation.
 
 ### 3.1 System Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              Kubernetes Cluster                              │
 │                                                                              │
@@ -191,7 +191,7 @@ This transforms graph traversal into a set intersection operation.
 
 ### 3.2 Event Flow
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                            Write Path                                        │
 │                                                                              │
@@ -422,6 +422,16 @@ pub struct WorkerConfig {
 
     /// TTL for pre-computed results in Valkey
     pub cache_ttl: Duration,
+
+    /// Types to skip during reverse expansion (unbounded types like 'user', 'file')
+    /// These would cause catastrophic expansion; rely on cache-on-read instead
+    pub unbounded_types: HashSet<String>,
+
+    /// Maximum objects to query per type during reverse expansion
+    pub max_objects_per_type: usize,  // e.g., 10,000
+
+    /// Maximum total affected checks per tuple change
+    pub max_affected_checks: usize,   // e.g., 100,000
 }
 
 impl PrecomputeWorker {
@@ -528,6 +538,12 @@ impl PrecomputeWorker {
     }
 
     /// Reverse expand to find checks affected by a tuple change
+    ///
+    /// IMPORTANT: This can be expensive for relations referenced by types with
+    /// many objects. We mitigate this by:
+    /// 1. Limiting expansion to bounded types (configured via `unbounded_types`)
+    /// 2. Capping the number of affected checks per expansion
+    /// 3. For unbounded relations, we skip pre-computation and rely on cache-on-read
     async fn reverse_expand(
         &self,
         store_id: &str,
@@ -542,12 +558,34 @@ impl PrecomputeWorker {
 
         // Find relations that reference this relation (computed usersets)
         for (type_name, type_def) in &model.types {
+            // Skip unbounded types (e.g., 'user', 'file') - these would cause
+            // catastrophic expansion. Instead, rely on cache-on-read for these.
+            if self.config.unbounded_types.contains(type_name) {
+                tracing::debug!(
+                    type_name = %type_name,
+                    "Skipping pre-computation for unbounded type"
+                );
+                continue;
+            }
+
             for (rel_name, rel_def) in &type_def.relations {
                 if self.relation_references(rel_def, relation) {
-                    // Find all objects of this type
+                    // Query with limit to prevent runaway expansion
                     let objects = self.db_pool
-                        .query_objects_by_type(store_id, type_name)
+                        .query_objects_by_type_limited(
+                            store_id,
+                            type_name,
+                            self.config.max_objects_per_type, // e.g., 10,000
+                        )
                         .await?;
+
+                    if objects.len() >= self.config.max_objects_per_type {
+                        tracing::warn!(
+                            type_name = %type_name,
+                            limit = self.config.max_objects_per_type,
+                            "Type has too many objects, pre-computation truncated"
+                        );
+                    }
 
                     for obj in objects {
                         affected.push(CheckToCompute {
@@ -571,22 +609,43 @@ impl PrecomputeWorker {
             affected.extend(group_affected);
         }
 
+        // Final safety cap
+        if affected.len() > self.config.max_affected_checks {
+            tracing::warn!(
+                count = affected.len(),
+                limit = self.config.max_affected_checks,
+                "Too many affected checks, truncating"
+            );
+            affected.truncate(self.config.max_affected_checks);
+        }
+
         Ok(affected)
     }
 
-    /// Compute a check and store in Valkey
+    /// Compute a check and store in Valkey with retry logic
+    ///
+    /// Uses exponential backoff for transient failures:
+    /// - Resolver errors: No retry (likely permanent - bad model, invalid check)
+    /// - Valkey errors: Retry with backoff (transient network/connection issues)
+    /// - NATS errors: Retry with backoff (transient, but non-critical)
     async fn compute_and_cache(&self, check: CheckToCompute) -> Result<()> {
         let start = Instant::now();
 
-        // Compute the check result
-        let result = self.resolver.check(
+        // Compute the check result (no retry - resolver errors are usually permanent)
+        let result = match self.resolver.check(
             &check.store_id,
             &check.user,
             &check.relation,
             &check.object,
-        ).await?;
+        ).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.metrics.precompute_errors.with_label_values(&["resolver"]).inc();
+                return Err(e);
+            }
+        };
 
-        // Store in Valkey (L2)
+        // Store in Valkey (L2) with retry
         let cache_key = format!(
             "check:{}:{}#{}@{}",
             check.store_id,
@@ -595,30 +654,89 @@ impl PrecomputeWorker {
             check.user,
         );
 
+        let model_id = self.resolver.get_model_id(&check.store_id).await?;
         let cache_value = PrecomputedCheck {
             allowed: result,
             computed_at: Utc::now(),
-            model_id: self.resolver.get_model_id(&check.store_id).await?,
+            model_id,
         };
 
-        self.valkey
-            .set_ex(
-                &cache_key,
-                serde_json::to_string(&cache_value)?,
-                self.config.cache_ttl.as_secs() as usize,
-            )
-            .await?;
+        let serialized = serde_json::to_string(&cache_value)?;
+
+        // Retry Valkey write with exponential backoff
+        let mut attempt = 0;
+        let max_retries = 3;
+        let mut backoff = Duration::from_millis(100);
+
+        loop {
+            match self.valkey
+                .set_ex(
+                    &cache_key,
+                    &serialized,
+                    self.config.cache_ttl.as_secs() as usize,
+                )
+                .await
+            {
+                Ok(_) => break,
+                Err(e) => {
+                    attempt += 1;
+                    if attempt >= max_retries {
+                        self.metrics.precompute_errors.with_label_values(&["valkey"]).inc();
+                        tracing::error!(
+                            cache_key = %cache_key,
+                            attempts = attempt,
+                            error = %e,
+                            "Failed to write to Valkey after retries"
+                        );
+                        return Err(e.into());
+                    }
+                    tracing::warn!(
+                        cache_key = %cache_key,
+                        attempt = attempt,
+                        backoff_ms = backoff.as_millis(),
+                        error = %e,
+                        "Valkey write failed, retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2; // Exponential backoff: 100ms, 200ms, 400ms
+                }
+            }
+        }
 
         // Invalidate hot cache (L1) across all API pods
-        // This ensures pods don't serve stale data from their local cache
-        self.nats
+        // Non-critical: if this fails, L1 will eventually expire via TTL
+        // Retry once, then log and continue
+        let invalidation_result = self.nats
             .publish(
                 format!("rsfga.cache.invalidate.{}", check.store_id),
                 serde_json::to_vec(&CacheInvalidationEvent::Check {
                     cache_key: cache_key.clone(),
                 })?.into(),
             )
-            .await?;
+            .await;
+
+        if let Err(e) = invalidation_result {
+            // Retry once
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if let Err(e2) = self.nats
+                .publish(
+                    format!("rsfga.cache.invalidate.{}", check.store_id),
+                    serde_json::to_vec(&CacheInvalidationEvent::Check {
+                        cache_key: cache_key.clone(),
+                    })?.into(),
+                )
+                .await
+            {
+                // Log but don't fail - L1 will expire via TTL
+                self.metrics.precompute_errors.with_label_values(&["nats_invalidation"]).inc();
+                tracing::warn!(
+                    cache_key = %cache_key,
+                    error = %e2,
+                    original_error = %e,
+                    "Failed to broadcast L1 invalidation (non-fatal)"
+                );
+            }
+        }
 
         // Update metrics
         self.metrics.precompute_duration.observe(start.elapsed().as_secs_f64());
@@ -628,35 +746,28 @@ impl PrecomputeWorker {
     }
 
     /// Handle model change - invalidate all cached checks for the store
+    ///
+    /// NOTE: We intentionally avoid SCAN/DEL operations on Valkey as they can
+    /// block the server for extended periods on large keystores. Instead, we:
+    /// 1. Update the model_version key - readers check this and reject stale entries
+    /// 2. Broadcast L1 hot cache invalidation via NATS
+    /// 3. Let stale L2 entries naturally expire via TTL (1 hour)
+    ///
+    /// This "lazy invalidation" approach trades slightly higher memory usage
+    /// for significantly better availability during model changes.
     async fn process_model_events(&self, messages: Vec<Message>) -> Result<()> {
         for msg in &messages {
             let event: ModelChangeEvent = serde_json::from_slice(&msg.payload)?;
 
-            // Invalidate all Valkey entries for this store
-            // Use SCAN to find and delete matching keys
-            let pattern = format!("check:{}:*", event.store_id);
-            let mut cursor = 0u64;
-            loop {
-                let (next_cursor, keys): (u64, Vec<String>) = valkey::cmd("SCAN")
-                    .arg(cursor)
-                    .arg("MATCH")
-                    .arg(&pattern)
-                    .arg("COUNT")
-                    .arg(1000)
-                    .query_async(&mut self.valkey.clone())
-                    .await?;
-
-                if !keys.is_empty() {
-                    self.valkey.del::<_, ()>(&keys).await?;
-                }
-
-                cursor = next_cursor;
-                if cursor == 0 {
-                    break;
-                }
-            }
+            // Update model version in Valkey - readers will reject entries
+            // with mismatched model_id (see CachedCheckResolver::check)
+            let model_key = format!("model_version:{}", event.store_id);
+            self.valkey
+                .set::<_, _, ()>(&model_key, &event.new_model_id)
+                .await?;
 
             // Broadcast hot cache invalidation to all API pods
+            // L1 caches are small enough that full invalidation is fast
             self.nats
                 .publish(
                     format!("rsfga.cache.invalidate.{}", event.store_id),
@@ -670,7 +781,7 @@ impl PrecomputeWorker {
                 store_id = %event.store_id,
                 old_model = ?event.old_model_id,
                 new_model = %event.new_model_id,
-                "Invalidated cache for model change"
+                "Updated model version, stale cache entries will be rejected on read"
             );
         }
 
@@ -913,7 +1024,9 @@ impl CachedCheckResolver {
         // │ - ~100K entries, 60s TTL, 10s TTI                           │
         // └─────────────────────────────────────────────────────────────┘
         if let Some(cached) = self.hot_cache.get(&cache_key).await {
-            // Verify model hasn't changed (hot cache doesn't subscribe to NATS)
+            // Verify model hasn't changed (defense-in-depth: hot cache also
+            // subscribes to NATS invalidation via start_invalidation_listener(),
+            // but model version check provides additional consistency guarantee)
             let current_model = self.resolver.get_model_id(store_id).await?;
             if cached.model_id == current_model {
                 self.metrics.cache_hits.with_label_values(&["l1_hot"]).inc();
@@ -1092,7 +1205,7 @@ pub enum CacheInvalidationEvent {
 
 ### 4.5 Cache Tier Summary
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           Cache Tier Architecture                            │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -1142,13 +1255,223 @@ pub enum CacheInvalidationEvent {
 3. TinyLFU automatically evicts cold data, retains hot data
 4. On tuple change → workers update L2 → broadcast invalidate to L1
 
+### 4.6 Write Amplification Analysis
+
+Write amplification is a critical concern for pre-computation systems. A single tuple write can trigger re-computation of many cached check results. This section quantifies the amplification factors and mitigation strategies.
+
+#### Amplification Scenarios
+
+**Scenario 1: Direct Assignment (Low Amplification)**
+```text
+Tuple: user:alice → viewer → document:readme
+
+Affected checks: 1
+  - (user:alice, viewer, document:readme)
+
+Amplification factor: 1x
+```
+
+**Scenario 2: Group Membership (Moderate Amplification)**
+```text
+Tuple: user:alice → member → group:engineering
+
+If group:engineering grants access to 100 documents:
+Affected checks: 100
+  - (user:alice, viewer, document:1)
+  - (user:alice, viewer, document:2)
+  - ...
+
+Amplification factor: 100x
+```
+
+**Scenario 3: Nested Group Hierarchy (High Amplification)**
+```text
+Tuple: user:alice → member → group:engineering
+
+Group hierarchy:
+  group:engineering ∈ group:product ∈ group:company
+
+If each group grants access to objects:
+  - group:engineering → 50 documents
+  - group:product → 200 folders
+  - group:company → 500 resources
+
+Affected checks: 750
+Amplification factor: 750x
+```
+
+**Scenario 4: TTU with Popular Parent (Very High Amplification)**
+```text
+Tuple: user:alice → owner → folder:root
+
+If folder:root contains 10,000 documents with:
+  type document { viewer: [user] or owner from parent }
+
+Affected checks: 10,000
+Amplification factor: 10,000x
+```
+
+#### Quantified Bounds
+
+| Scenario | Typical Amplification | Max Bounded |
+|----------|----------------------|-------------|
+| Direct assignment | 1x | 1x |
+| Flat group membership | 10-100x | max_objects_per_type |
+| Nested groups (depth 3) | 100-1,000x | depth × max_objects_per_type |
+| TTU inheritance | 1,000-100,000x | max_affected_checks |
+| Unbounded type (skipped) | ∞ (not computed) | 0 (rely on cache-on-read) |
+
+#### Mitigation Summary
+
+1. **Unbounded type exclusion**: Types like `user`, `file` with millions of instances are skipped entirely; rely on cache-on-read instead of pre-computation.
+
+2. **Per-type limits**: `max_objects_per_type` (default: 10,000) caps how many objects we query during reverse expansion.
+
+3. **Total check limit**: `max_affected_checks` (default: 100,000) provides a hard cap on pre-computation work per tuple change.
+
+4. **Backpressure**: NATS JetStream with `max_pending` prevents workers from being overwhelmed; HPA scales workers based on queue depth.
+
+5. **Selective pre-computation**: Hot paths benefit from pre-computation; cold paths fall back to cache-on-read with acceptable latency.
+
+#### Cost-Benefit Analysis
+
+```text
+Pre-computation cost:  O(amplification × check_resolution_time)
+Pre-computation benefit: O(cache_hit_rate × query_volume × latency_savings)
+
+Break-even when:
+  cache_hit_rate × query_volume × (l3_latency - l2_latency) >
+  amplification × check_resolution_time × write_frequency
+```
+
+For most workloads (read-heavy, moderate write rate), pre-computation is beneficial. For write-heavy workloads with high amplification, consider:
+- Disabling pre-computation for specific types
+- Increasing TTL to reduce re-computation frequency
+- Using cache-on-read only for high-amplification relations
+
+### 4.7 Consistency Model
+
+This section clarifies the consistency guarantees provided by the pre-computation architecture.
+
+#### Consistency Level: Eventual Consistency
+
+The system provides **eventual consistency** (per A9: 1-10ms staleness acceptable). This means:
+- Reads may return stale results for a brief window after writes
+- All caches eventually converge to the correct state
+- No read-your-writes guarantee at the cache level
+
+#### Read-Your-Writes Guarantee
+
+**The system does NOT provide read-your-writes at the cache layer.** After writing a tuple, immediate reads may return stale cached results until:
+1. The pre-computation worker processes the event (~10-100ms)
+2. L1 hot cache receives invalidation via NATS (~1-10ms)
+3. L2 Valkey entry is updated or expires
+
+**Workaround for strong consistency needs:**
+
+```rust
+impl CachedCheckResolver {
+    /// Check with read-your-writes guarantee (bypasses cache)
+    pub async fn check_consistent(
+        &self,
+        store_id: &str,
+        user: &str,
+        relation: &str,
+        object: &str,
+    ) -> Result<bool> {
+        // Skip L1 and L2, go directly to L3 (source of truth)
+        self.resolver.check(store_id, user, relation, object).await
+    }
+
+    /// Write tuples with optional consistency token
+    pub async fn write_tuples_with_token(
+        &self,
+        store_id: &str,
+        writes: Vec<TupleWrite>,
+        deletes: Vec<TupleKey>,
+    ) -> Result<ConsistencyToken> {
+        self.write_tuples(store_id, writes, deletes).await?;
+
+        // Return token that can be used to ensure subsequent reads
+        // see at least this write
+        Ok(ConsistencyToken {
+            event_id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+        })
+    }
+
+    /// Check with consistency token (waits for pre-computation)
+    pub async fn check_after(
+        &self,
+        store_id: &str,
+        user: &str,
+        relation: &str,
+        object: &str,
+        token: &ConsistencyToken,
+    ) -> Result<bool> {
+        // Wait until pre-computation has caught up to this token
+        self.wait_for_watermark(store_id, &token.event_id).await?;
+
+        // Now safe to read from cache
+        self.check(store_id, user, relation, object).await
+    }
+}
+```
+
+#### Model Change Atomicity
+
+Model changes are **atomic at the store level**:
+
+1. New model is written to PostgreSQL
+2. `ModelChangeEvent` is published to NATS
+3. Worker updates `model_version:{store_id}` in Valkey
+4. Worker broadcasts `CacheInvalidationEvent::Store` via NATS
+5. All API pods invalidate L1 entries for the store
+
+**Atomicity guarantee**: All cached entries for a store are invalidated together. There is no window where some entries use the old model while others use the new model (within a single store).
+
+**Cross-store consistency**: Not guaranteed. Each store's model version is tracked independently.
+
+#### Staleness Windows
+
+| Cache Tier | Staleness Window | Mechanism |
+|------------|------------------|-----------|
+| L1 Hot Cache | 1-10ms | NATS invalidation broadcast |
+| L2 Valkey | 10-100ms | Worker pre-computation + version check |
+| L3 PostgreSQL | 0ms | Source of truth |
+
+#### Failure Mode Consistency
+
+| Failure | Consistency Impact | Recovery |
+|---------|-------------------|----------|
+| Worker crash | Stale cache until TTL or restart | NATS redelivers unacked events |
+| NATS partition | L1 may serve stale data | Falls back to L2/L3 on version mismatch |
+| Valkey failure | All reads go to L3 (consistent) | Graceful degradation |
+| PostgreSQL failure | System unavailable | No consistency violation |
+
+#### Tuning for Stronger Consistency
+
+For applications requiring stronger guarantees:
+
+```yaml
+# Shorter TTLs reduce staleness window
+hot_cache:
+  ttl: 10s    # Instead of 60s
+  tti: 2s     # Instead of 10s
+
+valkey:
+  cache_ttl: 300s  # Instead of 3600s
+
+# Or use check_consistent() for critical paths
+```
+
 ---
 
 ## 5. Valkey Cache Schema
 
 ### 5.1 Key Patterns
 
-```
+```text
 # Pre-computed check results
 check:{store_id}:{object}#{relation}@{user}
   → JSON: { "allowed": bool, "computed_at": timestamp, "model_id": string }
