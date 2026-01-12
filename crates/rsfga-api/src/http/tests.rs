@@ -9,7 +9,7 @@ use axum::{
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tower::ServiceExt; // for oneshot
 
-use rsfga_storage::{DataStore, MemoryDataStore};
+use rsfga_storage::{DataStore, MemoryDataStore, StoredAuthorizationModel};
 
 use super::routes::{
     create_router, create_router_with_body_limit, create_router_with_observability,
@@ -1095,4 +1095,225 @@ async fn test_write_authorization_model_with_empty_type_definitions_returns_400(
         .as_str()
         .unwrap()
         .contains("type_definitions cannot be empty"));
+}
+
+/// Test: GET /stores/{store_id}/authorization-models with invalid continuation_token returns 400
+#[tokio::test]
+async fn test_list_authorization_models_with_invalid_continuation_token_returns_400() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/stores/test-store/authorization-models?continuation_token=invalid")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["message"]
+        .as_str()
+        .unwrap()
+        .contains("invalid continuation_token"));
+}
+
+/// Test: GET /stores/{store_id}/authorization-models pagination with continuation_token works
+#[tokio::test]
+async fn test_list_authorization_models_pagination_works() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Create 3 models
+    for i in 0..3 {
+        let model = StoredAuthorizationModel::new(
+            format!("model-{}", i),
+            "test-store",
+            "1.1",
+            format!(r#"{{"type_definitions": [{{"type": "type{}"}}]}}"#, i),
+        );
+        storage.write_authorization_model(model).await.unwrap();
+    }
+
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    // First page (page_size=2)
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/stores/test-store/authorization-models?page_size=2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let models = json["authorization_models"].as_array().unwrap();
+    assert_eq!(models.len(), 2);
+    let token = json["continuation_token"].as_str().unwrap();
+
+    // Second page using continuation_token
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/stores/test-store/authorization-models?page_size=2&continuation_token={}",
+                    token
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let models = json["authorization_models"].as_array().unwrap();
+    assert_eq!(models.len(), 1); // Only 1 remaining model
+    assert!(json["continuation_token"].is_null()); // No more pages
+}
+
+/// Test: POST /stores/{store_id}/authorization-models rejects oversized models
+#[tokio::test]
+async fn test_write_authorization_model_rejects_oversized_model() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(storage);
+    // Use a higher body limit (2MB) so the request passes Axum's middleware
+    // and our handler's validation logic can reject it with a proper error message
+    let app = create_router_with_body_limit(state, 2 * 1024 * 1024);
+
+    // Create a model larger than 1MB (our application limit)
+    let large_type = "x".repeat(1024 * 1024); // 1MB string
+    let body_json = serde_json::json!({
+        "schema_version": "1.1",
+        "type_definitions": [{"type": large_type}]
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/authorization-models")
+                .header("content-type", "application/json")
+                .body(Body::from(body_json.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["message"]
+        .as_str()
+        .unwrap()
+        .contains("exceeds maximum size"));
+}
+
+/// Test: GET /stores/{store_id}/authorization-models returns latest model first
+///
+/// Verifies that when listing authorization models, the most recently created
+/// model appears first. This is the expected way to "get the latest model" in
+/// the OpenFGA API - by listing models and taking the first one.
+#[tokio::test]
+async fn test_list_authorization_models_returns_latest_first() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Create first model
+    let model_json1 = serde_json::json!({
+        "schema_version": "1.1",
+        "type_definitions": [{"type": "document"}]
+    });
+    let model1 =
+        StoredAuthorizationModel::new("model-001", "test-store", "1.1", model_json1.to_string());
+    storage.write_authorization_model(model1).await.unwrap();
+
+    // Small delay to ensure different timestamps
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    // Create second (more recent) model
+    let model_json2 = serde_json::json!({
+        "schema_version": "1.1",
+        "type_definitions": [{"type": "user"}]
+    });
+    let model2 =
+        StoredAuthorizationModel::new("model-002", "test-store", "1.1", model_json2.to_string());
+    storage.write_authorization_model(model2).await.unwrap();
+
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    // List models
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/stores/test-store/authorization-models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let models = json["authorization_models"].as_array().unwrap();
+    assert_eq!(models.len(), 2);
+
+    // Most recent model (model-002) should be first
+    let first_model_id = models[0]["id"].as_str().unwrap();
+    let second_model_id = models[1]["id"].as_str().unwrap();
+
+    assert_eq!(first_model_id, "model-002", "Latest model should be first");
+    assert_eq!(second_model_id, "model-001", "Older model should be second");
 }

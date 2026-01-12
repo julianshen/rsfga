@@ -28,6 +28,45 @@ pub fn validate_store_id(store_id: &str) -> StorageResult<()> {
     Ok(())
 }
 
+/// Parse a continuation token into an offset value.
+///
+/// # Arguments
+/// * `token` - Optional continuation token string (should be a numeric offset)
+///
+/// # Returns
+/// * `Ok(0)` if token is None (start from beginning)
+/// * `Ok(offset)` if token is a valid non-negative integer
+/// * `Err(StorageError::InvalidInput)` if token is present but invalid
+///
+/// # Errors
+/// Returns `StorageError::InvalidInput` if the token is not a valid non-negative integer.
+pub fn parse_continuation_token(token: &Option<String>) -> StorageResult<i64> {
+    match token {
+        None => Ok(0),
+        Some(t) if t.is_empty() => Ok(0),
+        Some(t) => t
+            .parse::<i64>()
+            .map_err(|_| StorageError::InvalidInput {
+                message: format!(
+                    "invalid continuation_token: '{}' (must be a non-negative integer)",
+                    t
+                ),
+            })
+            .and_then(|v| {
+                if v < 0 {
+                    Err(StorageError::InvalidInput {
+                        message: format!(
+                            "invalid continuation_token: '{}' (must be non-negative)",
+                            t
+                        ),
+                    })
+                } else {
+                    Ok(v)
+                }
+            }),
+    }
+}
+
 /// Validate a store name.
 ///
 /// # Errors

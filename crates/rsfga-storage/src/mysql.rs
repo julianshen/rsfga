@@ -16,8 +16,9 @@ use tracing::{debug, instrument};
 
 use crate::error::{StorageError, StorageResult};
 use crate::traits::{
-    parse_user_filter, validate_store_id, validate_store_name, validate_tuple, DataStore,
-    PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel, StoredTuple, TupleFilter,
+    parse_continuation_token, parse_user_filter, validate_store_id, validate_store_name,
+    validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel,
+    StoredTuple, TupleFilter,
 };
 
 /// MySQL configuration options.
@@ -181,7 +182,31 @@ impl MySQLDataStore {
         )
         .await?;
 
-        // Create indexes for common query patterns
+        // Index Strategy for Tuple Queries
+        //
+        // These indexes are designed to optimize the most common authorization query patterns:
+        //
+        // idx_tuples_store: Base index for store-scoped queries. Used when listing all tuples
+        // in a store or as a fallback when more specific indexes don't apply.
+        //
+        // idx_tuples_object: Optimizes "who has access to this object?" queries.
+        // Common in Check operations when resolving direct object relationships.
+        // Example: SELECT * FROM tuples WHERE store_id=? AND object_type=? AND object_id=?
+        //
+        // idx_tuples_user: Optimizes "what can this user access?" queries.
+        // Used in ListObjects and reverse lookup operations.
+        // Example: SELECT * FROM tuples WHERE store_id=? AND user_type=? AND user_id=?
+        //
+        // idx_tuples_relation: Optimizes queries filtering by relation on a specific object.
+        // Critical for Check operations resolving specific relations.
+        // Example: SELECT * FROM tuples WHERE store_id=? AND object_type=? AND object_id=? AND relation=?
+        //
+        // idx_tuples_store_relation: Optimizes queries that filter by relation across all objects.
+        // Used for analytics and bulk operations on specific relation types.
+        // Example: SELECT * FROM tuples WHERE store_id=? AND relation=?
+        //
+        // Note: MySQL doesn't support partial indexes, so no condition_name index is created here.
+        // Conditional tuple queries may be slower on MySQL compared to PostgreSQL.
         self.create_index_if_not_exists("idx_tuples_store", "tuples", "(store_id)", false)
             .await?;
 
@@ -236,7 +261,19 @@ impl MySQLDataStore {
             message: format!("Failed to create authorization_models table: {}", e),
         })?;
 
-        // Create composite index for listing models by store (newest first, deterministic)
+        // Index Strategy for Authorization Models
+        //
+        // idx_authorization_models_store: Composite index for efficient model listing.
+        // Ordering: (store_id, created_at, id) ensures:
+        //   1. Store-scoped queries are efficient (leading store_id column)
+        //   2. Results are returned in timestamp order (created_at)
+        //   3. Deterministic ordering when timestamps are identical (id tiebreaker)
+        //   4. Efficient LIMIT/OFFSET pagination as rows are indexed in order
+        //
+        // Note: MySQL orders ASC by default; ORDER BY ... DESC in queries will use
+        // a backwards index scan which is still efficient.
+        //
+        // Used by: list_authorization_models, get_latest_authorization_model
         self.create_index_if_not_exists(
             "idx_authorization_models_store",
             "authorization_models",
@@ -549,11 +586,7 @@ impl DataStore for MySQLDataStore {
         pagination: &PaginationOptions,
     ) -> StorageResult<PaginatedResult<Store>> {
         let page_size = pagination.page_size.unwrap_or(100) as i64;
-        let offset: i64 = pagination
-            .continuation_token
-            .as_ref()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or(0);
+        let offset = parse_continuation_token(&pagination.continuation_token)?;
 
         let rows = sqlx::query(
             r#"
@@ -866,11 +899,7 @@ impl DataStore for MySQLDataStore {
         };
 
         let page_size = pagination.page_size.unwrap_or(100) as i64;
-        let offset: i64 = pagination
-            .continuation_token
-            .as_ref()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or(0);
+        let offset = parse_continuation_token(&pagination.continuation_token)?;
 
         // Use sqlx::QueryBuilder for safe dynamic query construction
         let mut builder: sqlx::QueryBuilder<sqlx::MySql> = sqlx::QueryBuilder::new(
@@ -1173,11 +1202,7 @@ impl DataStore for MySQLDataStore {
         }
 
         let page_size = pagination.page_size.unwrap_or(100) as i64;
-        let offset: i64 = pagination
-            .continuation_token
-            .as_ref()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or(0);
+        let offset = parse_continuation_token(&pagination.continuation_token)?;
 
         // Fetch models with pagination (newest first, deterministic ordering)
         let rows = sqlx::query(

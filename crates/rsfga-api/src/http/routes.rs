@@ -406,11 +406,19 @@ pub struct ListAuthorizationModelsQuery {
     pub continuation_token: Option<String>,
 }
 
+/// Maximum size for authorization model JSON (1MB, similar to OpenFGA's ~256KB but more lenient).
+/// This is validated at the HTTP layer before storage to prevent oversized payloads.
+const MAX_AUTHORIZATION_MODEL_SIZE: usize = 1024 * 1024; // 1MB
+
 async fn write_authorization_model<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
     Json(body): Json<WriteAuthorizationModelRequest>,
 ) -> ApiResult<impl IntoResponse> {
+    // Validation strategy: Validate at HTTP layer for immediate feedback.
+    // Domain-level validation (schema version, type definition semantics) is deferred
+    // to allow storage of models that may be validated differently across versions.
+
     // Validate type_definitions is not empty (OpenFGA requirement)
     if body.type_definitions.is_empty() {
         return Err(ApiError::invalid_input("type_definitions cannot be empty"));
@@ -430,12 +438,17 @@ async fn write_authorization_model<S: DataStore>(
         }
     }
 
-    let model = StoredAuthorizationModel::new(
-        &model_id,
-        &store_id,
-        &body.schema_version,
-        model_json.to_string(),
-    );
+    // Validate model size before storage
+    let model_json_str = model_json.to_string();
+    if model_json_str.len() > MAX_AUTHORIZATION_MODEL_SIZE {
+        return Err(ApiError::invalid_input(format!(
+            "authorization model exceeds maximum size of {} bytes",
+            MAX_AUTHORIZATION_MODEL_SIZE
+        )));
+    }
+
+    let model =
+        StoredAuthorizationModel::new(&model_id, &store_id, &body.schema_version, model_json_str);
 
     state.storage.write_authorization_model(model).await?;
 
