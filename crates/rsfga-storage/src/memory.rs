@@ -37,6 +37,16 @@ impl MemoryDataStore {
     }
 }
 
+/// Sorts authorization models newest-first (created_at DESC, id DESC).
+/// Matches the ordering contract in the DataStore trait and DB backends.
+fn sort_models_newest_first(models: &mut [StoredAuthorizationModel]) {
+    models.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+}
+
 #[async_trait]
 impl DataStore for MemoryDataStore {
     async fn create_store(&self, id: &str, name: &str) -> StorageResult<Store> {
@@ -414,12 +424,7 @@ impl DataStore for MemoryDataStore {
             .map(|models| models.iter().cloned().collect())
             .unwrap_or_default();
 
-        // Sort by (created_at DESC, id DESC) to match trait contract and DB behavior
-        models.sort_by(|a, b| {
-            b.created_at
-                .cmp(&a.created_at)
-                .then_with(|| b.id.cmp(&a.id))
-        });
+        sort_models_newest_first(&mut models);
 
         Ok(models)
     }
@@ -446,12 +451,7 @@ impl DataStore for MemoryDataStore {
             .map(|models| models.iter().cloned().collect())
             .unwrap_or_default();
 
-        // Sort by (created_at DESC, id DESC) to match trait contract and DB behavior
-        all_models.sort_by(|a, b| {
-            b.created_at
-                .cmp(&a.created_at)
-                .then_with(|| b.id.cmp(&a.id))
-        });
+        sort_models_newest_first(&mut all_models);
 
         let page_size = pagination.page_size.unwrap_or(100) as usize;
         let offset: usize = pagination
@@ -506,12 +506,8 @@ impl DataStore for MemoryDataStore {
             });
         }
 
-        // Sort by (created_at DESC, id DESC) and return the first (newest)
-        models.sort_by(|a, b| {
-            b.created_at
-                .cmp(&a.created_at)
-                .then_with(|| b.id.cmp(&a.id))
-        });
+        // Sort and return the first (newest)
+        sort_models_newest_first(&mut models);
 
         Ok(models.into_iter().next().unwrap())
     }
