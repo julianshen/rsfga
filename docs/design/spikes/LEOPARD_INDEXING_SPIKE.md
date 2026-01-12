@@ -9,15 +9,16 @@
 
 ## Executive Summary
 
-Google's **Leopard** indexing system is a specialized pre-computation engine within Zanzibar that flattens group hierarchies into an in-memory transitive closure for sub-millisecond authorization lookups. After evaluating Leopard's architecture against RSFGA's Phase 2 requirements, **Leopard is partially suitable** with significant adaptations required.
+Google's **Leopard** indexing system is a specialized pre-computation engine within Zanzibar that flattens group hierarchies into a transitive closure for sub-millisecond authorization lookups. After evaluating Leopard's architecture against RSFGA's Phase 2 requirements in a **cloud-native deployment context**, **Leopard's architecture is well-suited** with adaptations for our technology stack.
 
 ### Recommendation
 
-**Adopt Leopard's core principles with a modified architecture**:
-1. Use Leopard's two-layer approach (offline index + online incremental)
-2. Simplify data structures (skip lists → bloom filters + sorted vectors)
-3. Scope narrowly to group membership resolution (not general relations)
-4. Consider hybrid approach with existing cache layer
+**Adopt Leopard's full architecture adapted for cloud-native deployment**:
+1. Use NATS JetStream for change event streaming (replaces Zanzibar's Watch API)
+2. Store pre-computed results in Valkey (replaces in-memory skip lists)
+3. Deploy pre-computation workers as separate Kubernetes pods (horizontal scaling)
+4. Extend beyond group membership to cover all relation types
+5. Implement incremental updates with periodic full rebuilds for consistency
 
 ---
 
@@ -43,11 +44,11 @@ To check if user U belongs to group G:
 
 This transforms graph traversal into a set intersection operation.
 
-### 1.3 Three-Layer Architecture
+### 1.3 Three-Layer Architecture (Original Zanzibar)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Leopard Serving System                     │
+│                    Leopard Serving System                    │
 │  ┌─────────────────┐  ┌─────────────────────────────────┐   │
 │  │   Skip Lists    │  │      Set Intersection Engine     │   │
 │  │  (Ordered IDs)  │  │  O(min(|A|,|B|)) seeks          │   │
@@ -83,474 +84,1108 @@ This transforms graph traversal into a set intersection operation.
 
 ---
 
-## 2. RSFGA Phase 2 Requirements
+## 2. RSFGA Phase 2 Requirements (Updated)
 
-### 2.1 Current Phase 2 Design
+### 2.1 Deployment Environment
 
-From `docs/design/ARCHITECTURE.md`:
+**Cloud-Native Architecture**:
+- **Production**: Kubernetes (EKS, GKE, AKS, or self-hosted)
+- **Local Development**: Docker Compose
+- **No single-node constraint**: Horizontal scaling is expected
 
-```
-Write Operation
-    ↓
-Change Classification
-    ↓
-Impact Analysis (Reverse Expansion)
-    ↓
-Parallel Recomputation
-    ↓
-Result Distribution (Valkey)
-```
+### 2.2 Technology Stack
 
-### 2.2 Key Requirements
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| Event Streaming | **NATS JetStream** | Tuple/model change events |
+| Pre-computed Cache | **Valkey** | Distributed cache for check results |
+| Primary Storage | PostgreSQL/MySQL | Authoritative tuple storage |
+| Container Orchestration | Kubernetes | Production deployment |
+| Local Development | Docker Compose | Developer experience |
 
-| Requirement | Current Phase 2 | Leopard |
-|-------------|-----------------|---------|
-| Check latency target | <1ms | <150μs ✓ |
-| Scope | All relations | Group membership only |
-| Storage | Valkey/Redis | In-memory |
-| Update propagation | Async invalidation | Incremental index |
-| Consistency | Eventual (acceptable) | Snapshot + incremental |
+### 2.3 Key Requirements
 
-### 2.3 RSFGA-Specific Constraints
+| Requirement | Target | Notes |
+|-------------|--------|-------|
+| Check latency (cache hit) | <1ms | Valkey lookup |
+| Check latency (cache miss) | <10ms | Full graph resolution |
+| Pre-computation lag | <100ms | Event to cache update |
+| Horizontal scaling | Yes | Workers scale independently |
+| Consistency model | Eventual | Acceptable per A9 |
 
-1. **C12**: Cache memory budget <500MB per node
-2. **C7**: Memory usage <2x tuple storage size
-3. **A9**: Users can tolerate 1-10ms cache staleness window
-4. **C4**: Single-region deployment must work
+### 2.4 Updated Constraints
 
----
-
-## 3. Suitability Analysis
-
-### 3.1 Where Leopard Fits Well
-
-#### ✅ Group Membership Resolution
-
-Leopard excels at the exact problem RSFGA faces with deeply nested groups:
-
-```
-# Example: Is user:alice in group:company#member?
-# Without Leopard: 5+ database queries for each hop
-user:alice → team:engineering#member → dept:product#member → org:tech#member → company#member
-
-# With Leopard: 2 set lookups + 1 intersection
-MEMBER2GROUP(user:alice) = {team:engineering, group:devs}
-GROUP2GROUP(group:company) = {org:tech, dept:product, team:engineering, ...}
-Intersection: team:engineering → TRUE
-```
-
-#### ✅ High Read/Low Write Ratio
-
-RSFGA assumes infrequent model changes (A6: <1 per hour). Leopard's offline rebuild + incremental layer suits this pattern.
-
-#### ✅ Deterministic Set Operations
-
-Leopard's set-theoretic approach eliminates graph traversal nondeterminism and enables efficient caching.
-
-### 3.2 Where Leopard Doesn't Fit
-
-#### ❌ Write Amplification at Scale
-
-**Critical Concern**: A single Zanzibar tuple addition can generate tens of thousands of Leopard tuple events.
-
-```
-# Adding user:bob to group:company
-# Leopard must update:
-# - MEMBER2GROUP(user:bob) = {group:company}
-# - For every object granting access via company membership:
-#   - Every computed relation referencing company
-#   - Every TTU relation through company
-
-# At Google scale: Acceptable (dedicated infrastructure)
-# At RSFGA scale: May exceed memory constraints (C12)
-```
-
-#### ❌ General Relation Resolution
-
-Leopard only handles group-to-group and member-to-group relationships. It cannot pre-compute:
-
-- **TupleToUserset (TTU)**: `viewer: editor from parent`
-- **Computed usersets**: `viewer: editor` (unless editor is a group)
-- **Exclusion**: `viewer: all but banned`
-- **Intersection**: `can_view: viewer and active`
-
-#### ❌ Memory Requirements
-
-Leopard keeps the entire transitive closure in memory. For RSFGA:
-
-```
-# Estimate for 1M tuples with 10% group membership
-# Groups: 100K group relationships
-# Transitive closure expansion: ~10x (conservative)
-# Storage per tuple: ~100 bytes
-# Total: 100K × 10 × 100 = 100MB (groups only)
-
-# With full relation coverage: Exceeds C12 (500MB limit)
-```
-
-#### ❌ Offline Index Rebuild
-
-Leopard's offline index builder requires periodic full rebuilds. This:
-- Creates staleness windows during rebuild
-- Requires dedicated build infrastructure
-- Doesn't fit single-node deployment (C4)
+| Constraint | Value | Rationale |
+|------------|-------|-----------|
+| ~~C4~~ | ~~Removed~~ | Cloud-native, not single-node |
+| C12 | <500MB per API pod | Workers can use more |
+| A9 | 1-10ms staleness OK | Eventual consistency acceptable |
 
 ---
 
-## 4. Alternative Approaches
+## 3. Proposed Architecture
 
-### 4.1 Hybrid Leopard-Lite
+### 3.1 System Overview
 
-**Approach**: Implement Leopard principles for group membership only, use existing cache for other relations.
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Kubernetes Cluster                              │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                         API Pods (Stateless)                          │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                   │   │
+│  │  │  rsfga-api  │  │  rsfga-api  │  │  rsfga-api  │  ... (HPA)       │   │
+│  │  │  :8080      │  │  :8080      │  │  :8080      │                   │   │
+│  │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘                   │   │
+│  │         │                │                │                           │   │
+│  └─────────┼────────────────┼────────────────┼───────────────────────────┘   │
+│            │                │                │                               │
+│            ▼                ▼                ▼                               │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                         Valkey Cluster                                │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                   │   │
+│  │  │   Primary   │──│   Replica   │──│   Replica   │                   │   │
+│  │  │   :6379     │  │   :6379     │  │   :6379     │                   │   │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘                   │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                    ▲                                         │
+│                                    │ Write pre-computed results              │
+│                                    │                                         │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                    Pre-computation Workers                            │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                   │   │
+│  │  │  worker-0   │  │  worker-1   │  │  worker-2   │  ... (HPA)       │   │
+│  │  │  (store A)  │  │  (store B)  │  │  (store C)  │                   │   │
+│  │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘                   │   │
+│  │         │                │                │                           │   │
+│  └─────────┼────────────────┼────────────────┼───────────────────────────┘   │
+│            │ Subscribe      │                │                               │
+│            ▼                ▼                ▼                               │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                       NATS JetStream                                  │   │
+│  │  ┌─────────────────────────────────────────────────────────────────┐ │   │
+│  │  │  Streams:                                                        │ │   │
+│  │  │  • rsfga.tuples.{store_id}     - Tuple change events            │ │   │
+│  │  │  • rsfga.models.{store_id}     - Model change events            │ │   │
+│  │  │  • rsfga.precompute.commands   - Rebuild commands               │ │   │
+│  │  └─────────────────────────────────────────────────────────────────┘ │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│            ▲                                                                 │
+│            │ Publish events                                                  │
+│            │                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                         API Pods (Write Path)                         │   │
+│  │  Write Tuple → PostgreSQL → Publish Event → NATS                     │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                         PostgreSQL                                    │   │
+│  │  ┌─────────────┐  ┌─────────────┐                                    │   │
+│  │  │   Primary   │──│   Replica   │                                    │   │
+│  │  │   :5432     │  │   :5432     │                                    │   │
+│  │  └─────────────┘  └─────────────┘                                    │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 3.2 Event Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            Write Path                                        │
+│                                                                              │
+│   Client                API Pod              PostgreSQL         NATS         │
+│     │                     │                      │               │           │
+│     │──WriteTuples()────▶│                      │               │           │
+│     │                     │──INSERT tuples─────▶│               │           │
+│     │                     │◀─────────OK─────────│               │           │
+│     │                     │                      │               │           │
+│     │                     │──Publish TupleChangeEvent──────────▶│           │
+│     │                     │◀──────────ACK───────────────────────│           │
+│     │◀──────OK───────────│                      │               │           │
+│     │                     │                      │               │           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Pre-computation Path                                 │
+│                                                                              │
+│   NATS              Worker                PostgreSQL         Valkey          │
+│     │                 │                      │                 │             │
+│     │──TupleChangeEvent─▶│                   │                 │             │
+│     │                 │                      │                 │             │
+│     │                 │──Analyze Impact─────▶│                 │             │
+│     │                 │  (reverse expansion) │                 │             │
+│     │                 │◀─Affected checks─────│                 │             │
+│     │                 │                      │                 │             │
+│     │                 │──Recompute checks───▶│                 │             │
+│     │                 │◀─Check results───────│                 │             │
+│     │                 │                      │                 │             │
+│     │                 │──Store pre-computed─────────────────▶│             │
+│     │                 │◀─────────OK──────────────────────────│             │
+│     │                 │                      │                 │             │
+│     │◀────ACK────────│                      │                 │             │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            Read Path                                         │
+│                                                                              │
+│   Client              API Pod               Valkey           PostgreSQL      │
+│     │                   │                     │                  │           │
+│     │──Check()────────▶│                     │                  │           │
+│     │                   │──GET cache key────▶│                  │           │
+│     │                   │◀──HIT (result)─────│                  │           │
+│     │◀──────Result─────│                     │                  │           │
+│     │                   │                     │                  │           │
+│     │       OR (cache miss):                 │                  │           │
+│     │                   │──GET cache key────▶│                  │           │
+│     │                   │◀──MISS─────────────│                  │           │
+│     │                   │──Graph resolve────────────────────▶│           │
+│     │                   │◀──Result──────────────────────────│           │
+│     │                   │──SET cache (async)─▶│                  │           │
+│     │◀──────Result─────│                     │                  │           │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 3.3 NATS Event Schema
 
 ```rust
-pub struct LeopardLite {
-    // Group transitive closure (Leopard-style)
-    group_to_groups: DashMap<GroupId, Arc<RoaringBitmap>>,
-    member_to_groups: DashMap<UserId, Arc<RoaringBitmap>>,
+/// Events published when tuples change
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TupleChangeEvent {
+    /// Unique event ID for deduplication
+    pub event_id: Uuid,
 
-    // Incremental update layer
-    pending_updates: DashMap<GroupId, Vec<GroupUpdate>>,
+    /// Store where the change occurred
+    pub store_id: String,
 
-    // Existing cache for non-group relations
-    check_cache: Arc<CheckCache>,
+    /// Timestamp of the change (for ordering)
+    pub timestamp: DateTime<Utc>,
+
+    /// The actual changes
+    pub changes: Vec<TupleChange>,
+
+    /// Authorization model version at time of change
+    pub model_id: String,
 }
 
-impl LeopardLite {
-    /// Check group membership: O(1) + intersection
-    pub fn is_member(&self, user: &UserId, group: &GroupId) -> bool {
-        if let (Some(user_groups), Some(group_groups)) = (
-            self.member_to_groups.get(user),
-            self.group_to_groups.get(group),
-        ) {
-            // Roaring bitmap intersection is very fast
-            !user_groups.is_disjoint(group_groups)
-        } else {
-            false
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TupleChange {
+    Write {
+        user: String,
+        relation: String,
+        object: String,
+        condition: Option<String>,
+    },
+    Delete {
+        user: String,
+        relation: String,
+        object: String,
+    },
+}
 
-    /// Handle tuple write with incremental update
-    pub async fn on_tuple_write(&self, tuple: &Tuple) {
-        if self.is_group_membership(tuple) {
-            // Incremental transitive closure update
-            self.update_group_index(tuple).await;
-        } else {
-            // Invalidate check cache
-            self.check_cache.invalidate_pattern(&tuple.to_pattern()).await;
-        }
-    }
+/// Events published when authorization models change
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelChangeEvent {
+    pub event_id: Uuid,
+    pub store_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub old_model_id: Option<String>,
+    pub new_model_id: String,
+    /// Hint for workers: which relations changed
+    pub affected_relations: Vec<String>,
+}
+
+/// Commands for manual pre-computation control
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PrecomputeCommand {
+    /// Rebuild all pre-computed data for a store
+    FullRebuild { store_id: String },
+
+    /// Rebuild specific object types
+    PartialRebuild {
+        store_id: String,
+        object_types: Vec<String>,
+    },
+
+    /// Invalidate cache entries matching pattern
+    Invalidate {
+        store_id: String,
+        pattern: String,
+    },
 }
 ```
 
-**Memory Estimate**:
-- RoaringBitmap: ~1-2 bytes per group ID (compressed)
-- 100K groups × 10 average memberships = 1-2MB
-- Well within C12 constraint
+### 3.4 NATS Stream Configuration
 
-### 4.2 Precomputed Check Results (Current Phase 2 Design)
+```yaml
+# nats-streams.yaml
+streams:
+  # Tuple change events - partitioned by store
+  - name: RSFGA_TUPLES
+    subjects:
+      - "rsfga.tuples.>"
+    retention: limits
+    max_age: 24h              # Keep events for 24 hours
+    max_bytes: 10GB           # Per stream limit
+    storage: file             # Persistent storage
+    replicas: 3               # High availability
+    discard: old              # Discard oldest when full
 
-**Approach**: Keep current Phase 2 design with Valkey but optimize hot paths.
+  # Model change events
+  - name: RSFGA_MODELS
+    subjects:
+      - "rsfga.models.>"
+    retention: limits
+    max_age: 168h             # Keep for 7 days (models change rarely)
+    max_bytes: 1GB
+    storage: file
+    replicas: 3
+    discard: old
+
+  # Pre-computation commands
+  - name: RSFGA_PRECOMPUTE
+    subjects:
+      - "rsfga.precompute.>"
+    retention: workqueue      # Remove after ACK
+    max_bytes: 100MB
+    storage: file
+    replicas: 3
+
+consumers:
+  # Worker consumer group for tuple events
+  - stream: RSFGA_TUPLES
+    name: precompute-workers
+    durable: precompute-workers
+    deliver_policy: all
+    ack_policy: explicit
+    max_deliver: 5            # Retry up to 5 times
+    ack_wait: 30s             # 30 second processing timeout
+    filter_subject: "rsfga.tuples.>"
+```
+
+---
+
+## 4. Pre-computation Worker Design
+
+### 4.1 Worker Architecture
 
 ```rust
-pub struct PrecomputedChecker {
-    // L1: In-memory hot cache
-    hot_cache: Arc<moka::Cache<CacheKey, bool>>,
+use async_nats::jetstream::{self, consumer::PullConsumer};
+use valkey::aio::ConnectionManager;
 
-    // L2: Valkey for shared cache
-    valkey: Arc<ValkeyClient>,
+/// Pre-computation worker that processes tuple/model changes
+pub struct PrecomputeWorker {
+    /// NATS JetStream connection
+    jetstream: jetstream::Context,
 
-    // L3: Fallback to graph resolver
+    /// Consumer for tuple change events
+    tuple_consumer: PullConsumer,
+
+    /// Consumer for model change events
+    model_consumer: PullConsumer,
+
+    /// Valkey connection pool
+    valkey: ConnectionManager,
+
+    /// PostgreSQL connection pool for graph resolution
+    db_pool: PgPool,
+
+    /// Graph resolver for computing check results
     resolver: Arc<GraphResolver>,
+
+    /// Worker configuration
+    config: WorkerConfig,
+
+    /// Metrics
+    metrics: WorkerMetrics,
 }
 
-impl PrecomputedChecker {
-    pub async fn check(&self, req: &CheckRequest) -> Result<bool> {
-        // L1: Hot cache (sub-microsecond)
-        if let Some(result) = self.hot_cache.get(&req.cache_key()) {
-            return Ok(result);
-        }
+#[derive(Debug, Clone)]
+pub struct WorkerConfig {
+    /// Batch size for processing events
+    pub batch_size: usize,
 
-        // L2: Valkey lookup (~100μs)
-        if let Some(result) = self.valkey.get(&req.cache_key()).await? {
-            self.hot_cache.insert(req.cache_key(), result);
-            return Ok(result);
-        }
+    /// Maximum concurrent pre-computations
+    pub max_concurrency: usize,
 
-        // L3: Graph resolution (~1-10ms)
-        let result = self.resolver.check(req).await?;
+    /// Stores this worker is responsible for (empty = all)
+    pub assigned_stores: Vec<String>,
 
-        // Async cache population
-        tokio::spawn(self.populate_cache(req.clone(), result));
+    /// Whether to process group membership specially (Leopard-style)
+    pub enable_leopard_optimization: bool,
 
-        Ok(result)
-    }
-}
-```
+    /// Maximum depth for reverse expansion
+    pub max_expansion_depth: u32,
 
-### 4.3 Materialized Views (Database-Level)
-
-**Approach**: Use PostgreSQL materialized views for group expansion.
-
-```sql
--- Materialized view of transitive group membership
-CREATE MATERIALIZED VIEW group_transitive_closure AS
-WITH RECURSIVE group_hierarchy AS (
-    -- Base case: direct group memberships
-    SELECT store_id, user_type, user_id, object_id as group_id, 1 as depth
-    FROM tuples
-    WHERE object_type = 'group' AND relation = 'member'
-
-    UNION ALL
-
-    -- Recursive case: group-to-group memberships
-    SELECT gh.store_id, gh.user_type, gh.user_id, t.object_id, gh.depth + 1
-    FROM group_hierarchy gh
-    JOIN tuples t ON gh.group_id = t.user_id
-        AND t.object_type = 'group'
-        AND t.relation = 'member'
-        AND t.user_type = 'group'
-    WHERE gh.depth < 25
-)
-SELECT DISTINCT * FROM group_hierarchy;
-
--- Index for fast lookups
-CREATE INDEX idx_gtc_user ON group_transitive_closure(store_id, user_type, user_id);
-CREATE INDEX idx_gtc_group ON group_transitive_closure(store_id, group_id);
-
--- Refresh strategy (incremental in PostgreSQL 15+)
-REFRESH MATERIALIZED VIEW CONCURRENTLY group_transitive_closure;
-```
-
-**Pros**: Database handles consistency, no application memory pressure
-**Cons**: Refresh latency, additional database load
-
----
-
-## 5. Recommended Architecture
-
-### 5.1 Tiered Pre-computation Strategy
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   Check Request                              │
-└───────────────────────────┬─────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│  Tier 1: In-Memory Hot Cache (Moka)                         │
-│  - Recent check results                                      │
-│  - Sub-microsecond latency                                   │
-│  - 100MB budget                                              │
-└───────────────────────────┬─────────────────────────────────┘
-                            ↓ (miss)
-┌─────────────────────────────────────────────────────────────┐
-│  Tier 2: Leopard-Lite (Group Membership Only)               │
-│  - Transitive closure for groups                             │
-│  - <50μs latency                                             │
-│  - 50MB budget                                               │
-│  - Roaring bitmaps for efficient storage                     │
-└───────────────────────────┬─────────────────────────────────┘
-                            ↓ (not group check or miss)
-┌─────────────────────────────────────────────────────────────┐
-│  Tier 3: Valkey Precomputed Cache                           │
-│  - Full check results                                        │
-│  - ~100μs latency                                            │
-│  - Shared across nodes                                       │
-│  - TTL-based expiration                                      │
-└───────────────────────────┬─────────────────────────────────┘
-                            ↓ (miss)
-┌─────────────────────────────────────────────────────────────┐
-│  Tier 4: Graph Resolver (Fallback)                          │
-│  - Full resolution                                           │
-│  - 1-10ms latency                                            │
-│  - Populates upper tiers                                     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 5.2 Leopard-Lite Implementation
-
-```rust
-use roaring::RoaringBitmap;
-use dashmap::DashMap;
-
-/// Leopard-Lite: Optimized group membership pre-computation
-pub struct LeopardLite {
-    /// Maps group ID → all ancestor group IDs (transitive)
-    group_ancestors: DashMap<u64, Arc<RoaringBitmap>>,
-
-    /// Maps group ID → all descendant group IDs (transitive)
-    group_descendants: DashMap<u64, Arc<RoaringBitmap>>,
-
-    /// Maps user ID → directly member groups
-    user_groups: DashMap<u64, Arc<RoaringBitmap>>,
-
-    /// ID allocator for stable integer IDs
-    id_allocator: IdAllocator,
-
-    /// Pending incremental updates
-    update_queue: tokio::sync::mpsc::Sender<GroupUpdate>,
+    /// TTL for pre-computed results in Valkey
+    pub cache_ttl: Duration,
 }
 
-impl LeopardLite {
-    /// Check if user is member of group (direct or transitive)
-    pub fn check_membership(&self, user_id: u64, group_id: u64) -> bool {
-        // Get user's direct group memberships
-        let user_bitmap = match self.user_groups.get(&user_id) {
-            Some(b) => b.clone(),
-            None => return false,
-        };
+impl PrecomputeWorker {
+    pub async fn run(&self) -> Result<()> {
+        loop {
+            tokio::select! {
+                // Process tuple change events
+                msgs = self.tuple_consumer.fetch().max_messages(self.config.batch_size).await => {
+                    self.process_tuple_events(msgs?).await?;
+                }
 
-        // Check if user is directly in group
-        if user_bitmap.contains(group_id as u32) {
-            return true;
-        }
-
-        // Get group's transitive descendants (groups that are members)
-        let group_descendants = match self.group_descendants.get(&group_id) {
-            Some(b) => b.clone(),
-            None => return false,
-        };
-
-        // Check intersection: is user in any descendant group?
-        !user_bitmap.is_disjoint(&group_descendants)
-    }
-
-    /// Handle incremental group update
-    pub async fn apply_update(&self, update: GroupUpdate) {
-        match update {
-            GroupUpdate::AddMember { group_id, user_id } => {
-                self.user_groups
-                    .entry(user_id)
-                    .or_insert_with(|| Arc::new(RoaringBitmap::new()))
-                    .clone()
-                    .insert(group_id as u32);
-            }
-            GroupUpdate::RemoveMember { group_id, user_id } => {
-                if let Some(mut bitmap) = self.user_groups.get_mut(&user_id) {
-                    Arc::make_mut(&mut bitmap).remove(group_id as u32);
+                // Process model change events (higher priority)
+                msgs = self.model_consumer.fetch().max_messages(10).await => {
+                    self.process_model_events(msgs?).await?;
                 }
             }
-            GroupUpdate::AddSubgroup { parent_id, child_id } => {
-                // Update transitive closure
-                self.propagate_subgroup_add(parent_id, child_id).await;
-            }
-            GroupUpdate::RemoveSubgroup { parent_id, child_id } => {
-                // Requires full recomputation of affected paths
-                self.schedule_partial_rebuild(parent_id).await;
-            }
         }
     }
 
-    /// Propagate subgroup addition through transitive closure
-    async fn propagate_subgroup_add(&self, parent_id: u64, child_id: u64) {
-        // Get child's descendants (including itself)
-        let mut to_add = RoaringBitmap::new();
-        to_add.insert(child_id as u32);
-        if let Some(child_descendants) = self.group_descendants.get(&child_id) {
-            to_add |= child_descendants.as_ref();
-        }
+    async fn process_tuple_events(&self, messages: Vec<Message>) -> Result<()> {
+        let events: Vec<TupleChangeEvent> = messages
+            .iter()
+            .map(|m| serde_json::from_slice(&m.payload))
+            .collect::<Result<_, _>>()?;
 
-        // Add to parent's descendants
-        self.group_descendants
-            .entry(parent_id)
-            .or_insert_with(|| Arc::new(RoaringBitmap::new()))
-            .clone()
-            .extend(to_add.iter().map(|x| x));
+        // Group by store for efficient batch processing
+        let by_store = events.into_iter().group_by(|e| e.store_id.clone());
 
-        // Propagate to parent's ancestors
-        if let Some(ancestors) = self.group_ancestors.get(&parent_id) {
-            for ancestor in ancestors.iter() {
-                self.group_descendants
-                    .entry(ancestor as u64)
-                    .or_insert_with(|| Arc::new(RoaringBitmap::new()))
-                    .clone()
-                    .extend(to_add.iter().map(|x| x));
+        for (store_id, store_events) in &by_store {
+            // Skip if not assigned to this worker
+            if !self.is_assigned_store(&store_id) {
+                continue;
+            }
+
+            let store_events: Vec<_> = store_events.collect();
+
+            // Batch analyze impact
+            let affected_checks = self.analyze_impact(&store_id, &store_events).await?;
+
+            // Pre-compute in parallel with bounded concurrency
+            let results = stream::iter(affected_checks)
+                .map(|check| self.compute_and_cache(check))
+                .buffer_unordered(self.config.max_concurrency)
+                .collect::<Vec<_>>()
+                .await;
+
+            // Log any errors but don't fail the batch
+            for result in results {
+                if let Err(e) = result {
+                    tracing::warn!("Pre-computation failed: {}", e);
+                    self.metrics.precompute_errors.inc();
+                }
             }
         }
+
+        // ACK all messages
+        for msg in messages {
+            msg.ack().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Analyze which checks are affected by tuple changes
+    async fn analyze_impact(
+        &self,
+        store_id: &str,
+        events: &[TupleChangeEvent],
+    ) -> Result<Vec<CheckToCompute>> {
+        let mut affected = Vec::new();
+
+        for event in events {
+            for change in &event.changes {
+                match change {
+                    TupleChange::Write { user, relation, object, .. } |
+                    TupleChange::Delete { user, relation, object } => {
+                        // Direct check is always affected
+                        affected.push(CheckToCompute {
+                            store_id: store_id.to_string(),
+                            user: user.clone(),
+                            relation: relation.clone(),
+                            object: object.clone(),
+                        });
+
+                        // Reverse expand to find other affected checks
+                        let expanded = self.reverse_expand(
+                            store_id,
+                            user,
+                            relation,
+                            object,
+                        ).await?;
+
+                        affected.extend(expanded);
+                    }
+                }
+            }
+        }
+
+        // Deduplicate
+        affected.sort();
+        affected.dedup();
+
+        Ok(affected)
+    }
+
+    /// Reverse expand to find checks affected by a tuple change
+    async fn reverse_expand(
+        &self,
+        store_id: &str,
+        user: &str,
+        relation: &str,
+        object: &str,
+    ) -> Result<Vec<CheckToCompute>> {
+        let mut affected = Vec::new();
+
+        // Get authorization model
+        let model = self.resolver.get_model(store_id).await?;
+
+        // Find relations that reference this relation (computed usersets)
+        for (type_name, type_def) in &model.types {
+            for (rel_name, rel_def) in &type_def.relations {
+                if self.relation_references(rel_def, relation) {
+                    // Find all objects of this type
+                    let objects = self.db_pool
+                        .query_objects_by_type(store_id, type_name)
+                        .await?;
+
+                    for obj in objects {
+                        affected.push(CheckToCompute {
+                            store_id: store_id.to_string(),
+                            user: user.to_string(),
+                            relation: rel_name.clone(),
+                            object: obj,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Find TTU relations that inherit through this object
+        let ttu_affected = self.expand_ttu_impact(store_id, object, &model).await?;
+        affected.extend(ttu_affected);
+
+        // If this is a group membership change, use Leopard optimization
+        if self.config.enable_leopard_optimization && self.is_group_membership(object, relation) {
+            let group_affected = self.expand_group_impact(store_id, user, object).await?;
+            affected.extend(group_affected);
+        }
+
+        Ok(affected)
+    }
+
+    /// Compute a check and store in Valkey
+    async fn compute_and_cache(&self, check: CheckToCompute) -> Result<()> {
+        let start = Instant::now();
+
+        // Compute the check result
+        let result = self.resolver.check(
+            &check.store_id,
+            &check.user,
+            &check.relation,
+            &check.object,
+        ).await?;
+
+        // Store in Valkey
+        let cache_key = format!(
+            "check:{}:{}#{}@{}",
+            check.store_id,
+            check.object,
+            check.relation,
+            check.user,
+        );
+
+        let cache_value = PrecomputedCheck {
+            allowed: result,
+            computed_at: Utc::now(),
+            model_id: self.resolver.get_model_id(&check.store_id).await?,
+        };
+
+        self.valkey
+            .set_ex(
+                &cache_key,
+                serde_json::to_string(&cache_value)?,
+                self.config.cache_ttl.as_secs() as usize,
+            )
+            .await?;
+
+        // Update metrics
+        self.metrics.precompute_duration.observe(start.elapsed().as_secs_f64());
+        self.metrics.precompute_total.inc();
+
+        Ok(())
     }
 }
 
-#[derive(Clone)]
-pub enum GroupUpdate {
-    AddMember { group_id: u64, user_id: u64 },
-    RemoveMember { group_id: u64, user_id: u64 },
-    AddSubgroup { parent_id: u64, child_id: u64 },
-    RemoveSubgroup { parent_id: u64, child_id: u64 },
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CheckToCompute {
+    store_id: String,
+    user: String,
+    relation: String,
+    object: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PrecomputedCheck {
+    allowed: bool,
+    computed_at: DateTime<Utc>,
+    model_id: String,
 }
 ```
 
-### 5.3 Integration with Graph Resolver
+### 4.2 Leopard Optimization for Groups
 
 ```rust
-impl GraphResolver {
-    pub async fn check_with_leopard(
+impl PrecomputeWorker {
+    /// Expand impact of group membership changes (Leopard-style)
+    async fn expand_group_impact(
         &self,
-        store: &str,
+        store_id: &str,
+        user: &str,
+        group: &str,
+    ) -> Result<Vec<CheckToCompute>> {
+        let mut affected = Vec::new();
+
+        // Get all objects that grant access via this group
+        // e.g., document:*#viewer@group:engineering#member
+        let objects_with_group = self.db_pool
+            .query("
+                SELECT DISTINCT object_type, object_id, relation
+                FROM tuples
+                WHERE store_id = $1
+                  AND user_type = 'group'
+                  AND user_id = $2
+            ", &[&store_id, &group])
+            .await?;
+
+        for row in objects_with_group {
+            let object = format!("{}:{}", row.object_type, row.object_id);
+            affected.push(CheckToCompute {
+                store_id: store_id.to_string(),
+                user: user.to_string(),
+                relation: row.relation,
+                object,
+            });
+        }
+
+        // Get transitive group memberships (group contains other groups)
+        let parent_groups = self.get_parent_groups(store_id, group).await?;
+
+        for parent in parent_groups {
+            // Recursively expand impact for parent groups
+            let parent_affected = self.expand_group_impact(store_id, user, &parent).await?;
+            affected.extend(parent_affected);
+        }
+
+        Ok(affected)
+    }
+
+    /// Pre-compute transitive group closure (Leopard core algorithm)
+    async fn compute_group_closure(
+        &self,
+        store_id: &str,
+        group: &str,
+    ) -> Result<HashSet<String>> {
+        let mut closure = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(group.to_string());
+
+        while let Some(current) = queue.pop_front() {
+            if closure.contains(&current) {
+                continue; // Already processed (cycle detection)
+            }
+            closure.insert(current.clone());
+
+            // Get direct child groups
+            let children = self.db_pool
+                .query("
+                    SELECT user_id
+                    FROM tuples
+                    WHERE store_id = $1
+                      AND object_type = 'group'
+                      AND object_id = $2
+                      AND relation = 'member'
+                      AND user_type = 'group'
+                ", &[&store_id, &current])
+                .await?;
+
+            for child in children {
+                if !closure.contains(&child.user_id) {
+                    queue.push_back(child.user_id);
+                }
+            }
+        }
+
+        Ok(closure)
+    }
+
+    /// Store group transitive closure in Valkey for fast lookups
+    async fn cache_group_closure(
+        &self,
+        store_id: &str,
+        group: &str,
+        closure: &HashSet<String>,
+    ) -> Result<()> {
+        let key = format!("group_closure:{}:{}", store_id, group);
+
+        // Use Valkey SET for efficient membership checks
+        let mut pipe = valkey::pipe();
+        pipe.del(&key);
+        for member in closure {
+            pipe.sadd(&key, member);
+        }
+        pipe.expire(&key, self.config.cache_ttl.as_secs() as usize);
+
+        pipe.query_async(&mut self.valkey.clone()).await?;
+
+        Ok(())
+    }
+}
+```
+
+### 4.3 API Server Integration
+
+```rust
+/// Check resolver that uses pre-computed cache
+pub struct CachedCheckResolver {
+    /// Valkey connection for pre-computed results
+    valkey: ConnectionManager,
+
+    /// Fallback graph resolver
+    resolver: Arc<GraphResolver>,
+
+    /// NATS client for publishing invalidations
+    nats: async_nats::Client,
+
+    /// Local hot cache (L1)
+    hot_cache: Arc<moka::Cache<String, bool>>,
+
+    /// Metrics
+    metrics: CheckMetrics,
+}
+
+impl CachedCheckResolver {
+    pub async fn check(
+        &self,
+        store_id: &str,
         user: &str,
         relation: &str,
         object: &str,
     ) -> Result<bool> {
-        // Parse user and object
-        let (user_type, user_id) = parse_entity(user)?;
-        let (object_type, object_id) = parse_entity(object)?;
+        let cache_key = format!("check:{}:{}#{}@{}", store_id, object, relation, user);
 
-        // Check if this is a group membership check
-        if self.is_group_membership_check(object_type, relation) {
-            if let Some(leopard) = &self.leopard {
-                let user_int_id = leopard.id_allocator.get_id(user);
-                let group_int_id = leopard.id_allocator.get_id(object);
-
-                if leopard.check_membership(user_int_id, group_int_id) {
-                    return Ok(true);
-                }
-                // Fall through to full resolution if Leopard says no
-                // (might be due to stale index)
-            }
+        // L1: Hot cache (sub-microsecond)
+        if let Some(result) = self.hot_cache.get(&cache_key) {
+            self.metrics.cache_hits.with_label_values(&["l1"]).inc();
+            return Ok(result);
         }
 
-        // Standard graph resolution
-        self.resolve(store, user, relation, object, &CheckContext::new()).await
+        // L2: Valkey pre-computed cache (~100μs)
+        if let Some(cached) = self.valkey.get::<_, Option<String>>(&cache_key).await? {
+            let precomputed: PrecomputedCheck = serde_json::from_str(&cached)?;
+
+            // Verify model version is current
+            let current_model = self.resolver.get_model_id(store_id).await?;
+            if precomputed.model_id == current_model {
+                self.hot_cache.insert(cache_key.clone(), precomputed.allowed);
+                self.metrics.cache_hits.with_label_values(&["l2"]).inc();
+                return Ok(precomputed.allowed);
+            }
+            // Model changed, cache is stale - fall through
+        }
+
+        // L3: Full graph resolution (~1-10ms)
+        self.metrics.cache_misses.inc();
+        let result = self.resolver.check(store_id, user, relation, object).await?;
+
+        // Async cache population (don't block response)
+        let valkey = self.valkey.clone();
+        let hot_cache = self.hot_cache.clone();
+        let model_id = self.resolver.get_model_id(store_id).await?;
+        tokio::spawn(async move {
+            let value = PrecomputedCheck {
+                allowed: result,
+                computed_at: Utc::now(),
+                model_id,
+            };
+            let _ = valkey.set_ex::<_, _, ()>(
+                &cache_key,
+                serde_json::to_string(&value).unwrap(),
+                3600, // 1 hour TTL
+            ).await;
+            hot_cache.insert(cache_key, result);
+        });
+
+        Ok(result)
+    }
+
+    /// Write tuples and publish change event
+    pub async fn write_tuples(
+        &self,
+        store_id: &str,
+        writes: Vec<TupleWrite>,
+        deletes: Vec<TupleKey>,
+    ) -> Result<()> {
+        // Write to database
+        self.resolver.write_tuples(store_id, &writes, &deletes).await?;
+
+        // Publish change event to NATS
+        let event = TupleChangeEvent {
+            event_id: Uuid::new_v4(),
+            store_id: store_id.to_string(),
+            timestamp: Utc::now(),
+            changes: writes.iter()
+                .map(|w| TupleChange::Write {
+                    user: w.user.clone(),
+                    relation: w.relation.clone(),
+                    object: w.object.clone(),
+                    condition: w.condition.clone(),
+                })
+                .chain(deletes.iter().map(|d| TupleChange::Delete {
+                    user: d.user.clone(),
+                    relation: d.relation.clone(),
+                    object: d.object.clone(),
+                }))
+                .collect(),
+            model_id: self.resolver.get_model_id(store_id).await?,
+        };
+
+        self.nats
+            .publish(
+                format!("rsfga.tuples.{}", store_id),
+                serde_json::to_vec(&event)?.into(),
+            )
+            .await?;
+
+        Ok(())
     }
 }
 ```
 
 ---
 
-## 6. Implementation Roadmap
+## 5. Valkey Cache Schema
 
-### Phase 2a: Leopard-Lite for Groups (4 weeks)
+### 5.1 Key Patterns
 
-| Week | Tasks |
-|------|-------|
-| 1 | ID allocator, RoaringBitmap integration, basic data structures |
-| 2 | Incremental update propagation, subgroup handling |
-| 3 | Integration with GraphResolver, benchmarks |
-| 4 | Testing, edge cases, memory profiling |
+```
+# Pre-computed check results
+check:{store_id}:{object}#{relation}@{user}
+  → JSON: { "allowed": bool, "computed_at": timestamp, "model_id": string }
+  → TTL: 1 hour (configurable)
 
-### Phase 2b: Valkey Integration (2 weeks)
+# Group transitive closure (Leopard optimization)
+group_closure:{store_id}:{group_id}
+  → SET: { member_group_1, member_group_2, ... }
+  → TTL: 1 hour
 
-| Week | Tasks |
-|------|-------|
-| 1 | Valkey client, cache population strategy |
-| 2 | TTL management, cluster support |
+# User's direct group memberships
+user_groups:{store_id}:{user_id}
+  → SET: { group_1, group_2, ... }
+  → TTL: 1 hour
 
-### Phase 2c: Hybrid Resolution (2 weeks)
+# Model version tracking (for cache invalidation)
+model_version:{store_id}
+  → STRING: model_id
+  → TTL: none (updated on model change)
 
-| Week | Tasks |
-|------|-------|
-| 1 | Tiered lookup implementation |
-| 2 | Metrics, tuning, production readiness |
+# Pre-computation watermark (for consistency)
+precompute_watermark:{store_id}
+  → STRING: event_id
+  → TTL: none
+```
+
+### 5.2 Valkey Configuration
+
+```yaml
+# valkey.conf
+maxmemory 2gb
+maxmemory-policy allkeys-lru    # Evict any key using LRU
+appendonly yes                   # Persistence
+appendfsync everysec             # Async persistence
+cluster-enabled yes              # Cluster mode
+cluster-node-timeout 5000
+```
 
 ---
 
-## 7. Risks and Mitigations
+## 6. Deployment
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|------------|--------|------------|
-| Memory exceeds budget | Medium | High | Monitor with metrics, LRU eviction for user_groups |
-| Incremental updates lag | Medium | Medium | Queue depth monitoring, circuit breaker |
-| Transitive closure explosion | Low | High | Depth limits, size limits per group |
-| Stale index returns false negative | Medium | Medium | Always fall back to full resolution |
+### 6.1 Docker Compose (Local Development)
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  # RSFGA API Server
+  rsfga-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"   # HTTP
+      - "8081:8081"   # gRPC
+    environment:
+      - DATABASE_URL=postgres://rsfga:rsfga@postgres:5432/rsfga
+      - VALKEY_URL=redis://valkey:6379
+      - NATS_URL=nats://nats:4222
+      - RUST_LOG=info
+    depends_on:
+      - postgres
+      - valkey
+      - nats
+    deploy:
+      replicas: 2
+
+  # Pre-computation Worker
+  rsfga-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      - DATABASE_URL=postgres://rsfga:rsfga@postgres:5432/rsfga
+      - VALKEY_URL=redis://valkey:6379
+      - NATS_URL=nats://nats:4222
+      - WORKER_BATCH_SIZE=100
+      - WORKER_CONCURRENCY=10
+      - RUST_LOG=info
+    depends_on:
+      - postgres
+      - valkey
+      - nats
+    deploy:
+      replicas: 2
+
+  # PostgreSQL
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_DB=rsfga
+      - POSTGRES_USER=rsfga
+      - POSTGRES_PASSWORD=rsfga
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Valkey (Redis-compatible)
+  valkey:
+    image: valkey/valkey:7.2
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey_data:/data
+    command: valkey-server --appendonly yes
+
+  # NATS with JetStream
+  nats:
+    image: nats:2.10
+    ports:
+      - "4222:4222"   # Client
+      - "8222:8222"   # HTTP monitoring
+    command: -js -sd /data
+    volumes:
+      - nats_data:/data
+
+volumes:
+  postgres_data:
+  valkey_data:
+  nats_data:
+```
+
+### 6.2 Kubernetes (Production)
+
+```yaml
+# k8s/rsfga-api.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsfga-api
+  labels:
+    app: rsfga
+    component: api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: rsfga
+      component: api
+  template:
+    metadata:
+      labels:
+        app: rsfga
+        component: api
+    spec:
+      containers:
+      - name: rsfga-api
+        image: rsfga/rsfga-api:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 8081
+          name: grpc
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: rsfga-secrets
+              key: database-url
+        - name: VALKEY_URL
+          value: "redis://valkey-master:6379"
+        - name: NATS_URL
+          value: "nats://nats:4222"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "1000m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rsfga-api-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rsfga-api
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+```
+
+```yaml
+# k8s/rsfga-worker.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsfga-worker
+  labels:
+    app: rsfga
+    component: worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rsfga
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: rsfga
+        component: worker
+    spec:
+      containers:
+      - name: rsfga-worker
+        image: rsfga/rsfga-worker:latest
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: rsfga-secrets
+              key: database-url
+        - name: VALKEY_URL
+          value: "redis://valkey-master:6379"
+        - name: NATS_URL
+          value: "nats://nats:4222"
+        - name: WORKER_BATCH_SIZE
+          value: "100"
+        - name: WORKER_CONCURRENCY
+          value: "20"
+        - name: ENABLE_LEOPARD_OPTIMIZATION
+          value: "true"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rsfga-worker-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rsfga-worker
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: External
+    external:
+      metric:
+        name: nats_consumer_pending_messages
+        selector:
+          matchLabels:
+            consumer: precompute-workers
+      target:
+        type: AverageValue
+        averageValue: "1000"
+```
+
+---
+
+## 7. Implementation Roadmap
+
+### Phase 2a: Event Infrastructure (2 weeks)
+
+| Week | Tasks |
+|------|-------|
+| 1 | NATS JetStream setup, event schema definition, stream configuration |
+| 2 | Event publishing in API server, integration tests |
+
+### Phase 2b: Pre-computation Worker (4 weeks)
+
+| Week | Tasks |
+|------|-------|
+| 1 | Worker skeleton, NATS consumer, basic event processing |
+| 2 | Impact analysis (reverse expansion), affected check identification |
+| 3 | Parallel pre-computation, Valkey storage, batch processing |
+| 4 | Leopard optimization for groups, transitive closure |
+
+### Phase 2c: API Integration (2 weeks)
+
+| Week | Tasks |
+|------|-------|
+| 1 | CachedCheckResolver, tiered cache lookup |
+| 2 | Cache invalidation on model change, consistency checks |
+
+### Phase 2d: Deployment & Operations (2 weeks)
+
+| Week | Tasks |
+|------|-------|
+| 1 | Docker Compose, Kubernetes manifests, Helm chart |
+| 2 | Monitoring, alerting, runbooks, load testing |
 
 ---
 
@@ -558,32 +1193,63 @@ impl GraphResolver {
 
 ### Performance
 
-- [ ] Group membership check: <100μs p99
-- [ ] Non-group check: <1ms p99 (with cache hit)
-- [ ] Index update latency: <10ms p99
+- [ ] Check latency (cache hit): <1ms p99
+- [ ] Check latency (cache miss): <10ms p99
+- [ ] Pre-computation lag: <100ms p99 (event to cache)
+- [ ] Write throughput: >500 tuples/sec sustained
+- [ ] Worker throughput: >10K pre-computations/sec per worker
 
-### Memory
+### Scalability
 
-- [ ] Leopard-Lite: <50MB for 100K groups
-- [ ] Total cache budget: <500MB (C12)
+- [ ] Linear scaling with worker replicas
+- [ ] API pods stateless, scale to 20+ replicas
+- [ ] NATS handles >100K events/sec
+- [ ] Valkey cluster handles >1M ops/sec
+
+### Reliability
+
+- [ ] Zero data loss on worker crash (NATS redelivery)
+- [ ] Graceful degradation on Valkey failure (fallback to DB)
+- [ ] Model change invalidates stale cache entries
 
 ### Correctness
 
-- [ ] All compatibility tests pass
-- [ ] No false negatives (may have false positive due to staleness, triggers fallback)
-- [ ] Consistent with full graph resolution
+- [ ] Pre-computed results match graph resolver results (100%)
+- [ ] Cache invalidation covers all affected checks
+- [ ] Model version tracking prevents stale reads
 
 ---
 
-## 9. Decision
+## 9. Risks and Mitigations
 
-**Proceed with Leopard-Lite implementation** as described in Section 5, with the following scope:
+| Risk | Likelihood | Impact | Mitigation |
+|------|------------|--------|------------|
+| Write amplification overwhelms workers | Medium | High | Backpressure, rate limiting, partitioning |
+| NATS message loss | Low | High | JetStream persistence, replication, monitoring |
+| Valkey memory exhaustion | Medium | Medium | LRU eviction, memory limits, TTLs |
+| Pre-computation lag during burst | Medium | Low | HPA scaling, queue depth alerts |
+| Stale cache returns wrong result | Low | High | Model version check, TTL, consistency modes |
+| Complex model causes infinite expansion | Low | Medium | Depth limits, timeout, circuit breaker |
 
-1. **In scope**: Group-to-group and member-to-group transitive closure
-2. **Out of scope**: General relation pre-computation (use existing cache + Valkey)
-3. **Memory budget**: 50MB for Leopard-Lite, 100MB for hot cache, remainder for Valkey client
+---
 
-**ADR to create**: ADR-017: Leopard-Lite Pre-computation for Group Membership
+## 10. Decision
+
+**Proceed with Leopard-inspired cloud-native architecture** as described:
+
+1. **Event-driven**: NATS JetStream for tuple/model change events
+2. **Distributed cache**: Valkey for pre-computed check results
+3. **Horizontal scaling**: Separate worker pods, HPA-enabled
+4. **Leopard optimization**: Transitive closure for group membership
+5. **Graceful degradation**: Fallback to graph resolution on cache miss
+
+**Key differences from original Leopard**:
+- Valkey replaces in-memory skip lists (distributed, persistent)
+- NATS replaces Watch API (cloud-native, JetStream durability)
+- Kubernetes replaces dedicated infrastructure (standard deployment)
+- Extended beyond groups to all relation types
+
+**ADR to create**: ADR-017: Cloud-Native Pre-computation Architecture
 
 ---
 
@@ -594,4 +1260,5 @@ impl GraphResolver {
 - [AuthZed: Zanzibar Overview](https://authzed.com/zanzibar)
 - [SpiceDB Leopard Issue #129](https://github.com/authzed/spicedb/issues/129)
 - [OpenFGA Performance Optimizations](https://deepwiki.com/openfga/openfga/2.3-performance-optimizations)
-- [Oso: What is Google Zanzibar](https://www.osohq.com/learn/google-zanzibar)
+- [NATS JetStream Documentation](https://docs.nats.io/nats-concepts/jetstream)
+- [Valkey Documentation](https://valkey.io/docs/)
