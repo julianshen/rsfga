@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::error;
 
-use rsfga_storage::{DataStore, StorageError};
+use rsfga_storage::{DataStore, PaginationOptions, StorageError, StoredAuthorizationModel};
 
 use super::state::AppState;
 use crate::observability::{metrics_handler, MetricsState};
@@ -35,6 +35,15 @@ fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
             get(get_store::<S>)
                 .put(update_store::<S>)
                 .delete(delete_store::<S>),
+        )
+        // Authorization model management
+        .route(
+            "/stores/:store_id/authorization-models",
+            post(write_authorization_model::<S>).get(list_authorization_models::<S>),
+        )
+        .route(
+            "/stores/:store_id/authorization-models/:authorization_model_id",
+            get(get_authorization_model::<S>),
         )
         // Authorization operations
         .route("/stores/:store_id/check", post(check::<S>))
@@ -309,6 +318,212 @@ async fn delete_store<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     state.storage.delete_store(&store_id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ============================================================
+// Authorization Model Management
+// ============================================================
+
+/// Request body for writing an authorization model.
+/// Matches OpenFGA's WriteAuthorizationModel request format.
+#[derive(Debug, Deserialize)]
+pub struct WriteAuthorizationModelRequest {
+    /// Schema version (e.g., "1.1").
+    #[serde(default = "default_schema_version")]
+    pub schema_version: String,
+    /// Type definitions for the model.
+    pub type_definitions: Vec<serde_json::Value>,
+    /// Optional conditions for the model.
+    #[serde(default)]
+    pub conditions: Option<serde_json::Value>,
+}
+
+fn default_schema_version() -> String {
+    "1.1".to_string()
+}
+
+/// Response for write authorization model.
+#[derive(Debug, Serialize)]
+pub struct WriteAuthorizationModelResponse {
+    pub authorization_model_id: String,
+}
+
+/// Response for a single authorization model.
+#[derive(Debug, Serialize)]
+pub struct AuthorizationModelResponse {
+    pub id: String,
+    pub schema_version: String,
+    pub type_definitions: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<serde_json::Value>,
+}
+
+impl TryFrom<StoredAuthorizationModel> for AuthorizationModelResponse {
+    type Error = ApiError;
+
+    fn try_from(model: StoredAuthorizationModel) -> Result<Self, Self::Error> {
+        // Parse the stored JSON back into structured data
+        let parsed: serde_json::Value = serde_json::from_str(&model.model_json).map_err(|e| {
+            error!("Failed to parse stored model JSON: {}", e);
+            ApiError::internal_error("Failed to parse authorization model")
+        })?;
+
+        let type_definitions = parsed
+            .get("type_definitions")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .ok_or_else(|| {
+                error!("Stored model missing type_definitions: {}", model.id);
+                ApiError::internal_error("Stored authorization model is invalid")
+            })?;
+
+        // Filter out null conditions (treat JSON null as absent)
+        let conditions = parsed.get("conditions").cloned().filter(|v| !v.is_null());
+
+        Ok(Self {
+            id: model.id,
+            schema_version: model.schema_version,
+            type_definitions,
+            conditions,
+        })
+    }
+}
+
+/// Response for listing authorization models.
+#[derive(Debug, Serialize)]
+pub struct ListAuthorizationModelsResponse {
+    pub authorization_models: Vec<AuthorizationModelResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_token: Option<String>,
+}
+
+/// Query parameters for listing authorization models.
+#[derive(Debug, Deserialize)]
+pub struct ListAuthorizationModelsQuery {
+    #[serde(default)]
+    pub page_size: Option<u32>,
+    #[serde(default)]
+    pub continuation_token: Option<String>,
+}
+
+/// Maximum size for authorization model JSON (1MB, similar to OpenFGA's ~256KB but more lenient).
+/// This is validated at the HTTP layer before storage to prevent oversized payloads.
+const MAX_AUTHORIZATION_MODEL_SIZE: usize = 1024 * 1024; // 1MB
+
+async fn write_authorization_model<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(store_id): Path<String>,
+    Json(body): Json<WriteAuthorizationModelRequest>,
+) -> ApiResult<impl IntoResponse> {
+    // Validation strategy: Validate at HTTP layer for immediate feedback.
+    // Domain-level validation (schema version, type definition semantics) is deferred
+    // to allow storage of models that may be validated differently across versions.
+
+    // Validate type_definitions is not empty (OpenFGA requirement)
+    if body.type_definitions.is_empty() {
+        return Err(ApiError::invalid_input("type_definitions cannot be empty"));
+    }
+
+    // Generate a new ULID for the model
+    let model_id = ulid::Ulid::new().to_string();
+
+    // Serialize the model data to JSON for storage (omit conditions if absent/null)
+    let mut model_json = serde_json::json!({
+        "type_definitions": body.type_definitions,
+    });
+    // Only include conditions if present and not null (OpenFGA compatibility)
+    if let Some(ref conditions) = body.conditions {
+        if !conditions.is_null() {
+            model_json["conditions"] = conditions.clone();
+        }
+    }
+
+    // Validate model size before storage
+    let model_json_str = model_json.to_string();
+    if model_json_str.len() > MAX_AUTHORIZATION_MODEL_SIZE {
+        return Err(ApiError::invalid_input(format!(
+            "authorization model exceeds maximum size of {} bytes",
+            MAX_AUTHORIZATION_MODEL_SIZE
+        )));
+    }
+
+    let model =
+        StoredAuthorizationModel::new(&model_id, &store_id, &body.schema_version, model_json_str);
+
+    state.storage.write_authorization_model(model).await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(WriteAuthorizationModelResponse {
+            authorization_model_id: model_id,
+        }),
+    ))
+}
+
+/// Path parameters for authorization model routes.
+#[derive(Debug, Deserialize)]
+pub struct AuthorizationModelPath {
+    pub store_id: String,
+    pub authorization_model_id: String,
+}
+
+async fn get_authorization_model<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(path): Path<AuthorizationModelPath>,
+) -> ApiResult<impl IntoResponse> {
+    let model = state
+        .storage
+        .get_authorization_model(&path.store_id, &path.authorization_model_id)
+        .await
+        .map_err(|e| match e {
+            StorageError::ModelNotFound { model_id } => {
+                ApiError::not_found(format!("authorization model not found: {}", model_id))
+            }
+            other => ApiError::from(other),
+        })?;
+
+    let response = AuthorizationModelResponse::try_from(model)?;
+    Ok(Json(serde_json::json!({
+        "authorization_model": response
+    })))
+}
+
+/// Default and maximum page size for listing authorization models (OpenFGA limit).
+const DEFAULT_AUTHORIZATION_MODELS_PAGE_SIZE: u32 = 50;
+
+async fn list_authorization_models<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(store_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ListAuthorizationModelsQuery>,
+) -> ApiResult<impl IntoResponse> {
+    // Use OpenFGA default (50) when not specified, clamp to max 50 when provided
+    let page_size = Some(
+        query
+            .page_size
+            .unwrap_or(DEFAULT_AUTHORIZATION_MODELS_PAGE_SIZE)
+            .min(DEFAULT_AUTHORIZATION_MODELS_PAGE_SIZE),
+    );
+
+    let pagination = PaginationOptions {
+        page_size,
+        continuation_token: query.continuation_token,
+    };
+
+    let result = state
+        .storage
+        .list_authorization_models_paginated(&store_id, &pagination)
+        .await?;
+
+    let models: Result<Vec<AuthorizationModelResponse>, ApiError> = result
+        .items
+        .into_iter()
+        .map(AuthorizationModelResponse::try_from)
+        .collect();
+
+    Ok(Json(ListAuthorizationModelsResponse {
+        authorization_models: models?,
+        continuation_token: result.continuation_token,
+    }))
 }
 
 // ============================================================

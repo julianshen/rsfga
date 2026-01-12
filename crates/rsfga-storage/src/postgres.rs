@@ -8,8 +8,9 @@ use tracing::{debug, instrument};
 
 use crate::error::{StorageError, StorageResult};
 use crate::traits::{
-    parse_user_filter, validate_store_id, validate_store_name, validate_tuple, DataStore,
-    PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter,
+    parse_continuation_token, parse_user_filter, validate_store_id, validate_store_name,
+    validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel,
+    StoredTuple, TupleFilter,
 };
 
 /// Maximum size of condition_context JSON in bytes (64 KB).
@@ -270,15 +271,38 @@ impl PostgresDataStore {
             message: format!("Failed to create unique index: {}", e),
         })?;
 
-        // Create indexes for common query patterns
+        // Index Strategy for Tuple Queries
+        //
+        // These indexes are designed to optimize the most common authorization query patterns:
+        //
+        // idx_tuples_store: Base index for store-scoped queries. Used when listing all tuples
+        // in a store or as a fallback when more specific indexes don't apply.
+        //
+        // idx_tuples_object: Optimizes "who has access to this object?" queries.
+        // Common in Check operations when resolving direct object relationships.
+        // Example: SELECT * FROM tuples WHERE store_id=$1 AND object_type=$2 AND object_id=$3
+        //
+        // idx_tuples_user: Optimizes "what can this user access?" queries.
+        // Used in ListObjects and reverse lookup operations.
+        // Example: SELECT * FROM tuples WHERE store_id=$1 AND user_type=$2 AND user_id=$3
+        //
+        // idx_tuples_relation: Optimizes queries filtering by relation on a specific object.
+        // Critical for Check operations resolving specific relations.
+        // Example: SELECT * FROM tuples WHERE store_id=$1 AND object_type=$2 AND object_id=$3 AND relation=$4
+        //
+        // idx_tuples_store_relation: Optimizes queries that filter by relation across all objects.
+        // Used for analytics and bulk operations on specific relation types.
+        // Example: SELECT * FROM tuples WHERE store_id=$1 AND relation=$2
+        //
+        // idx_tuples_condition: Partial index for conditional tuples (CEL conditions).
+        // Only indexes rows with non-NULL condition_name to save space.
+        // Used when evaluating or auditing conditional relationships.
         let indexes = [
             "CREATE INDEX IF NOT EXISTS idx_tuples_store ON tuples(store_id)",
             "CREATE INDEX IF NOT EXISTS idx_tuples_object ON tuples(store_id, object_type, object_id)",
             "CREATE INDEX IF NOT EXISTS idx_tuples_user ON tuples(store_id, user_type, user_id)",
             "CREATE INDEX IF NOT EXISTS idx_tuples_relation ON tuples(store_id, object_type, object_id, relation)",
-            // Additional index for queries filtering by relation without object_type
             "CREATE INDEX IF NOT EXISTS idx_tuples_store_relation ON tuples(store_id, relation)",
-            // Index for condition_name queries (e.g., finding all tuples with a specific condition)
             "CREATE INDEX IF NOT EXISTS idx_tuples_condition ON tuples(store_id, condition_name) WHERE condition_name IS NOT NULL",
         ];
 
@@ -290,6 +314,44 @@ impl PostgresDataStore {
                     message: format!("Failed to create index: {}", e),
                 })?;
         }
+
+        // Create authorization_models table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS authorization_models (
+                id VARCHAR(255) PRIMARY KEY,
+                store_id VARCHAR(255) NOT NULL,
+                schema_version VARCHAR(50) NOT NULL,
+                model_json TEXT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to create authorization_models table: {}", e),
+        })?;
+
+        // Index Strategy for Authorization Models
+        //
+        // idx_authorization_models_store: Composite index for efficient model listing.
+        // Ordering: (store_id, created_at DESC, id DESC) ensures:
+        //   1. Store-scoped queries are efficient (leading store_id column)
+        //   2. Results are returned newest-first without additional sorting
+        //   3. Deterministic ordering when timestamps are identical (id DESC tiebreaker)
+        //   4. Efficient OFFSET/LIMIT pagination as rows are pre-sorted
+        //
+        // Used by: list_authorization_models, get_latest_authorization_model
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_authorization_models_store ON authorization_models(store_id, created_at DESC, id DESC)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to create authorization_models index: {}", e),
+        })?;
 
         debug!("Database migrations completed successfully");
         Ok(())
@@ -463,11 +525,7 @@ impl DataStore for PostgresDataStore {
         pagination: &PaginationOptions,
     ) -> StorageResult<PaginatedResult<Store>> {
         let page_size = pagination.page_size.unwrap_or(100) as i64;
-        let offset: i64 = pagination
-            .continuation_token
-            .as_ref()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or(0);
+        let offset = parse_continuation_token(&pagination.continuation_token)?;
 
         let rows = sqlx::query(
             r#"
@@ -885,11 +943,7 @@ impl DataStore for PostgresDataStore {
         };
 
         let page_size = pagination.page_size.unwrap_or(100) as i64;
-        let offset: i64 = pagination
-            .continuation_token
-            .as_ref()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or(0);
+        let offset = parse_continuation_token(&pagination.continuation_token)?;
 
         // Build query with shared filter logic
         let mut builder: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
@@ -954,6 +1008,305 @@ impl DataStore for PostgresDataStore {
         // is not supported. However, write_tuples operations are atomic internally.
         // Users should use write_tuples with both writes and deletes for atomic operations.
         false
+    }
+
+    // Authorization model operations
+    //
+    // Note on SQL injection safety: All queries use sqlx parameterized bindings ($1, $2, etc.)
+    // which prevent SQL injection by design. Input validation below ensures bounds checking
+    // for defense-in-depth and consistent error handling.
+
+    #[instrument(skip(self, model))]
+    async fn write_authorization_model(
+        &self,
+        model: StoredAuthorizationModel,
+    ) -> StorageResult<StoredAuthorizationModel> {
+        // Validate input bounds (defense-in-depth, sqlx params prevent SQL injection)
+        validate_store_id(&model.store_id)?;
+
+        // Verify store exists (needed for proper error semantics vs generic FK error)
+        let store_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+            "#,
+        )
+        .bind(&model.store_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check store existence: {}", e),
+        })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: model.store_id.clone(),
+            });
+        }
+
+        // Insert the model
+        sqlx::query(
+            r#"
+            INSERT INTO authorization_models (id, store_id, schema_version, model_json, created_at)
+            VALUES ($1, $2, $3, $4, $5)
+            "#,
+        )
+        .bind(&model.id)
+        .bind(&model.store_id)
+        .bind(&model.schema_version)
+        .bind(&model.model_json)
+        .bind(model.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to write authorization model: {}", e),
+        })?;
+
+        Ok(model)
+    }
+
+    #[instrument(skip(self))]
+    async fn get_authorization_model(
+        &self,
+        store_id: &str,
+        model_id: &str,
+    ) -> StorageResult<StoredAuthorizationModel> {
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
+        // Verify store exists (needed to distinguish StoreNotFound vs ModelNotFound)
+        let store_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+            "#,
+        )
+        .bind(store_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check store existence: {}", e),
+        })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Fetch the model
+        let row = sqlx::query(
+            r#"
+            SELECT id, store_id, schema_version, model_json, created_at
+            FROM authorization_models
+            WHERE store_id = $1 AND id = $2
+            "#,
+        )
+        .bind(store_id)
+        .bind(model_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to get authorization model: {}", e),
+        })?;
+
+        match row {
+            Some(row) => Ok(StoredAuthorizationModel {
+                id: row.get("id"),
+                store_id: row.get("store_id"),
+                schema_version: row.get("schema_version"),
+                model_json: row.get("model_json"),
+                created_at: row.get("created_at"),
+            }),
+            None => Err(StorageError::ModelNotFound {
+                model_id: model_id.to_string(),
+            }),
+        }
+    }
+
+    #[instrument(skip(self))]
+    async fn list_authorization_models(
+        &self,
+        store_id: &str,
+    ) -> StorageResult<Vec<StoredAuthorizationModel>> {
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
+        // Verify store exists (needed to return StoreNotFound vs empty list)
+        let store_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+            "#,
+        )
+        .bind(store_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check store existence: {}", e),
+        })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Fetch all models for the store (newest first, deterministic ordering)
+        let rows = sqlx::query(
+            r#"
+            SELECT id, store_id, schema_version, model_json, created_at
+            FROM authorization_models
+            WHERE store_id = $1
+            ORDER BY created_at DESC, id DESC
+            "#,
+        )
+        .bind(store_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to list authorization models: {}", e),
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| StoredAuthorizationModel {
+                id: row.get("id"),
+                store_id: row.get("store_id"),
+                schema_version: row.get("schema_version"),
+                model_json: row.get("model_json"),
+                created_at: row.get("created_at"),
+            })
+            .collect())
+    }
+
+    #[instrument(skip(self, pagination))]
+    async fn list_authorization_models_paginated(
+        &self,
+        store_id: &str,
+        pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<StoredAuthorizationModel>> {
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
+        // Verify store exists (needed to return StoreNotFound vs empty list)
+        let store_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+            "#,
+        )
+        .bind(store_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check store existence: {}", e),
+        })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        let page_size = pagination.page_size.unwrap_or(100) as i64;
+        let offset = parse_continuation_token(&pagination.continuation_token)?;
+
+        // Fetch models with pagination (newest first, deterministic ordering)
+        let rows = sqlx::query(
+            r#"
+            SELECT id, store_id, schema_version, model_json, created_at
+            FROM authorization_models
+            WHERE store_id = $1
+            ORDER BY created_at DESC, id DESC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(store_id)
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to list authorization models: {}", e),
+        })?;
+
+        let items: Vec<StoredAuthorizationModel> = rows
+            .into_iter()
+            .map(|row| StoredAuthorizationModel {
+                id: row.get("id"),
+                store_id: row.get("store_id"),
+                schema_version: row.get("schema_version"),
+                model_json: row.get("model_json"),
+                created_at: row.get("created_at"),
+            })
+            .collect();
+
+        let next_offset = offset + items.len() as i64;
+        let continuation_token = if items.len() == page_size as usize {
+            Some(next_offset.to_string())
+        } else {
+            None
+        };
+
+        Ok(PaginatedResult {
+            items,
+            continuation_token,
+        })
+    }
+
+    #[instrument(skip(self))]
+    async fn get_latest_authorization_model(
+        &self,
+        store_id: &str,
+    ) -> StorageResult<StoredAuthorizationModel> {
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
+        // Verify store exists (needed to distinguish StoreNotFound vs ModelNotFound)
+        let store_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+            "#,
+        )
+        .bind(store_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check store existence: {}", e),
+        })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Fetch the most recent model (deterministic ordering)
+        let row = sqlx::query(
+            r#"
+            SELECT id, store_id, schema_version, model_json, created_at
+            FROM authorization_models
+            WHERE store_id = $1
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(store_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to get latest authorization model: {}", e),
+        })?;
+
+        match row {
+            Some(row) => Ok(StoredAuthorizationModel {
+                id: row.get("id"),
+                store_id: row.get("store_id"),
+                schema_version: row.get("schema_version"),
+                model_json: row.get("model_json"),
+                created_at: row.get("created_at"),
+            }),
+            None => Err(StorageError::ModelNotFound {
+                model_id: format!("latest (no models exist for store {})", store_id),
+            }),
+        }
     }
 }
 
