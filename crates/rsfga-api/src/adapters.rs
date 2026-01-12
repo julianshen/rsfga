@@ -127,10 +127,26 @@ impl<S: DataStore> DataStoreModelReader<S> {
 
                     // Parse relations if present
                     if let Some(rels) = type_def.get("relations").and_then(|v| v.as_object()) {
-                        for (rel_name, _rel_def) in rels {
-                            // For now, create a basic relation definition with direct assignment
-                            // Full relation parsing (union, intersection, etc.) will be added
-                            // when the model parser is fully integrated
+                        for (rel_name, rel_def) in rels {
+                            // TODO(#124): Full relation parsing (union, intersection, exclusion,
+                            // computedUserset, tupleToUserset) should be implemented when the
+                            // model parser is fully integrated. Currently only direct assignment
+                            // (Userset::This) is supported.
+                            //
+                            // LIMITATION: Complex relation definitions will be simplified to
+                            // direct assignment, which may cause incorrect authorization results
+                            // for non-trivial models. This adapter is intended for basic models
+                            // with simple direct tuple assignments.
+                            if !rel_def.is_object()
+                                || !rel_def.as_object().map_or(true, |o| o.is_empty())
+                            {
+                                tracing::warn!(
+                                    type_name = type_name,
+                                    relation = rel_name.as_str(),
+                                    "Complex relation definition found but not fully parsed; \
+                                     defaulting to direct assignment (Userset::This)"
+                                );
+                            }
                             relations.push(RelationDefinition {
                                 name: rel_name.clone(),
                                 type_constraints: vec![],
