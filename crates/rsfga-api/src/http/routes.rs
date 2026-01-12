@@ -378,10 +378,7 @@ impl TryFrom<StoredAuthorizationModel> for AuthorizationModelResponse {
             })?;
 
         // Filter out null conditions (treat JSON null as absent)
-        let conditions = parsed
-            .get("conditions")
-            .cloned()
-            .filter(|v| !v.is_null());
+        let conditions = parsed.get("conditions").cloned().filter(|v| !v.is_null());
 
         Ok(Self {
             id: model.id,
