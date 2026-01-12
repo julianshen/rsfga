@@ -9,7 +9,7 @@ use tracing::instrument;
 use crate::error::{StorageError, StorageResult};
 use crate::traits::{
     parse_user_filter, validate_store_id, validate_store_name, validate_tuple, DataStore,
-    PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter,
+    PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel, StoredTuple, TupleFilter,
 };
 
 /// In-memory implementation of DataStore.
@@ -19,6 +19,9 @@ use crate::traits::{
 pub struct MemoryDataStore {
     stores: DashMap<String, Store>,
     tuples: DashMap<String, Vec<StoredTuple>>,
+    /// Authorization models keyed by store_id.
+    /// Models are stored in insertion order (newest at the end).
+    authorization_models: DashMap<String, Vec<StoredAuthorizationModel>>,
 }
 
 impl MemoryDataStore {
@@ -83,6 +86,7 @@ impl DataStore for MemoryDataStore {
             });
         }
         self.tuples.remove(id);
+        self.authorization_models.remove(id);
         Ok(())
     }
 
@@ -328,6 +332,136 @@ impl DataStore for MemoryDataStore {
             items,
             continuation_token,
         })
+    }
+
+    // Authorization model operations
+
+    async fn write_authorization_model(
+        &self,
+        model: StoredAuthorizationModel,
+    ) -> StorageResult<StoredAuthorizationModel> {
+        // Verify store exists
+        if !self.stores.contains_key(&model.store_id) {
+            return Err(StorageError::StoreNotFound {
+                store_id: model.store_id.clone(),
+            });
+        }
+
+        // Add model to the store's list
+        let mut models = self
+            .authorization_models
+            .entry(model.store_id.clone())
+            .or_default();
+        models.push(model.clone());
+
+        Ok(model)
+    }
+
+    async fn get_authorization_model(
+        &self,
+        store_id: &str,
+        model_id: &str,
+    ) -> StorageResult<StoredAuthorizationModel> {
+        // Verify store exists
+        if !self.stores.contains_key(store_id) {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Find the model by ID
+        self.authorization_models
+            .get(store_id)
+            .and_then(|models| models.iter().find(|m| m.id == model_id).cloned())
+            .ok_or_else(|| StorageError::ModelNotFound {
+                model_id: model_id.to_string(),
+            })
+    }
+
+    async fn list_authorization_models(
+        &self,
+        store_id: &str,
+    ) -> StorageResult<Vec<StoredAuthorizationModel>> {
+        // Verify store exists
+        if !self.stores.contains_key(store_id) {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Return models in reverse order (newest first)
+        let models: Vec<StoredAuthorizationModel> = self
+            .authorization_models
+            .get(store_id)
+            .map(|models| models.iter().rev().cloned().collect())
+            .unwrap_or_default();
+
+        Ok(models)
+    }
+
+    async fn list_authorization_models_paginated(
+        &self,
+        store_id: &str,
+        pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<StoredAuthorizationModel>> {
+        // Verify store exists
+        if !self.stores.contains_key(store_id) {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Get models in reverse order (newest first)
+        let all_models: Vec<StoredAuthorizationModel> = self
+            .authorization_models
+            .get(store_id)
+            .map(|models| models.iter().rev().cloned().collect())
+            .unwrap_or_default();
+
+        let page_size = pagination.page_size.unwrap_or(100) as usize;
+        let offset: usize = pagination
+            .continuation_token
+            .as_ref()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(0);
+
+        let items: Vec<StoredAuthorizationModel> = all_models
+            .into_iter()
+            .skip(offset)
+            .take(page_size)
+            .collect();
+
+        let next_offset = offset + items.len();
+        let continuation_token = if items.len() == page_size {
+            Some(next_offset.to_string())
+        } else {
+            None
+        };
+
+        Ok(PaginatedResult {
+            items,
+            continuation_token,
+        })
+    }
+
+    async fn get_latest_authorization_model(
+        &self,
+        store_id: &str,
+    ) -> StorageResult<StoredAuthorizationModel> {
+        // Verify store exists
+        if !self.stores.contains_key(store_id) {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Get the last model (newest)
+        self.authorization_models
+            .get(store_id)
+            .and_then(|models| models.last().cloned())
+            .ok_or_else(|| StorageError::ModelNotFound {
+                model_id: "latest".to_string(),
+            })
     }
 }
 

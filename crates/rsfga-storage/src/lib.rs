@@ -32,7 +32,7 @@ pub use mysql::{MySQLConfig, MySQLDataStore};
 pub use postgres::{PostgresConfig, PostgresDataStore};
 pub use traits::{
     parse_user_filter, validate_store_id, validate_store_name, validate_tuple, DataStore,
-    PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter,
+    PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel, StoredTuple, TupleFilter,
 };
 
 // Re-export chrono types for timestamp handling

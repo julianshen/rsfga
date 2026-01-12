@@ -17,7 +17,7 @@ use tracing::{debug, instrument};
 use crate::error::{StorageError, StorageResult};
 use crate::traits::{
     parse_user_filter, validate_store_id, validate_store_name, validate_tuple, DataStore,
-    PaginatedResult, PaginationOptions, Store, StoredTuple, TupleFilter,
+    PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel, StoredTuple, TupleFilter,
 };
 
 /// MySQL configuration options.
@@ -213,6 +213,34 @@ impl MySQLDataStore {
             "idx_tuples_store_relation",
             "tuples",
             "(store_id, relation)",
+            false,
+        )
+        .await?;
+
+        // Create authorization_models table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS authorization_models (
+                id VARCHAR(255) PRIMARY KEY,
+                store_id VARCHAR(255) NOT NULL,
+                schema_version VARCHAR(50) NOT NULL,
+                model_json MEDIUMTEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to create authorization_models table: {}", e),
+        })?;
+
+        // Create index for listing models by store (newest first)
+        self.create_index_if_not_exists(
+            "idx_authorization_models_store",
+            "authorization_models",
+            "(store_id, created_at)",
             false,
         )
         .await?;
@@ -947,6 +975,290 @@ impl DataStore for MySQLDataStore {
         // Users should use write_tuples with both writes and deletes for atomic operations.
         // Callers MUST check this method before calling begin/commit/rollback_transaction.
         false
+    }
+
+    // Authorization model operations
+
+    #[instrument(skip(self, model))]
+    async fn write_authorization_model(
+        &self,
+        model: StoredAuthorizationModel,
+    ) -> StorageResult<StoredAuthorizationModel> {
+        // Verify store exists
+        let store_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+            "#,
+        )
+        .bind(&model.store_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check store existence: {}", e),
+        })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: model.store_id.clone(),
+            });
+        }
+
+        // Insert the model
+        sqlx::query(
+            r#"
+            INSERT INTO authorization_models (id, store_id, schema_version, model_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&model.id)
+        .bind(&model.store_id)
+        .bind(&model.schema_version)
+        .bind(&model.model_json)
+        .bind(model.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to write authorization model: {}", e),
+        })?;
+
+        Ok(model)
+    }
+
+    #[instrument(skip(self))]
+    async fn get_authorization_model(
+        &self,
+        store_id: &str,
+        model_id: &str,
+    ) -> StorageResult<StoredAuthorizationModel> {
+        // Verify store exists
+        let store_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+            "#,
+        )
+        .bind(store_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check store existence: {}", e),
+        })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Fetch the model
+        let row = sqlx::query(
+            r#"
+            SELECT id, store_id, schema_version, model_json, created_at
+            FROM authorization_models
+            WHERE store_id = ? AND id = ?
+            "#,
+        )
+        .bind(store_id)
+        .bind(model_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to get authorization model: {}", e),
+        })?;
+
+        match row {
+            Some(row) => Ok(StoredAuthorizationModel {
+                id: row.get("id"),
+                store_id: row.get("store_id"),
+                schema_version: row.get("schema_version"),
+                model_json: row.get("model_json"),
+                created_at: row.get("created_at"),
+            }),
+            None => Err(StorageError::ModelNotFound {
+                model_id: model_id.to_string(),
+            }),
+        }
+    }
+
+    #[instrument(skip(self))]
+    async fn list_authorization_models(
+        &self,
+        store_id: &str,
+    ) -> StorageResult<Vec<StoredAuthorizationModel>> {
+        // Verify store exists
+        let store_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+            "#,
+        )
+        .bind(store_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check store existence: {}", e),
+        })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Fetch all models for the store (newest first)
+        let rows = sqlx::query(
+            r#"
+            SELECT id, store_id, schema_version, model_json, created_at
+            FROM authorization_models
+            WHERE store_id = ?
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(store_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to list authorization models: {}", e),
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| StoredAuthorizationModel {
+                id: row.get("id"),
+                store_id: row.get("store_id"),
+                schema_version: row.get("schema_version"),
+                model_json: row.get("model_json"),
+                created_at: row.get("created_at"),
+            })
+            .collect())
+    }
+
+    #[instrument(skip(self, pagination))]
+    async fn list_authorization_models_paginated(
+        &self,
+        store_id: &str,
+        pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<StoredAuthorizationModel>> {
+        // Verify store exists
+        let store_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+            "#,
+        )
+        .bind(store_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check store existence: {}", e),
+        })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        let page_size = pagination.page_size.unwrap_or(100) as i64;
+        let offset: i64 = pagination
+            .continuation_token
+            .as_ref()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(0);
+
+        // Fetch models with pagination (newest first)
+        let rows = sqlx::query(
+            r#"
+            SELECT id, store_id, schema_version, model_json, created_at
+            FROM authorization_models
+            WHERE store_id = ?
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            "#,
+        )
+        .bind(store_id)
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to list authorization models: {}", e),
+        })?;
+
+        let items: Vec<StoredAuthorizationModel> = rows
+            .into_iter()
+            .map(|row| StoredAuthorizationModel {
+                id: row.get("id"),
+                store_id: row.get("store_id"),
+                schema_version: row.get("schema_version"),
+                model_json: row.get("model_json"),
+                created_at: row.get("created_at"),
+            })
+            .collect();
+
+        let next_offset = offset + items.len() as i64;
+        let continuation_token = if items.len() == page_size as usize {
+            Some(next_offset.to_string())
+        } else {
+            None
+        };
+
+        Ok(PaginatedResult {
+            items,
+            continuation_token,
+        })
+    }
+
+    #[instrument(skip(self))]
+    async fn get_latest_authorization_model(
+        &self,
+        store_id: &str,
+    ) -> StorageResult<StoredAuthorizationModel> {
+        // Verify store exists
+        let store_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+            "#,
+        )
+        .bind(store_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check store existence: {}", e),
+        })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Fetch the most recent model
+        let row = sqlx::query(
+            r#"
+            SELECT id, store_id, schema_version, model_json, created_at
+            FROM authorization_models
+            WHERE store_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(store_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to get latest authorization model: {}", e),
+        })?;
+
+        match row {
+            Some(row) => Ok(StoredAuthorizationModel {
+                id: row.get("id"),
+                store_id: row.get("store_id"),
+                schema_version: row.get("schema_version"),
+                model_json: row.get("model_json"),
+                created_at: row.get("created_at"),
+            }),
+            None => Err(StorageError::ModelNotFound {
+                model_id: "latest".to_string(),
+            }),
+        }
     }
 }
 

@@ -842,3 +842,216 @@ async fn test_check_handles_missing_contextual_tuples() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["allowed"], true);
 }
+
+// ============================================================
+// Authorization Model Tests (Issue #117)
+// ============================================================
+
+/// Test: POST /stores/{store_id}/authorization-models creates a model
+#[tokio::test]
+async fn test_write_authorization_model_returns_201() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/authorization-models")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "schema_version": "1.1",
+                        "type_definitions": [
+                            {
+                                "type": "user"
+                            },
+                            {
+                                "type": "document",
+                                "relations": {
+                                    "viewer": {
+                                        "this": {}
+                                    }
+                                },
+                                "metadata": {
+                                    "relations": {
+                                        "viewer": {
+                                            "directly_related_user_types": [
+                                                {"type": "user"}
+                                            ]
+                                        }
+                                    }
+                                }
+                            }
+                        ]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Verify response contains authorization_model_id in ULID format
+    let model_id = json["authorization_model_id"]
+        .as_str()
+        .expect("authorization_model_id should be a string");
+    assert_eq!(model_id.len(), 26, "Model ID should be a ULID (26 chars)");
+}
+
+/// Test: GET /stores/{store_id}/authorization-models lists models
+#[tokio::test]
+async fn test_list_authorization_models_returns_200() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write a model directly to storage
+    let model = rsfga_storage::StoredAuthorizationModel::new(
+        "01HXK0ABCDEFGHIJKLMNOPQRST",
+        "test-store",
+        "1.1",
+        r#"{"type_definitions": [{"type": "user"}]}"#,
+    );
+    storage.write_authorization_model(model).await.unwrap();
+
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/stores/test-store/authorization-models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let models = json["authorization_models"]
+        .as_array()
+        .expect("authorization_models should be an array");
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["id"], "01HXK0ABCDEFGHIJKLMNOPQRST");
+    assert_eq!(models[0]["schema_version"], "1.1");
+}
+
+/// Test: GET /stores/{store_id}/authorization-models/{id} returns a specific model
+#[tokio::test]
+async fn test_get_authorization_model_returns_200() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write a model directly to storage
+    let model = rsfga_storage::StoredAuthorizationModel::new(
+        "01HXK0ABCDEFGHIJKLMNOPQRST",
+        "test-store",
+        "1.1",
+        r#"{"type_definitions": [{"type": "user"}], "conditions": null}"#,
+    );
+    storage.write_authorization_model(model).await.unwrap();
+
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/stores/test-store/authorization-models/01HXK0ABCDEFGHIJKLMNOPQRST")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let model = &json["authorization_model"];
+    assert_eq!(model["id"], "01HXK0ABCDEFGHIJKLMNOPQRST");
+    assert_eq!(model["schema_version"], "1.1");
+    assert!(model["type_definitions"].is_array());
+}
+
+/// Test: GET /stores/{store_id}/authorization-models/{id} returns 404 for nonexistent model
+#[tokio::test]
+async fn test_get_nonexistent_authorization_model_returns_404() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/stores/test-store/authorization-models/nonexistent")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Test: POST /stores/{store_id}/authorization-models returns 404 for nonexistent store
+#[tokio::test]
+async fn test_write_authorization_model_to_nonexistent_store_returns_404() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/nonexistent-store/authorization-models")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "schema_version": "1.1",
+                        "type_definitions": [{"type": "user"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}

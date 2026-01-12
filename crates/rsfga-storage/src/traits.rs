@@ -392,6 +392,44 @@ pub struct Store {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Stored authorization model.
+///
+/// Authorization models define the type system and relations for a store.
+/// The model data is stored as a JSON string to preserve the complex nested
+/// structure of type definitions and conditions.
+#[derive(Debug, Clone)]
+pub struct StoredAuthorizationModel {
+    /// Unique identifier for this model (ULID format).
+    pub id: String,
+    /// ID of the store this model belongs to.
+    pub store_id: String,
+    /// Schema version (e.g., "1.1").
+    pub schema_version: String,
+    /// JSON-serialized type definitions and conditions.
+    /// This preserves the full OpenFGA model structure.
+    pub model_json: String,
+    /// When this model was created.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl StoredAuthorizationModel {
+    /// Creates a new StoredAuthorizationModel.
+    pub fn new(
+        id: impl Into<String>,
+        store_id: impl Into<String>,
+        schema_version: impl Into<String>,
+        model_json: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            store_id: store_id.into(),
+            schema_version: schema_version.into(),
+            model_json: model_json.into(),
+            created_at: chrono::Utc::now(),
+        }
+    }
+}
+
 /// Options for paginated queries.
 #[derive(Debug, Clone, Default)]
 pub struct PaginationOptions {
@@ -544,6 +582,66 @@ pub trait DataStore: Send + Sync + 'static {
     fn supports_transactions(&self) -> bool {
         false
     }
+
+    // Authorization model operations
+
+    /// Writes an authorization model to storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
+    async fn write_authorization_model(
+        &self,
+        model: StoredAuthorizationModel,
+    ) -> StorageResult<StoredAuthorizationModel>;
+
+    /// Gets an authorization model by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
+    /// Returns `StorageError::AuthorizationModelNotFound` if the model doesn't exist.
+    async fn get_authorization_model(
+        &self,
+        store_id: &str,
+        model_id: &str,
+    ) -> StorageResult<StoredAuthorizationModel>;
+
+    /// Lists all authorization models for a store.
+    ///
+    /// Returns models ordered by creation time (newest first).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
+    async fn list_authorization_models(
+        &self,
+        store_id: &str,
+    ) -> StorageResult<Vec<StoredAuthorizationModel>>;
+
+    /// Lists authorization models with pagination support.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
+    async fn list_authorization_models_paginated(
+        &self,
+        store_id: &str,
+        pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<StoredAuthorizationModel>>;
+
+    /// Gets the latest authorization model for a store.
+    ///
+    /// Returns the most recently created model.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
+    /// Returns `StorageError::AuthorizationModelNotFound` if no models exist.
+    async fn get_latest_authorization_model(
+        &self,
+        store_id: &str,
+    ) -> StorageResult<StoredAuthorizationModel>;
 }
 
 #[cfg(test)]

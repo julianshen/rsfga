@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::error;
 
-use rsfga_storage::{DataStore, StorageError};
+use rsfga_storage::{DataStore, PaginationOptions, StorageError, StoredAuthorizationModel};
 
 use super::state::AppState;
 use crate::observability::{metrics_handler, MetricsState};
@@ -35,6 +35,15 @@ fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
             get(get_store::<S>)
                 .put(update_store::<S>)
                 .delete(delete_store::<S>),
+        )
+        // Authorization model management
+        .route(
+            "/stores/:store_id/authorization-models",
+            post(write_authorization_model::<S>).get(list_authorization_models::<S>),
+        )
+        .route(
+            "/stores/:store_id/authorization-models/:authorization_model_id",
+            get(get_authorization_model::<S>),
         )
         // Authorization operations
         .route("/stores/:store_id/check", post(check::<S>))
@@ -309,6 +318,174 @@ async fn delete_store<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     state.storage.delete_store(&store_id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ============================================================
+// Authorization Model Management
+// ============================================================
+
+/// Request body for writing an authorization model.
+/// Matches OpenFGA's WriteAuthorizationModel request format.
+#[derive(Debug, Deserialize)]
+pub struct WriteAuthorizationModelRequest {
+    /// Schema version (e.g., "1.1").
+    #[serde(default = "default_schema_version")]
+    pub schema_version: String,
+    /// Type definitions for the model.
+    pub type_definitions: Vec<serde_json::Value>,
+    /// Optional conditions for the model.
+    #[serde(default)]
+    pub conditions: Option<serde_json::Value>,
+}
+
+fn default_schema_version() -> String {
+    "1.1".to_string()
+}
+
+/// Response for write authorization model.
+#[derive(Debug, Serialize)]
+pub struct WriteAuthorizationModelResponse {
+    pub authorization_model_id: String,
+}
+
+/// Response for a single authorization model.
+#[derive(Debug, Serialize)]
+pub struct AuthorizationModelResponse {
+    pub id: String,
+    pub schema_version: String,
+    pub type_definitions: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<serde_json::Value>,
+}
+
+impl TryFrom<StoredAuthorizationModel> for AuthorizationModelResponse {
+    type Error = ApiError;
+
+    fn try_from(model: StoredAuthorizationModel) -> Result<Self, Self::Error> {
+        // Parse the stored JSON back into structured data
+        let parsed: serde_json::Value = serde_json::from_str(&model.model_json).map_err(|e| {
+            error!("Failed to parse stored model JSON: {}", e);
+            ApiError::internal_error("Failed to parse authorization model")
+        })?;
+
+        let type_definitions = parsed
+            .get("type_definitions")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let conditions = parsed.get("conditions").cloned();
+
+        Ok(Self {
+            id: model.id,
+            schema_version: model.schema_version,
+            type_definitions,
+            conditions,
+        })
+    }
+}
+
+/// Response for listing authorization models.
+#[derive(Debug, Serialize)]
+pub struct ListAuthorizationModelsResponse {
+    pub authorization_models: Vec<AuthorizationModelResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_token: Option<String>,
+}
+
+/// Query parameters for listing authorization models.
+#[derive(Debug, Deserialize)]
+pub struct ListAuthorizationModelsQuery {
+    #[serde(default)]
+    pub page_size: Option<u32>,
+    #[serde(default)]
+    pub continuation_token: Option<String>,
+}
+
+async fn write_authorization_model<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(store_id): Path<String>,
+    Json(body): Json<WriteAuthorizationModelRequest>,
+) -> ApiResult<impl IntoResponse> {
+    // Generate a new ULID for the model
+    let model_id = ulid::Ulid::new().to_string();
+
+    // Serialize the model data to JSON for storage
+    let model_json = serde_json::json!({
+        "type_definitions": body.type_definitions,
+        "conditions": body.conditions,
+    });
+
+    let model = StoredAuthorizationModel::new(
+        &model_id,
+        &store_id,
+        &body.schema_version,
+        model_json.to_string(),
+    );
+
+    state.storage.write_authorization_model(model).await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(WriteAuthorizationModelResponse {
+            authorization_model_id: model_id,
+        }),
+    ))
+}
+
+/// Path parameters for authorization model routes.
+#[derive(Debug, Deserialize)]
+pub struct AuthorizationModelPath {
+    pub store_id: String,
+    pub authorization_model_id: String,
+}
+
+async fn get_authorization_model<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(path): Path<AuthorizationModelPath>,
+) -> ApiResult<impl IntoResponse> {
+    let model = state
+        .storage
+        .get_authorization_model(&path.store_id, &path.authorization_model_id)
+        .await
+        .map_err(|e| match e {
+            StorageError::ModelNotFound { model_id } => {
+                ApiError::not_found(format!("authorization model not found: {}", model_id))
+            }
+            other => ApiError::from(other),
+        })?;
+
+    let response = AuthorizationModelResponse::try_from(model)?;
+    Ok(Json(serde_json::json!({
+        "authorization_model": response
+    })))
+}
+
+async fn list_authorization_models<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(store_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ListAuthorizationModelsQuery>,
+) -> ApiResult<impl IntoResponse> {
+    let pagination = PaginationOptions {
+        page_size: query.page_size,
+        continuation_token: query.continuation_token,
+    };
+
+    let result = state
+        .storage
+        .list_authorization_models_paginated(&store_id, &pagination)
+        .await?;
+
+    let models: Result<Vec<AuthorizationModelResponse>, ApiError> = result
+        .items
+        .into_iter()
+        .map(AuthorizationModelResponse::try_from)
+        .collect();
+
+    Ok(Json(ListAuthorizationModelsResponse {
+        authorization_models: models?,
+        continuation_token: result.continuation_token,
+    }))
 }
 
 // ============================================================
