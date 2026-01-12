@@ -85,6 +85,9 @@ fn storage_error_to_status(err: StorageError) -> Status {
 }
 
 /// Converts a BatchCheckError to a tonic Status.
+///
+/// Logs internal errors with structured context to aid debugging while
+/// returning sanitized error messages to clients.
 fn batch_check_error_to_status(err: rsfga_server::handlers::batch::BatchCheckError) -> Status {
     use rsfga_server::handlers::batch::BatchCheckError;
     match err {
@@ -96,7 +99,11 @@ fn batch_check_error_to_status(err: rsfga_server::handlers::batch::BatchCheckErr
         BatchCheckError::InvalidCheck { index, message } => {
             Status::invalid_argument(format!("invalid check at index {}: {}", index, message))
         }
-        BatchCheckError::DomainError(msg) => Status::internal(format!("check error: {}", msg)),
+        BatchCheckError::DomainError(msg) => {
+            // Log internal errors for debugging - these indicate unexpected failures
+            tracing::error!(error = %msg, "Domain error in gRPC batch check");
+            Status::internal(format!("check error: {}", msg))
+        }
     }
 }
 

@@ -191,6 +191,9 @@ impl From<StorageError> for ApiError {
 }
 
 /// Converts a BatchCheckError to an ApiError.
+///
+/// Logs internal errors with structured context to aid debugging while
+/// returning sanitized error messages to clients.
 fn batch_check_error_to_api_error(err: rsfga_server::handlers::batch::BatchCheckError) -> ApiError {
     use rsfga_server::handlers::batch::BatchCheckError;
     match err {
@@ -203,6 +206,8 @@ fn batch_check_error_to_api_error(err: rsfga_server::handlers::batch::BatchCheck
             ApiError::invalid_input(format!("invalid check at index {}: {}", index, message))
         }
         BatchCheckError::DomainError(msg) => {
+            // Log internal errors for debugging - these indicate unexpected failures
+            tracing::error!(error = %msg, "Domain error in HTTP batch check");
             ApiError::internal_error(format!("check error: {}", msg))
         }
     }
