@@ -411,6 +411,11 @@ async fn write_authorization_model<S: DataStore>(
     Path(store_id): Path<String>,
     Json(body): Json<WriteAuthorizationModelRequest>,
 ) -> ApiResult<impl IntoResponse> {
+    // Validate type_definitions is not empty (OpenFGA requirement)
+    if body.type_definitions.is_empty() {
+        return Err(ApiError::invalid_input("type_definitions cannot be empty"));
+    }
+
     // Generate a new ULID for the model
     let model_id = ulid::Ulid::new().to_string();
 
@@ -470,13 +475,21 @@ async fn get_authorization_model<S: DataStore>(
     })))
 }
 
+/// Maximum page size for listing authorization models (OpenFGA limit).
+const MAX_AUTHORIZATION_MODELS_PAGE_SIZE: u32 = 50;
+
 async fn list_authorization_models<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<ListAuthorizationModelsQuery>,
 ) -> ApiResult<impl IntoResponse> {
+    // Clamp page_size to OpenFGA limit (max 50 models per page)
+    let page_size = query
+        .page_size
+        .map(|ps| ps.min(MAX_AUTHORIZATION_MODELS_PAGE_SIZE));
+
     let pagination = PaginationOptions {
-        page_size: query.page_size,
+        page_size,
         continuation_token: query.continuation_token,
     };
 

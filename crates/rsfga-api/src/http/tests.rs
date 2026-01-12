@@ -1055,3 +1055,44 @@ async fn test_write_authorization_model_to_nonexistent_store_returns_404() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+/// Test: POST /stores/{store_id}/authorization-models returns 400 for empty type_definitions
+#[tokio::test]
+async fn test_write_authorization_model_with_empty_type_definitions_returns_400() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/authorization-models")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "schema_version": "1.1",
+                        "type_definitions": []
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["message"]
+        .as_str()
+        .unwrap()
+        .contains("type_definitions cannot be empty"));
+}
