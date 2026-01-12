@@ -194,26 +194,26 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // Store correlation_ids for mapping back to response
-        // We need to maintain the order since BatchCheckHandler returns results in order
-        let correlation_ids: Vec<String> = req
-            .checks
-            .iter()
-            .map(|item| item.correlation_id.clone())
-            .collect();
+        // Convert gRPC request to server-layer request, validating each check
+        // We process correlation_ids and server_checks in lockstep to ensure correct mapping
+        let mut correlation_ids: Vec<String> = Vec::with_capacity(req.checks.len());
+        let mut server_checks: Vec<ServerBatchCheckItem> = Vec::with_capacity(req.checks.len());
 
-        // Convert gRPC request to server-layer request
-        let server_checks: Vec<ServerBatchCheckItem> = req
-            .checks
-            .into_iter()
-            .filter_map(|item| {
-                item.tuple_key.map(|tk| ServerBatchCheckItem {
-                    user: tk.user,
-                    relation: tk.relation,
-                    object: tk.object,
-                })
-            })
-            .collect();
+        for (index, item) in req.checks.into_iter().enumerate() {
+            let tuple_key = item.tuple_key.ok_or_else(|| {
+                Status::invalid_argument(format!(
+                    "tuple_key is required for check at index {}",
+                    index
+                ))
+            })?;
+
+            correlation_ids.push(item.correlation_id);
+            server_checks.push(ServerBatchCheckItem {
+                user: tuple_key.user,
+                relation: tuple_key.relation,
+                object: tuple_key.object,
+            });
+        }
 
         let server_request = ServerBatchCheckRequest::new(req.store_id, server_checks);
 

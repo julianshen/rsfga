@@ -206,6 +206,54 @@ async fn test_batch_check_rpc_works_correctly() {
     assert!(!result.result.get("check-2").unwrap().allowed);
 }
 
+/// Test: BatchCheck RPC rejects checks with missing tuple_key
+///
+/// Verifies that a batch check with a missing tuple_key returns an invalid_argument error.
+#[tokio::test]
+async fn test_batch_check_rpc_rejects_missing_tuple_key() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Submit a batch with one valid check and one missing tuple_key
+    let request = Request::new(BatchCheckRequest {
+        store_id: "test-store".to_string(),
+        checks: vec![
+            BatchCheckItem {
+                tuple_key: Some(TupleKey {
+                    user: "user:alice".to_string(),
+                    relation: "viewer".to_string(),
+                    object: "document:doc1".to_string(),
+                    condition: None,
+                }),
+                contextual_tuples: None,
+                context: None,
+                correlation_id: "check-1".to_string(),
+            },
+            BatchCheckItem {
+                tuple_key: None, // Missing tuple_key!
+                contextual_tuples: None,
+                context: None,
+                correlation_id: "check-2".to_string(),
+            },
+        ],
+        authorization_model_id: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.batch_check(request).await;
+    assert!(response.is_err());
+
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("tuple_key is required"));
+    assert!(status.message().contains("index 1"));
+}
+
 /// Test: Write RPC works correctly
 ///
 /// Verifies the Write RPC can create and delete tuples.
