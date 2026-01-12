@@ -986,13 +986,20 @@ impl DataStore for PostgresDataStore {
     }
 
     // Authorization model operations
+    //
+    // Note on SQL injection safety: All queries use sqlx parameterized bindings ($1, $2, etc.)
+    // which prevent SQL injection by design. Input validation below ensures bounds checking
+    // for defense-in-depth and consistent error handling.
 
     #[instrument(skip(self, model))]
     async fn write_authorization_model(
         &self,
         model: StoredAuthorizationModel,
     ) -> StorageResult<StoredAuthorizationModel> {
-        // Verify store exists
+        // Validate input bounds (defense-in-depth, sqlx params prevent SQL injection)
+        validate_store_id(&model.store_id)?;
+
+        // Verify store exists (needed for proper error semantics vs generic FK error)
         let store_exists: bool = sqlx::query_scalar(
             r#"
             SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
@@ -1038,7 +1045,10 @@ impl DataStore for PostgresDataStore {
         store_id: &str,
         model_id: &str,
     ) -> StorageResult<StoredAuthorizationModel> {
-        // Verify store exists
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
+        // Verify store exists (needed to distinguish StoreNotFound vs ModelNotFound)
         let store_exists: bool = sqlx::query_scalar(
             r#"
             SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
@@ -1092,7 +1102,10 @@ impl DataStore for PostgresDataStore {
         &self,
         store_id: &str,
     ) -> StorageResult<Vec<StoredAuthorizationModel>> {
-        // Verify store exists
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
+        // Verify store exists (needed to return StoreNotFound vs empty list)
         let store_exists: bool = sqlx::query_scalar(
             r#"
             SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
@@ -1145,7 +1158,10 @@ impl DataStore for PostgresDataStore {
         store_id: &str,
         pagination: &PaginationOptions,
     ) -> StorageResult<PaginatedResult<StoredAuthorizationModel>> {
-        // Verify store exists
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
+        // Verify store exists (needed to return StoreNotFound vs empty list)
         let store_exists: bool = sqlx::query_scalar(
             r#"
             SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
@@ -1219,7 +1235,10 @@ impl DataStore for PostgresDataStore {
         &self,
         store_id: &str,
     ) -> StorageResult<StoredAuthorizationModel> {
-        // Verify store exists
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
+        // Verify store exists (needed to distinguish StoreNotFound vs ModelNotFound)
         let store_exists: bool = sqlx::query_scalar(
             r#"
             SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)

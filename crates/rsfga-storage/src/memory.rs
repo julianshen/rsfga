@@ -341,6 +341,9 @@ impl DataStore for MemoryDataStore {
         &self,
         model: StoredAuthorizationModel,
     ) -> StorageResult<StoredAuthorizationModel> {
+        // Validate input bounds (consistent with DB backends)
+        validate_store_id(&model.store_id)?;
+
         // Verify store exists
         if !self.stores.contains_key(&model.store_id) {
             return Err(StorageError::StoreNotFound {
@@ -371,6 +374,9 @@ impl DataStore for MemoryDataStore {
         store_id: &str,
         model_id: &str,
     ) -> StorageResult<StoredAuthorizationModel> {
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
         // Verify store exists
         if !self.stores.contains_key(store_id) {
             return Err(StorageError::StoreNotFound {
@@ -391,6 +397,9 @@ impl DataStore for MemoryDataStore {
         &self,
         store_id: &str,
     ) -> StorageResult<Vec<StoredAuthorizationModel>> {
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
         // Verify store exists
         if !self.stores.contains_key(store_id) {
             return Err(StorageError::StoreNotFound {
@@ -420,6 +429,9 @@ impl DataStore for MemoryDataStore {
         store_id: &str,
         pagination: &PaginationOptions,
     ) -> StorageResult<PaginatedResult<StoredAuthorizationModel>> {
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
         // Verify store exists
         if !self.stores.contains_key(store_id) {
             return Err(StorageError::StoreNotFound {
@@ -471,6 +483,9 @@ impl DataStore for MemoryDataStore {
         &self,
         store_id: &str,
     ) -> StorageResult<StoredAuthorizationModel> {
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
         // Verify store exists
         if !self.stores.contains_key(store_id) {
             return Err(StorageError::StoreNotFound {
