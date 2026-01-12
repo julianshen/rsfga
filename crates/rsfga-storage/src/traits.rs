@@ -600,7 +600,7 @@ pub trait DataStore: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
-    /// Returns `StorageError::AuthorizationModelNotFound` if the model doesn't exist.
+    /// Returns `StorageError::ModelNotFound` if the model doesn't exist.
     async fn get_authorization_model(
         &self,
         store_id: &str,
@@ -609,7 +609,7 @@ pub trait DataStore: Send + Sync + 'static {
 
     /// Lists all authorization models for a store.
     ///
-    /// Returns models ordered by creation time (newest first).
+    /// Returns models ordered by `created_at DESC, id DESC` (newest first, deterministic).
     ///
     /// # Errors
     ///
@@ -620,6 +620,8 @@ pub trait DataStore: Send + Sync + 'static {
     ) -> StorageResult<Vec<StoredAuthorizationModel>>;
 
     /// Lists authorization models with pagination support.
+    ///
+    /// Returns models ordered by `created_at DESC, id DESC` (newest first, deterministic).
     ///
     /// # Errors
     ///
@@ -632,12 +634,13 @@ pub trait DataStore: Send + Sync + 'static {
 
     /// Gets the latest authorization model for a store.
     ///
-    /// Returns the most recently created model.
+    /// Returns the most recently created model (ordered by `created_at DESC, id DESC`
+    /// for deterministic results).
     ///
     /// # Errors
     ///
     /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
-    /// Returns `StorageError::AuthorizationModelNotFound` if no models exist.
+    /// Returns `StorageError::ModelNotFound` if no models exist.
     async fn get_latest_authorization_model(
         &self,
         store_id: &str,

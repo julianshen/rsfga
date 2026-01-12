@@ -20,7 +20,8 @@ pub struct MemoryDataStore {
     stores: DashMap<String, Store>,
     tuples: DashMap<String, Vec<StoredTuple>>,
     /// Authorization models keyed by store_id.
-    /// Models are stored in insertion order (newest at the end).
+    /// Models are stored in insertion order (newest at the end), but list methods
+    /// return them newest-first (reversed) for API consistency.
     authorization_models: DashMap<String, Vec<StoredAuthorizationModel>>,
 }
 
@@ -460,7 +461,7 @@ impl DataStore for MemoryDataStore {
             .get(store_id)
             .and_then(|models| models.last().cloned())
             .ok_or_else(|| StorageError::ModelNotFound {
-                model_id: "latest".to_string(),
+                model_id: format!("latest (no models exist for store {})", store_id),
             })
     }
 }

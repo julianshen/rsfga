@@ -372,9 +372,16 @@ impl TryFrom<StoredAuthorizationModel> for AuthorizationModelResponse {
             .get("type_definitions")
             .and_then(|v| v.as_array())
             .cloned()
-            .unwrap_or_default();
+            .ok_or_else(|| {
+                error!("Stored model missing type_definitions: {}", model.id);
+                ApiError::internal_error("Stored authorization model is invalid")
+            })?;
 
-        let conditions = parsed.get("conditions").cloned();
+        // Filter out null conditions (treat JSON null as absent)
+        let conditions = parsed
+            .get("conditions")
+            .cloned()
+            .filter(|v| !v.is_null());
 
         Ok(Self {
             id: model.id,
@@ -410,11 +417,16 @@ async fn write_authorization_model<S: DataStore>(
     // Generate a new ULID for the model
     let model_id = ulid::Ulid::new().to_string();
 
-    // Serialize the model data to JSON for storage
-    let model_json = serde_json::json!({
+    // Serialize the model data to JSON for storage (omit conditions if absent/null)
+    let mut model_json = serde_json::json!({
         "type_definitions": body.type_definitions,
-        "conditions": body.conditions,
     });
+    // Only include conditions if present and not null (OpenFGA compatibility)
+    if let Some(ref conditions) = body.conditions {
+        if !conditions.is_null() {
+            model_json["conditions"] = conditions.clone();
+        }
+    }
 
     let model = StoredAuthorizationModel::new(
         &model_id,

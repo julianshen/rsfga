@@ -236,11 +236,11 @@ impl MySQLDataStore {
             message: format!("Failed to create authorization_models table: {}", e),
         })?;
 
-        // Create index for listing models by store (newest first)
+        // Create composite index for listing models by store (newest first, deterministic)
         self.create_index_if_not_exists(
             "idx_authorization_models_store",
             "authorization_models",
-            "(store_id, created_at)",
+            "(store_id, created_at, id)",
             false,
         )
         .await?;
@@ -1103,13 +1103,13 @@ impl DataStore for MySQLDataStore {
             });
         }
 
-        // Fetch all models for the store (newest first)
+        // Fetch all models for the store (newest first, deterministic ordering)
         let rows = sqlx::query(
             r#"
             SELECT id, store_id, schema_version, model_json, created_at
             FROM authorization_models
             WHERE store_id = ?
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             "#,
         )
         .bind(store_id)
@@ -1163,13 +1163,13 @@ impl DataStore for MySQLDataStore {
             .and_then(|t| t.parse().ok())
             .unwrap_or(0);
 
-        // Fetch models with pagination (newest first)
+        // Fetch models with pagination (newest first, deterministic ordering)
         let rows = sqlx::query(
             r#"
             SELECT id, store_id, schema_version, model_json, created_at
             FROM authorization_models
             WHERE store_id = ?
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT ? OFFSET ?
             "#,
         )
@@ -1230,13 +1230,13 @@ impl DataStore for MySQLDataStore {
             });
         }
 
-        // Fetch the most recent model
+        // Fetch the most recent model (deterministic ordering)
         let row = sqlx::query(
             r#"
             SELECT id, store_id, schema_version, model_json, created_at
             FROM authorization_models
             WHERE store_id = ?
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT 1
             "#,
         )
@@ -1256,7 +1256,7 @@ impl DataStore for MySQLDataStore {
                 created_at: row.get("created_at"),
             }),
             None => Err(StorageError::ModelNotFound {
-                model_id: "latest".to_string(),
+                model_id: format!("latest (no models exist for store {})", store_id),
             }),
         }
     }
