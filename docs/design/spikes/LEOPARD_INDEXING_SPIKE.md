@@ -586,7 +586,7 @@ impl PrecomputeWorker {
             &check.object,
         ).await?;
 
-        // Store in Valkey
+        // Store in Valkey (L2)
         let cache_key = format!(
             "check:{}:{}#{}@{}",
             check.store_id,
@@ -609,9 +609,75 @@ impl PrecomputeWorker {
             )
             .await?;
 
+        // Invalidate hot cache (L1) across all API pods
+        // This ensures pods don't serve stale data from their local cache
+        self.nats
+            .publish(
+                format!("rsfga.cache.invalidate.{}", check.store_id),
+                serde_json::to_vec(&CacheInvalidationEvent::Check {
+                    cache_key: cache_key.clone(),
+                })?.into(),
+            )
+            .await?;
+
         // Update metrics
         self.metrics.precompute_duration.observe(start.elapsed().as_secs_f64());
         self.metrics.precompute_total.inc();
+
+        Ok(())
+    }
+
+    /// Handle model change - invalidate all cached checks for the store
+    async fn process_model_events(&self, messages: Vec<Message>) -> Result<()> {
+        for msg in &messages {
+            let event: ModelChangeEvent = serde_json::from_slice(&msg.payload)?;
+
+            // Invalidate all Valkey entries for this store
+            // Use SCAN to find and delete matching keys
+            let pattern = format!("check:{}:*", event.store_id);
+            let mut cursor = 0u64;
+            loop {
+                let (next_cursor, keys): (u64, Vec<String>) = valkey::cmd("SCAN")
+                    .arg(cursor)
+                    .arg("MATCH")
+                    .arg(&pattern)
+                    .arg("COUNT")
+                    .arg(1000)
+                    .query_async(&mut self.valkey.clone())
+                    .await?;
+
+                if !keys.is_empty() {
+                    self.valkey.del::<_, ()>(&keys).await?;
+                }
+
+                cursor = next_cursor;
+                if cursor == 0 {
+                    break;
+                }
+            }
+
+            // Broadcast hot cache invalidation to all API pods
+            self.nats
+                .publish(
+                    format!("rsfga.cache.invalidate.{}", event.store_id),
+                    serde_json::to_vec(&CacheInvalidationEvent::Store {
+                        store_id: event.store_id.clone(),
+                    })?.into(),
+                )
+                .await?;
+
+            tracing::info!(
+                store_id = %event.store_id,
+                old_model = ?event.old_model_id,
+                new_model = %event.new_model_id,
+                "Invalidated cache for model change"
+            );
+        }
+
+        // ACK all messages
+        for msg in messages {
+            msg.ack().await?;
+        }
 
         Ok(())
     }
@@ -743,7 +809,69 @@ impl PrecomputeWorker {
 }
 ```
 
-### 4.3 API Server Integration
+### 4.3 In-Memory Hot Cache (L1)
+
+The in-memory hot cache is critical for achieving sub-millisecond latency on frequently accessed check results. This cache lives in each API pod and uses Moka's TinyLFU algorithm to automatically identify and retain hot data.
+
+```rust
+use moka::future::Cache;
+use std::time::Duration;
+
+/// Hot cache configuration optimized for frequently accessed checks
+pub struct HotCacheConfig {
+    /// Maximum number of entries (not bytes - entries are small)
+    pub max_entries: u64,
+
+    /// Time-to-live for entries
+    pub ttl: Duration,
+
+    /// Time-to-idle - evict if not accessed within this window
+    pub tti: Duration,
+}
+
+impl Default for HotCacheConfig {
+    fn default() -> Self {
+        Self {
+            max_entries: 100_000,      // ~10MB assuming 100 bytes/entry
+            ttl: Duration::from_secs(60),   // 1 minute max lifetime
+            tti: Duration::from_secs(10),   // Evict if idle for 10s
+        }
+    }
+}
+
+/// Build the hot cache with TinyLFU eviction
+pub fn build_hot_cache(config: &HotCacheConfig) -> Cache<String, CachedCheckResult> {
+    Cache::builder()
+        .max_capacity(config.max_entries)
+        .time_to_live(config.ttl)
+        .time_to_idle(config.tti)
+        // TinyLFU: Frequency + recency based eviction
+        // Automatically identifies and retains hot data
+        .build()
+}
+
+/// Cached check result with metadata
+#[derive(Clone, Debug)]
+pub struct CachedCheckResult {
+    pub allowed: bool,
+    pub model_id: String,
+    pub cached_at: Instant,
+}
+```
+
+**Why TinyLFU for Hot Data:**
+- Combines frequency (how often accessed) with recency (when last accessed)
+- Automatically evicts cold data while retaining hot data
+- No manual "hot list" management required
+- O(1) lookup with minimal memory overhead
+
+**Hot Data Characteristics:**
+- Repeatedly checked permissions (e.g., `user:system#admin` on `org:default`)
+- High-traffic user/object combinations
+- Service accounts with broad permissions
+- Recently computed results likely to be checked again
+
+### 4.4 API Server Integration
 
 ```rust
 /// Check resolver that uses pre-computed cache
@@ -757,8 +885,11 @@ pub struct CachedCheckResolver {
     /// NATS client for publishing invalidations
     nats: async_nats::Client,
 
-    /// Local hot cache (L1)
-    hot_cache: Arc<moka::Cache<String, bool>>,
+    /// Local hot cache (L1) - per-pod, frequency-based retention
+    hot_cache: Cache<String, CachedCheckResult>,
+
+    /// Hot cache config
+    hot_cache_config: HotCacheConfig,
 
     /// Metrics
     metrics: CheckMetrics,
@@ -773,35 +904,82 @@ impl CachedCheckResolver {
         object: &str,
     ) -> Result<bool> {
         let cache_key = format!("check:{}:{}#{}@{}", store_id, object, relation, user);
+        let start = Instant::now();
 
-        // L1: Hot cache (sub-microsecond)
-        if let Some(result) = self.hot_cache.get(&cache_key) {
-            self.metrics.cache_hits.with_label_values(&["l1"]).inc();
-            return Ok(result);
+        // ┌─────────────────────────────────────────────────────────────┐
+        // │ L1: In-Memory Hot Cache (sub-microsecond)                   │
+        // │ - Per-pod local cache using Moka TinyLFU                    │
+        // │ - Automatically retains frequently accessed (hot) data      │
+        // │ - ~100K entries, 60s TTL, 10s TTI                           │
+        // └─────────────────────────────────────────────────────────────┘
+        if let Some(cached) = self.hot_cache.get(&cache_key).await {
+            // Verify model hasn't changed (hot cache doesn't subscribe to NATS)
+            let current_model = self.resolver.get_model_id(store_id).await?;
+            if cached.model_id == current_model {
+                self.metrics.cache_hits.with_label_values(&["l1_hot"]).inc();
+                self.metrics.check_latency.with_label_values(&["l1_hot"])
+                    .observe(start.elapsed().as_secs_f64());
+                return Ok(cached.allowed);
+            }
+            // Model changed - invalidate this entry and fall through
+            self.hot_cache.invalidate(&cache_key).await;
         }
 
-        // L2: Valkey pre-computed cache (~100μs)
+        // ┌─────────────────────────────────────────────────────────────┐
+        // │ L2: Valkey Distributed Cache (~100-500μs)                   │
+        // │ - Shared across all API pods                                │
+        // │ - Pre-computed by workers, or populated on cache miss       │
+        // │ - 1 hour TTL                                                │
+        // └─────────────────────────────────────────────────────────────┘
         if let Some(cached) = self.valkey.get::<_, Option<String>>(&cache_key).await? {
             let precomputed: PrecomputedCheck = serde_json::from_str(&cached)?;
 
             // Verify model version is current
             let current_model = self.resolver.get_model_id(store_id).await?;
             if precomputed.model_id == current_model {
-                self.hot_cache.insert(cache_key.clone(), precomputed.allowed);
-                self.metrics.cache_hits.with_label_values(&["l2"]).inc();
+                // Promote to hot cache (TinyLFU will decide if it stays)
+                self.hot_cache.insert(
+                    cache_key.clone(),
+                    CachedCheckResult {
+                        allowed: precomputed.allowed,
+                        model_id: precomputed.model_id,
+                        cached_at: Instant::now(),
+                    },
+                ).await;
+
+                self.metrics.cache_hits.with_label_values(&["l2_valkey"]).inc();
+                self.metrics.check_latency.with_label_values(&["l2_valkey"])
+                    .observe(start.elapsed().as_secs_f64());
                 return Ok(precomputed.allowed);
             }
             // Model changed, cache is stale - fall through
         }
 
-        // L3: Full graph resolution (~1-10ms)
+        // ┌─────────────────────────────────────────────────────────────┐
+        // │ L3: Graph Resolution (1-10ms)                               │
+        // │ - Full database-backed resolution                           │
+        // │ - Async populate both L1 and L2 caches                      │
+        // └─────────────────────────────────────────────────────────────┘
         self.metrics.cache_misses.inc();
         let result = self.resolver.check(store_id, user, relation, object).await?;
-
-        // Async cache population (don't block response)
-        let valkey = self.valkey.clone();
-        let hot_cache = self.hot_cache.clone();
         let model_id = self.resolver.get_model_id(store_id).await?;
+
+        self.metrics.check_latency.with_label_values(&["l3_resolver"])
+            .observe(start.elapsed().as_secs_f64());
+
+        // Populate hot cache immediately (this check was just requested, likely hot)
+        self.hot_cache.insert(
+            cache_key.clone(),
+            CachedCheckResult {
+                allowed: result,
+                model_id: model_id.clone(),
+                cached_at: Instant::now(),
+            },
+        ).await;
+
+        // Async populate Valkey (don't block response)
+        let valkey = self.valkey.clone();
+        let cache_key_clone = cache_key.clone();
         tokio::spawn(async move {
             let value = PrecomputedCheck {
                 allowed: result,
@@ -809,11 +987,10 @@ impl CachedCheckResolver {
                 model_id,
             };
             let _ = valkey.set_ex::<_, _, ()>(
-                &cache_key,
+                &cache_key_clone,
                 serde_json::to_string(&value).unwrap(),
                 3600, // 1 hour TTL
             ).await;
-            hot_cache.insert(cache_key, result);
         });
 
         Ok(result)
@@ -859,8 +1036,111 @@ impl CachedCheckResolver {
 
         Ok(())
     }
+
+    /// Subscribe to NATS for hot cache invalidation
+    /// Each API pod subscribes to invalidation events
+    pub async fn start_invalidation_listener(&self) -> Result<()> {
+        let subscriber = self.nats
+            .subscribe("rsfga.cache.invalidate.>")
+            .await?;
+
+        let hot_cache = self.hot_cache.clone();
+
+        tokio::spawn(async move {
+            while let Some(msg) = subscriber.next().await {
+                if let Ok(event) = serde_json::from_slice::<CacheInvalidationEvent>(&msg.payload) {
+                    match event {
+                        CacheInvalidationEvent::Check { cache_key } => {
+                            hot_cache.invalidate(&cache_key).await;
+                        }
+                        CacheInvalidationEvent::Pattern { store_id, pattern } => {
+                            // Invalidate all entries matching pattern
+                            // Moka doesn't support pattern invalidation, so we track keys
+                            hot_cache.invalidate_entries_if(move |key, _| {
+                                key.starts_with(&format!("check:{}:", store_id))
+                                    && key.contains(&pattern)
+                            });
+                        }
+                        CacheInvalidationEvent::Store { store_id } => {
+                            // Invalidate all entries for a store (model change)
+                            hot_cache.invalidate_entries_if(move |key, _| {
+                                key.starts_with(&format!("check:{}:", store_id))
+                            });
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
+}
+
+/// Events for invalidating hot cache across pods
+#[derive(Debug, Serialize, Deserialize)]
+pub enum CacheInvalidationEvent {
+    /// Invalidate a specific check
+    Check { cache_key: String },
+
+    /// Invalidate checks matching a pattern (e.g., all for an object)
+    Pattern { store_id: String, pattern: String },
+
+    /// Invalidate all checks for a store (e.g., model change)
+    Store { store_id: String },
 }
 ```
+
+### 4.5 Cache Tier Summary
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Cache Tier Architecture                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ L1: In-Memory Hot Cache (per API pod)                               │    │
+│  │ ┌─────────────────────────────────────────────────────────────────┐ │    │
+│  │ │ • Latency: <1μs                                                 │ │    │
+│  │ │ • Capacity: ~100K entries (~10MB)                               │ │    │
+│  │ │ • Algorithm: TinyLFU (frequency + recency)                      │ │    │
+│  │ │ • TTL: 60s, TTI: 10s                                            │ │    │
+│  │ │ • Scope: Hot/frequently accessed checks only                    │ │    │
+│  │ │ • Invalidation: NATS subscription per pod                       │ │    │
+│  │ └─────────────────────────────────────────────────────────────────┘ │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                    │                                         │
+│                                    ▼ miss                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ L2: Valkey Distributed Cache (shared across pods)                   │    │
+│  │ ┌─────────────────────────────────────────────────────────────────┐ │    │
+│  │ │ • Latency: 100-500μs                                            │ │    │
+│  │ │ • Capacity: 2GB+ (cluster)                                      │ │    │
+│  │ │ • Algorithm: LRU                                                │ │    │
+│  │ │ • TTL: 1 hour                                                   │ │    │
+│  │ │ • Scope: All pre-computed check results                         │ │    │
+│  │ │ • Population: Workers (proactive) + API (reactive)              │ │    │
+│  │ └─────────────────────────────────────────────────────────────────┘ │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                    │                                         │
+│                                    ▼ miss                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ L3: Graph Resolver (PostgreSQL)                                     │    │
+│  │ ┌─────────────────────────────────────────────────────────────────┐ │    │
+│  │ │ • Latency: 1-10ms                                               │ │    │
+│  │ │ • Capacity: Unlimited (database)                                │ │    │
+│  │ │ • Always consistent (source of truth)                           │ │    │
+│  │ │ • Populates L1 and L2 on resolution                             │ │    │
+│  │ └─────────────────────────────────────────────────────────────────┘ │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Hot Data Flow:**
+1. First request → L3 (resolver) → populate L1 + L2
+2. Subsequent requests → L1 hit (sub-microsecond) if hot
+3. TinyLFU automatically evicts cold data, retains hot data
+4. On tuple change → workers update L2 → broadcast invalidate to L1
 
 ---
 
