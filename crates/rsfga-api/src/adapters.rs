@@ -45,12 +45,14 @@ pub(crate) fn parse_userset(
     type_name: &str,
     rel_name: &str,
 ) -> DomainResult<Userset> {
-    let obj = rel_def.as_object().ok_or_else(|| DomainError::ModelParseError {
-        message: format!(
-            "relation definition must be an object: type '{}', relation '{}'",
-            type_name, rel_name
-        ),
-    })?;
+    let obj = rel_def
+        .as_object()
+        .ok_or_else(|| DomainError::ModelParseError {
+            message: format!(
+                "relation definition must be an object: type '{}', relation '{}'",
+                type_name, rel_name
+            ),
+        })?;
 
     // Empty object or {"this": {}} means direct assignment
     if obj.is_empty() || obj.contains_key("this") {
@@ -58,23 +60,28 @@ pub(crate) fn parse_userset(
     }
 
     // computedUserset or computed_userset
-    if let Some(cu) = obj.get("computedUserset").or_else(|| obj.get("computed_userset")) {
-        let relation = cu
-            .get("relation")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DomainError::ModelParseError {
+    if let Some(cu) = obj
+        .get("computedUserset")
+        .or_else(|| obj.get("computed_userset"))
+    {
+        let relation = cu.get("relation").and_then(|v| v.as_str()).ok_or_else(|| {
+            DomainError::ModelParseError {
                 message: format!(
                     "computedUserset requires 'relation' field: type '{}', relation '{}'",
                     type_name, rel_name
                 ),
-            })?;
+            }
+        })?;
         return Ok(Userset::ComputedUserset {
             relation: relation.to_string(),
         });
     }
 
     // tupleToUserset or tuple_to_userset
-    if let Some(ttu) = obj.get("tupleToUserset").or_else(|| obj.get("tuple_to_userset")) {
+    if let Some(ttu) = obj
+        .get("tupleToUserset")
+        .or_else(|| obj.get("tuple_to_userset"))
+    {
         let tupleset = ttu
             .get("tupleset")
             .and_then(|ts| ts.get("relation"))
@@ -144,18 +151,22 @@ pub(crate) fn parse_userset(
 
     // exclusion or difference (both map to Userset::Exclusion)
     if let Some(exclusion) = obj.get("exclusion").or_else(|| obj.get("difference")) {
-        let base = exclusion.get("base").ok_or_else(|| DomainError::ModelParseError {
-            message: format!(
-                "exclusion requires 'base' field: type '{}', relation '{}'",
-                type_name, rel_name
-            ),
-        })?;
-        let subtract = exclusion.get("subtract").ok_or_else(|| DomainError::ModelParseError {
-            message: format!(
-                "exclusion requires 'subtract' field: type '{}', relation '{}'",
-                type_name, rel_name
-            ),
-        })?;
+        let base = exclusion
+            .get("base")
+            .ok_or_else(|| DomainError::ModelParseError {
+                message: format!(
+                    "exclusion requires 'base' field: type '{}', relation '{}'",
+                    type_name, rel_name
+                ),
+            })?;
+        let subtract = exclusion
+            .get("subtract")
+            .ok_or_else(|| DomainError::ModelParseError {
+                message: format!(
+                    "exclusion requires 'subtract' field: type '{}', relation '{}'",
+                    type_name, rel_name
+                ),
+            })?;
         return Ok(Userset::Exclusion {
             base: Box::new(parse_userset(base, type_name, rel_name)?),
             subtract: Box::new(parse_userset(subtract, type_name, rel_name)?),
@@ -193,13 +204,12 @@ fn parse_type_constraints(type_def: &serde_json::Value, rel_name: &str) -> Vec<T
                     let type_name = item.get("type").and_then(|t| t.as_str())?;
                     let condition = item.get("condition").and_then(|c| c.as_str());
 
-                    let full_type = if let Some(relation) =
-                        item.get("relation").and_then(|r| r.as_str())
-                    {
-                        format!("{}#{}", type_name, relation)
-                    } else {
-                        type_name.to_string()
-                    };
+                    let full_type =
+                        if let Some(relation) = item.get("relation").and_then(|r| r.as_str()) {
+                            format!("{}#{}", type_name, relation)
+                        } else {
+                            type_name.to_string()
+                        };
 
                     if let Some(cond) = condition {
                         Some(TypeConstraint::with_condition(&full_type, cond))
@@ -692,11 +702,18 @@ mod tests {
         let result = reader.get_model("test-store").await;
 
         // Complex relations should now be parsed correctly
-        assert!(result.is_ok(), "Failed to parse complex relation: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Failed to parse complex relation: {:?}",
+            result
+        );
         let model = result.unwrap();
 
         // Find the document type and verify the viewer relation was parsed correctly
-        let doc_type = model.type_definitions.iter().find(|t| t.type_name == "document");
+        let doc_type = model
+            .type_definitions
+            .iter()
+            .find(|t| t.type_name == "document");
         assert!(doc_type.is_some(), "document type not found");
 
         let viewer_rel = doc_type
@@ -788,8 +805,8 @@ mod tests {
 
     #[test]
     fn test_parse_userset_this_empty_object() {
-        use serde_json::json;
         use rsfga_domain::model::Userset;
+        use serde_json::json;
 
         let result = super::parse_userset(&json!({}), "document", "viewer");
         assert!(result.is_ok());
@@ -798,8 +815,8 @@ mod tests {
 
     #[test]
     fn test_parse_userset_this_explicit() {
-        use serde_json::json;
         use rsfga_domain::model::Userset;
+        use serde_json::json;
 
         let result = super::parse_userset(&json!({"this": {}}), "document", "viewer");
         assert!(result.is_ok());
@@ -808,8 +825,8 @@ mod tests {
 
     #[test]
     fn test_parse_userset_computed_userset_camel_case() {
-        use serde_json::json;
         use rsfga_domain::model::Userset;
+        use serde_json::json;
 
         let result = super::parse_userset(
             &json!({"computedUserset": {"relation": "owner"}}),
@@ -827,8 +844,8 @@ mod tests {
 
     #[test]
     fn test_parse_userset_computed_userset_snake_case() {
-        use serde_json::json;
         use rsfga_domain::model::Userset;
+        use serde_json::json;
 
         let result = super::parse_userset(
             &json!({"computed_userset": {"relation": "admin"}}),
@@ -846,8 +863,8 @@ mod tests {
 
     #[test]
     fn test_parse_userset_tuple_to_userset() {
-        use serde_json::json;
         use rsfga_domain::model::Userset;
+        use serde_json::json;
 
         let result = super::parse_userset(
             &json!({
@@ -874,8 +891,8 @@ mod tests {
 
     #[test]
     fn test_parse_userset_tuple_to_userset_snake_case() {
-        use serde_json::json;
         use rsfga_domain::model::Userset;
+        use serde_json::json;
 
         let result = super::parse_userset(
             &json!({
@@ -902,8 +919,8 @@ mod tests {
 
     #[test]
     fn test_parse_userset_union() {
-        use serde_json::json;
         use rsfga_domain::model::Userset;
+        use serde_json::json;
 
         let result = super::parse_userset(
             &json!({
@@ -922,7 +939,9 @@ mod tests {
             Userset::Union { children } => {
                 assert_eq!(children.len(), 2);
                 assert!(matches!(&children[0], Userset::This));
-                assert!(matches!(&children[1], Userset::ComputedUserset { relation } if relation == "owner"));
+                assert!(
+                    matches!(&children[1], Userset::ComputedUserset { relation } if relation == "owner")
+                );
             }
             _ => panic!("Expected Union"),
         }
@@ -930,8 +949,8 @@ mod tests {
 
     #[test]
     fn test_parse_userset_intersection() {
-        use serde_json::json;
         use rsfga_domain::model::Userset;
+        use serde_json::json;
 
         let result = super::parse_userset(
             &json!({
@@ -956,8 +975,8 @@ mod tests {
 
     #[test]
     fn test_parse_userset_exclusion() {
-        use serde_json::json;
         use rsfga_domain::model::Userset;
+        use serde_json::json;
 
         let result = super::parse_userset(
             &json!({
@@ -972,8 +991,12 @@ mod tests {
         assert!(result.is_ok());
         match result.unwrap() {
             Userset::Exclusion { base, subtract } => {
-                assert!(matches!(*base, Userset::ComputedUserset { relation } if relation == "member"));
-                assert!(matches!(*subtract, Userset::ComputedUserset { relation } if relation == "banned"));
+                assert!(
+                    matches!(*base, Userset::ComputedUserset { relation } if relation == "member")
+                );
+                assert!(
+                    matches!(*subtract, Userset::ComputedUserset { relation } if relation == "banned")
+                );
             }
             _ => panic!("Expected Exclusion"),
         }
@@ -981,8 +1004,8 @@ mod tests {
 
     #[test]
     fn test_parse_userset_difference_alias() {
-        use serde_json::json;
         use rsfga_domain::model::Userset;
+        use serde_json::json;
 
         // "difference" is an alias for "exclusion"
         let result = super::parse_userset(
@@ -1001,8 +1024,8 @@ mod tests {
 
     #[test]
     fn test_parse_userset_nested_union_in_intersection() {
-        use serde_json::json;
         use rsfga_domain::model::Userset;
+        use serde_json::json;
 
         let result = super::parse_userset(
             &json!({
@@ -1037,11 +1060,7 @@ mod tests {
     fn test_parse_userset_error_missing_relation() {
         use serde_json::json;
 
-        let result = super::parse_userset(
-            &json!({"computedUserset": {}}),
-            "document",
-            "viewer",
-        );
+        let result = super::parse_userset(&json!({"computedUserset": {}}), "document", "viewer");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("requires 'relation' field"));
@@ -1051,11 +1070,7 @@ mod tests {
     fn test_parse_userset_error_unknown_key() {
         use serde_json::json;
 
-        let result = super::parse_userset(
-            &json!({"unknownKey": {}}),
-            "document",
-            "viewer",
-        );
+        let result = super::parse_userset(&json!({"unknownKey": {}}), "document", "viewer");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("unknown relation definition keys"));
