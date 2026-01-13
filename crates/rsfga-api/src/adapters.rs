@@ -1329,4 +1329,349 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.to_string().contains("missing 'type' field"));
     }
+
+    // =========================================================================
+    // Integration Tests with OpenFGA Compatibility
+    // =========================================================================
+
+    /// Test: parse_userset handles real OpenFGA model patterns
+    ///
+    /// Validates parsing against common OpenFGA authorization model patterns
+    /// from the OpenFGA documentation and examples.
+    #[tokio::test]
+    async fn test_parse_userset_openfga_google_drive_model() {
+        use rsfga_domain::model::Userset;
+        use serde_json::json;
+
+        // Google Drive model pattern from OpenFGA docs
+        // https://openfga.dev/docs/modeling/getting-started
+        let viewer_relation = json!({
+            "union": {
+                "child": [
+                    {"this": {}},
+                    {"computedUserset": {"relation": "editor"}}
+                ]
+            }
+        });
+
+        let result = super::parse_userset(&viewer_relation, "document", "viewer");
+        assert!(result.is_ok(), "Should parse Google Drive viewer pattern");
+        match result.unwrap() {
+            Userset::Union { children } => {
+                assert_eq!(children.len(), 2);
+                assert!(matches!(&children[0], Userset::This));
+                assert!(matches!(
+                    &children[1],
+                    Userset::ComputedUserset { relation } if relation == "editor"
+                ));
+            }
+            _ => panic!("Expected Union"),
+        }
+
+        // Editor relation: can_edit = editor OR owner
+        let editor_relation = json!({
+            "union": {
+                "child": [
+                    {"this": {}},
+                    {"computedUserset": {"relation": "owner"}}
+                ]
+            }
+        });
+
+        let result = super::parse_userset(&editor_relation, "document", "editor");
+        assert!(result.is_ok());
+
+        // Parent folder access pattern (tupleToUserset)
+        let parent_viewer = json!({
+            "tupleToUserset": {
+                "tupleset": {"relation": "parent"},
+                "computedUserset": {"relation": "viewer"}
+            }
+        });
+
+        let result = super::parse_userset(&parent_viewer, "document", "can_view_from_parent");
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Userset::TupleToUserset {
+                tupleset,
+                computed_userset,
+            } => {
+                assert_eq!(tupleset, "parent");
+                assert_eq!(computed_userset, "viewer");
+            }
+            _ => panic!("Expected TupleToUserset"),
+        }
+    }
+
+    /// Test: parse_userset handles GitHub model with exclusion
+    #[test]
+    fn test_parse_userset_openfga_github_model() {
+        use rsfga_domain::model::Userset;
+        use serde_json::json;
+
+        // GitHub repo access: can read if member AND NOT banned
+        let can_read = json!({
+            "exclusion": {
+                "base": {"computedUserset": {"relation": "member"}},
+                "subtract": {"computedUserset": {"relation": "banned"}}
+            }
+        });
+
+        let result = super::parse_userset(&can_read, "repo", "can_read");
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Userset::Exclusion { base, subtract } => {
+                assert!(matches!(
+                    *base,
+                    Userset::ComputedUserset { relation } if relation == "member"
+                ));
+                assert!(matches!(
+                    *subtract,
+                    Userset::ComputedUserset { relation } if relation == "banned"
+                ));
+            }
+            _ => panic!("Expected Exclusion"),
+        }
+    }
+
+    /// Test: Full model parsing with complex relations through DataStoreModelReader
+    #[tokio::test]
+    async fn test_model_reader_parses_openfga_style_model() {
+        use rsfga_domain::model::Userset;
+
+        let storage = Arc::new(MemoryDataStore::new());
+        storage
+            .create_store("test-store", "Test Store")
+            .await
+            .unwrap();
+
+        // Complete OpenFGA-style model with all relation types
+        let model_json = r#"{
+            "type_definitions": [
+                {"type": "user"},
+                {"type": "group", "relations": {
+                    "member": {},
+                    "admin": {}
+                }},
+                {"type": "folder", "relations": {
+                    "viewer": {},
+                    "editor": {}
+                }},
+                {"type": "document", "relations": {
+                    "owner": {},
+                    "editor": {
+                        "union": {
+                            "child": [
+                                {"this": {}},
+                                {"computedUserset": {"relation": "owner"}}
+                            ]
+                        }
+                    },
+                    "viewer": {
+                        "union": {
+                            "child": [
+                                {"this": {}},
+                                {"computedUserset": {"relation": "editor"}},
+                                {"tupleToUserset": {
+                                    "tupleset": {"relation": "parent"},
+                                    "computedUserset": {"relation": "viewer"}
+                                }}
+                            ]
+                        }
+                    },
+                    "parent": {},
+                    "can_share": {
+                        "intersection": {
+                            "child": [
+                                {"computedUserset": {"relation": "owner"}},
+                                {"computedUserset": {"relation": "editor"}}
+                            ]
+                        }
+                    },
+                    "can_delete": {
+                        "exclusion": {
+                            "base": {"computedUserset": {"relation": "owner"}},
+                            "subtract": {"computedUserset": {"relation": "blocked"}}
+                        }
+                    },
+                    "blocked": {}
+                }}
+            ]
+        }"#;
+
+        let model = rsfga_storage::StoredAuthorizationModel::new(
+            "model-complex".to_string(),
+            "test-store",
+            "1.1",
+            model_json.to_string(),
+        );
+        storage.write_authorization_model(model).await.unwrap();
+
+        let reader = DataStoreModelReader::new(storage);
+        let result = reader.get_model("test-store").await;
+        assert!(result.is_ok(), "Failed to parse model: {:?}", result);
+
+        let model = result.unwrap();
+
+        // Find document type and verify all relations
+        let doc_type = model
+            .type_definitions
+            .iter()
+            .find(|t| t.type_name == "document")
+            .expect("document type not found");
+
+        // Check editor relation (union of this + owner)
+        let editor_rel = doc_type
+            .relations
+            .iter()
+            .find(|r| r.name == "editor")
+            .expect("editor relation not found");
+        assert!(matches!(&editor_rel.rewrite, Userset::Union { children } if children.len() == 2));
+
+        // Check viewer relation (union of this + editor + parent->viewer)
+        let viewer_rel = doc_type
+            .relations
+            .iter()
+            .find(|r| r.name == "viewer")
+            .expect("viewer relation not found");
+        match &viewer_rel.rewrite {
+            Userset::Union { children } => {
+                assert_eq!(children.len(), 3);
+                assert!(matches!(&children[2], Userset::TupleToUserset { .. }));
+            }
+            _ => panic!("Expected Union for viewer"),
+        }
+
+        // Check can_share relation (intersection)
+        let can_share_rel = doc_type
+            .relations
+            .iter()
+            .find(|r| r.name == "can_share")
+            .expect("can_share relation not found");
+        assert!(
+            matches!(&can_share_rel.rewrite, Userset::Intersection { children } if children.len() == 2)
+        );
+
+        // Check can_delete relation (exclusion)
+        let can_delete_rel = doc_type
+            .relations
+            .iter()
+            .find(|r| r.name == "can_delete")
+            .expect("can_delete relation not found");
+        assert!(matches!(&can_delete_rel.rewrite, Userset::Exclusion { .. }));
+    }
+
+    // =========================================================================
+    // Property-Based Tests (proptest)
+    // =========================================================================
+
+    mod proptest_tests {
+        use crate::adapters::MAX_PARSE_DEPTH;
+        use proptest::prelude::*;
+        use serde_json::json;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(100))]
+
+            /// Property: parse_userset never panics on valid This structures
+            #[test]
+            fn prop_parse_userset_never_panics_on_this(
+                type_name in "[a-z]{1,20}",
+                rel_name in "[a-z]{1,20}"
+            ) {
+                let value = json!({"this": {}});
+                let result = crate::adapters::parse_userset(&value, &type_name, &rel_name);
+                prop_assert!(result.is_ok());
+            }
+
+            /// Property: parse_userset returns correct type for empty object
+            #[test]
+            fn prop_parse_userset_empty_is_this(
+                type_name in "[a-z]{1,20}",
+                rel_name in "[a-z]{1,20}"
+            ) {
+                let value = json!({});
+                let result = crate::adapters::parse_userset(&value, &type_name, &rel_name);
+                prop_assert!(result.is_ok());
+                prop_assert!(matches!(result.unwrap(), rsfga_domain::model::Userset::This));
+            }
+
+            /// Property: parse_userset handles all valid relation names
+            #[test]
+            fn prop_parse_userset_valid_computed(
+                type_name in "[a-z]{1,20}",
+                rel_name in "[a-z]{1,20}",
+                computed_rel in "[a-z_]{1,50}"
+            ) {
+                let value = json!({"computedUserset": {"relation": computed_rel}});
+                let result = crate::adapters::parse_userset(&value, &type_name, &rel_name);
+                prop_assert!(result.is_ok());
+                match result.unwrap() {
+                    rsfga_domain::model::Userset::ComputedUserset { relation } => {
+                        prop_assert_eq!(relation, computed_rel);
+                    }
+                    _ => prop_assert!(false, "Expected ComputedUserset"),
+                }
+            }
+
+            /// Property: parse_userset respects depth limit
+            #[test]
+            fn prop_parse_userset_depth_limit(
+                depth in (MAX_PARSE_DEPTH + 1)..50usize
+            ) {
+                // Create nested structure at specified depth
+                let mut nested = json!({"this": {}});
+                for _ in 0..depth {
+                    nested = json!({"union": {"child": [nested]}});
+                }
+
+                let result = crate::adapters::parse_userset(&nested, "type", "rel");
+                // Should fail with depth limit error
+                prop_assert!(result.is_err());
+                let err = result.unwrap_err().to_string();
+                prop_assert!(err.contains("exceeds max nesting depth"));
+            }
+
+            /// Property: parse_userset rejects empty union/intersection child arrays
+            #[test]
+            fn prop_parse_userset_empty_children_rejected(
+                key in prop_oneof![Just("union"), Just("intersection")]
+            ) {
+                let value = json!({key: {"child": []}});
+                let result = crate::adapters::parse_userset(&value, "type", "rel");
+                prop_assert!(result.is_err());
+                let err = result.unwrap_err().to_string();
+                prop_assert!(err.contains("requires at least one child"));
+            }
+
+            /// Property: parse_userset preserves union children order
+            #[test]
+            fn prop_parse_userset_union_order_preserved(
+                rels in prop::collection::vec("[a-z]{1,10}", 1..=4)
+            ) {
+                let children: Vec<_> = rels.iter()
+                    .map(|r| json!({"computedUserset": {"relation": r}}))
+                    .collect();
+                let value = json!({"union": {"child": children}});
+
+                let result = crate::adapters::parse_userset(&value, "type", "rel");
+                prop_assert!(result.is_ok());
+
+                match result.unwrap() {
+                    rsfga_domain::model::Userset::Union { children: parsed } => {
+                        prop_assert_eq!(parsed.len(), rels.len());
+                        for (i, parsed_child) in parsed.iter().enumerate() {
+                            match parsed_child {
+                                rsfga_domain::model::Userset::ComputedUserset { relation } => {
+                                    prop_assert_eq!(relation, &rels[i]);
+                                }
+                                _ => prop_assert!(false, "Expected ComputedUserset"),
+                            }
+                        }
+                    }
+                    _ => prop_assert!(false, "Expected Union"),
+                }
+            }
+        }
+    }
 }
