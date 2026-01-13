@@ -4518,3 +4518,111 @@ async fn test_resolver_without_cache_has_no_metrics() {
     assert_eq!(metrics.misses, 0);
     assert_eq!(metrics.skips, 0);
 }
+
+#[tokio::test]
+async fn test_cache_skipped_for_request_context() {
+    // This test verifies the CRITICAL security fix:
+    // Cache must be bypassed when request.context is non-empty because
+    // CEL conditions depend on context values. Without this, a cached
+    // decision for context.enabled=true could be incorrectly returned
+    // for a request with context.enabled=false.
+
+    use std::collections::HashMap;
+
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+    let config = ResolverConfig::default().with_cache(cache);
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    // First request WITHOUT context - should be cached
+    let request_no_context = CheckRequest::new(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+    );
+
+    let result1 = resolver.check(&request_no_context).await.unwrap();
+    assert!(result1.allowed);
+
+    // Verify: 1 miss (cache was consulted)
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.misses, 1);
+    assert_eq!(metrics.skips, 0);
+
+    // Second request WITHOUT context - should hit cache
+    let result2 = resolver.check(&request_no_context).await.unwrap();
+    assert!(result2.allowed);
+
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.hits, 1);
+    assert_eq!(metrics.misses, 1);
+    assert_eq!(metrics.skips, 0);
+
+    // Third request WITH context - should SKIP cache (not hit, not miss)
+    let mut context = HashMap::new();
+    context.insert("enabled".to_string(), serde_json::json!(true));
+
+    let request_with_context = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+        context.clone(),
+    );
+
+    let result3 = resolver.check(&request_with_context).await.unwrap();
+    assert!(result3.allowed);
+
+    // Verify: Cache was SKIPPED (not hit, not miss, but skip)
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.hits, 1); // Unchanged
+    assert_eq!(metrics.misses, 1); // Unchanged
+    assert_eq!(metrics.skips, 1); // Incremented!
+
+    // Fourth request with DIFFERENT context - also skipped
+    let mut different_context = HashMap::new();
+    different_context.insert("enabled".to_string(), serde_json::json!(false));
+
+    let request_diff_context = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+        different_context,
+    );
+
+    let result4 = resolver.check(&request_diff_context).await.unwrap();
+    assert!(result4.allowed);
+
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.hits, 1); // Unchanged
+    assert_eq!(metrics.misses, 1); // Unchanged
+    assert_eq!(metrics.skips, 2); // Incremented again!
+}

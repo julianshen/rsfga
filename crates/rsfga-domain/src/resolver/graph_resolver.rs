@@ -157,31 +157,39 @@ where
         }
 
         // Determine if caching should be used for this request.
-        // Skip caching when contextual tuples are provided since they're
-        // request-specific and would pollute the cache.
-        let use_cache = self.config.cache.is_some() && request.contextual_tuples.is_empty();
+        // Skip caching when:
+        // - Contextual tuples are provided (request-specific, would pollute cache)
+        // - Request context is non-empty (CEL conditions depend on context values,
+        //   caching would return incorrect decisions for different contexts)
+        let cache_and_key = if request.contextual_tuples.is_empty() && request.context.is_empty() {
+            self.config.cache.as_ref().map(|cache| {
+                (
+                    cache,
+                    CacheKey::new(
+                        &request.store_id,
+                        &request.object,
+                        &request.relation,
+                        &request.user,
+                    ),
+                )
+            })
+        } else {
+            if self.config.cache.is_some() {
+                // Cache is configured but skipped due to contextual tuples or context
+                self.cache_metrics.skips.fetch_add(1, Ordering::Relaxed);
+            }
+            None
+        };
 
-        // Check cache first (if enabled)
-        if use_cache {
-            let cache_key = CacheKey::new(
-                &request.store_id,
-                &request.object,
-                &request.relation,
-                &request.user,
-            );
-
-            if let Some(cache) = &self.config.cache {
-                if let Some(allowed) = cache.get(&cache_key).await {
-                    // Cache hit - return immediately
-                    self.cache_metrics.hits.fetch_add(1, Ordering::Relaxed);
-                    return Ok(CheckResult { allowed });
-                }
+        // Check cache first (if enabled and no bypass conditions)
+        if let Some((cache, ref key)) = cache_and_key {
+            if let Some(allowed) = cache.get(key).await {
+                // Cache hit - return immediately
+                self.cache_metrics.hits.fetch_add(1, Ordering::Relaxed);
+                return Ok(CheckResult { allowed });
             }
             // Cache miss - will perform graph traversal
             self.cache_metrics.misses.fetch_add(1, Ordering::Relaxed);
-        } else if self.config.cache.is_some() {
-            // Cache is configured but skipped due to contextual tuples
-            self.cache_metrics.skips.fetch_add(1, Ordering::Relaxed);
         }
 
         // Apply timeout to the entire check operation
@@ -195,19 +203,9 @@ where
             }),
         };
 
-        // Store successful result in cache (if enabled and no contextual tuples)
-        if use_cache {
-            if let Ok(ref check_result) = result {
-                if let Some(cache) = &self.config.cache {
-                    let cache_key = CacheKey::new(
-                        &request.store_id,
-                        &request.object,
-                        &request.relation,
-                        &request.user,
-                    );
-                    cache.insert(cache_key, check_result.allowed).await;
-                }
-            }
+        // Store successful result in cache (reuse the same cache and key)
+        if let (Some((cache, key)), Ok(ref check_result)) = (cache_and_key, &result) {
+            cache.insert(key, check_result.allowed).await;
         }
 
         result

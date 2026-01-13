@@ -39,6 +39,8 @@ pub struct OpenFgaGrpcService<S: DataStore> {
     storage: Arc<S>,
     /// The batch check handler with parallel execution and deduplication.
     batch_handler: Arc<BatchCheckHandler<DataStoreTupleReader<S>, DataStoreModelReader<S>>>,
+    /// The check result cache, stored for future invalidation in write handlers.
+    cache: Arc<CheckCache>,
 }
 
 impl<S: DataStore> OpenFgaGrpcService<S> {
@@ -73,7 +75,13 @@ impl<S: DataStore> OpenFgaGrpcService<S> {
         Self {
             storage,
             batch_handler,
+            cache,
         }
+    }
+
+    /// Returns a reference to the check cache for invalidation.
+    pub fn cache(&self) -> &Arc<CheckCache> {
+        &self.cache
     }
 }
 
