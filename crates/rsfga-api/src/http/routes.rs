@@ -17,7 +17,7 @@ use rsfga_storage::{DataStore, PaginationOptions, StorageError, StoredAuthorizat
 
 use super::state::AppState;
 use crate::observability::{metrics_handler, MetricsState};
-use crate::utils::{format_user, parse_object, parse_user, MAX_BATCH_SIZE};
+use crate::utils::{format_user, parse_object, parse_user};
 
 /// Default request body size limit (1MB).
 /// This prevents memory exhaustion from oversized payloads.
@@ -186,6 +186,30 @@ impl From<StorageError> for ApiError {
                 error!("Storage error: {}", err);
                 ApiError::internal_error(err.to_string())
             }
+        }
+    }
+}
+
+/// Converts a BatchCheckError to an ApiError.
+///
+/// Logs internal errors with structured context to aid debugging while
+/// returning sanitized error messages to clients.
+fn batch_check_error_to_api_error(err: rsfga_server::handlers::batch::BatchCheckError) -> ApiError {
+    use rsfga_server::handlers::batch::BatchCheckError;
+    match err {
+        BatchCheckError::EmptyBatch => ApiError::invalid_input("batch request cannot be empty"),
+        BatchCheckError::BatchTooLarge { size, max } => ApiError::invalid_input(format!(
+            "batch size {} exceeds maximum allowed {}",
+            size, max
+        )),
+        BatchCheckError::InvalidCheck { index, message } => {
+            ApiError::invalid_input(format!("invalid check at index {}: {}", index, message))
+        }
+        BatchCheckError::DomainError(msg) => {
+            // Log full error details for debugging - DO NOT expose to clients
+            tracing::error!(error = %msg, "Domain error in HTTP batch check");
+            // Return sanitized message to prevent information leakage
+            ApiError::internal_error("internal error during authorization check")
         }
     }
 }
@@ -658,90 +682,60 @@ async fn batch_check<S: DataStore>(
     Path(store_id): Path<String>,
     Json(body): Json<BatchCheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
+    use rsfga_server::handlers::batch::{
+        BatchCheckItem as ServerBatchCheckItem, BatchCheckRequest as ServerBatchCheckRequest,
+    };
+
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
-    // Validate batch size
-    if body.checks.is_empty() {
-        return Err(ApiError::invalid_input("batch request cannot be empty"));
-    }
-    if body.checks.len() > MAX_BATCH_SIZE {
-        return Err(ApiError::invalid_input(format!(
-            "batch size {} exceeds maximum allowed {}",
-            body.checks.len(),
-            MAX_BATCH_SIZE
-        )));
-    }
+    // Store correlation_ids for mapping back to response
+    // We need to maintain the order since BatchCheckHandler returns results in order
+    let correlation_ids: Vec<String> = body
+        .checks
+        .iter()
+        .map(|item| item.correlation_id.clone())
+        .collect();
 
-    // Process each check independently - errors are captured per-item, not propagated
-    // This matches OpenFGA behavior where each check in a batch is independent
+    // Convert HTTP request to server-layer request
+    let server_checks: Vec<ServerBatchCheckItem> = body
+        .checks
+        .into_iter()
+        .map(|item| ServerBatchCheckItem {
+            user: item.tuple_key.user,
+            relation: item.tuple_key.relation,
+            object: item.tuple_key.object,
+        })
+        .collect();
+
+    let server_request = ServerBatchCheckRequest::new(store_id, server_checks);
+
+    // Delegate to BatchCheckHandler for parallel execution with deduplication
+    let server_response = state
+        .batch_handler
+        .check(server_request)
+        .await
+        .map_err(batch_check_error_to_api_error)?;
+
+    // Convert server response back to HTTP response format
     let mut result_map = std::collections::HashMap::new();
-    for item in body.checks.into_iter() {
-        let result = process_single_check(state.storage.as_ref(), &store_id, &item).await;
-        result_map.insert(item.correlation_id, result);
+    for (correlation_id, item_result) in correlation_ids
+        .into_iter()
+        .zip(server_response.results.into_iter())
+    {
+        result_map.insert(
+            correlation_id,
+            BatchCheckSingleResultBody {
+                allowed: item_result.allowed,
+                error: item_result.error.map(|msg| BatchCheckErrorBody {
+                    code: 500, // Internal error code for resolver errors
+                    message: msg,
+                }),
+            },
+        );
     }
 
     Ok(Json(BatchCheckResponseBody { result: result_map }))
-}
-
-/// Process a single check item, returning a result with either allowed status or error.
-async fn process_single_check<S: DataStore>(
-    storage: &S,
-    store_id: &str,
-    item: &BatchCheckItemBody,
-) -> BatchCheckSingleResultBody {
-    // Validate object format (required: "type:id")
-    let (object_type, object_id) = match parse_object(&item.tuple_key.object) {
-        Some((t, i)) => (t, i),
-        None => {
-            return BatchCheckSingleResultBody {
-                allowed: false,
-                error: Some(BatchCheckErrorBody {
-                    code: 400,
-                    message: format!(
-                        "invalid object format '{}': expected 'type:id'",
-                        item.tuple_key.object
-                    ),
-                }),
-            };
-        }
-    };
-
-    // Validate user format
-    if parse_user(&item.tuple_key.user).is_none() {
-        return BatchCheckSingleResultBody {
-            allowed: false,
-            error: Some(BatchCheckErrorBody {
-                code: 400,
-                message: format!(
-                    "invalid user format '{}': expected 'type:id' or 'type:id#relation'",
-                    item.tuple_key.user
-                ),
-            }),
-        };
-    }
-
-    let filter = rsfga_storage::TupleFilter {
-        object_type: Some(object_type.to_string()),
-        object_id: Some(object_id.to_string()),
-        relation: Some(item.tuple_key.relation.clone()),
-        user: Some(item.tuple_key.user.clone()),
-        condition_name: None,
-    };
-
-    match storage.read_tuples(store_id, &filter).await {
-        Ok(tuples) => BatchCheckSingleResultBody {
-            allowed: !tuples.is_empty(),
-            error: None,
-        },
-        Err(e) => BatchCheckSingleResultBody {
-            allowed: false,
-            error: Some(BatchCheckErrorBody {
-                code: 500,
-                message: format!("storage error: {}", e),
-            }),
-        },
-    }
 }
 
 // ============================================================

@@ -51,7 +51,23 @@ use axum::{
 use tower::ServiceExt;
 
 use rsfga_api::http::{create_router, AppState};
-use rsfga_storage::MemoryDataStore;
+use rsfga_storage::{DataStore, MemoryDataStore, StoredAuthorizationModel};
+
+/// Set up a simple authorization model for tests.
+///
+/// Creates a model with user, team, and document types.
+pub async fn setup_simple_model(storage: &MemoryDataStore, store_id: &str) {
+    let model_json = r#"{
+        "type_definitions": [
+            {"type": "user"},
+            {"type": "team", "relations": {"member": {}}},
+            {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
+        ]
+    }"#;
+    let model =
+        StoredAuthorizationModel::new(ulid::Ulid::new().to_string(), store_id, "1.1", model_json);
+    storage.write_authorization_model(model).await.unwrap();
+}
 
 /// Create a test app with in-memory storage.
 ///

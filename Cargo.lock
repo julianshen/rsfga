@@ -2911,12 +2911,14 @@ name = "rsfga-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum 0.7.9",
  "clap",
  "futures",
  "metrics",
  "metrics-exporter-prometheus",
  "mockall",
+ "moka",
  "opentelemetry",
  "opentelemetry-jaeger",
  "opentelemetry_sdk",

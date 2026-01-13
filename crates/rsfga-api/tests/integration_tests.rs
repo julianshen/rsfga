@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use rsfga_storage::MemoryDataStore;
 
 use common::{
-    create_test_app, post_json, CONCURRENT_CLIENT_COUNT, HIERARCHY_TEST_DEPTH,
+    create_test_app, post_json, setup_simple_model, CONCURRENT_CLIENT_COUNT, HIERARCHY_TEST_DEPTH,
     LARGE_MODEL_BATCH_SIZE, LARGE_MODEL_TUPLE_COUNT,
 };
 
@@ -424,6 +424,182 @@ async fn test_server_restart_preserves_data_postgres() {
     todo!("Implement when PostgreSQL test infrastructure is ready");
 }
 
+/// Test: Batch check deduplicates identical requests within a batch
+///
+/// Verifies that when identical checks appear in a batch, they are
+/// deduplicated and return consistent results with different correlation IDs.
+/// This tests the intra-batch deduplication in BatchCheckHandler.
+#[tokio::test]
+async fn test_batch_check_deduplicates_identical_requests() {
+    let storage = Arc::new(MemoryDataStore::new());
+
+    // Create a store
+    let store_id = {
+        let (status, response) = post_json(
+            create_test_app(&storage),
+            "/stores",
+            serde_json::json!({"name": "dedup-test"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        response["id"].as_str().unwrap().to_string()
+    };
+
+    // Set up authorization model
+    setup_simple_model(&storage, &store_id).await;
+
+    // Write a single tuple
+    let (status, _) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{}/write", store_id),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [
+                    {
+                        "user": "user:alice",
+                        "relation": "viewer",
+                        "object": "document:readme"
+                    }
+                ]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Submit 10 identical checks with different correlation IDs
+    // BatchCheckHandler should deduplicate these
+    let checks: Vec<_> = (0..10)
+        .map(|i| {
+            serde_json::json!({
+                "tuple_key": {
+                    "user": "user:alice",
+                    "relation": "viewer",
+                    "object": "document:readme"
+                },
+                "correlation_id": format!("dup-check-{}", i)
+            })
+        })
+        .collect();
+
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{}/batch-check", store_id),
+        serde_json::json!({
+            "checks": checks
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // All 10 should return with their unique correlation IDs
+    let result = response["result"].as_object().unwrap();
+    assert_eq!(
+        result.len(),
+        10,
+        "Should have 10 results despite deduplication"
+    );
+
+    // All should be allowed: true
+    for i in 0..10 {
+        let check_result = &result[&format!("dup-check-{}", i)];
+        assert_eq!(
+            check_result["allowed"], true,
+            "dup-check-{} should be allowed",
+            i
+        );
+    }
+}
+
+/// Test: Batch check processes checks in parallel correctly
+///
+/// Verifies that parallel execution produces correct results for
+/// a mix of allowed and denied checks.
+#[tokio::test]
+async fn test_batch_check_parallel_execution_correctness() {
+    let storage = Arc::new(MemoryDataStore::new());
+
+    // Create a store
+    let store_id = {
+        let (status, response) = post_json(
+            create_test_app(&storage),
+            "/stores",
+            serde_json::json!({"name": "parallel-test"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        response["id"].as_str().unwrap().to_string()
+    };
+
+    // Set up authorization model
+    setup_simple_model(&storage, &store_id).await;
+
+    // Write tuples for users 0-24 (half of 50)
+    let write_tuples: Vec<_> = (0..25)
+        .map(|i| {
+            serde_json::json!({
+                "user": format!("user:user{}", i),
+                "relation": "viewer",
+                "object": "document:shared"
+            })
+        })
+        .collect();
+
+    let (status, _) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{}/write", store_id),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": write_tuples
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Batch check users 0-49 (half should be allowed, half denied)
+    let checks: Vec<_> = (0..50)
+        .map(|i| {
+            serde_json::json!({
+                "tuple_key": {
+                    "user": format!("user:user{}", i),
+                    "relation": "viewer",
+                    "object": "document:shared"
+                },
+                "correlation_id": format!("parallel-{}", i)
+            })
+        })
+        .collect();
+
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{}/batch-check", store_id),
+        serde_json::json!({
+            "checks": checks
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let result = response["result"].as_object().unwrap();
+    assert_eq!(result.len(), 50, "Should have 50 results");
+
+    // Verify correctness: users 0-24 allowed, users 25-49 denied
+    for i in 0..50 {
+        let check_result = &result[&format!("parallel-{}", i)];
+        let expected = i < 25;
+        assert_eq!(
+            check_result["allowed"],
+            expected,
+            "parallel-{} should be {} (user{} {})",
+            i,
+            if expected { "allowed" } else { "denied" },
+            i,
+            if expected { "has" } else { "lacks" }
+        );
+    }
+}
+
 /// Test: Batch check handles many items efficiently
 ///
 /// Verifies batch check can handle the maximum batch size (50 items).
@@ -442,6 +618,9 @@ async fn test_batch_check_handles_max_items() {
         assert_eq!(status, StatusCode::CREATED);
         response["id"].as_str().unwrap().to_string()
     };
+
+    // Set up authorization model (required for GraphResolver)
+    setup_simple_model(&storage, &store_id).await;
 
     // Write 50 tuples
     let write_tuples: Vec<_> = (0..50)
