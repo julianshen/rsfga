@@ -24,9 +24,14 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::timeout;
+
+/// Timeout for cache operations (get/insert).
+/// Cache should never block authorization checks; treat timeout as "cache unavailable".
+const CACHE_OP_TIMEOUT: Duration = Duration::from_millis(10);
 
 use crate::cache::CacheKey;
 use crate::cel::{global_cache, CelContext, CelValue};
@@ -182,14 +187,23 @@ where
         };
 
         // Check cache first (if enabled and no bypass conditions)
+        // Cache operations are bounded by CACHE_OP_TIMEOUT to prevent blocking auth checks.
         if let Some((cache, ref key)) = cache_and_key {
-            if let Some(allowed) = cache.get(key).await {
-                // Cache hit - return immediately
-                self.cache_metrics.hits.fetch_add(1, Ordering::Relaxed);
-                return Ok(CheckResult { allowed });
+            match timeout(CACHE_OP_TIMEOUT, cache.get(key)).await {
+                Ok(Some(allowed)) => {
+                    // Cache hit - return immediately
+                    self.cache_metrics.hits.fetch_add(1, Ordering::Relaxed);
+                    return Ok(CheckResult { allowed });
+                }
+                Ok(None) => {
+                    // Cache miss - will perform graph traversal
+                    self.cache_metrics.misses.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(_) => {
+                    // Cache timeout - treat as unavailable, skip caching for this request
+                    self.cache_metrics.skips.fetch_add(1, Ordering::Relaxed);
+                }
             }
-            // Cache miss - will perform graph traversal
-            self.cache_metrics.misses.fetch_add(1, Ordering::Relaxed);
         }
 
         // Apply timeout to the entire check operation
@@ -204,8 +218,9 @@ where
         };
 
         // Store successful result in cache (reuse the same cache and key)
+        // Ignore timeout errors - cache insert is best-effort and shouldn't block response.
         if let (Some((cache, key)), Ok(ref check_result)) = (cache_and_key, &result) {
-            cache.insert(key, check_result.allowed).await;
+            let _ = timeout(CACHE_OP_TIMEOUT, cache.insert(key, check_result.allowed)).await;
         }
 
         result

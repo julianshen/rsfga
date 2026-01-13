@@ -4526,6 +4526,15 @@ async fn test_cache_skipped_for_request_context() {
     // CEL conditions depend on context values. Without this, a cached
     // decision for context.enabled=true could be incorrectly returned
     // for a request with context.enabled=false.
+    //
+    // This is a MECHANISM test: it proves the cache skip logic works.
+    // The tuple here has no condition, so context doesn't affect the outcome.
+    //
+    // A full INVARIANT test would require:
+    // 1. A tuple with a condition that evaluates based on context
+    // 2. Two checks with different context values yielding different results
+    // 3. Assert neither result came from cache
+    // TODO: Add integration test with full CEL condition evaluation
 
     use std::collections::HashMap;
 
