@@ -59,6 +59,7 @@ RUN cargo build --release --bin rsfga 2>/dev/null || true
 
 # Copy actual source code
 COPY crates/rsfga-api/src crates/rsfga-api/src
+COPY crates/rsfga-api/benches crates/rsfga-api/benches
 COPY crates/rsfga-server/src crates/rsfga-server/src
 COPY crates/rsfga-domain/src crates/rsfga-domain/src
 COPY crates/rsfga-domain/benches crates/rsfga-domain/benches
