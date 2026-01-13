@@ -29,6 +29,11 @@ const MODEL_CACHE_TTL: Duration = Duration::from_secs(30);
 /// Maximum number of models to cache. Prevents unbounded memory growth.
 const MODEL_CACHE_MAX_CAPACITY: u64 = 1000;
 
+/// Maximum nesting depth for parsing userset definitions.
+/// Matches the resolver's depth limit of 25 for consistency.
+/// Prevents stack overflow from maliciously nested model structures.
+const MAX_PARSE_DEPTH: usize = 25;
+
 /// Parses a JSON relation definition into a Userset.
 ///
 /// Supports all OpenFGA relation rewrite types:
@@ -45,6 +50,62 @@ pub(crate) fn parse_userset(
     type_name: &str,
     rel_name: &str,
 ) -> DomainResult<Userset> {
+    parse_userset_inner(rel_def, type_name, rel_name, 0)
+}
+
+/// Internal helper for parsing child arrays in union/intersection.
+/// Reduces code duplication between union and intersection parsing.
+fn parse_child_array(
+    value: &serde_json::Value,
+    key: &str,
+    type_name: &str,
+    rel_name: &str,
+    depth: usize,
+) -> DomainResult<Vec<Userset>> {
+    let children = value
+        .get("child")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| DomainError::ModelParseError {
+            message: format!(
+                "{} requires 'child' array: type '{}', relation '{}'",
+                key, type_name, rel_name
+            ),
+        })?;
+
+    // Security: reject empty child arrays to prevent "allow all" in intersection
+    // or "deny all" in union, which could lead to auth bypass or unintended denials
+    if children.is_empty() {
+        return Err(DomainError::ModelParseError {
+            message: format!(
+                "{} requires at least one child: type '{}', relation '{}'",
+                key, type_name, rel_name
+            ),
+        });
+    }
+
+    children
+        .iter()
+        .map(|c| parse_userset_inner(c, type_name, rel_name, depth + 1))
+        .collect()
+}
+
+/// Internal recursive parser with depth tracking.
+fn parse_userset_inner(
+    rel_def: &serde_json::Value,
+    type_name: &str,
+    rel_name: &str,
+    depth: usize,
+) -> DomainResult<Userset> {
+    // Security: prevent stack overflow from deeply nested structures
+    if depth > MAX_PARSE_DEPTH {
+        return Err(DomainError::ModelParseError {
+            message: format!(
+                "relation definition exceeds max nesting depth of {}: type '{}', relation '{}'",
+                MAX_PARSE_DEPTH, type_name, rel_name
+            ),
+        });
+    }
+
     let obj = rel_def
         .as_object()
         .ok_or_else(|| DomainError::ModelParseError {
@@ -111,41 +172,18 @@ pub(crate) fn parse_userset(
 
     // union
     if let Some(union) = obj.get("union") {
-        let children = union
-            .get("child")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| DomainError::ModelParseError {
-                message: format!(
-                    "union requires 'child' array: type '{}', relation '{}'",
-                    type_name, rel_name
-                ),
-            })?;
-        let parsed_children: Result<Vec<Userset>, _> = children
-            .iter()
-            .map(|c| parse_userset(c, type_name, rel_name))
-            .collect();
+        let parsed_children = parse_child_array(union, "union", type_name, rel_name, depth)?;
         return Ok(Userset::Union {
-            children: parsed_children?,
+            children: parsed_children,
         });
     }
 
     // intersection
     if let Some(intersection) = obj.get("intersection") {
-        let children = intersection
-            .get("child")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| DomainError::ModelParseError {
-                message: format!(
-                    "intersection requires 'child' array: type '{}', relation '{}'",
-                    type_name, rel_name
-                ),
-            })?;
-        let parsed_children: Result<Vec<Userset>, _> = children
-            .iter()
-            .map(|c| parse_userset(c, type_name, rel_name))
-            .collect();
+        let parsed_children =
+            parse_child_array(intersection, "intersection", type_name, rel_name, depth)?;
         return Ok(Userset::Intersection {
-            children: parsed_children?,
+            children: parsed_children,
         });
     }
 
@@ -168,8 +206,13 @@ pub(crate) fn parse_userset(
                 ),
             })?;
         return Ok(Userset::Exclusion {
-            base: Box::new(parse_userset(base, type_name, rel_name)?),
-            subtract: Box::new(parse_userset(subtract, type_name, rel_name)?),
+            base: Box::new(parse_userset_inner(base, type_name, rel_name, depth + 1)?),
+            subtract: Box::new(parse_userset_inner(
+                subtract,
+                type_name,
+                rel_name,
+                depth + 1,
+            )?),
         });
     }
 
@@ -187,39 +230,58 @@ pub(crate) fn parse_userset(
 ///
 /// Type constraints restrict which user types can have a relation.
 /// Format: `{"metadata": {"relations": {"<rel>": {"directly_related_user_types": [...]}}}}`
-fn parse_type_constraints(type_def: &serde_json::Value, rel_name: &str) -> Vec<TypeConstraint> {
-    type_def
+///
+/// # Security Note
+///
+/// This function returns an error if `directly_related_user_types` is present but
+/// contains malformed entries. Silently dropping entries could widen access by
+/// treating a constrained relation as unconstrained.
+fn parse_type_constraints(
+    type_def: &serde_json::Value,
+    type_name: &str,
+    rel_name: &str,
+) -> DomainResult<Vec<TypeConstraint>> {
+    // If no metadata or no directly_related_user_types, return empty (no constraints)
+    let Some(arr) = type_def
         .get("metadata")
         .and_then(|m| m.get("relations"))
         .and_then(|r| r.get(rel_name))
         .and_then(|rel_meta| rel_meta.get("directly_related_user_types"))
         .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    // Each item can be:
-                    // - {"type": "user"} → TypeConstraint::new("user")
-                    // - {"type": "group", "relation": "member"} → TypeConstraint::new("group#member")
-                    // - {"type": "user", "condition": "is_admin"} → TypeConstraint::with_condition("user", "is_admin")
-                    let type_name = item.get("type").and_then(|t| t.as_str())?;
-                    let condition = item.get("condition").and_then(|c| c.as_str());
+    else {
+        return Ok(vec![]);
+    };
 
-                    let full_type =
-                        if let Some(relation) = item.get("relation").and_then(|r| r.as_str()) {
-                            format!("{}#{}", type_name, relation)
-                        } else {
-                            type_name.to_string()
-                        };
+    // Parse each type constraint entry, failing on malformed entries
+    let mut constraints = Vec::with_capacity(arr.len());
+    for (idx, item) in arr.iter().enumerate() {
+        // Each item must have a "type" field
+        let user_type = item.get("type").and_then(|t| t.as_str()).ok_or_else(|| {
+            DomainError::ModelParseError {
+                message: format!(
+                    "directly_related_user_types[{}] missing 'type' field: type '{}', relation '{}'",
+                    idx, type_name, rel_name
+                ),
+            }
+        })?;
 
-                    if let Some(cond) = condition {
-                        Some(TypeConstraint::with_condition(&full_type, cond))
-                    } else {
-                        Some(TypeConstraint::new(&full_type))
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+        let condition = item.get("condition").and_then(|c| c.as_str());
+
+        let full_type = if let Some(relation) = item.get("relation").and_then(|r| r.as_str()) {
+            format!("{}#{}", user_type, relation)
+        } else {
+            user_type.to_string()
+        };
+
+        let constraint = if let Some(cond) = condition {
+            TypeConstraint::with_condition(&full_type, cond)
+        } else {
+            TypeConstraint::new(&full_type)
+        };
+        constraints.push(constraint);
+    }
+
+    Ok(constraints)
 }
 
 /// Adapter that implements `TupleReader` using a `DataStore`.
@@ -398,7 +460,8 @@ impl<S: DataStore> DataStoreModelReader<S> {
                             let rewrite = parse_userset(rel_def, type_name, rel_name)?;
 
                             // Parse type constraints from metadata
-                            let type_constraints = parse_type_constraints(type_def, rel_name);
+                            let type_constraints =
+                                parse_type_constraints(type_def, type_name, rel_name)?;
 
                             relations.push(RelationDefinition {
                                 name: rel_name.clone(),
@@ -1084,5 +1147,144 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("must be an object"));
+    }
+
+    #[test]
+    fn test_parse_userset_error_empty_union_child() {
+        use serde_json::json;
+
+        // Security: empty child array in union should be rejected
+        let result = super::parse_userset(&json!({"union": {"child": []}}), "document", "viewer");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("requires at least one child"));
+    }
+
+    #[test]
+    fn test_parse_userset_error_empty_intersection_child() {
+        use serde_json::json;
+
+        // Security: empty child array in intersection should be rejected
+        // (would cause "allow all" behavior)
+        let result = super::parse_userset(
+            &json!({"intersection": {"child": []}}),
+            "document",
+            "viewer",
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("requires at least one child"));
+    }
+
+    #[test]
+    fn test_parse_userset_error_exceeds_max_depth() {
+        use serde_json::json;
+
+        // Create deeply nested structure that exceeds MAX_PARSE_DEPTH (25)
+        let mut nested = json!({"this": {}});
+        for _ in 0..30 {
+            nested = json!({
+                "union": {
+                    "child": [nested, {"computedUserset": {"relation": "r"}}]
+                }
+            });
+        }
+
+        let result = super::parse_userset(&nested, "document", "viewer");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("exceeds max nesting depth"));
+    }
+
+    #[test]
+    fn test_parse_type_constraints_success() {
+        use serde_json::json;
+
+        let type_def = json!({
+            "type": "document",
+            "relations": {"viewer": {}},
+            "metadata": {
+                "relations": {
+                    "viewer": {
+                        "directly_related_user_types": [
+                            {"type": "user"},
+                            {"type": "group", "relation": "member"}
+                        ]
+                    }
+                }
+            }
+        });
+
+        let result = super::parse_type_constraints(&type_def, "document", "viewer");
+        assert!(result.is_ok());
+        let constraints = result.unwrap();
+        assert_eq!(constraints.len(), 2);
+        assert_eq!(constraints[0].type_name, "user");
+        assert_eq!(constraints[1].type_name, "group#member");
+    }
+
+    #[test]
+    fn test_parse_type_constraints_with_condition() {
+        use serde_json::json;
+
+        let type_def = json!({
+            "type": "document",
+            "relations": {"viewer": {}},
+            "metadata": {
+                "relations": {
+                    "viewer": {
+                        "directly_related_user_types": [
+                            {"type": "user", "condition": "is_admin"}
+                        ]
+                    }
+                }
+            }
+        });
+
+        let result = super::parse_type_constraints(&type_def, "document", "viewer");
+        assert!(result.is_ok());
+        let constraints = result.unwrap();
+        assert_eq!(constraints.len(), 1);
+        assert_eq!(constraints[0].type_name, "user");
+        assert_eq!(constraints[0].condition, Some("is_admin".to_string()));
+    }
+
+    #[test]
+    fn test_parse_type_constraints_no_metadata() {
+        use serde_json::json;
+
+        let type_def = json!({
+            "type": "document",
+            "relations": {"viewer": {}}
+        });
+
+        let result = super::parse_type_constraints(&type_def, "document", "viewer");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_type_constraints_error_missing_type() {
+        use serde_json::json;
+
+        // Security: malformed entry should fail, not be silently dropped
+        let type_def = json!({
+            "type": "document",
+            "relations": {"viewer": {}},
+            "metadata": {
+                "relations": {
+                    "viewer": {
+                        "directly_related_user_types": [
+                            {"relation": "member"}  // Missing "type" field
+                        ]
+                    }
+                }
+            }
+        });
+
+        let result = super::parse_type_constraints(&type_def, "document", "viewer");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("missing 'type' field"));
     }
 }
