@@ -245,6 +245,20 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .map_err(batch_check_error_to_status)?;
 
         // Convert server response back to gRPC response format
+        // SAFETY: Validate that results match input to prevent correlation ID mismatch.
+        // This is a critical invariant - mismatched results would cause authorization
+        // decisions to be mapped to wrong correlation IDs (violates Invariant I1).
+        if server_response.results.len() != correlation_ids.len() {
+            tracing::error!(
+                expected = correlation_ids.len(),
+                actual = server_response.results.len(),
+                "batch check result count mismatch - this indicates a bug in BatchCheckHandler"
+            );
+            return Err(Status::internal(
+                "internal error: batch check result count mismatch",
+            ));
+        }
+
         let mut result_map = std::collections::HashMap::new();
         for (correlation_id, item_result) in correlation_ids
             .into_iter()

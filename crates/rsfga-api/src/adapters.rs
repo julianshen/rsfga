@@ -33,6 +33,7 @@ const COMPLEX_RELATION_KEYS: &[&str] = &[
     "union",
     "intersection",
     "exclusion",
+    "difference",
     "computedUserset",
     "tupleToUserset",
     // OpenFGA v1.1+ uses snake_case in some contexts
