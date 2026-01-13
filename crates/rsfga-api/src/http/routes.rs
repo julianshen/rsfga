@@ -826,6 +826,7 @@ async fn write_tuples<S: DataStore>(
     let _ = state.storage.get_store(&store_id).await?;
 
     // Convert write tuples - fail if any tuple key is invalid
+    // Use into_iter() to take ownership and avoid clones
     let writes: Vec<StoredTuple> = body
         .writes
         .map(|w| {
@@ -833,10 +834,11 @@ async fn write_tuples<S: DataStore>(
                 .into_iter()
                 .enumerate()
                 .map(|(i, tk)| {
-                    parse_tuple_key(&tk).ok_or_else(|| {
+                    let user = tk.user.clone();
+                    let object = tk.object.clone();
+                    parse_tuple_key(tk).ok_or_else(|| {
                         ApiError::invalid_input(format!(
-                            "invalid tuple_key at writes index {}: user='{}', object='{}'",
-                            i, tk.user, tk.object
+                            "invalid tuple_key at writes index {i}: user='{user}', object='{object}'"
                         ))
                     })
                 })
@@ -874,26 +876,31 @@ async fn write_tuples<S: DataStore>(
     Ok(Json(serde_json::json!({})))
 }
 
-/// Parses a tuple key into a StoredTuple.
+/// Parses a tuple key into a StoredTuple (takes ownership to avoid clones).
 ///
 /// Includes condition parsing for conditional relationships.
-fn parse_tuple_key(tk: &TupleKeyBody) -> Option<rsfga_storage::StoredTuple> {
+fn parse_tuple_key(tk: TupleKeyBody) -> Option<rsfga_storage::StoredTuple> {
     // Parse user: "user:alice" or "team:eng#member"
     let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
 
     // Parse object: "document:readme" - use parse_object for consistent validation
     let (object_type, object_id) = parse_object(&tk.object)?;
 
-    // Parse condition if present
-    let (condition_name, condition_context) = match &tk.condition {
-        Some(cond) if !cond.name.is_empty() => (Some(cond.name.clone()), cond.context.clone()),
-        _ => (None, None),
+    // Parse condition if present (move values instead of cloning)
+    let (condition_name, condition_context) = if let Some(cond) = tk.condition {
+        if cond.name.is_empty() {
+            (None, None)
+        } else {
+            (Some(cond.name), cond.context)
+        }
+    } else {
+        (None, None)
     };
 
     Some(rsfga_storage::StoredTuple {
         object_type: object_type.to_string(),
         object_id: object_id.to_string(),
-        relation: tk.relation.clone(),
+        relation: tk.relation,
         user_type: user_type.to_string(),
         user_id: user_id.to_string(),
         user_relation: user_relation.map(|s| s.to_string()),

@@ -112,65 +112,68 @@ fn batch_check_error_to_status(err: rsfga_server::handlers::batch::BatchCheckErr
     }
 }
 
-/// Converts a prost_types::Value to serde_json::Value.
-fn prost_value_to_json(value: &prost_types::Value) -> serde_json::Value {
+/// Converts a prost_types::Value to serde_json::Value (takes ownership to avoid clones).
+fn prost_value_to_json(value: prost_types::Value) -> serde_json::Value {
     use prost_types::value::Kind;
 
-    match &value.kind {
+    match value.kind {
         Some(Kind::NullValue(_)) => serde_json::Value::Null,
-        Some(Kind::NumberValue(n)) => serde_json::json!(*n),
-        Some(Kind::StringValue(s)) => serde_json::Value::String(s.clone()),
-        Some(Kind::BoolValue(b)) => serde_json::Value::Bool(*b),
+        Some(Kind::NumberValue(n)) => serde_json::json!(n),
+        Some(Kind::StringValue(s)) => serde_json::Value::String(s),
+        Some(Kind::BoolValue(b)) => serde_json::Value::Bool(b),
         Some(Kind::StructValue(s)) => prost_struct_to_json(s),
         Some(Kind::ListValue(l)) => {
-            serde_json::Value::Array(l.values.iter().map(prost_value_to_json).collect())
+            serde_json::Value::Array(l.values.into_iter().map(prost_value_to_json).collect())
         }
         None => serde_json::Value::Null,
     }
 }
 
-/// Converts a prost_types::Struct to serde_json::Value (as an object).
-fn prost_struct_to_json(s: &prost_types::Struct) -> serde_json::Value {
+/// Converts a prost_types::Struct to serde_json::Value (takes ownership to avoid clones).
+fn prost_struct_to_json(s: prost_types::Struct) -> serde_json::Value {
     let map: serde_json::Map<String, serde_json::Value> = s
         .fields
-        .iter()
-        .map(|(k, v)| (k.clone(), prost_value_to_json(v)))
+        .into_iter()
+        .map(|(k, v)| (k, prost_value_to_json(v)))
         .collect();
     serde_json::Value::Object(map)
 }
 
-/// Converts a prost_types::Struct to HashMap<String, serde_json::Value>.
+/// Converts a prost_types::Struct to HashMap<String, serde_json::Value> (takes ownership).
 fn prost_struct_to_hashmap(
-    s: &prost_types::Struct,
+    s: prost_types::Struct,
 ) -> std::collections::HashMap<String, serde_json::Value> {
     s.fields
-        .iter()
-        .map(|(k, v)| (k.clone(), prost_value_to_json(v)))
+        .into_iter()
+        .map(|(k, v)| (k, prost_value_to_json(v)))
         .collect()
 }
 
-/// Converts a TupleKey proto to StoredTuple.
+/// Converts a TupleKey proto to StoredTuple (takes ownership to avoid clones).
 ///
 /// Uses `parse_user` and `parse_object` for consistent validation across all handlers.
 /// Parses the optional condition field including name and context.
-fn tuple_key_to_stored(tk: &TupleKey) -> Option<StoredTuple> {
+fn tuple_key_to_stored(tk: TupleKey) -> Option<StoredTuple> {
     let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
     // Use parse_object for consistent validation (rejects empty type or id)
     let (object_type, object_id) = parse_object(&tk.object)?;
 
-    // Parse condition if present
-    let (condition_name, condition_context) = match &tk.condition {
-        Some(cond) if !cond.name.is_empty() => {
-            let context = cond.context.as_ref().map(prost_struct_to_hashmap);
-            (Some(cond.name.clone()), context)
+    // Parse condition if present (move values instead of cloning)
+    let (condition_name, condition_context) = if let Some(cond) = tk.condition {
+        if cond.name.is_empty() {
+            (None, None)
+        } else {
+            let context = cond.context.map(prost_struct_to_hashmap);
+            (Some(cond.name), context)
         }
-        _ => (None, None),
+    } else {
+        (None, None)
     };
 
     Some(StoredTuple {
         object_type: object_type.to_string(),
         object_id: object_id.to_string(),
-        relation: tk.relation.clone(),
+        relation: tk.relation,
         user_type: user_type.to_string(),
         user_id: user_id.to_string(),
         user_relation: user_relation.map(|s| s.to_string()),
@@ -339,17 +342,19 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .map_err(storage_error_to_status)?;
 
         // Convert writes - fail if any tuple key is invalid
+        // Use into_iter() to take ownership and avoid clones
         let writes: Vec<StoredTuple> = req
             .writes
             .map(|w| {
                 w.tuple_keys
-                    .iter()
+                    .into_iter()
                     .enumerate()
                     .map(|(i, tk)| {
+                        let user = tk.user.clone();
+                        let object = tk.object.clone();
                         tuple_key_to_stored(tk).ok_or_else(|| {
                             Status::invalid_argument(format!(
-                                "invalid tuple_key at writes index {}: user='{}', object='{}'",
-                                i, tk.user, tk.object
+                                "invalid tuple_key at writes index {i}: user='{user}', object='{object}'"
                             ))
                         })
                     })
@@ -359,23 +364,25 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .unwrap_or_default();
 
         // Convert deletes - fail if any tuple key is invalid
+        // Deletes use TupleKeyWithoutCondition, convert to TupleKey
         let deletes: Vec<StoredTuple> = req
             .deletes
             .map(|d| {
                 d.tuple_keys
-                    .iter()
+                    .into_iter()
                     .enumerate()
                     .map(|(i, tk)| {
-                        tuple_key_to_stored(&TupleKey {
-                            user: tk.user.clone(),
-                            relation: tk.relation.clone(),
-                            object: tk.object.clone(),
+                        let user = tk.user.clone();
+                        let object = tk.object.clone();
+                        tuple_key_to_stored(TupleKey {
+                            user: tk.user,
+                            relation: tk.relation,
+                            object: tk.object,
                             condition: None,
                         })
                         .ok_or_else(|| {
                             Status::invalid_argument(format!(
-                                "invalid tuple_key at deletes index {}: user='{}', object='{}'",
-                                i, tk.user, tk.object
+                                "invalid tuple_key at deletes index {i}: user='{user}', object='{object}'"
                             ))
                         })
                     })
