@@ -22,11 +22,13 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::timeout;
 
+use crate::cache::CacheKey;
 use crate::cel::{global_cache, CelContext, CelValue};
 use crate::error::{DomainError, DomainResult};
 use crate::model::{TypeConstraint, Userset};
@@ -36,6 +38,49 @@ use super::context::TraversalContext;
 use super::traits::{ModelReader, TupleReader};
 use super::types::{CheckRequest, CheckResult};
 
+/// Metrics for cache performance monitoring.
+#[derive(Debug, Default)]
+pub struct CacheMetrics {
+    /// Number of cache hits (result found in cache).
+    pub hits: AtomicU64,
+    /// Number of cache misses (result not in cache, needed graph traversal).
+    pub misses: AtomicU64,
+    /// Number of cache skips (caching bypassed due to contextual tuples).
+    pub skips: AtomicU64,
+}
+
+impl CacheMetrics {
+    /// Returns a snapshot of the current metrics.
+    pub fn snapshot(&self) -> CacheMetricsSnapshot {
+        CacheMetricsSnapshot {
+            hits: self.hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            skips: self.skips.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Returns the cache hit ratio (hits / (hits + misses)).
+    /// Returns 0.0 if no hits or misses have occurred.
+    pub fn hit_ratio(&self) -> f64 {
+        let hits = self.hits.load(Ordering::Relaxed);
+        let misses = self.misses.load(Ordering::Relaxed);
+        let total = hits + misses;
+        if total == 0 {
+            0.0
+        } else {
+            hits as f64 / total as f64
+        }
+    }
+}
+
+/// A point-in-time snapshot of cache metrics.
+#[derive(Debug, Clone, Copy)]
+pub struct CacheMetricsSnapshot {
+    pub hits: u64,
+    pub misses: u64,
+    pub skips: u64,
+}
+
 /// Type alias for boxed future to handle async recursion.
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -43,10 +88,21 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ///
 /// Performs async graph traversal to determine if a user has
 /// a specific permission on an object.
+///
+/// # Caching
+///
+/// When a cache is configured, the resolver will:
+/// 1. Check the cache before performing expensive graph traversal
+/// 2. Store successful results in the cache for future lookups
+/// 3. Skip caching when contextual tuples are present (request-specific)
+///
+/// Cache metrics are available via `cache_metrics()` for monitoring.
 pub struct GraphResolver<T, M> {
     tuple_reader: Arc<T>,
     model_reader: Arc<M>,
     config: ResolverConfig,
+    /// Metrics for cache performance monitoring.
+    cache_metrics: CacheMetrics,
 }
 
 impl<T, M> GraphResolver<T, M>
@@ -60,6 +116,7 @@ where
             tuple_reader,
             model_reader,
             config: ResolverConfig::default(),
+            cache_metrics: CacheMetrics::default(),
         }
     }
 
@@ -69,10 +126,25 @@ where
             tuple_reader,
             model_reader,
             config,
+            cache_metrics: CacheMetrics::default(),
         }
     }
 
+    /// Returns the cache metrics for monitoring.
+    pub fn cache_metrics(&self) -> &CacheMetrics {
+        &self.cache_metrics
+    }
+
     /// Performs a permission check.
+    ///
+    /// # Caching Behavior
+    ///
+    /// When a cache is configured:
+    /// 1. Checks cache before graph traversal (returns immediately on hit)
+    /// 2. Stores successful results in cache after traversal
+    /// 3. Skips caching when contextual tuples are present
+    ///
+    /// Use `cache_metrics()` to monitor cache hit/miss rates.
     pub async fn check(&self, request: &CheckRequest) -> DomainResult<CheckResult> {
         // Validate inputs
         self.validate_request(request)?;
@@ -84,16 +156,61 @@ where
             });
         }
 
+        // Determine if caching should be used for this request.
+        // Skip caching when contextual tuples are provided since they're
+        // request-specific and would pollute the cache.
+        let use_cache = self.config.cache.is_some() && request.contextual_tuples.is_empty();
+
+        // Check cache first (if enabled)
+        if use_cache {
+            let cache_key = CacheKey::new(
+                &request.store_id,
+                &request.object,
+                &request.relation,
+                &request.user,
+            );
+
+            if let Some(cache) = &self.config.cache {
+                if let Some(allowed) = cache.get(&cache_key).await {
+                    // Cache hit - return immediately
+                    self.cache_metrics.hits.fetch_add(1, Ordering::Relaxed);
+                    return Ok(CheckResult { allowed });
+                }
+            }
+            // Cache miss - will perform graph traversal
+            self.cache_metrics.misses.fetch_add(1, Ordering::Relaxed);
+        } else if self.config.cache.is_some() {
+            // Cache is configured but skipped due to contextual tuples
+            self.cache_metrics.skips.fetch_add(1, Ordering::Relaxed);
+        }
+
         // Apply timeout to the entire check operation
         let ctx = TraversalContext::new();
         let check_future = self.resolve_check(request.clone(), ctx);
 
-        match timeout(self.config.timeout, check_future).await {
+        let result = match timeout(self.config.timeout, check_future).await {
             Ok(result) => result,
             Err(_) => Err(DomainError::Timeout {
                 duration_ms: self.config.timeout.as_millis() as u64,
             }),
+        };
+
+        // Store successful result in cache (if enabled and no contextual tuples)
+        if use_cache {
+            if let Ok(ref check_result) = result {
+                if let Some(cache) = &self.config.cache {
+                    let cache_key = CacheKey::new(
+                        &request.store_id,
+                        &request.object,
+                        &request.relation,
+                        &request.user,
+                    );
+                    cache.insert(cache_key, check_result.allowed).await;
+                }
+            }
         }
+
+        result
     }
 
     /// Validates the check request.

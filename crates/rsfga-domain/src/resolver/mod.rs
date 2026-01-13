@@ -37,6 +37,6 @@ mod tests;
 
 // Re-export public API
 pub use config::ResolverConfig;
-pub use graph_resolver::GraphResolver;
+pub use graph_resolver::{CacheMetrics, CacheMetricsSnapshot, GraphResolver};
 pub use traits::{ModelReader, TupleReader};
 pub use types::{CheckRequest, CheckResult, ContextualTuple, StoredTupleRef};

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use rsfga_domain::cache::{CheckCache, CheckCacheConfig};
-use rsfga_domain::resolver::GraphResolver;
+use rsfga_domain::resolver::{GraphResolver, ResolverConfig};
 use rsfga_server::handlers::batch::BatchCheckHandler;
 use rsfga_storage::DataStore;
 
@@ -50,14 +50,16 @@ impl<S: DataStore> AppState<S> {
         let tuple_reader = Arc::new(DataStoreTupleReader::new(Arc::clone(&storage)));
         let model_reader = Arc::new(DataStoreModelReader::new(Arc::clone(&storage)));
 
-        // Create the graph resolver
-        let resolver = Arc::new(GraphResolver::new(
-            Arc::clone(&tuple_reader),
-            Arc::clone(&model_reader),
-        ));
-
         // Create the check cache
         let cache = Arc::new(CheckCache::new(cache_config));
+
+        // Create the graph resolver with cache integration
+        let resolver_config = ResolverConfig::default().with_cache(Arc::clone(&cache));
+        let resolver = Arc::new(GraphResolver::with_config(
+            Arc::clone(&tuple_reader),
+            Arc::clone(&model_reader),
+            resolver_config,
+        ));
 
         // Create the batch handler
         let batch_handler = Arc::new(BatchCheckHandler::new(
