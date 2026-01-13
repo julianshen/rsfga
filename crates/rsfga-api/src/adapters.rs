@@ -553,4 +553,110 @@ mod tests {
             assert!(message.contains("viewer"));
         }
     }
+
+    #[tokio::test]
+    async fn test_model_reader_cache_returns_fresh_model_after_update() {
+        // CRITICAL: Verify that model updates are reflected after cache expiry.
+        // This test uses cache invalidation through entry removal.
+        let storage = Arc::new(MemoryDataStore::new());
+        storage
+            .create_store("test-store", "Test Store")
+            .await
+            .unwrap();
+
+        // Initial model with only "user" type
+        let model_v1 = rsfga_storage::StoredAuthorizationModel::new(
+            "model-v1".to_string(),
+            "test-store",
+            "1.1",
+            r#"{"type_definitions": [{"type": "user"}]}"#.to_string(),
+        );
+        storage.write_authorization_model(model_v1).await.unwrap();
+
+        let reader = DataStoreModelReader::new(Arc::clone(&storage));
+
+        // First read - should get model with 1 type
+        let cached_model = reader.get_model("test-store").await.unwrap();
+        assert_eq!(cached_model.type_definitions.len(), 1);
+
+        // Write a new model with 2 types
+        let model_v2 = rsfga_storage::StoredAuthorizationModel::new(
+            "model-v2".to_string(),
+            "test-store",
+            "1.1",
+            r#"{"type_definitions": [{"type": "user"}, {"type": "document"}]}"#.to_string(),
+        );
+        storage.write_authorization_model(model_v2).await.unwrap();
+
+        // Invalidate cache entry manually (simulating expiry)
+        reader.cache.invalidate("test-store").await;
+
+        // Next read should get the updated model
+        let fresh_model = reader.get_model("test-store").await.unwrap();
+        assert_eq!(fresh_model.type_definitions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_model_reader_cache_max_capacity_eviction() {
+        // Verify MODEL_CACHE_MAX_CAPACITY eviction works.
+        // We create more entries than the cache capacity and verify old ones are evicted.
+        let storage = Arc::new(MemoryDataStore::new());
+
+        // Create a reader and manually insert entries to test eviction
+        let reader = DataStoreModelReader::new(Arc::clone(&storage));
+
+        // Insert entries up to and beyond capacity
+        // Note: moka uses approximate LRU, so we test that the cache doesn't grow unbounded
+        for i in 0..10 {
+            let model = AuthorizationModel::with_types("1.1", vec![]);
+            reader.cache.insert(format!("store-{}", i), model).await;
+        }
+
+        // Run pending tasks to ensure eviction happens
+        reader.cache.run_pending_tasks().await;
+
+        // Cache should have entries (exact count depends on moka's eviction policy)
+        // The key invariant is that it doesn't exceed max capacity over time
+        assert!(reader.cache.entry_count() <= super::MODEL_CACHE_MAX_CAPACITY);
+    }
+
+    #[tokio::test]
+    async fn test_is_complex_relation_def_detects_all_complex_types() {
+        use serde_json::json;
+
+        // All known complex relation keys should be detected
+        let complex_cases = vec![
+            json!({"union": {}}),
+            json!({"intersection": {}}),
+            json!({"exclusion": {}}),
+            json!({"difference": {}}),
+            json!({"computedUserset": {"relation": "owner"}}),
+            json!({"tupleToUserset": {}}),
+            json!({"computed_userset": {"relation": "owner"}}),
+            json!({"tuple_to_userset": {}}),
+        ];
+
+        for case in complex_cases {
+            assert!(
+                super::is_complex_relation_def(&case),
+                "Failed to detect complex relation: {:?}",
+                case
+            );
+        }
+
+        // Empty object and metadata-only should NOT be detected as complex
+        let simple_cases = vec![
+            json!({}),
+            json!({"metadata": {"description": "Some relation"}}),
+            json!({"this": {}}),
+        ];
+
+        for case in simple_cases {
+            assert!(
+                !super::is_complex_relation_def(&case),
+                "Incorrectly detected simple relation as complex: {:?}",
+                case
+            );
+        }
+    }
 }

@@ -297,6 +297,219 @@ async fn test_batch_check_rpc_rejects_oversized_correlation_id() {
     assert!(status.message().contains("exceeds maximum length"));
 }
 
+/// Test: BatchCheck RPC accepts correlation_id at exactly 256 bytes
+///
+/// Edge case: exactly at the limit should be accepted.
+#[tokio::test]
+async fn test_batch_check_rpc_accepts_max_length_correlation_id() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+    setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    // Create a correlation_id at exactly 256 bytes (the limit)
+    let max_length_correlation_id = "x".repeat(256);
+
+    let request = Request::new(BatchCheckRequest {
+        store_id: "test-store".to_string(),
+        checks: vec![BatchCheckItem {
+            tuple_key: Some(TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+                condition: None,
+            }),
+            contextual_tuples: None,
+            context: None,
+            correlation_id: max_length_correlation_id.clone(),
+        }],
+        authorization_model_id: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.batch_check(request).await;
+    // Should succeed (not rejected for length)
+    assert!(response.is_ok());
+
+    // Verify the correlation_id is preserved in response
+    let result = response.unwrap().into_inner();
+    assert!(result.result.contains_key(&max_length_correlation_id));
+}
+
+/// Test: BatchCheck RPC rejects correlation_id at 257 bytes
+///
+/// Edge case: exactly one byte over the limit should be rejected.
+#[tokio::test]
+async fn test_batch_check_rpc_rejects_correlation_id_at_257_bytes() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Create a correlation_id at 257 bytes (one over the limit)
+    let over_limit_correlation_id = "x".repeat(257);
+
+    let request = Request::new(BatchCheckRequest {
+        store_id: "test-store".to_string(),
+        checks: vec![BatchCheckItem {
+            tuple_key: Some(TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+                condition: None,
+            }),
+            contextual_tuples: None,
+            context: None,
+            correlation_id: over_limit_correlation_id,
+        }],
+        authorization_model_id: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.batch_check(request).await;
+    assert!(response.is_err());
+
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("exceeds maximum length"));
+}
+
+/// Test: BatchCheck RPC accepts empty correlation_id
+///
+/// Empty strings should be valid correlation IDs.
+#[tokio::test]
+async fn test_batch_check_rpc_accepts_empty_correlation_id() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+    setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(BatchCheckRequest {
+        store_id: "test-store".to_string(),
+        checks: vec![BatchCheckItem {
+            tuple_key: Some(TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+                condition: None,
+            }),
+            contextual_tuples: None,
+            context: None,
+            correlation_id: String::new(), // Empty correlation ID
+        }],
+        authorization_model_id: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.batch_check(request).await;
+    // Should succeed
+    assert!(response.is_ok());
+
+    // Verify the empty correlation_id is in the response
+    let result = response.unwrap().into_inner();
+    assert!(result.result.contains_key(""));
+}
+
+/// Test: BatchCheck RPC enforces MAX_BATCH_SIZE limit
+///
+/// Verifies that batches exceeding MAX_BATCH_SIZE (50) are rejected.
+#[tokio::test]
+async fn test_batch_check_rpc_rejects_oversized_batch() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Create 51 checks (one over the limit of 50)
+    let checks: Vec<BatchCheckItem> = (0..51)
+        .map(|i| BatchCheckItem {
+            tuple_key: Some(TupleKey {
+                user: format!("user:user{}", i),
+                relation: "viewer".to_string(),
+                object: format!("document:doc{}", i),
+                condition: None,
+            }),
+            contextual_tuples: None,
+            context: None,
+            correlation_id: format!("check-{}", i),
+        })
+        .collect();
+
+    let request = Request::new(BatchCheckRequest {
+        store_id: "test-store".to_string(),
+        checks,
+        authorization_model_id: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.batch_check(request).await;
+    assert!(response.is_err());
+
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("batch size"));
+    assert!(status.message().contains("exceeds maximum"));
+}
+
+/// Test: BatchCheck RPC accepts exactly MAX_BATCH_SIZE items
+///
+/// Edge case: exactly at the limit should be accepted.
+#[tokio::test]
+async fn test_batch_check_rpc_accepts_max_batch_size() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+    setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    // Create exactly 50 checks (at the limit)
+    let checks: Vec<BatchCheckItem> = (0..50)
+        .map(|i| BatchCheckItem {
+            tuple_key: Some(TupleKey {
+                user: format!("user:user{}", i),
+                relation: "viewer".to_string(),
+                object: format!("document:doc{}", i),
+                condition: None,
+            }),
+            contextual_tuples: None,
+            context: None,
+            correlation_id: format!("check-{}", i),
+        })
+        .collect();
+
+    let request = Request::new(BatchCheckRequest {
+        store_id: "test-store".to_string(),
+        checks,
+        authorization_model_id: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.batch_check(request).await;
+    // Should succeed at exactly the limit
+    assert!(response.is_ok());
+
+    // Verify we got 50 results
+    let result = response.unwrap().into_inner();
+    assert_eq!(result.result.len(), 50);
+}
+
 /// Test: Write RPC works correctly
 ///
 /// Verifies the Write RPC can create and delete tuples.
