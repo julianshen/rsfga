@@ -810,3 +810,439 @@ async fn test_write_authorization_model_validates_store_exists() {
     assert!(response.is_err());
     assert_eq!(response.unwrap_err().code(), tonic::Code::NotFound);
 }
+
+/// Test: Write RPC correctly parses and stores conditions
+///
+/// Verifies that when a TupleKey includes a condition, the condition name
+/// and context are correctly extracted and stored in the StoredTuple.
+#[tokio::test]
+async fn test_write_rpc_parses_conditions() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Build a condition with context
+    let mut context_fields = std::collections::BTreeMap::new();
+    context_fields.insert(
+        "allowed_ip".to_string(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::StringValue(
+                "192.168.1.100".to_string(),
+            )),
+        },
+    );
+    context_fields.insert(
+        "max_age".to_string(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::NumberValue(30.0)),
+        },
+    );
+
+    let condition = RelationshipCondition {
+        name: "ip_restriction".to_string(),
+        context: Some(prost_types::Struct {
+            fields: context_fields,
+        }),
+    };
+
+    // Write a tuple with a condition
+    let request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:secret".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    let response = service.write(request).await;
+    assert!(response.is_ok());
+
+    // Verify the tuple was written with the condition
+    let tuples = storage
+        .read_tuples("test-store", &Default::default())
+        .await
+        .unwrap();
+
+    assert_eq!(tuples.len(), 1);
+    let tuple = &tuples[0];
+
+    // Verify condition name
+    assert_eq!(tuple.condition_name, Some("ip_restriction".to_string()));
+
+    // Verify condition context
+    let context = tuple
+        .condition_context
+        .as_ref()
+        .expect("condition context should be present");
+    assert_eq!(
+        context.get("allowed_ip"),
+        Some(&serde_json::json!("192.168.1.100"))
+    );
+    assert_eq!(context.get("max_age"), Some(&serde_json::json!(30.0)));
+}
+
+/// Test: Write RPC correctly parses condition without context
+///
+/// Verifies that a condition with only a name (no context) is correctly parsed.
+#[tokio::test]
+async fn test_write_rpc_parses_condition_without_context() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Condition with name but no context
+    let condition = RelationshipCondition {
+        name: "time_based_access".to_string(),
+        context: None,
+    };
+
+    let request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:bob".to_string(),
+                relation: "editor".to_string(),
+                object: "document:report".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    let response = service.write(request).await;
+    assert!(response.is_ok());
+
+    // Verify the tuple was written
+    let tuples = storage
+        .read_tuples("test-store", &Default::default())
+        .await
+        .unwrap();
+
+    assert_eq!(tuples.len(), 1);
+    let tuple = &tuples[0];
+
+    // Verify condition name is present but context is None
+    assert_eq!(tuple.condition_name, Some("time_based_access".to_string()));
+    assert!(tuple.condition_context.is_none());
+}
+
+/// Test: Write RPC ignores empty condition name
+///
+/// Verifies that a condition with an empty name is treated as no condition.
+#[tokio::test]
+async fn test_write_rpc_ignores_empty_condition_name() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Condition with empty name
+    let condition = RelationshipCondition {
+        name: String::new(),
+        context: Some(prost_types::Struct {
+            fields: std::collections::BTreeMap::new(),
+        }),
+    };
+
+    let request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:carol".to_string(),
+                relation: "owner".to_string(),
+                object: "document:public".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    let response = service.write(request).await;
+    assert!(response.is_ok());
+
+    // Verify the tuple was written without condition
+    let tuples = storage
+        .read_tuples("test-store", &Default::default())
+        .await
+        .unwrap();
+
+    assert_eq!(tuples.len(), 1);
+    let tuple = &tuples[0];
+
+    // Empty condition name should be treated as no condition
+    assert!(tuple.condition_name.is_none());
+    assert!(tuple.condition_context.is_none());
+}
+
+/// Test: Write RPC rejects invalid condition name with special characters
+///
+/// Verifies that condition names with special characters are rejected (security I4).
+#[tokio::test]
+async fn test_write_rpc_rejects_invalid_condition_name() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Condition with invalid name (contains special characters)
+    let condition = RelationshipCondition {
+        name: "invalid;DROP TABLE--".to_string(),
+        context: None,
+    };
+
+    let request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:secret".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    let response = service.write(request).await;
+    assert!(response.is_err());
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("invalid condition name"));
+}
+
+/// Test: Write RPC accepts valid condition names with underscore and hyphen
+///
+/// Verifies that valid condition names are accepted.
+#[tokio::test]
+async fn test_write_rpc_accepts_valid_condition_name_formats() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Valid condition names with underscore and hyphen
+    let condition = RelationshipCondition {
+        name: "ip_restriction-v2".to_string(),
+        context: None,
+    };
+
+    let request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:report".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    let response = service.write(request).await;
+    assert!(response.is_ok());
+
+    // Verify the tuple was written with the condition
+    let tuples = storage
+        .read_tuples("test-store", &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1);
+    assert_eq!(
+        tuples[0].condition_name,
+        Some("ip_restriction-v2".to_string())
+    );
+}
+
+/// Test: Write RPC rejects NaN/Infinity in condition context
+///
+/// Verifies that invalid numeric values (NaN, Infinity) are rejected
+/// since they cannot be represented in JSON (constraint C11).
+#[tokio::test]
+async fn test_write_rpc_rejects_nan_infinity_in_condition_context() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Test NaN value in context
+    let mut context_fields = std::collections::BTreeMap::new();
+    context_fields.insert(
+        "invalid_value".to_string(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::NumberValue(f64::NAN)),
+        },
+    );
+
+    let condition = RelationshipCondition {
+        name: "test_condition".to_string(),
+        context: Some(prost_types::Struct {
+            fields: context_fields,
+        }),
+    };
+
+    let request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:test".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    let response = service.write(request).await;
+    assert!(response.is_err());
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("NaN or Infinity"));
+
+    // Test Infinity value in context
+    let mut context_fields = std::collections::BTreeMap::new();
+    context_fields.insert(
+        "invalid_value".to_string(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::NumberValue(f64::INFINITY)),
+        },
+    );
+
+    let condition = RelationshipCondition {
+        name: "test_condition".to_string(),
+        context: Some(prost_types::Struct {
+            fields: context_fields,
+        }),
+    };
+
+    let request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:test".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    let response = service.write(request).await;
+    assert!(response.is_err());
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("NaN or Infinity"));
+}
+
+/// Test: Read RPC returns conditions stored with tuples
+///
+/// Verifies read-after-write contract: conditions written are returned by Read (I2).
+#[tokio::test]
+async fn test_read_rpc_returns_conditions() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Write a tuple with a condition
+    let mut context_fields = std::collections::BTreeMap::new();
+    context_fields.insert(
+        "max_age".to_string(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::NumberValue(25.0)),
+        },
+    );
+
+    let condition = RelationshipCondition {
+        name: "age_restriction".to_string(),
+        context: Some(prost_types::Struct {
+            fields: context_fields,
+        }),
+    };
+
+    let write_request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:bob".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:restricted".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    service.write(write_request).await.unwrap();
+
+    // Read the tuple back
+    let read_request = Request::new(ReadRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: None,
+        page_size: None,
+        continuation_token: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.read(read_request).await.unwrap();
+    let tuples = response.into_inner().tuples;
+
+    assert_eq!(tuples.len(), 1);
+    let tuple = &tuples[0];
+    let key = tuple.key.as_ref().expect("tuple should have key");
+
+    // Verify condition is returned
+    let condition = key.condition.as_ref().expect("condition should be present");
+    assert_eq!(condition.name, "age_restriction");
+
+    let context = condition
+        .context
+        .as_ref()
+        .expect("context should be present");
+    let max_age = context
+        .fields
+        .get("max_age")
+        .expect("max_age should be present");
+    assert!(matches!(
+        max_age.kind,
+        Some(prost_types::value::Kind::NumberValue(25.0))
+    ));
+}

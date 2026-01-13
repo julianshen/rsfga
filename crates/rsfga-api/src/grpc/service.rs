@@ -22,9 +22,9 @@ use crate::proto::openfga::v1::{
     ReadAssertionsRequest, ReadAssertionsResponse, ReadAuthorizationModelRequest,
     ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
     ReadAuthorizationModelsResponse, ReadChangesRequest, ReadChangesResponse, ReadRequest,
-    ReadResponse, Store, Tuple, TupleKey, UpdateStoreRequest, UpdateStoreResponse,
-    WriteAssertionsRequest, WriteAssertionsResponse, WriteAuthorizationModelRequest,
-    WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
+    ReadResponse, RelationshipCondition, Store, Tuple, TupleKey, UpdateStoreRequest,
+    UpdateStoreResponse, WriteAssertionsRequest, WriteAssertionsResponse,
+    WriteAuthorizationModelRequest, WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
 
 /// Maximum allowed length for correlation IDs to prevent DoS attacks.
@@ -112,24 +112,230 @@ fn batch_check_error_to_status(err: rsfga_server::handlers::batch::BatchCheckErr
     }
 }
 
-/// Converts a TupleKey proto to StoredTuple.
+/// Converts a prost_types::Value to serde_json::Value (takes ownership to avoid clones).
+///
+/// Returns `Err` if the value contains NaN or Infinity (invalid JSON numbers).
+fn prost_value_to_json(value: prost_types::Value) -> Result<serde_json::Value, &'static str> {
+    use prost_types::value::Kind;
+
+    match value.kind {
+        Some(Kind::NullValue(_)) => Ok(serde_json::Value::Null),
+        Some(Kind::NumberValue(n)) => {
+            // Reject NaN and Infinity as they are not valid JSON values.
+            // Note: Protobuf NumberValue uses f64, which loses precision for
+            // integers > 2^53. This is a known limitation of the protocol.
+            if n.is_nan() || n.is_infinite() {
+                return Err("NaN and Infinity are not valid JSON numbers");
+            }
+            Ok(serde_json::json!(n))
+        }
+        Some(Kind::StringValue(s)) => Ok(serde_json::Value::String(s)),
+        Some(Kind::BoolValue(b)) => Ok(serde_json::Value::Bool(b)),
+        Some(Kind::StructValue(s)) => prost_struct_to_json(s),
+        Some(Kind::ListValue(l)) => {
+            let values: Result<Vec<_>, _> = l.values.into_iter().map(prost_value_to_json).collect();
+            Ok(serde_json::Value::Array(values?))
+        }
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+/// Converts a prost_types::Struct to serde_json::Value (takes ownership to avoid clones).
+///
+/// Returns `Err` if any value contains NaN or Infinity.
+fn prost_struct_to_json(s: prost_types::Struct) -> Result<serde_json::Value, &'static str> {
+    let mut map = serde_json::Map::new();
+    for (k, v) in s.fields {
+        map.insert(k, prost_value_to_json(v)?);
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
+/// Converts a prost_types::Struct to HashMap<String, serde_json::Value> (takes ownership).
+///
+/// Returns `Err` if any value contains NaN or Infinity.
+fn prost_struct_to_hashmap(
+    s: prost_types::Struct,
+) -> Result<std::collections::HashMap<String, serde_json::Value>, &'static str> {
+    s.fields
+        .into_iter()
+        .map(|(k, v)| Ok((k, prost_value_to_json(v)?)))
+        .collect()
+}
+
+/// Converts a serde_json::Value to prost_types::Value (for Read response).
+fn json_to_prost_value(value: serde_json::Value) -> prost_types::Value {
+    use prost_types::value::Kind;
+
+    prost_types::Value {
+        kind: Some(match value {
+            serde_json::Value::Null => Kind::NullValue(0),
+            serde_json::Value::Bool(b) => Kind::BoolValue(b),
+            serde_json::Value::Number(n) => Kind::NumberValue(n.as_f64().unwrap_or(0.0)),
+            serde_json::Value::String(s) => Kind::StringValue(s),
+            serde_json::Value::Array(arr) => Kind::ListValue(prost_types::ListValue {
+                values: arr.into_iter().map(json_to_prost_value).collect(),
+            }),
+            serde_json::Value::Object(obj) => Kind::StructValue(json_map_to_prost_struct(obj)),
+        }),
+    }
+}
+
+/// Converts a serde_json Map to prost_types::Struct (for Read response).
+fn json_map_to_prost_struct(
+    map: serde_json::Map<String, serde_json::Value>,
+) -> prost_types::Struct {
+    prost_types::Struct {
+        fields: map
+            .into_iter()
+            .map(|(k, v)| (k, json_to_prost_value(v)))
+            .collect(),
+    }
+}
+
+/// Converts a HashMap<String, serde_json::Value> to prost_types::Struct (for Read response).
+fn hashmap_to_prost_struct(
+    map: std::collections::HashMap<String, serde_json::Value>,
+) -> prost_types::Struct {
+    prost_types::Struct {
+        fields: map
+            .into_iter()
+            .map(|(k, v)| (k, json_to_prost_value(v)))
+            .collect(),
+    }
+}
+
+/// Maximum allowed condition name length (security constraint I4).
+const MAX_CONDITION_NAME_LENGTH: usize = 256;
+
+/// Maximum allowed condition context size in bytes (constraint C11: Fail Fast with Bounds).
+const MAX_CONDITION_CONTEXT_SIZE: usize = 10 * 1024; // 10KB
+
+/// Maximum allowed JSON nesting depth (constraint C11: Fail Fast with Bounds).
+/// Prevents stack overflow during serialization of deeply nested structures.
+const MAX_JSON_DEPTH: usize = 10;
+
+/// Checks if a prost_types::Value exceeds the maximum nesting depth.
+fn exceeds_max_depth(value: &prost_types::Value, current_depth: usize) -> bool {
+    if current_depth > MAX_JSON_DEPTH {
+        return true;
+    }
+    use prost_types::value::Kind;
+    match &value.kind {
+        Some(Kind::StructValue(s)) => s
+            .fields
+            .values()
+            .any(|v| exceeds_max_depth(v, current_depth + 1)),
+        Some(Kind::ListValue(l)) => l
+            .values
+            .iter()
+            .any(|v| exceeds_max_depth(v, current_depth + 1)),
+        _ => false,
+    }
+}
+
+/// Error returned when tuple key parsing fails.
+/// Contains the original user/object strings for error messages (avoids cloning in happy path).
+struct TupleKeyParseError {
+    user: String,
+    object: String,
+    reason: &'static str,
+}
+
+/// Validates a condition name format (security constraint I4).
+/// Allows only alphanumeric, underscore, hyphen characters with max 256 chars.
+fn is_valid_condition_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_CONDITION_NAME_LENGTH
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Converts a TupleKey proto to StoredTuple (takes ownership to avoid clones).
 ///
 /// Uses `parse_user` and `parse_object` for consistent validation across all handlers.
-fn tuple_key_to_stored(tk: &TupleKey) -> Option<StoredTuple> {
-    let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
-    // Use parse_object for consistent validation (rejects empty type or id)
-    let (object_type, object_id) = parse_object(&tk.object)?;
+/// Parses the optional condition field including name and context.
+///
+/// Returns `Err` with the original user/object for error messages (avoids cloning in happy path).
+fn tuple_key_to_stored(tk: TupleKey) -> Result<StoredTuple, TupleKeyParseError> {
+    let (user_type, user_id, user_relation) =
+        parse_user(&tk.user).ok_or_else(|| TupleKeyParseError {
+            user: tk.user.clone(),
+            object: tk.object.clone(),
+            reason: "invalid user format",
+        })?;
 
-    Some(StoredTuple {
+    let (object_type, object_id) = parse_object(&tk.object).ok_or_else(|| TupleKeyParseError {
+        user: tk.user.clone(),
+        object: tk.object.clone(),
+        reason: "invalid object format",
+    })?;
+
+    // Parse and validate condition if present
+    let (condition_name, condition_context) = if let Some(cond) = tk.condition {
+        if cond.name.is_empty() {
+            (None, None)
+        } else {
+            // Validate condition name format (security constraint I4)
+            if !is_valid_condition_name(&cond.name) {
+                return Err(TupleKeyParseError {
+                    user: tk.user,
+                    object: tk.object,
+                    reason: "invalid condition name: must be alphanumeric/underscore/hyphen, max 256 chars",
+                });
+            }
+
+            // Convert and validate context (constraint C11)
+            let context = if let Some(ctx) = cond.context {
+                // Check depth limit to prevent stack overflow
+                if ctx.fields.values().any(|v| exceeds_max_depth(v, 1)) {
+                    return Err(TupleKeyParseError {
+                        user: tk.user,
+                        object: tk.object,
+                        reason: "condition context exceeds maximum nesting depth (10 levels)",
+                    });
+                }
+
+                // Convert prost Struct to HashMap, rejecting NaN/Infinity values
+                let hashmap = prost_struct_to_hashmap(ctx).map_err(|_| TupleKeyParseError {
+                    user: tk.user.clone(),
+                    object: tk.object.clone(),
+                    reason: "condition context contains invalid number (NaN or Infinity)",
+                })?;
+
+                // Estimate serialized size to enforce bounds
+                let estimated_size: usize = hashmap
+                    .iter()
+                    .map(|(k, v)| k.len() + v.to_string().len())
+                    .sum();
+                if estimated_size > MAX_CONDITION_CONTEXT_SIZE {
+                    return Err(TupleKeyParseError {
+                        user: tk.user,
+                        object: tk.object,
+                        reason: "condition context exceeds maximum size (10KB)",
+                    });
+                }
+                Some(hashmap)
+            } else {
+                None
+            };
+
+            (Some(cond.name), context)
+        }
+    } else {
+        (None, None)
+    };
+
+    Ok(StoredTuple {
         object_type: object_type.to_string(),
         object_id: object_id.to_string(),
-        relation: tk.relation.clone(),
+        relation: tk.relation,
         user_type: user_type.to_string(),
         user_id: user_id.to_string(),
         user_relation: user_relation.map(|s| s.to_string()),
-        // TODO(#84): Parse condition from request when API support is added
-        condition_name: None,
-        condition_context: None,
+        condition_name,
+        condition_context,
     })
 }
 
@@ -293,17 +499,18 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .map_err(storage_error_to_status)?;
 
         // Convert writes - fail if any tuple key is invalid
+        // No clones in happy path - error contains user/object for messages
         let writes: Vec<StoredTuple> = req
             .writes
             .map(|w| {
                 w.tuple_keys
-                    .iter()
+                    .into_iter()
                     .enumerate()
                     .map(|(i, tk)| {
-                        tuple_key_to_stored(tk).ok_or_else(|| {
+                        tuple_key_to_stored(tk).map_err(|e| {
                             Status::invalid_argument(format!(
-                                "invalid tuple_key at writes index {}: user='{}', object='{}'",
-                                i, tk.user, tk.object
+                                "invalid tuple_key at writes index {i}: user='{}', object='{}': {}",
+                                e.user, e.object, e.reason
                             ))
                         })
                     })
@@ -313,23 +520,24 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .unwrap_or_default();
 
         // Convert deletes - fail if any tuple key is invalid
+        // Deletes use TupleKeyWithoutCondition, convert to TupleKey
         let deletes: Vec<StoredTuple> = req
             .deletes
             .map(|d| {
                 d.tuple_keys
-                    .iter()
+                    .into_iter()
                     .enumerate()
                     .map(|(i, tk)| {
-                        tuple_key_to_stored(&TupleKey {
-                            user: tk.user.clone(),
-                            relation: tk.relation.clone(),
-                            object: tk.object.clone(),
+                        tuple_key_to_stored(TupleKey {
+                            user: tk.user,
+                            relation: tk.relation,
+                            object: tk.object,
                             condition: None,
                         })
-                        .ok_or_else(|| {
+                        .map_err(|e| {
                             Status::invalid_argument(format!(
-                                "invalid tuple_key at deletes index {}: user='{}', object='{}'",
-                                i, tk.user, tk.object
+                                "invalid tuple_key at deletes index {i}: user='{}', object='{}': {}",
+                                e.user, e.object, e.reason
                             ))
                         })
                     })
@@ -392,7 +600,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // Convert to response format
+        // Convert to response format, including conditions (OpenFGA compatibility I2)
         let response_tuples: Vec<Tuple> = tuples
             .into_iter()
             .map(|t| Tuple {
@@ -400,7 +608,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                     user: format_user(&t.user_type, &t.user_id, t.user_relation.as_deref()),
                     relation: t.relation,
                     object: format!("{}:{}", t.object_type, t.object_id),
-                    condition: None,
+                    condition: t.condition_name.map(|name| RelationshipCondition {
+                        name,
+                        context: t.condition_context.map(hashmap_to_prost_struct),
+                    }),
                 }),
                 timestamp: None,
             })

@@ -566,11 +566,24 @@ pub struct CheckRequestBody {
     pub contextual_tuples: Option<ContextualTuplesBody>,
 }
 
+/// Relationship condition for conditional tuples.
+#[derive(Debug, Deserialize)]
+pub struct RelationshipConditionBody {
+    /// The name of the condition (must match a condition defined in the model).
+    pub name: String,
+    /// Optional context parameters for the condition.
+    #[serde(default)]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TupleKeyBody {
     pub user: String,
     pub relation: String,
     pub object: String,
+    /// Optional condition for conditional relationships.
+    #[serde(default)]
+    pub condition: Option<RelationshipConditionBody>,
 }
 
 #[allow(dead_code)]
@@ -813,6 +826,7 @@ async fn write_tuples<S: DataStore>(
     let _ = state.storage.get_store(&store_id).await?;
 
     // Convert write tuples - fail if any tuple key is invalid
+    // No clones in happy path - error contains user/object for messages
     let writes: Vec<StoredTuple> = body
         .writes
         .map(|w| {
@@ -820,10 +834,10 @@ async fn write_tuples<S: DataStore>(
                 .into_iter()
                 .enumerate()
                 .map(|(i, tk)| {
-                    parse_tuple_key(&tk).ok_or_else(|| {
+                    parse_tuple_key(tk).map_err(|e| {
                         ApiError::invalid_input(format!(
-                            "invalid tuple_key at writes index {}: user='{}', object='{}'",
-                            i, tk.user, tk.object
+                            "invalid tuple_key at writes index {i}: user='{}', object='{}': {}",
+                            e.user, e.object, e.reason
                         ))
                     })
                 })
@@ -861,14 +875,128 @@ async fn write_tuples<S: DataStore>(
     Ok(Json(serde_json::json!({})))
 }
 
-/// Parses a tuple key into a StoredTuple.
-fn parse_tuple_key(tk: &TupleKeyBody) -> Option<rsfga_storage::StoredTuple> {
-    parse_tuple_fields(&tk.user, &tk.relation, &tk.object)
+/// Maximum allowed condition name length (security constraint I4).
+const MAX_CONDITION_NAME_LENGTH: usize = 256;
+
+/// Maximum allowed condition context size in bytes (constraint C11: Fail Fast with Bounds).
+const MAX_CONDITION_CONTEXT_SIZE: usize = 10 * 1024; // 10KB
+
+/// Maximum allowed JSON nesting depth (constraint C11: Fail Fast with Bounds).
+/// Prevents stack overflow during serialization of deeply nested structures.
+const MAX_JSON_DEPTH: usize = 10;
+
+/// Checks if a serde_json::Value exceeds the maximum nesting depth.
+fn json_exceeds_max_depth(value: &serde_json::Value, current_depth: usize) -> bool {
+    if current_depth > MAX_JSON_DEPTH {
+        return true;
+    }
+    match value {
+        serde_json::Value::Object(obj) => obj
+            .values()
+            .any(|v| json_exceeds_max_depth(v, current_depth + 1)),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .any(|v| json_exceeds_max_depth(v, current_depth + 1)),
+        _ => false,
+    }
 }
 
-/// Parses tuple fields directly into a StoredTuple.
+/// Error returned when tuple key parsing fails.
+/// Contains the original user/object strings for error messages (avoids cloning in happy path).
+struct TupleKeyParseError {
+    user: String,
+    object: String,
+    reason: &'static str,
+}
+
+/// Validates a condition name format (security constraint I4).
+/// Allows only alphanumeric, underscore, hyphen characters with max 256 chars.
+fn is_valid_condition_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_CONDITION_NAME_LENGTH
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Parses a tuple key into a StoredTuple (takes ownership to avoid clones).
 ///
-/// This avoids unnecessary cloning when converting from TupleKeyWithoutConditionBody.
+/// Includes condition parsing for conditional relationships.
+/// Returns `Err` with the original user/object for error messages (avoids cloning in happy path).
+fn parse_tuple_key(tk: TupleKeyBody) -> Result<rsfga_storage::StoredTuple, TupleKeyParseError> {
+    // Parse user: "user:alice" or "team:eng#member"
+    let (user_type, user_id, user_relation) =
+        parse_user(&tk.user).ok_or_else(|| TupleKeyParseError {
+            user: tk.user.clone(),
+            object: tk.object.clone(),
+            reason: "invalid user format",
+        })?;
+
+    // Parse object: "document:readme" - use parse_object for consistent validation
+    let (object_type, object_id) = parse_object(&tk.object).ok_or_else(|| TupleKeyParseError {
+        user: tk.user.clone(),
+        object: tk.object.clone(),
+        reason: "invalid object format",
+    })?;
+
+    // Parse and validate condition if present
+    let (condition_name, condition_context) = if let Some(cond) = tk.condition {
+        if cond.name.is_empty() {
+            (None, None)
+        } else {
+            // Validate condition name format (security constraint I4)
+            if !is_valid_condition_name(&cond.name) {
+                return Err(TupleKeyParseError {
+                    user: tk.user,
+                    object: tk.object,
+                    reason: "invalid condition name: must be alphanumeric/underscore/hyphen, max 256 chars",
+                });
+            }
+
+            // Validate context if present (constraint C11)
+            if let Some(ref ctx) = cond.context {
+                // Check depth limit to prevent stack overflow
+                if ctx.values().any(|v| json_exceeds_max_depth(v, 1)) {
+                    return Err(TupleKeyParseError {
+                        user: tk.user,
+                        object: tk.object,
+                        reason: "condition context exceeds maximum nesting depth (10 levels)",
+                    });
+                }
+
+                // Validate size limit
+                let estimated_size: usize =
+                    ctx.iter().map(|(k, v)| k.len() + v.to_string().len()).sum();
+                if estimated_size > MAX_CONDITION_CONTEXT_SIZE {
+                    return Err(TupleKeyParseError {
+                        user: tk.user,
+                        object: tk.object,
+                        reason: "condition context exceeds maximum size (10KB)",
+                    });
+                }
+            }
+
+            (Some(cond.name), cond.context)
+        }
+    } else {
+        (None, None)
+    };
+
+    Ok(rsfga_storage::StoredTuple {
+        object_type: object_type.to_string(),
+        object_id: object_id.to_string(),
+        relation: tk.relation,
+        user_type: user_type.to_string(),
+        user_id: user_id.to_string(),
+        user_relation: user_relation.map(|s| s.to_string()),
+        condition_name,
+        condition_context,
+    })
+}
+
+/// Parses tuple fields directly into a StoredTuple (without condition).
+///
+/// This is used for delete operations where conditions are not applicable.
 /// Uses `parse_user` and `parse_object` for consistent validation across all handlers.
 fn parse_tuple_fields(
     user: &str,
@@ -888,7 +1016,6 @@ fn parse_tuple_fields(
         user_type: user_type.to_string(),
         user_id: user_id.to_string(),
         user_relation: user_relation.map(|s| s.to_string()),
-        // TODO(#84): Parse condition from request when API support is added
         condition_name: None,
         condition_context: None,
     })
@@ -930,6 +1057,19 @@ pub struct TupleKeyResponseBody {
     pub user: String,
     pub relation: String,
     pub object: String,
+    /// Condition for conditional relationships (OpenFGA compatibility I2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<RelationshipConditionResponseBody>,
+}
+
+/// Response body for relationship condition.
+#[derive(Debug, Serialize)]
+pub struct RelationshipConditionResponseBody {
+    /// The name of the condition.
+    pub name: String,
+    /// Optional context parameters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 async fn read_tuples<S: DataStore>(
@@ -974,7 +1114,7 @@ async fn read_tuples<S: DataStore>(
 
     let tuples = state.storage.read_tuples(&store_id, &filter).await?;
 
-    // Convert to response format
+    // Convert to response format, including conditions (OpenFGA compatibility I2)
     let response_tuples: Vec<TupleResponseBody> = tuples
         .into_iter()
         .map(|t| TupleResponseBody {
@@ -982,6 +1122,12 @@ async fn read_tuples<S: DataStore>(
                 user: format_user(&t.user_type, &t.user_id, t.user_relation.as_deref()),
                 relation: t.relation,
                 object: format!("{}:{}", t.object_type, t.object_id),
+                condition: t
+                    .condition_name
+                    .map(|name| RelationshipConditionResponseBody {
+                        name,
+                        context: t.condition_context,
+                    }),
             },
             timestamp: None,
         })
