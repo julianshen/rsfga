@@ -44,7 +44,6 @@ const MAX_PARSE_DEPTH: usize = 25;
 /// - `{"intersection": {"child": [...]}}` → `Userset::Intersection`
 /// - `{"exclusion": {"base": {...}, "subtract": {...}}}` → `Userset::Exclusion`
 /// - `{"difference": {...}}` → `Userset::Exclusion` (alias)
-#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn parse_userset(
     rel_def: &serde_json::Value,
     type_name: &str,
@@ -981,6 +980,49 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_userset_mixed_camel_and_snake_case() {
+        // Test that we can mix camelCase and snake_case within the same structure
+        // This matches OpenFGA's flexible JSON handling
+        use rsfga_domain::model::Userset;
+        use serde_json::json;
+
+        let result = super::parse_userset(
+            &json!({
+                "union": {
+                    "child": [
+                        {"this": {}},
+                        {"computedUserset": {"relation": "owner"}},  // camelCase
+                        {"computed_userset": {"relation": "admin"}}, // snake_case
+                        {
+                            "tuple_to_userset": {  // snake_case outer
+                                "tupleset": {"relation": "parent"},
+                                "computedUserset": {"relation": "viewer"}  // camelCase inner
+                            }
+                        }
+                    ]
+                }
+            }),
+            "document",
+            "can_read",
+        );
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Userset::Union { children } => {
+                assert_eq!(children.len(), 4);
+                assert!(matches!(&children[0], Userset::This));
+                assert!(
+                    matches!(&children[1], Userset::ComputedUserset { relation } if relation == "owner")
+                );
+                assert!(
+                    matches!(&children[2], Userset::ComputedUserset { relation } if relation == "admin")
+                );
+                assert!(matches!(&children[3], Userset::TupleToUserset { .. }));
+            }
+            _ => panic!("Expected Union"),
+        }
+    }
+
+    #[test]
     fn test_parse_userset_union() {
         use rsfga_domain::model::Userset;
         use serde_json::json;
@@ -1180,9 +1222,9 @@ mod tests {
     fn test_parse_userset_error_exceeds_max_depth() {
         use serde_json::json;
 
-        // Create deeply nested structure that exceeds MAX_PARSE_DEPTH (25)
+        // Create deeply nested structure that exceeds MAX_PARSE_DEPTH
         let mut nested = json!({"this": {}});
-        for _ in 0..30 {
+        for _ in 0..(super::MAX_PARSE_DEPTH + 5) {
             nested = json!({
                 "union": {
                     "child": [nested, {"computedUserset": {"relation": "r"}}]
