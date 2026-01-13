@@ -72,3 +72,8 @@ proptest = { workspace = true }
 mockall = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 futures = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "parse_bench"
+harness = false

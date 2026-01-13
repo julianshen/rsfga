@@ -1634,6 +1634,34 @@ Phase 1 completion status:
 - Milestone 1.11: MySQL/MariaDB/TiDB Storage Backend ✅ COMPLETE (45/45 tests)
 - Milestone 1.12: CockroachDB Storage Backend ✅ COMPLETE (21 tests)
 
+---
+
+## Recent Enhancements
+
+### Issue #66: Batch Check Handler Integration ✅ COMPLETE
+**PR**: #123
+
+Integrated `batch_check` endpoint with `BatchCheckHandler` for parallel execution:
+- Added moka async cache for model caching with singleflight behavior
+- Implemented batch check deduplication (intra-batch + cross-request)
+- Added correlation_id validation (max 256 bytes)
+- Tests for cache invalidation, batch size limits, and edge cases
+
+### Issue #124: Full Relation Parsing ✅ COMPLETE
+**PR**: #125
+
+Implemented full OpenFGA relation definition parsing in `adapters.rs`:
+- Support for all Userset types: This, ComputedUserset, TupleToUserset, Union, Intersection, Exclusion/Difference
+- Both camelCase and snake_case JSON key support
+- Recursive parsing for nested structures
+- Security hardening:
+  - `MAX_PARSE_DEPTH=25` to prevent stack overflow
+  - Empty child array rejection in union/intersection
+  - `parse_type_constraints` fails on malformed entries (no silent drops)
+- 20+ new unit tests for parsing validation
+
+---
+
 **Phase 1 Status**: ✅ COMPLETE
 
 **Milestone 1.9 Summary**:

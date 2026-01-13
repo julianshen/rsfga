@@ -2914,6 +2914,7 @@ dependencies = [
  "async-trait",
  "axum 0.7.9",
  "clap",
+ "criterion",
  "futures",
  "metrics",
  "metrics-exporter-prometheus",
