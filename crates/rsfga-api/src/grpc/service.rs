@@ -113,39 +113,53 @@ fn batch_check_error_to_status(err: rsfga_server::handlers::batch::BatchCheckErr
 }
 
 /// Converts a prost_types::Value to serde_json::Value (takes ownership to avoid clones).
-fn prost_value_to_json(value: prost_types::Value) -> serde_json::Value {
+///
+/// Returns `Err` if the value contains NaN or Infinity (invalid JSON numbers).
+fn prost_value_to_json(value: prost_types::Value) -> Result<serde_json::Value, &'static str> {
     use prost_types::value::Kind;
 
     match value.kind {
-        Some(Kind::NullValue(_)) => serde_json::Value::Null,
-        Some(Kind::NumberValue(n)) => serde_json::json!(n),
-        Some(Kind::StringValue(s)) => serde_json::Value::String(s),
-        Some(Kind::BoolValue(b)) => serde_json::Value::Bool(b),
+        Some(Kind::NullValue(_)) => Ok(serde_json::Value::Null),
+        Some(Kind::NumberValue(n)) => {
+            // Reject NaN and Infinity as they are not valid JSON values.
+            // Note: Protobuf NumberValue uses f64, which loses precision for
+            // integers > 2^53. This is a known limitation of the protocol.
+            if n.is_nan() || n.is_infinite() {
+                return Err("NaN and Infinity are not valid JSON numbers");
+            }
+            Ok(serde_json::json!(n))
+        }
+        Some(Kind::StringValue(s)) => Ok(serde_json::Value::String(s)),
+        Some(Kind::BoolValue(b)) => Ok(serde_json::Value::Bool(b)),
         Some(Kind::StructValue(s)) => prost_struct_to_json(s),
         Some(Kind::ListValue(l)) => {
-            serde_json::Value::Array(l.values.into_iter().map(prost_value_to_json).collect())
+            let values: Result<Vec<_>, _> = l.values.into_iter().map(prost_value_to_json).collect();
+            Ok(serde_json::Value::Array(values?))
         }
-        None => serde_json::Value::Null,
+        None => Ok(serde_json::Value::Null),
     }
 }
 
 /// Converts a prost_types::Struct to serde_json::Value (takes ownership to avoid clones).
-fn prost_struct_to_json(s: prost_types::Struct) -> serde_json::Value {
-    let map: serde_json::Map<String, serde_json::Value> = s
-        .fields
-        .into_iter()
-        .map(|(k, v)| (k, prost_value_to_json(v)))
-        .collect();
-    serde_json::Value::Object(map)
+///
+/// Returns `Err` if any value contains NaN or Infinity.
+fn prost_struct_to_json(s: prost_types::Struct) -> Result<serde_json::Value, &'static str> {
+    let mut map = serde_json::Map::new();
+    for (k, v) in s.fields {
+        map.insert(k, prost_value_to_json(v)?);
+    }
+    Ok(serde_json::Value::Object(map))
 }
 
 /// Converts a prost_types::Struct to HashMap<String, serde_json::Value> (takes ownership).
+///
+/// Returns `Err` if any value contains NaN or Infinity.
 fn prost_struct_to_hashmap(
     s: prost_types::Struct,
-) -> std::collections::HashMap<String, serde_json::Value> {
+) -> Result<std::collections::HashMap<String, serde_json::Value>, &'static str> {
     s.fields
         .into_iter()
-        .map(|(k, v)| (k, prost_value_to_json(v)))
+        .map(|(k, v)| Ok((k, prost_value_to_json(v)?)))
         .collect()
 }
 
@@ -283,7 +297,13 @@ fn tuple_key_to_stored(tk: TupleKey) -> Result<StoredTuple, TupleKeyParseError> 
                     });
                 }
 
-                let hashmap = prost_struct_to_hashmap(ctx);
+                // Convert prost Struct to HashMap, rejecting NaN/Infinity values
+                let hashmap = prost_struct_to_hashmap(ctx).map_err(|_| TupleKeyParseError {
+                    user: tk.user.clone(),
+                    object: tk.object.clone(),
+                    reason: "condition context contains invalid number (NaN or Infinity)",
+                })?;
+
                 // Estimate serialized size to enforce bounds
                 let estimated_size: usize = hashmap
                     .iter()

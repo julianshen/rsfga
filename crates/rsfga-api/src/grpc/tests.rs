@@ -1081,6 +1081,93 @@ async fn test_write_rpc_accepts_valid_condition_name_formats() {
     );
 }
 
+/// Test: Write RPC rejects NaN/Infinity in condition context
+///
+/// Verifies that invalid numeric values (NaN, Infinity) are rejected
+/// since they cannot be represented in JSON (constraint C11).
+#[tokio::test]
+async fn test_write_rpc_rejects_nan_infinity_in_condition_context() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Test NaN value in context
+    let mut context_fields = std::collections::BTreeMap::new();
+    context_fields.insert(
+        "invalid_value".to_string(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::NumberValue(f64::NAN)),
+        },
+    );
+
+    let condition = RelationshipCondition {
+        name: "test_condition".to_string(),
+        context: Some(prost_types::Struct {
+            fields: context_fields,
+        }),
+    };
+
+    let request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:test".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    let response = service.write(request).await;
+    assert!(response.is_err());
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("NaN or Infinity"));
+
+    // Test Infinity value in context
+    let mut context_fields = std::collections::BTreeMap::new();
+    context_fields.insert(
+        "invalid_value".to_string(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::NumberValue(f64::INFINITY)),
+        },
+    );
+
+    let condition = RelationshipCondition {
+        name: "test_condition".to_string(),
+        context: Some(prost_types::Struct {
+            fields: context_fields,
+        }),
+    };
+
+    let request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:test".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    let response = service.write(request).await;
+    assert!(response.is_err());
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("NaN or Infinity"));
+}
+
 /// Test: Read RPC returns conditions stored with tuples
 ///
 /// Verifies read-after-write contract: conditions written are returned by Read (I2).
