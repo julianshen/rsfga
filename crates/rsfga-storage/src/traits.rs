@@ -19,10 +19,7 @@ pub fn validate_store_id(store_id: &str) -> StorageResult<()> {
     }
     if store_id.len() > MAX_FIELD_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!(
-                "store_id exceeds maximum length of {} characters",
-                MAX_FIELD_LENGTH
-            ),
+            message: format!("store_id exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
         });
     }
     Ok(())
@@ -48,16 +45,14 @@ pub fn parse_continuation_token(token: &Option<String>) -> StorageResult<i64> {
             .parse::<i64>()
             .map_err(|_| StorageError::InvalidInput {
                 message: format!(
-                    "invalid continuation_token: '{}' (must be a non-negative integer)",
-                    t
+                    "invalid continuation_token: '{t}' (must be a non-negative integer)"
                 ),
             })
             .and_then(|v| {
                 if v < 0 {
                     Err(StorageError::InvalidInput {
                         message: format!(
-                            "invalid continuation_token: '{}' (must be non-negative)",
-                            t
+                            "invalid continuation_token: '{t}' (must be non-negative)"
                         ),
                     })
                 } else {
@@ -79,10 +74,7 @@ pub fn validate_store_name(name: &str) -> StorageResult<()> {
     }
     if name.len() > MAX_FIELD_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!(
-                "store name exceeds maximum length of {} characters",
-                MAX_FIELD_LENGTH
-            ),
+            message: format!("store name exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
         });
     }
     Ok(())
@@ -123,10 +115,7 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
     }
     if tuple.object_type.len() > MAX_FIELD_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!(
-                "object_type exceeds maximum length of {} characters",
-                MAX_FIELD_LENGTH
-            ),
+            message: format!("object_type exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
         });
     }
     if tuple.object_id.is_empty() {
@@ -136,10 +125,7 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
     }
     if tuple.object_id.len() > MAX_FIELD_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!(
-                "object_id exceeds maximum length of {} characters",
-                MAX_FIELD_LENGTH
-            ),
+            message: format!("object_id exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
         });
     }
     if tuple.relation.is_empty() {
@@ -149,10 +135,7 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
     }
     if tuple.relation.len() > MAX_FIELD_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!(
-                "relation exceeds maximum length of {} characters",
-                MAX_FIELD_LENGTH
-            ),
+            message: format!("relation exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
         });
     }
     if tuple.user_type.is_empty() {
@@ -162,10 +145,7 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
     }
     if tuple.user_type.len() > MAX_FIELD_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!(
-                "user_type exceeds maximum length of {} characters",
-                MAX_FIELD_LENGTH
-            ),
+            message: format!("user_type exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
         });
     }
     if tuple.user_id.is_empty() {
@@ -175,10 +155,7 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
     }
     if tuple.user_id.len() > MAX_FIELD_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!(
-                "user_id exceeds maximum length of {} characters",
-                MAX_FIELD_LENGTH
-            ),
+            message: format!("user_id exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
         });
     }
     if let Some(ref user_relation) = tuple.user_relation {
@@ -190,8 +167,7 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
         if user_relation.len() > MAX_FIELD_LENGTH {
             return Err(StorageError::InvalidInput {
                 message: format!(
-                    "user_relation exceeds maximum length of {} characters",
-                    MAX_FIELD_LENGTH
+                    "user_relation exceeds maximum length of {MAX_FIELD_LENGTH} characters"
                 ),
             });
         }
@@ -205,8 +181,7 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
         if condition_name.len() > MAX_FIELD_LENGTH {
             return Err(StorageError::InvalidInput {
                 message: format!(
-                    "condition_name exceeds maximum length of {} characters",
-                    MAX_FIELD_LENGTH
+                    "condition_name exceeds maximum length of {MAX_FIELD_LENGTH} characters"
                 ),
             });
         }
@@ -271,8 +246,7 @@ pub fn parse_user_filter(user: &str) -> StorageResult<(String, String, Option<St
         if parts.len() != 2 || parts[1].is_empty() {
             return Err(StorageError::InvalidFilter {
                 message: format!(
-                    "Invalid user filter format: '{}'. Expected 'type:id#relation'",
-                    user
+                    "Invalid user filter format: '{user}'. Expected 'type:id#relation'"
                 ),
             });
         }
@@ -280,8 +254,7 @@ pub fn parse_user_filter(user: &str) -> StorageResult<(String, String, Option<St
         if user_parts.len() != 2 || user_parts[0].is_empty() || user_parts[1].is_empty() {
             return Err(StorageError::InvalidFilter {
                 message: format!(
-                    "Invalid user filter format: '{}'. Expected 'type:id#relation'",
-                    user
+                    "Invalid user filter format: '{user}'. Expected 'type:id#relation'"
                 ),
             });
         }
@@ -294,7 +267,7 @@ pub fn parse_user_filter(user: &str) -> StorageResult<(String, String, Option<St
         let user_parts: Vec<&str> = user.split(':').collect();
         if user_parts.len() != 2 || user_parts[0].is_empty() || user_parts[1].is_empty() {
             return Err(StorageError::InvalidFilter {
-                message: format!("Invalid user filter format: '{}'. Expected 'type:id'", user),
+                message: format!("Invalid user filter format: '{user}'. Expected 'type:id'"),
             });
         }
         Ok((user_parts[0].to_string(), user_parts[1].to_string(), None))

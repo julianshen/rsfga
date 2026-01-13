@@ -23,7 +23,7 @@ fn validate_condition_context_size(tuple: &StoredTuple) -> StorageResult<()> {
     if let Some(ctx) = &tuple.condition_context {
         let json_str =
             serde_json::to_string(ctx).map_err(|e| StorageError::SerializationError {
-                message: format!("Failed to serialize condition_context: {}", e),
+                message: format!("Failed to serialize condition_context: {e}"),
             })?;
         if json_str.len() > MAX_CONDITION_CONTEXT_SIZE {
             return Err(StorageError::InvalidInput {
@@ -48,7 +48,7 @@ fn parse_condition_context(
         Some(v) => serde_json::from_value(v)
             .map(Some)
             .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to deserialize condition_context: {}", e),
+                message: format!("Failed to deserialize condition_context: {e}"),
             }),
     }
 }
@@ -201,7 +201,7 @@ impl PostgresDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to create stores table: {}", e),
+            message: format!("Failed to create stores table: {e}"),
         })?;
 
         // Create tuples table
@@ -228,7 +228,7 @@ impl PostgresDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to create tuples table: {}", e),
+            message: format!("Failed to create tuples table: {e}"),
         })?;
 
         // Add condition columns if they don't exist (for existing databases)
@@ -255,7 +255,7 @@ impl PostgresDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to add condition columns: {}", e),
+            message: format!("Failed to add condition columns: {e}"),
         })?;
 
         // Create unique index to enforce tuple uniqueness (handles NULL user_relation correctly)
@@ -268,7 +268,7 @@ impl PostgresDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to create unique index: {}", e),
+            message: format!("Failed to create unique index: {e}"),
         })?;
 
         // Index Strategy for Tuple Queries
@@ -311,7 +311,7 @@ impl PostgresDataStore {
                 .execute(&self.pool)
                 .await
                 .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to create index: {}", e),
+                    message: format!("Failed to create index: {e}"),
                 })?;
         }
 
@@ -331,7 +331,7 @@ impl PostgresDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to create authorization_models table: {}", e),
+            message: format!("Failed to create authorization_models table: {e}"),
         })?;
 
         // Index Strategy for Authorization Models
@@ -350,7 +350,7 @@ impl PostgresDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to create authorization_models index: {}", e),
+            message: format!("Failed to create authorization_models index: {e}"),
         })?;
 
         debug!("Database migrations completed successfully");
@@ -394,7 +394,7 @@ impl DataStore for PostgresDataStore {
                 }
             }
             StorageError::QueryError {
-                message: format!("Failed to create store: {}", e),
+                message: format!("Failed to create store: {e}"),
             }
         })?;
 
@@ -419,7 +419,7 @@ impl DataStore for PostgresDataStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to get store: {}", e),
+            message: format!("Failed to get store: {e}"),
         })?;
 
         match row {
@@ -446,7 +446,7 @@ impl DataStore for PostgresDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to delete store: {}", e),
+            message: format!("Failed to delete store: {e}"),
         })?;
 
         if result.rows_affected() == 0 {
@@ -477,7 +477,7 @@ impl DataStore for PostgresDataStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to update store: {}", e),
+            message: format!("Failed to update store: {e}"),
         })?;
 
         match row {
@@ -505,7 +505,7 @@ impl DataStore for PostgresDataStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list stores: {}", e),
+            message: format!("Failed to list stores: {e}"),
         })?;
 
         Ok(rows
@@ -540,7 +540,7 @@ impl DataStore for PostgresDataStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list stores: {}", e),
+            message: format!("Failed to list stores: {e}"),
         })?;
 
         let items: Vec<Store> = rows
@@ -593,7 +593,7 @@ impl DataStore for PostgresDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -608,7 +608,7 @@ impl DataStore for PostgresDataStore {
             .begin()
             .await
             .map_err(|e| StorageError::TransactionError {
-                message: format!("Failed to begin transaction: {}", e),
+                message: format!("Failed to begin transaction: {e}"),
             })?;
 
         // Batch delete using UNNEST arrays (fixes N+1 query problem)
@@ -647,7 +647,7 @@ impl DataStore for PostgresDataStore {
             .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to batch delete tuples: {}", e),
+                message: format!("Failed to batch delete tuples: {e}"),
             })?;
         }
 
@@ -722,7 +722,7 @@ impl DataStore for PostgresDataStore {
             .fetch_optional(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to check for condition conflicts: {}", e),
+                message: format!("Failed to check for condition conflicts: {e}"),
             })?;
 
             if let Some(row) = conflict_check {
@@ -731,7 +731,7 @@ impl DataStore for PostgresDataStore {
                     row.get::<String, _>("user_type"),
                     row.get::<String, _>("user_id"),
                     row.get::<Option<String>, _>("user_relation")
-                        .map(|r| format!("#{}", r))
+                        .map(|r| format!("#{r}"))
                         .unwrap_or_default()
                 );
                 return Err(StorageError::ConditionConflict(Box::new(
@@ -772,7 +772,7 @@ impl DataStore for PostgresDataStore {
             .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to batch write tuples: {}", e),
+                message: format!("Failed to batch write tuples: {e}"),
             })?;
 
             // Post-insert verification: if fewer rows were inserted than expected,
@@ -818,7 +818,7 @@ impl DataStore for PostgresDataStore {
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to verify condition conflicts: {}", e),
+                    message: format!("Failed to verify condition conflicts: {e}"),
                 })?;
 
                 if let Some(row) = post_conflict {
@@ -827,7 +827,7 @@ impl DataStore for PostgresDataStore {
                         row.get::<String, _>("user_type"),
                         row.get::<String, _>("user_id"),
                         row.get::<Option<String>, _>("user_relation")
-                            .map(|r| format!("#{}", r))
+                            .map(|r| format!("#{r}"))
                             .unwrap_or_default()
                     );
                     return Err(StorageError::ConditionConflict(Box::new(
@@ -850,7 +850,7 @@ impl DataStore for PostgresDataStore {
         tx.commit()
             .await
             .map_err(|e| StorageError::TransactionError {
-                message: format!("Failed to commit transaction: {}", e),
+                message: format!("Failed to commit transaction: {e}"),
             })?;
 
         Ok(())
@@ -872,7 +872,7 @@ impl DataStore for PostgresDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -902,7 +902,7 @@ impl DataStore for PostgresDataStore {
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to read tuples: {}", e),
+                    message: format!("Failed to read tuples: {e}"),
                 })?;
 
         // Parse rows using shared helper
@@ -926,7 +926,7 @@ impl DataStore for PostgresDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -962,7 +962,7 @@ impl DataStore for PostgresDataStore {
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to read tuples: {}", e),
+                    message: format!("Failed to read tuples: {e}"),
                 })?;
 
         // Parse rows using shared helper
@@ -1034,7 +1034,7 @@ impl DataStore for PostgresDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -1058,7 +1058,7 @@ impl DataStore for PostgresDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to write authorization model: {}", e),
+            message: format!("Failed to write authorization model: {e}"),
         })?;
 
         Ok(model)
@@ -1083,7 +1083,7 @@ impl DataStore for PostgresDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -1105,7 +1105,7 @@ impl DataStore for PostgresDataStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to get authorization model: {}", e),
+            message: format!("Failed to get authorization model: {e}"),
         })?;
 
         match row {
@@ -1140,7 +1140,7 @@ impl DataStore for PostgresDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -1162,7 +1162,7 @@ impl DataStore for PostgresDataStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list authorization models: {}", e),
+            message: format!("Failed to list authorization models: {e}"),
         })?;
 
         Ok(rows
@@ -1196,7 +1196,7 @@ impl DataStore for PostgresDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -1224,7 +1224,7 @@ impl DataStore for PostgresDataStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list authorization models: {}", e),
+            message: format!("Failed to list authorization models: {e}"),
         })?;
 
         let items: Vec<StoredAuthorizationModel> = rows
@@ -1269,7 +1269,7 @@ impl DataStore for PostgresDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -1292,7 +1292,7 @@ impl DataStore for PostgresDataStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to get latest authorization model: {}", e),
+            message: format!("Failed to get latest authorization model: {e}"),
         })?;
 
         match row {
@@ -1304,7 +1304,7 @@ impl DataStore for PostgresDataStore {
                 created_at: row.get("created_at"),
             }),
             None => Err(StorageError::ModelNotFound {
-                model_id: format!("latest (no models exist for store {})", store_id),
+                model_id: format!("latest (no models exist for store {store_id})"),
             }),
         }
     }
