@@ -22,9 +22,9 @@ use crate::proto::openfga::v1::{
     ReadAssertionsRequest, ReadAssertionsResponse, ReadAuthorizationModelRequest,
     ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
     ReadAuthorizationModelsResponse, ReadChangesRequest, ReadChangesResponse, ReadRequest,
-    ReadResponse, Store, Tuple, TupleKey, UpdateStoreRequest, UpdateStoreResponse,
-    WriteAssertionsRequest, WriteAssertionsResponse, WriteAuthorizationModelRequest,
-    WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
+    ReadResponse, RelationshipCondition, Store, Tuple, TupleKey, UpdateStoreRequest,
+    UpdateStoreResponse, WriteAssertionsRequest, WriteAssertionsResponse,
+    WriteAuthorizationModelRequest, WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
 
 /// Maximum allowed length for correlation IDs to prevent DoS attacks.
@@ -149,11 +149,76 @@ fn prost_struct_to_hashmap(
         .collect()
 }
 
+/// Converts a serde_json::Value to prost_types::Value (for Read response).
+fn json_to_prost_value(value: serde_json::Value) -> prost_types::Value {
+    use prost_types::value::Kind;
+
+    prost_types::Value {
+        kind: Some(match value {
+            serde_json::Value::Null => Kind::NullValue(0),
+            serde_json::Value::Bool(b) => Kind::BoolValue(b),
+            serde_json::Value::Number(n) => Kind::NumberValue(n.as_f64().unwrap_or(0.0)),
+            serde_json::Value::String(s) => Kind::StringValue(s),
+            serde_json::Value::Array(arr) => Kind::ListValue(prost_types::ListValue {
+                values: arr.into_iter().map(json_to_prost_value).collect(),
+            }),
+            serde_json::Value::Object(obj) => Kind::StructValue(json_map_to_prost_struct(obj)),
+        }),
+    }
+}
+
+/// Converts a serde_json Map to prost_types::Struct (for Read response).
+fn json_map_to_prost_struct(
+    map: serde_json::Map<String, serde_json::Value>,
+) -> prost_types::Struct {
+    prost_types::Struct {
+        fields: map
+            .into_iter()
+            .map(|(k, v)| (k, json_to_prost_value(v)))
+            .collect(),
+    }
+}
+
+/// Converts a HashMap<String, serde_json::Value> to prost_types::Struct (for Read response).
+fn hashmap_to_prost_struct(
+    map: std::collections::HashMap<String, serde_json::Value>,
+) -> prost_types::Struct {
+    prost_types::Struct {
+        fields: map
+            .into_iter()
+            .map(|(k, v)| (k, json_to_prost_value(v)))
+            .collect(),
+    }
+}
+
 /// Maximum allowed condition name length (security constraint I4).
 const MAX_CONDITION_NAME_LENGTH: usize = 256;
 
 /// Maximum allowed condition context size in bytes (constraint C11: Fail Fast with Bounds).
 const MAX_CONDITION_CONTEXT_SIZE: usize = 10 * 1024; // 10KB
+
+/// Maximum allowed JSON nesting depth (constraint C11: Fail Fast with Bounds).
+/// Prevents stack overflow during serialization of deeply nested structures.
+const MAX_JSON_DEPTH: usize = 10;
+
+/// Checks if a prost_types::Value exceeds the maximum nesting depth.
+fn exceeds_max_depth(value: &prost_types::Value, current_depth: usize) -> bool {
+    if current_depth > MAX_JSON_DEPTH {
+        return true;
+    }
+    use prost_types::value::Kind;
+    match &value.kind {
+        Some(Kind::StructValue(s)) => s
+            .fields
+            .values()
+            .any(|v| exceeds_max_depth(v, current_depth + 1)),
+        Some(Kind::ListValue(l)) => l
+            .values
+            .iter()
+            .any(|v| exceeds_max_depth(v, current_depth + 1)),
+        _ => false,
+    }
+}
 
 /// Error returned when tuple key parsing fails.
 /// Contains the original user/object strings for error messages (avoids cloning in happy path).
@@ -207,8 +272,17 @@ fn tuple_key_to_stored(tk: TupleKey) -> Result<StoredTuple, TupleKeyParseError> 
                 });
             }
 
-            // Convert and validate context size (constraint C11)
+            // Convert and validate context (constraint C11)
             let context = if let Some(ctx) = cond.context {
+                // Check depth limit to prevent stack overflow
+                if ctx.fields.values().any(|v| exceeds_max_depth(v, 1)) {
+                    return Err(TupleKeyParseError {
+                        user: tk.user,
+                        object: tk.object,
+                        reason: "condition context exceeds maximum nesting depth (10 levels)",
+                    });
+                }
+
                 let hashmap = prost_struct_to_hashmap(ctx);
                 // Estimate serialized size to enforce bounds
                 let estimated_size: usize = hashmap
@@ -506,7 +580,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // Convert to response format
+        // Convert to response format, including conditions (OpenFGA compatibility I2)
         let response_tuples: Vec<Tuple> = tuples
             .into_iter()
             .map(|t| Tuple {
@@ -514,7 +588,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                     user: format_user(&t.user_type, &t.user_id, t.user_relation.as_deref()),
                     relation: t.relation,
                     object: format!("{}:{}", t.object_type, t.object_id),
-                    condition: None,
+                    condition: t.condition_name.map(|name| RelationshipCondition {
+                        name,
+                        context: t.condition_context.map(hashmap_to_prost_struct),
+                    }),
                 }),
                 timestamp: None,
             })

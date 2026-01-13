@@ -881,6 +881,26 @@ const MAX_CONDITION_NAME_LENGTH: usize = 256;
 /// Maximum allowed condition context size in bytes (constraint C11: Fail Fast with Bounds).
 const MAX_CONDITION_CONTEXT_SIZE: usize = 10 * 1024; // 10KB
 
+/// Maximum allowed JSON nesting depth (constraint C11: Fail Fast with Bounds).
+/// Prevents stack overflow during serialization of deeply nested structures.
+const MAX_JSON_DEPTH: usize = 10;
+
+/// Checks if a serde_json::Value exceeds the maximum nesting depth.
+fn json_exceeds_max_depth(value: &serde_json::Value, current_depth: usize) -> bool {
+    if current_depth > MAX_JSON_DEPTH {
+        return true;
+    }
+    match value {
+        serde_json::Value::Object(obj) => obj
+            .values()
+            .any(|v| json_exceeds_max_depth(v, current_depth + 1)),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .any(|v| json_exceeds_max_depth(v, current_depth + 1)),
+        _ => false,
+    }
+}
+
 /// Error returned when tuple key parsing fails.
 /// Contains the original user/object strings for error messages (avoids cloning in happy path).
 struct TupleKeyParseError {
@@ -933,8 +953,18 @@ fn parse_tuple_key(tk: TupleKeyBody) -> Result<rsfga_storage::StoredTuple, Tuple
                 });
             }
 
-            // Validate context size if present (constraint C11)
+            // Validate context if present (constraint C11)
             if let Some(ref ctx) = cond.context {
+                // Check depth limit to prevent stack overflow
+                if ctx.values().any(|v| json_exceeds_max_depth(v, 1)) {
+                    return Err(TupleKeyParseError {
+                        user: tk.user,
+                        object: tk.object,
+                        reason: "condition context exceeds maximum nesting depth (10 levels)",
+                    });
+                }
+
+                // Validate size limit
                 let estimated_size: usize =
                     ctx.iter().map(|(k, v)| k.len() + v.to_string().len()).sum();
                 if estimated_size > MAX_CONDITION_CONTEXT_SIZE {
@@ -1027,6 +1057,19 @@ pub struct TupleKeyResponseBody {
     pub user: String,
     pub relation: String,
     pub object: String,
+    /// Condition for conditional relationships (OpenFGA compatibility I2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<RelationshipConditionResponseBody>,
+}
+
+/// Response body for relationship condition.
+#[derive(Debug, Serialize)]
+pub struct RelationshipConditionResponseBody {
+    /// The name of the condition.
+    pub name: String,
+    /// Optional context parameters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 async fn read_tuples<S: DataStore>(
@@ -1071,7 +1114,7 @@ async fn read_tuples<S: DataStore>(
 
     let tuples = state.storage.read_tuples(&store_id, &filter).await?;
 
-    // Convert to response format
+    // Convert to response format, including conditions (OpenFGA compatibility I2)
     let response_tuples: Vec<TupleResponseBody> = tuples
         .into_iter()
         .map(|t| TupleResponseBody {
@@ -1079,6 +1122,12 @@ async fn read_tuples<S: DataStore>(
                 user: format_user(&t.user_type, &t.user_id, t.user_relation.as_deref()),
                 relation: t.relation,
                 object: format!("{}:{}", t.object_type, t.object_id),
+                condition: t
+                    .condition_name
+                    .map(|name| RelationshipConditionResponseBody {
+                        name,
+                        context: t.condition_context,
+                    }),
             },
             timestamp: None,
         })

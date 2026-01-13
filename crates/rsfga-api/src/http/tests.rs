@@ -1699,3 +1699,85 @@ async fn test_write_endpoint_accepts_valid_condition_name_formats() {
         Some("ip_restriction-v2".to_string())
     );
 }
+
+/// Test: GET /stores/{store_id}/read returns conditions stored with tuples
+///
+/// Verifies read-after-write contract: conditions written are returned by Read (I2).
+#[tokio::test]
+async fn test_read_endpoint_returns_conditions() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // First, write a tuple with a condition
+    let write_state = AppState::new(Arc::clone(&storage));
+    let write_app = create_router(write_state);
+    let write_response = write_app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/write")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "writes": {
+                            "tuple_keys": [
+                                {
+                                    "user": "user:alice",
+                                    "relation": "viewer",
+                                    "object": "document:secret",
+                                    "condition": {
+                                        "name": "ip_restriction",
+                                        "context": {
+                                            "allowed_ip": "192.168.1.100"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(write_response.status(), StatusCode::OK);
+
+    // Now read the tuples back - create new app with same storage
+    let read_state = AppState::new(Arc::clone(&storage));
+    let app2 = create_router(read_state);
+    let read_response = app2
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/read")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(read_response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(read_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let tuples = json["tuples"].as_array().unwrap();
+    assert_eq!(tuples.len(), 1);
+
+    let key = &tuples[0]["key"];
+    assert_eq!(key["user"], "user:alice");
+    assert_eq!(key["relation"], "viewer");
+    assert_eq!(key["object"], "document:secret");
+
+    // Verify condition is returned
+    let condition = &key["condition"];
+    assert_eq!(condition["name"], "ip_restriction");
+    assert_eq!(condition["context"]["allowed_ip"], "192.168.1.100");
+}

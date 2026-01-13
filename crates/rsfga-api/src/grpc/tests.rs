@@ -1080,3 +1080,82 @@ async fn test_write_rpc_accepts_valid_condition_name_formats() {
         Some("ip_restriction-v2".to_string())
     );
 }
+
+/// Test: Read RPC returns conditions stored with tuples
+///
+/// Verifies read-after-write contract: conditions written are returned by Read (I2).
+#[tokio::test]
+async fn test_read_rpc_returns_conditions() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Write a tuple with a condition
+    let mut context_fields = std::collections::BTreeMap::new();
+    context_fields.insert(
+        "max_age".to_string(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::NumberValue(25.0)),
+        },
+    );
+
+    let condition = RelationshipCondition {
+        name: "age_restriction".to_string(),
+        context: Some(prost_types::Struct {
+            fields: context_fields,
+        }),
+    };
+
+    let write_request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:bob".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:restricted".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    service.write(write_request).await.unwrap();
+
+    // Read the tuple back
+    let read_request = Request::new(ReadRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: None,
+        page_size: None,
+        continuation_token: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.read(read_request).await.unwrap();
+    let tuples = response.into_inner().tuples;
+
+    assert_eq!(tuples.len(), 1);
+    let tuple = &tuples[0];
+    let key = tuple.key.as_ref().expect("tuple should have key");
+
+    // Verify condition is returned
+    let condition = key.condition.as_ref().expect("condition should be present");
+    assert_eq!(condition.name, "age_restriction");
+
+    let context = condition
+        .context
+        .as_ref()
+        .expect("context should be present");
+    let max_age = context
+        .fields
+        .get("max_age")
+        .expect("max_age should be present");
+    assert!(matches!(
+        max_age.kind,
+        Some(prost_types::value::Kind::NumberValue(25.0))
+    ));
+}
