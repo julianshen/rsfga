@@ -44,7 +44,8 @@ const MAX_PARSE_DEPTH: usize = 25;
 /// - `{"intersection": {"child": [...]}}` → `Userset::Intersection`
 /// - `{"exclusion": {"base": {...}, "subtract": {...}}}` → `Userset::Exclusion`
 /// - `{"difference": {...}}` → `Userset::Exclusion` (alias)
-pub(crate) fn parse_userset(
+#[doc(hidden)]
+pub fn parse_userset(
     rel_def: &serde_json::Value,
     type_name: &str,
     rel_name: &str,

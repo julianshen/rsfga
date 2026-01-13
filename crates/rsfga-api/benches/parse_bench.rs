@@ -11,6 +11,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::json;
 
+// Import the actual parse_userset function from rsfga-api
+use rsfga_api::adapters::parse_userset;
+
 // =============================================================================
 // Helper functions for generating test structures
 // =============================================================================
@@ -150,144 +153,6 @@ fn model_with_constraints(num_types: usize) -> serde_json::Value {
         }
     })
 }
-
-// =============================================================================
-// Benchmark: Import parse_userset
-// =============================================================================
-
-// We need to import the parse function
-// Since adapters.rs exports parse_userset as pub(crate), we use a test-exposed function
-mod parse_wrapper {
-    use rsfga_domain::error::DomainResult;
-    use rsfga_domain::model::Userset;
-
-    /// Wrapper to access parse_userset for benchmarking
-    /// This mirrors the parse_userset function signature
-    pub fn parse_userset(
-        rel_def: &serde_json::Value,
-        type_name: &str,
-        rel_name: &str,
-    ) -> DomainResult<Userset> {
-        // Re-implement parsing for benchmark purposes
-        // This ensures we're measuring actual parsing performance
-        parse_userset_bench(rel_def, type_name, rel_name, 0)
-    }
-
-    const MAX_DEPTH: usize = 25;
-
-    fn parse_userset_bench(
-        rel_def: &serde_json::Value,
-        type_name: &str,
-        rel_name: &str,
-        depth: usize,
-    ) -> DomainResult<Userset> {
-        use rsfga_domain::error::DomainError;
-
-        if depth > MAX_DEPTH {
-            return Err(DomainError::ModelParseError {
-                message: format!(
-                    "Recursion depth limit ({}) exceeded in {}.{}",
-                    MAX_DEPTH, type_name, rel_name
-                ),
-            });
-        }
-
-        // Handle "this" for direct relations
-        if rel_def.get("this").is_some() {
-            return Ok(Userset::This);
-        }
-
-        // Handle computedUserset
-        if let Some(computed) = rel_def.get("computedUserset") {
-            if let Some(relation) = computed.get("relation").and_then(|r| r.as_str()) {
-                return Ok(Userset::ComputedUserset {
-                    relation: relation.to_string(),
-                });
-            }
-        }
-
-        // Handle tupleToUserset
-        if let Some(ttu) = rel_def.get("tupleToUserset") {
-            let tupleset_relation = ttu
-                .get("tupleset")
-                .and_then(|ts| ts.get("relation"))
-                .and_then(|r| r.as_str())
-                .unwrap_or_default();
-
-            let computed_relation = ttu
-                .get("computedUserset")
-                .and_then(|cs| cs.get("relation"))
-                .and_then(|r| r.as_str())
-                .unwrap_or_default();
-
-            return Ok(Userset::TupleToUserset {
-                tupleset: tupleset_relation.to_string(),
-                computed_userset: computed_relation.to_string(),
-            });
-        }
-
-        // Handle union
-        if let Some(union) = rel_def.get("union") {
-            if let Some(children) = union.get("child").and_then(|c| c.as_array()) {
-                if children.is_empty() {
-                    return Err(DomainError::ModelParseError {
-                        message: format!(
-                            "Empty child array in union for {}.{}",
-                            type_name, rel_name
-                        ),
-                    });
-                }
-                let parsed: Result<Vec<_>, _> = children
-                    .iter()
-                    .map(|c| parse_userset_bench(c, type_name, rel_name, depth + 1))
-                    .collect();
-                return Ok(Userset::Union { children: parsed? });
-            }
-        }
-
-        // Handle intersection
-        if let Some(intersection) = rel_def.get("intersection") {
-            if let Some(children) = intersection.get("child").and_then(|c| c.as_array()) {
-                if children.is_empty() {
-                    return Err(DomainError::ModelParseError {
-                        message: format!(
-                            "Empty child array in intersection for {}.{}",
-                            type_name, rel_name
-                        ),
-                    });
-                }
-                let parsed: Result<Vec<_>, _> = children
-                    .iter()
-                    .map(|c| parse_userset_bench(c, type_name, rel_name, depth + 1))
-                    .collect();
-                return Ok(Userset::Intersection { children: parsed? });
-            }
-        }
-
-        // Handle exclusion/difference
-        if let Some(diff) = rel_def.get("difference") {
-            let base = diff
-                .get("base")
-                .map(|b| parse_userset_bench(b, type_name, rel_name, depth + 1))
-                .transpose()?
-                .map(Box::new);
-            let subtract = diff
-                .get("subtract")
-                .map(|s| parse_userset_bench(s, type_name, rel_name, depth + 1))
-                .transpose()?
-                .map(Box::new);
-
-            if let (Some(base), Some(subtract)) = (base, subtract) {
-                return Ok(Userset::Exclusion { base, subtract });
-            }
-        }
-
-        // Default case
-        Ok(Userset::This)
-    }
-}
-
-use parse_wrapper::parse_userset;
 
 // =============================================================================
 // Benchmarks
