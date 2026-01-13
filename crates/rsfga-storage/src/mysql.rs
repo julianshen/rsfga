@@ -143,7 +143,7 @@ impl MySQLDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to create stores table: {}", e),
+            message: format!("Failed to create stores table: {e}"),
         })?;
 
         // Create tuples table
@@ -169,7 +169,7 @@ impl MySQLDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to create tuples table: {}", e),
+            message: format!("Failed to create tuples table: {e}"),
         })?;
 
         // Create unique index to enforce tuple uniqueness
@@ -258,7 +258,7 @@ impl MySQLDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to create authorization_models table: {}", e),
+            message: format!("Failed to create authorization_models table: {e}"),
         })?;
 
         // Index Strategy for Authorization Models
@@ -323,17 +323,17 @@ impl MySQLDataStore {
 
         if !is_safe_identifier(index_name) {
             return Err(StorageError::QueryError {
-                message: format!("Invalid index name: {}", index_name),
+                message: format!("Invalid index name: {index_name}"),
             });
         }
         if !is_safe_identifier(table_name) {
             return Err(StorageError::QueryError {
-                message: format!("Invalid table name: {}", table_name),
+                message: format!("Invalid table name: {table_name}"),
             });
         }
         if !is_safe_columns(columns) {
             return Err(StorageError::QueryError {
-                message: format!("Invalid column specification: {}", columns),
+                message: format!("Invalid column specification: {columns}"),
             });
         }
 
@@ -352,15 +352,13 @@ impl MySQLDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check index existence: {}", e),
+            message: format!("Failed to check index existence: {e}"),
         })?;
 
         if !exists {
             let unique_clause = if unique { "UNIQUE" } else { "" };
-            let query = format!(
-                "CREATE {} INDEX {} ON {} {}",
-                unique_clause, index_name, table_name, columns
-            );
+            let query =
+                format!("CREATE {unique_clause} INDEX {index_name} ON {table_name} {columns}");
             if let Err(e) = sqlx::query(&query).execute(&self.pool).await {
                 // Handle TOCTOU race: ignore duplicate index error (1061 = ER_DUP_KEYNAME)
                 // This can happen if concurrent migrations try to create the same index
@@ -374,7 +372,7 @@ impl MySQLDataStore {
 
                 if !is_duplicate_index {
                     return Err(StorageError::QueryError {
-                        message: format!("Failed to create index {}: {}", index_name, e),
+                        message: format!("Failed to create index {index_name}: {e}"),
                     });
                 }
             }
@@ -425,7 +423,7 @@ impl DataStore for MySQLDataStore {
                 }
             }
             StorageError::QueryError {
-                message: format!("Failed to create store: {}", e),
+                message: format!("Failed to create store: {e}"),
             }
         })?;
 
@@ -450,7 +448,7 @@ impl DataStore for MySQLDataStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to get store: {}", e),
+            message: format!("Failed to get store: {e}"),
         })?;
 
         match row {
@@ -477,7 +475,7 @@ impl DataStore for MySQLDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to delete store: {}", e),
+            message: format!("Failed to delete store: {e}"),
         })?;
 
         if result.rows_affected() == 0 {
@@ -502,7 +500,7 @@ impl DataStore for MySQLDataStore {
             .begin()
             .await
             .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to begin transaction: {}", e),
+                message: format!("Failed to begin transaction: {e}"),
             })?;
 
         let result = sqlx::query(
@@ -517,7 +515,7 @@ impl DataStore for MySQLDataStore {
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to update store: {}", e),
+            message: format!("Failed to update store: {e}"),
         })?;
 
         if result.rows_affected() == 0 {
@@ -539,11 +537,11 @@ impl DataStore for MySQLDataStore {
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to fetch updated store: {}", e),
+            message: format!("Failed to fetch updated store: {e}"),
         })?;
 
         tx.commit().await.map_err(|e| StorageError::QueryError {
-            message: format!("Failed to commit transaction: {}", e),
+            message: format!("Failed to commit transaction: {e}"),
         })?;
 
         Ok(Store {
@@ -566,7 +564,7 @@ impl DataStore for MySQLDataStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list stores: {}", e),
+            message: format!("Failed to list stores: {e}"),
         })?;
 
         Ok(rows
@@ -601,7 +599,7 @@ impl DataStore for MySQLDataStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list stores: {}", e),
+            message: format!("Failed to list stores: {e}"),
         })?;
 
         let items: Vec<Store> = rows
@@ -653,7 +651,7 @@ impl DataStore for MySQLDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -668,7 +666,7 @@ impl DataStore for MySQLDataStore {
             .begin()
             .await
             .map_err(|e| StorageError::TransactionError {
-                message: format!("Failed to begin transaction: {}", e),
+                message: format!("Failed to begin transaction: {e}"),
             })?;
 
         // Batch delete using tuple comparison with IN clause.
@@ -706,7 +704,7 @@ impl DataStore for MySQLDataStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to batch delete tuples: {}", e),
+                    message: format!("Failed to batch delete tuples: {e}"),
                 })?;
         }
 
@@ -743,7 +741,7 @@ impl DataStore for MySQLDataStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to batch write tuples: {}", e),
+                    message: format!("Failed to batch write tuples: {e}"),
                 })?;
         }
 
@@ -751,7 +749,7 @@ impl DataStore for MySQLDataStore {
         tx.commit()
             .await
             .map_err(|e| StorageError::TransactionError {
-                message: format!("Failed to commit transaction: {}", e),
+                message: format!("Failed to commit transaction: {e}"),
             })?;
 
         Ok(())
@@ -773,7 +771,7 @@ impl DataStore for MySQLDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -839,7 +837,7 @@ impl DataStore for MySQLDataStore {
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to read tuples: {}", e),
+                    message: format!("Failed to read tuples: {e}"),
                 })?;
 
         Ok(rows
@@ -874,7 +872,7 @@ impl DataStore for MySQLDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -946,7 +944,7 @@ impl DataStore for MySQLDataStore {
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to read tuples: {}", e),
+                    message: format!("Failed to read tuples: {e}"),
                 })?;
 
         let items: Vec<StoredTuple> = rows
@@ -1030,7 +1028,7 @@ impl DataStore for MySQLDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -1054,7 +1052,7 @@ impl DataStore for MySQLDataStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to write authorization model: {}", e),
+            message: format!("Failed to write authorization model: {e}"),
         })?;
 
         Ok(model)
@@ -1079,7 +1077,7 @@ impl DataStore for MySQLDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -1101,7 +1099,7 @@ impl DataStore for MySQLDataStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to get authorization model: {}", e),
+            message: format!("Failed to get authorization model: {e}"),
         })?;
 
         match row {
@@ -1136,7 +1134,7 @@ impl DataStore for MySQLDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -1158,7 +1156,7 @@ impl DataStore for MySQLDataStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list authorization models: {}", e),
+            message: format!("Failed to list authorization models: {e}"),
         })?;
 
         Ok(rows
@@ -1192,7 +1190,7 @@ impl DataStore for MySQLDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -1220,7 +1218,7 @@ impl DataStore for MySQLDataStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list authorization models: {}", e),
+            message: format!("Failed to list authorization models: {e}"),
         })?;
 
         let items: Vec<StoredAuthorizationModel> = rows
@@ -1265,7 +1263,7 @@ impl DataStore for MySQLDataStore {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {}", e),
+            message: format!("Failed to check store existence: {e}"),
         })?;
 
         if !store_exists {
@@ -1288,7 +1286,7 @@ impl DataStore for MySQLDataStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to get latest authorization model: {}", e),
+            message: format!("Failed to get latest authorization model: {e}"),
         })?;
 
         match row {
@@ -1300,7 +1298,7 @@ impl DataStore for MySQLDataStore {
                 created_at: row.get("created_at"),
             }),
             None => Err(StorageError::ModelNotFound {
-                model_id: format!("latest (no models exist for store {})", store_id),
+                model_id: format!("latest (no models exist for store {store_id})"),
             }),
         }
     }

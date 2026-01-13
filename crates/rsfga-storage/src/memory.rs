@@ -488,7 +488,7 @@ impl DataStore for MemoryDataStore {
 
         if models.is_empty() {
             return Err(StorageError::ModelNotFound {
-                model_id: format!("latest (no models exist for store {})", store_id),
+                model_id: format!("latest (no models exist for store {store_id})"),
             });
         }
 
