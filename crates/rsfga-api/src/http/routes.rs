@@ -206,9 +206,10 @@ fn batch_check_error_to_api_error(err: rsfga_server::handlers::batch::BatchCheck
             ApiError::invalid_input(format!("invalid check at index {}: {}", index, message))
         }
         BatchCheckError::DomainError(msg) => {
-            // Log internal errors for debugging - these indicate unexpected failures
+            // Log full error details for debugging - DO NOT expose to clients
             tracing::error!(error = %msg, "Domain error in HTTP batch check");
-            ApiError::internal_error(format!("check error: {}", msg))
+            // Return sanitized message to prevent information leakage
+            ApiError::internal_error("internal error during authorization check")
         }
     }
 }

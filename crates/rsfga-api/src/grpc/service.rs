@@ -100,9 +100,10 @@ fn batch_check_error_to_status(err: rsfga_server::handlers::batch::BatchCheckErr
             Status::invalid_argument(format!("invalid check at index {}: {}", index, message))
         }
         BatchCheckError::DomainError(msg) => {
-            // Log internal errors for debugging - these indicate unexpected failures
+            // Log full error details for debugging - DO NOT expose to clients
             tracing::error!(error = %msg, "Domain error in gRPC batch check");
-            Status::internal(format!("check error: {}", msg))
+            // Return sanitized message to prevent information leakage
+            Status::internal("internal error during authorization check")
         }
     }
 }

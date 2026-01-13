@@ -199,17 +199,19 @@ impl<S: DataStore> DataStoreModelReader<S> {
                             // model parser is fully integrated. Currently only direct assignment
                             // (Userset::This) is supported.
                             //
-                            // LIMITATION: Complex relation definitions will be simplified to
-                            // direct assignment, which may cause incorrect authorization results
-                            // for non-trivial models. This adapter is intended for basic models
-                            // with simple direct tuple assignments.
+                            // Per Invariant I1 (Correctness > Performance), we fail fast on
+                            // complex relations rather than silently defaulting to potentially
+                            // incorrect behavior. This prevents security-critical authorization
+                            // bugs from going unnoticed.
                             if is_complex_relation_def(rel_def) {
-                                tracing::warn!(
-                                    type_name = type_name,
-                                    relation = rel_name.as_str(),
-                                    "Complex relation definition found but not fully parsed; \
-                                     defaulting to direct assignment (Userset::This)"
-                                );
+                                return Err(DomainError::ModelParseError {
+                                    message: format!(
+                                        "Complex relation definition not supported: type '{}', \
+                                         relation '{}'. Only direct tuple assignments are \
+                                         currently supported. See issue #124.",
+                                        type_name, rel_name
+                                    ),
+                                });
                             }
                             relations.push(RelationDefinition {
                                 name: rel_name.clone(),
@@ -470,5 +472,54 @@ mod tests {
         // Verify cache is populated
         let cache = reader.cache.read().await;
         assert!(cache.contains_key(&store_id));
+    }
+
+    #[tokio::test]
+    async fn test_model_reader_rejects_complex_relations() {
+        let storage = Arc::new(MemoryDataStore::new());
+        storage
+            .create_store("test-store", "Test Store")
+            .await
+            .unwrap();
+
+        // Create a model with a complex relation (union)
+        let complex_model_json = r#"{
+            "type_definitions": [
+                {"type": "user"},
+                {
+                    "type": "document",
+                    "relations": {
+                        "viewer": {
+                            "union": {
+                                "child": [
+                                    {"this": {}},
+                                    {"computedUserset": {"relation": "editor"}}
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }"#;
+
+        let model = rsfga_storage::StoredAuthorizationModel::new(
+            "model-complex".to_string(),
+            "test-store",
+            "1.1",
+            complex_model_json.to_string(),
+        );
+        storage.write_authorization_model(model).await.unwrap();
+
+        let reader = DataStoreModelReader::new(storage);
+        let result = reader.get_model("test-store").await;
+
+        // Should fail with ModelParseError for complex relations
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, DomainError::ModelParseError { .. }));
+        if let DomainError::ModelParseError { message } = err {
+            assert!(message.contains("Complex relation definition not supported"));
+            assert!(message.contains("viewer"));
+        }
     }
 }
