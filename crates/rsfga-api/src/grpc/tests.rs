@@ -254,6 +254,49 @@ async fn test_batch_check_rpc_rejects_missing_tuple_key() {
     assert!(status.message().contains("index 1"));
 }
 
+/// Test: BatchCheck RPC rejects excessively long correlation_ids
+///
+/// Validates that the API rejects correlation_ids exceeding the maximum length
+/// to prevent DoS attacks via excessive memory allocation.
+#[tokio::test]
+async fn test_batch_check_rpc_rejects_oversized_correlation_id() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Create a correlation_id that exceeds the 256 byte limit
+    let oversized_correlation_id = "x".repeat(300);
+
+    let request = Request::new(BatchCheckRequest {
+        store_id: "test-store".to_string(),
+        checks: vec![BatchCheckItem {
+            tuple_key: Some(TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+                condition: None,
+            }),
+            contextual_tuples: None,
+            context: None,
+            correlation_id: oversized_correlation_id,
+        }],
+        authorization_model_id: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.batch_check(request).await;
+    assert!(response.is_err());
+
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("correlation_id"));
+    assert!(status.message().contains("exceeds maximum length"));
+}
+
 /// Test: Write RPC works correctly
 ///
 /// Verifies the Write RPC can create and delete tuples.

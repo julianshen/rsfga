@@ -10,27 +10,47 @@
 //! enabling the API layer to connect storage implementations to domain logic.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::RwLock;
+use moka::future::Cache;
 
 use rsfga_domain::error::{DomainError, DomainResult};
 use rsfga_domain::model::{AuthorizationModel, RelationDefinition, TypeDefinition, Userset};
 use rsfga_domain::resolver::{ModelReader, StoredTupleRef, TupleReader};
 use rsfga_storage::DataStore;
 
-/// Default cache TTL for parsed authorization models (5 seconds).
-/// Short TTL ensures model updates propagate quickly while avoiding
-/// repeated storage fetches within a batch check operation.
-const MODEL_CACHE_TTL: Duration = Duration::from_secs(5);
+/// Default cache TTL for parsed authorization models.
+/// Slightly longer TTL (30s) is safe with moka's automatic eviction.
+const MODEL_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Maximum number of models to cache. Prevents unbounded memory growth.
+const MODEL_CACHE_MAX_CAPACITY: u64 = 1000;
+
+/// Known complex relation definition keys in OpenFGA.
+/// These represent relation rewrites beyond simple direct assignment.
+const COMPLEX_RELATION_KEYS: &[&str] = &[
+    "union",
+    "intersection",
+    "exclusion",
+    "computedUserset",
+    "tupleToUserset",
+    // OpenFGA v1.1+ uses snake_case in some contexts
+    "computed_userset",
+    "tuple_to_userset",
+];
 
 /// Checks if a relation definition JSON object represents a complex relation.
 ///
-/// Complex relations include union, intersection, exclusion, computedUserset,
-/// and tupleToUserset - anything beyond a simple direct assignment.
+/// Returns true only if the definition contains known complex relation keys
+/// (union, intersection, exclusion, computedUserset, tupleToUserset).
+/// Empty objects or objects with only metadata keys (e.g., future OpenFGA
+/// additions) are not considered complex.
 fn is_complex_relation_def(rel_def: &serde_json::Value) -> bool {
-    rel_def.as_object().is_some_and(|o| !o.is_empty())
+    rel_def.as_object().is_some_and(|obj| {
+        obj.keys()
+            .any(|key| COMPLEX_RELATION_KEYS.contains(&key.as_str()))
+    })
 }
 
 /// Adapter that implements `TupleReader` using a `DataStore`.
@@ -98,12 +118,6 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
     }
 }
 
-/// Cached authorization model with expiration time.
-struct CachedModel {
-    model: AuthorizationModel,
-    expires_at: Instant,
-}
-
 /// Adapter that implements `ModelReader` using a `DataStore`.
 ///
 /// This adapter bridges the storage layer to the domain layer for model operations.
@@ -111,62 +125,79 @@ struct CachedModel {
 ///
 /// # Caching
 ///
-/// Parsed models are cached per store_id with a short TTL to avoid repeated
-/// storage fetches during batch check operations. The cache is automatically
-/// invalidated when entries expire.
+/// Parsed models are cached per store_id with TTL-based expiration.
+/// Uses moka's async cache with built-in singleflight behavior to prevent
+/// thundering herd on cache misses - only one request fetches while others wait.
 pub struct DataStoreModelReader<S: DataStore> {
     storage: Arc<S>,
     /// Cache of parsed models keyed by store_id.
-    /// Uses RwLock for concurrent read access with exclusive write access.
-    cache: RwLock<std::collections::HashMap<String, CachedModel>>,
+    /// Moka provides automatic expiration, size limits, and singleflight behavior.
+    cache: Cache<String, AuthorizationModel>,
 }
 
 impl<S: DataStore> DataStoreModelReader<S> {
     /// Creates a new adapter wrapping the given storage.
     pub fn new(storage: Arc<S>) -> Self {
-        Self {
-            storage,
-            cache: RwLock::new(std::collections::HashMap::new()),
-        }
+        let cache = Cache::builder()
+            .max_capacity(MODEL_CACHE_MAX_CAPACITY)
+            .time_to_live(MODEL_CACHE_TTL)
+            .build();
+
+        Self { storage, cache }
     }
 
     /// Helper to get and parse the latest model for a store.
     ///
-    /// Uses a short-lived cache to avoid repeated storage fetches within
-    /// a batch check operation while ensuring model updates propagate quickly.
+    /// Uses moka's `try_get_with` for singleflight behavior: if multiple
+    /// concurrent requests find a cache miss, only one fetches from storage
+    /// while others wait for the result. This prevents thundering herd.
     async fn get_parsed_model(&self, store_id: &str) -> DomainResult<AuthorizationModel> {
-        // Check cache first (read lock)
-        {
-            let cache = self.cache.read().await;
-            if let Some(cached) = cache.get(store_id) {
-                if cached.expires_at > Instant::now() {
-                    return Ok(cached.model.clone());
+        // Use try_get_with for singleflight behavior
+        // Clone storage Arc for the async closure
+        let storage = Arc::clone(&self.storage);
+        let store_id_owned = store_id.to_string();
+
+        self.cache
+            .try_get_with(store_id.to_string(), async move {
+                Self::fetch_and_parse_model(&storage, &store_id_owned).await
+            })
+            .await
+            .map_err(|e| {
+                // Arc<DomainError> -> DomainError
+                // The error is wrapped in Arc by moka's try_get_with
+                // Reconstruct the error since DomainError doesn't implement Clone
+                match e.as_ref() {
+                    DomainError::ResolverError { message } => DomainError::ResolverError {
+                        message: message.clone(),
+                    },
+                    DomainError::ModelParseError { message } => DomainError::ModelParseError {
+                        message: message.clone(),
+                    },
+                    DomainError::TypeNotFound { type_name } => DomainError::TypeNotFound {
+                        type_name: type_name.clone(),
+                    },
+                    DomainError::RelationNotFound {
+                        type_name,
+                        relation,
+                    } => DomainError::RelationNotFound {
+                        type_name: type_name.clone(),
+                        relation: relation.clone(),
+                    },
+                    // Default fallback for any other variants
+                    other => DomainError::ResolverError {
+                        message: other.to_string(),
+                    },
                 }
-            }
-        }
-
-        // Cache miss or expired - fetch from storage
-        let model = self.fetch_and_parse_model(store_id).await?;
-
-        // Update cache (write lock)
-        {
-            let mut cache = self.cache.write().await;
-            cache.insert(
-                store_id.to_string(),
-                CachedModel {
-                    model: model.clone(),
-                    expires_at: Instant::now() + MODEL_CACHE_TTL,
-                },
-            );
-        }
-
-        Ok(model)
+            })
     }
 
     /// Fetches and parses a model from storage (no caching).
-    async fn fetch_and_parse_model(&self, store_id: &str) -> DomainResult<AuthorizationModel> {
-        let stored_model = self
-            .storage
+    /// This is a static method to allow use in async closures.
+    async fn fetch_and_parse_model(
+        storage: &S,
+        store_id: &str,
+    ) -> DomainResult<AuthorizationModel> {
+        let stored_model = storage
             .get_latest_authorization_model(store_id)
             .await
             .map_err(|e| DomainError::ResolverError {
@@ -469,9 +500,8 @@ mod tests {
         // Both should return the same model
         assert_eq!(model1.type_definitions.len(), model2.type_definitions.len());
 
-        // Verify cache is populated
-        let cache = reader.cache.read().await;
-        assert!(cache.contains_key(&store_id));
+        // Verify cache is populated (moka's contains_key is synchronous)
+        assert!(reader.cache.contains_key(&store_id));
     }
 
     #[tokio::test]

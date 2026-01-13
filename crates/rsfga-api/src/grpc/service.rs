@@ -27,6 +27,10 @@ use crate::proto::openfga::v1::{
     WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
 
+/// Maximum allowed length for correlation IDs to prevent DoS attacks.
+/// OpenFGA uses UUIDs (36 chars), so 256 provides generous headroom.
+const MAX_CORRELATION_ID_LENGTH: usize = 256;
+
 /// gRPC service implementation for OpenFGA.
 ///
 /// This service implements the OpenFGA gRPC API with support for parallel
@@ -214,6 +218,14 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                     index
                 ))
             })?;
+
+            // Validate correlation_id length to prevent DoS via excessive memory allocation
+            if item.correlation_id.len() > MAX_CORRELATION_ID_LENGTH {
+                return Err(Status::invalid_argument(format!(
+                    "correlation_id at index {} exceeds maximum length of {} bytes",
+                    index, MAX_CORRELATION_ID_LENGTH
+                )));
+            }
 
             correlation_ids.push(item.correlation_id);
             server_checks.push(ServerBatchCheckItem {

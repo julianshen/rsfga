@@ -61,6 +61,9 @@ uuid = { workspace = true }
 ulid = { workspace = true }
 async-trait = { workspace = true }
 
+# Caching
+moka = { workspace = true }
+
 # CLI
 clap = { workspace = true }
 
