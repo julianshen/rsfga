@@ -149,28 +149,91 @@ fn prost_struct_to_hashmap(
         .collect()
 }
 
+/// Maximum allowed condition name length (security constraint I4).
+const MAX_CONDITION_NAME_LENGTH: usize = 256;
+
+/// Maximum allowed condition context size in bytes (constraint C11: Fail Fast with Bounds).
+const MAX_CONDITION_CONTEXT_SIZE: usize = 10 * 1024; // 10KB
+
+/// Error returned when tuple key parsing fails.
+/// Contains the original user/object strings for error messages (avoids cloning in happy path).
+struct TupleKeyParseError {
+    user: String,
+    object: String,
+    reason: &'static str,
+}
+
+/// Validates a condition name format (security constraint I4).
+/// Allows only alphanumeric, underscore, hyphen characters with max 256 chars.
+fn is_valid_condition_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_CONDITION_NAME_LENGTH
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 /// Converts a TupleKey proto to StoredTuple (takes ownership to avoid clones).
 ///
 /// Uses `parse_user` and `parse_object` for consistent validation across all handlers.
 /// Parses the optional condition field including name and context.
-fn tuple_key_to_stored(tk: TupleKey) -> Option<StoredTuple> {
-    let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
-    // Use parse_object for consistent validation (rejects empty type or id)
-    let (object_type, object_id) = parse_object(&tk.object)?;
+///
+/// Returns `Err` with the original user/object for error messages (avoids cloning in happy path).
+fn tuple_key_to_stored(tk: TupleKey) -> Result<StoredTuple, TupleKeyParseError> {
+    let (user_type, user_id, user_relation) =
+        parse_user(&tk.user).ok_or_else(|| TupleKeyParseError {
+            user: tk.user.clone(),
+            object: tk.object.clone(),
+            reason: "invalid user format",
+        })?;
 
-    // Parse condition if present (move values instead of cloning)
+    let (object_type, object_id) = parse_object(&tk.object).ok_or_else(|| TupleKeyParseError {
+        user: tk.user.clone(),
+        object: tk.object.clone(),
+        reason: "invalid object format",
+    })?;
+
+    // Parse and validate condition if present
     let (condition_name, condition_context) = if let Some(cond) = tk.condition {
         if cond.name.is_empty() {
             (None, None)
         } else {
-            let context = cond.context.map(prost_struct_to_hashmap);
+            // Validate condition name format (security constraint I4)
+            if !is_valid_condition_name(&cond.name) {
+                return Err(TupleKeyParseError {
+                    user: tk.user,
+                    object: tk.object,
+                    reason: "invalid condition name: must be alphanumeric/underscore/hyphen, max 256 chars",
+                });
+            }
+
+            // Convert and validate context size (constraint C11)
+            let context = if let Some(ctx) = cond.context {
+                let hashmap = prost_struct_to_hashmap(ctx);
+                // Estimate serialized size to enforce bounds
+                let estimated_size: usize = hashmap
+                    .iter()
+                    .map(|(k, v)| k.len() + v.to_string().len())
+                    .sum();
+                if estimated_size > MAX_CONDITION_CONTEXT_SIZE {
+                    return Err(TupleKeyParseError {
+                        user: tk.user,
+                        object: tk.object,
+                        reason: "condition context exceeds maximum size (10KB)",
+                    });
+                }
+                Some(hashmap)
+            } else {
+                None
+            };
+
             (Some(cond.name), context)
         }
     } else {
         (None, None)
     };
 
-    Some(StoredTuple {
+    Ok(StoredTuple {
         object_type: object_type.to_string(),
         object_id: object_id.to_string(),
         relation: tk.relation,
@@ -342,7 +405,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .map_err(storage_error_to_status)?;
 
         // Convert writes - fail if any tuple key is invalid
-        // Use into_iter() to take ownership and avoid clones
+        // No clones in happy path - error contains user/object for messages
         let writes: Vec<StoredTuple> = req
             .writes
             .map(|w| {
@@ -350,11 +413,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                     .into_iter()
                     .enumerate()
                     .map(|(i, tk)| {
-                        let user = tk.user.clone();
-                        let object = tk.object.clone();
-                        tuple_key_to_stored(tk).ok_or_else(|| {
+                        tuple_key_to_stored(tk).map_err(|e| {
                             Status::invalid_argument(format!(
-                                "invalid tuple_key at writes index {i}: user='{user}', object='{object}'"
+                                "invalid tuple_key at writes index {i}: user='{}', object='{}': {}",
+                                e.user, e.object, e.reason
                             ))
                         })
                     })
@@ -372,17 +434,16 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                     .into_iter()
                     .enumerate()
                     .map(|(i, tk)| {
-                        let user = tk.user.clone();
-                        let object = tk.object.clone();
                         tuple_key_to_stored(TupleKey {
                             user: tk.user,
                             relation: tk.relation,
                             object: tk.object,
                             condition: None,
                         })
-                        .ok_or_else(|| {
+                        .map_err(|e| {
                             Status::invalid_argument(format!(
-                                "invalid tuple_key at deletes index {i}: user='{user}', object='{object}'"
+                                "invalid tuple_key at deletes index {i}: user='{}', object='{}': {}",
+                                e.user, e.object, e.reason
                             ))
                         })
                     })

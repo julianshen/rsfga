@@ -826,7 +826,7 @@ async fn write_tuples<S: DataStore>(
     let _ = state.storage.get_store(&store_id).await?;
 
     // Convert write tuples - fail if any tuple key is invalid
-    // Use into_iter() to take ownership and avoid clones
+    // No clones in happy path - error contains user/object for messages
     let writes: Vec<StoredTuple> = body
         .writes
         .map(|w| {
@@ -834,11 +834,10 @@ async fn write_tuples<S: DataStore>(
                 .into_iter()
                 .enumerate()
                 .map(|(i, tk)| {
-                    let user = tk.user.clone();
-                    let object = tk.object.clone();
-                    parse_tuple_key(tk).ok_or_else(|| {
+                    parse_tuple_key(tk).map_err(|e| {
                         ApiError::invalid_input(format!(
-                            "invalid tuple_key at writes index {i}: user='{user}', object='{object}'"
+                            "invalid tuple_key at writes index {i}: user='{}', object='{}': {}",
+                            e.user, e.object, e.reason
                         ))
                     })
                 })
@@ -876,28 +875,84 @@ async fn write_tuples<S: DataStore>(
     Ok(Json(serde_json::json!({})))
 }
 
+/// Maximum allowed condition name length (security constraint I4).
+const MAX_CONDITION_NAME_LENGTH: usize = 256;
+
+/// Maximum allowed condition context size in bytes (constraint C11: Fail Fast with Bounds).
+const MAX_CONDITION_CONTEXT_SIZE: usize = 10 * 1024; // 10KB
+
+/// Error returned when tuple key parsing fails.
+/// Contains the original user/object strings for error messages (avoids cloning in happy path).
+struct TupleKeyParseError {
+    user: String,
+    object: String,
+    reason: &'static str,
+}
+
+/// Validates a condition name format (security constraint I4).
+/// Allows only alphanumeric, underscore, hyphen characters with max 256 chars.
+fn is_valid_condition_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_CONDITION_NAME_LENGTH
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 /// Parses a tuple key into a StoredTuple (takes ownership to avoid clones).
 ///
 /// Includes condition parsing for conditional relationships.
-fn parse_tuple_key(tk: TupleKeyBody) -> Option<rsfga_storage::StoredTuple> {
+/// Returns `Err` with the original user/object for error messages (avoids cloning in happy path).
+fn parse_tuple_key(tk: TupleKeyBody) -> Result<rsfga_storage::StoredTuple, TupleKeyParseError> {
     // Parse user: "user:alice" or "team:eng#member"
-    let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
+    let (user_type, user_id, user_relation) =
+        parse_user(&tk.user).ok_or_else(|| TupleKeyParseError {
+            user: tk.user.clone(),
+            object: tk.object.clone(),
+            reason: "invalid user format",
+        })?;
 
     // Parse object: "document:readme" - use parse_object for consistent validation
-    let (object_type, object_id) = parse_object(&tk.object)?;
+    let (object_type, object_id) = parse_object(&tk.object).ok_or_else(|| TupleKeyParseError {
+        user: tk.user.clone(),
+        object: tk.object.clone(),
+        reason: "invalid object format",
+    })?;
 
-    // Parse condition if present (move values instead of cloning)
+    // Parse and validate condition if present
     let (condition_name, condition_context) = if let Some(cond) = tk.condition {
         if cond.name.is_empty() {
             (None, None)
         } else {
+            // Validate condition name format (security constraint I4)
+            if !is_valid_condition_name(&cond.name) {
+                return Err(TupleKeyParseError {
+                    user: tk.user,
+                    object: tk.object,
+                    reason: "invalid condition name: must be alphanumeric/underscore/hyphen, max 256 chars",
+                });
+            }
+
+            // Validate context size if present (constraint C11)
+            if let Some(ref ctx) = cond.context {
+                let estimated_size: usize =
+                    ctx.iter().map(|(k, v)| k.len() + v.to_string().len()).sum();
+                if estimated_size > MAX_CONDITION_CONTEXT_SIZE {
+                    return Err(TupleKeyParseError {
+                        user: tk.user,
+                        object: tk.object,
+                        reason: "condition context exceeds maximum size (10KB)",
+                    });
+                }
+            }
+
             (Some(cond.name), cond.context)
         }
     } else {
         (None, None)
     };
 
-    Some(rsfga_storage::StoredTuple {
+    Ok(rsfga_storage::StoredTuple {
         object_type: object_type.to_string(),
         object_id: object_id.to_string(),
         relation: tk.relation,

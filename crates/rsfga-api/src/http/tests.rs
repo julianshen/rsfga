@@ -1591,3 +1591,111 @@ async fn test_write_endpoint_handles_multiple_tuples_with_conditions() {
     assert_eq!(carol_tuple.condition_name, Some("condition_c".to_string()));
     assert!(carol_tuple.condition_context.is_none());
 }
+
+/// Test: POST /stores/{store_id}/write rejects invalid condition name
+///
+/// Verifies that condition names with special characters are rejected (security I4).
+#[tokio::test]
+async fn test_write_endpoint_rejects_invalid_condition_name() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(Arc::clone(&storage));
+    let app = create_router(state);
+
+    // Write a tuple with an invalid condition name (special characters)
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/write")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "writes": {
+                            "tuple_keys": [
+                                {
+                                    "user": "user:alice",
+                                    "relation": "viewer",
+                                    "object": "document:secret",
+                                    "condition": {
+                                        "name": "invalid;DROP TABLE--"
+                                    }
+                                }
+                            ]
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let message = json["message"].as_str().unwrap();
+    assert!(message.contains("invalid condition name"));
+}
+
+/// Test: POST /stores/{store_id}/write accepts valid condition names
+///
+/// Verifies that valid condition names with underscore and hyphen are accepted.
+#[tokio::test]
+async fn test_write_endpoint_accepts_valid_condition_name_formats() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(Arc::clone(&storage));
+    let app = create_router(state);
+
+    // Write a tuple with a valid condition name (underscore and hyphen)
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/write")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "writes": {
+                            "tuple_keys": [
+                                {
+                                    "user": "user:alice",
+                                    "relation": "viewer",
+                                    "object": "document:report",
+                                    "condition": {
+                                        "name": "ip_restriction-v2"
+                                    }
+                                }
+                            ]
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify the tuple was written with the condition
+    let tuples = storage
+        .read_tuples("test-store", &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1);
+    assert_eq!(
+        tuples[0].condition_name,
+        Some("ip_restriction-v2".to_string())
+    );
+}

@@ -992,3 +992,91 @@ async fn test_write_rpc_ignores_empty_condition_name() {
     assert!(tuple.condition_name.is_none());
     assert!(tuple.condition_context.is_none());
 }
+
+/// Test: Write RPC rejects invalid condition name with special characters
+///
+/// Verifies that condition names with special characters are rejected (security I4).
+#[tokio::test]
+async fn test_write_rpc_rejects_invalid_condition_name() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Condition with invalid name (contains special characters)
+    let condition = RelationshipCondition {
+        name: "invalid;DROP TABLE--".to_string(),
+        context: None,
+    };
+
+    let request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:secret".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    let response = service.write(request).await;
+    assert!(response.is_err());
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("invalid condition name"));
+}
+
+/// Test: Write RPC accepts valid condition names with underscore and hyphen
+///
+/// Verifies that valid condition names are accepted.
+#[tokio::test]
+async fn test_write_rpc_accepts_valid_condition_name_formats() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Valid condition names with underscore and hyphen
+    let condition = RelationshipCondition {
+        name: "ip_restriction-v2".to_string(),
+        context: None,
+    };
+
+    let request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:report".to_string(),
+                condition: Some(condition),
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: String::new(),
+    });
+
+    let response = service.write(request).await;
+    assert!(response.is_ok());
+
+    // Verify the tuple was written with the condition
+    let tuples = storage
+        .read_tuples("test-store", &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1);
+    assert_eq!(
+        tuples[0].condition_name,
+        Some("ip_restriction-v2".to_string())
+    );
+}
