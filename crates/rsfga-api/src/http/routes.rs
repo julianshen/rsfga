@@ -566,11 +566,24 @@ pub struct CheckRequestBody {
     pub contextual_tuples: Option<ContextualTuplesBody>,
 }
 
+/// Relationship condition for conditional tuples.
+#[derive(Debug, Deserialize)]
+pub struct RelationshipConditionBody {
+    /// The name of the condition (must match a condition defined in the model).
+    pub name: String,
+    /// Optional context parameters for the condition.
+    #[serde(default)]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TupleKeyBody {
     pub user: String,
     pub relation: String,
     pub object: String,
+    /// Optional condition for conditional relationships.
+    #[serde(default)]
+    pub condition: Option<RelationshipConditionBody>,
 }
 
 #[allow(dead_code)]
@@ -862,13 +875,36 @@ async fn write_tuples<S: DataStore>(
 }
 
 /// Parses a tuple key into a StoredTuple.
+///
+/// Includes condition parsing for conditional relationships.
 fn parse_tuple_key(tk: &TupleKeyBody) -> Option<rsfga_storage::StoredTuple> {
-    parse_tuple_fields(&tk.user, &tk.relation, &tk.object)
+    // Parse user: "user:alice" or "team:eng#member"
+    let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
+
+    // Parse object: "document:readme" - use parse_object for consistent validation
+    let (object_type, object_id) = parse_object(&tk.object)?;
+
+    // Parse condition if present
+    let (condition_name, condition_context) = match &tk.condition {
+        Some(cond) if !cond.name.is_empty() => (Some(cond.name.clone()), cond.context.clone()),
+        _ => (None, None),
+    };
+
+    Some(rsfga_storage::StoredTuple {
+        object_type: object_type.to_string(),
+        object_id: object_id.to_string(),
+        relation: tk.relation.clone(),
+        user_type: user_type.to_string(),
+        user_id: user_id.to_string(),
+        user_relation: user_relation.map(|s| s.to_string()),
+        condition_name,
+        condition_context,
+    })
 }
 
-/// Parses tuple fields directly into a StoredTuple.
+/// Parses tuple fields directly into a StoredTuple (without condition).
 ///
-/// This avoids unnecessary cloning when converting from TupleKeyWithoutConditionBody.
+/// This is used for delete operations where conditions are not applicable.
 /// Uses `parse_user` and `parse_object` for consistent validation across all handlers.
 fn parse_tuple_fields(
     user: &str,
@@ -888,7 +924,6 @@ fn parse_tuple_fields(
         user_type: user_type.to_string(),
         user_id: user_id.to_string(),
         user_relation: user_relation.map(|s| s.to_string()),
-        // TODO(#84): Parse condition from request when API support is added
         condition_name: None,
         condition_context: None,
     })

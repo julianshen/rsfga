@@ -1317,3 +1317,277 @@ async fn test_list_authorization_models_returns_latest_first() {
     assert_eq!(first_model_id, "model-002", "Latest model should be first");
     assert_eq!(second_model_id, "model-001", "Older model should be second");
 }
+
+// ============================================================
+// Condition Parsing Tests (Issue #84)
+// ============================================================
+
+/// Test: POST /stores/{store_id}/write correctly parses conditions
+///
+/// Verifies that when a tuple includes a condition, the condition name
+/// and context are correctly extracted and stored.
+#[tokio::test]
+async fn test_write_endpoint_parses_conditions() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(Arc::clone(&storage));
+    let app = create_router(state);
+
+    // Write a tuple with a condition containing context
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/write")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "writes": {
+                            "tuple_keys": [
+                                {
+                                    "user": "user:alice",
+                                    "relation": "viewer",
+                                    "object": "document:secret",
+                                    "condition": {
+                                        "name": "ip_restriction",
+                                        "context": {
+                                            "allowed_ip": "192.168.1.100",
+                                            "max_age": 30
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify the tuple was written with the condition
+    let tuples = storage
+        .read_tuples("test-store", &Default::default())
+        .await
+        .unwrap();
+
+    assert_eq!(tuples.len(), 1);
+    let tuple = &tuples[0];
+
+    // Verify condition name
+    assert_eq!(tuple.condition_name, Some("ip_restriction".to_string()));
+
+    // Verify condition context
+    let context = tuple
+        .condition_context
+        .as_ref()
+        .expect("condition context should be present");
+    assert_eq!(
+        context.get("allowed_ip"),
+        Some(&serde_json::json!("192.168.1.100"))
+    );
+    assert_eq!(context.get("max_age"), Some(&serde_json::json!(30)));
+}
+
+/// Test: POST /stores/{store_id}/write parses condition without context
+///
+/// Verifies that a condition with only a name (no context) is correctly parsed.
+#[tokio::test]
+async fn test_write_endpoint_parses_condition_without_context() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(Arc::clone(&storage));
+    let app = create_router(state);
+
+    // Write a tuple with a condition but no context
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/write")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "writes": {
+                            "tuple_keys": [
+                                {
+                                    "user": "user:bob",
+                                    "relation": "editor",
+                                    "object": "document:report",
+                                    "condition": {
+                                        "name": "time_based_access"
+                                    }
+                                }
+                            ]
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify the tuple was written
+    let tuples = storage
+        .read_tuples("test-store", &Default::default())
+        .await
+        .unwrap();
+
+    assert_eq!(tuples.len(), 1);
+    let tuple = &tuples[0];
+
+    // Verify condition name is present but context is None
+    assert_eq!(tuple.condition_name, Some("time_based_access".to_string()));
+    assert!(tuple.condition_context.is_none());
+}
+
+/// Test: POST /stores/{store_id}/write ignores empty condition name
+///
+/// Verifies that a condition with an empty name is treated as no condition.
+#[tokio::test]
+async fn test_write_endpoint_ignores_empty_condition_name() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(Arc::clone(&storage));
+    let app = create_router(state);
+
+    // Write a tuple with a condition that has an empty name
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/write")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "writes": {
+                            "tuple_keys": [
+                                {
+                                    "user": "user:carol",
+                                    "relation": "owner",
+                                    "object": "document:public",
+                                    "condition": {
+                                        "name": "",
+                                        "context": {"key": "value"}
+                                    }
+                                }
+                            ]
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify the tuple was written without condition
+    let tuples = storage
+        .read_tuples("test-store", &Default::default())
+        .await
+        .unwrap();
+
+    assert_eq!(tuples.len(), 1);
+    let tuple = &tuples[0];
+
+    // Empty condition name should be treated as no condition
+    assert!(tuple.condition_name.is_none());
+    assert!(tuple.condition_context.is_none());
+}
+
+/// Test: POST /stores/{store_id}/write handles multiple tuples with conditions
+///
+/// Verifies that multiple tuples with different conditions are correctly parsed.
+#[tokio::test]
+async fn test_write_endpoint_handles_multiple_tuples_with_conditions() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let state = AppState::new(Arc::clone(&storage));
+    let app = create_router(state);
+
+    // Write multiple tuples with different conditions
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/stores/test-store/write")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "writes": {
+                            "tuple_keys": [
+                                {
+                                    "user": "user:alice",
+                                    "relation": "viewer",
+                                    "object": "document:doc1",
+                                    "condition": {
+                                        "name": "condition_a",
+                                        "context": {"param": "value_a"}
+                                    }
+                                },
+                                {
+                                    "user": "user:bob",
+                                    "relation": "editor",
+                                    "object": "document:doc2"
+                                },
+                                {
+                                    "user": "user:carol",
+                                    "relation": "owner",
+                                    "object": "document:doc3",
+                                    "condition": {
+                                        "name": "condition_c"
+                                    }
+                                }
+                            ]
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify all tuples were written
+    let tuples = storage
+        .read_tuples("test-store", &Default::default())
+        .await
+        .unwrap();
+
+    assert_eq!(tuples.len(), 3);
+
+    // Find each tuple and verify its condition
+    let alice_tuple = tuples.iter().find(|t| t.user_id == "alice").unwrap();
+    assert_eq!(alice_tuple.condition_name, Some("condition_a".to_string()));
+    assert!(alice_tuple.condition_context.is_some());
+
+    let bob_tuple = tuples.iter().find(|t| t.user_id == "bob").unwrap();
+    assert!(bob_tuple.condition_name.is_none());
+    assert!(bob_tuple.condition_context.is_none());
+
+    let carol_tuple = tuples.iter().find(|t| t.user_id == "carol").unwrap();
+    assert_eq!(carol_tuple.condition_name, Some("condition_c".to_string()));
+    assert!(carol_tuple.condition_context.is_none());
+}

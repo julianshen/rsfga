@@ -112,13 +112,60 @@ fn batch_check_error_to_status(err: rsfga_server::handlers::batch::BatchCheckErr
     }
 }
 
+/// Converts a prost_types::Value to serde_json::Value.
+fn prost_value_to_json(value: &prost_types::Value) -> serde_json::Value {
+    use prost_types::value::Kind;
+
+    match &value.kind {
+        Some(Kind::NullValue(_)) => serde_json::Value::Null,
+        Some(Kind::NumberValue(n)) => serde_json::json!(*n),
+        Some(Kind::StringValue(s)) => serde_json::Value::String(s.clone()),
+        Some(Kind::BoolValue(b)) => serde_json::Value::Bool(*b),
+        Some(Kind::StructValue(s)) => prost_struct_to_json(s),
+        Some(Kind::ListValue(l)) => {
+            serde_json::Value::Array(l.values.iter().map(prost_value_to_json).collect())
+        }
+        None => serde_json::Value::Null,
+    }
+}
+
+/// Converts a prost_types::Struct to serde_json::Value (as an object).
+fn prost_struct_to_json(s: &prost_types::Struct) -> serde_json::Value {
+    let map: serde_json::Map<String, serde_json::Value> = s
+        .fields
+        .iter()
+        .map(|(k, v)| (k.clone(), prost_value_to_json(v)))
+        .collect();
+    serde_json::Value::Object(map)
+}
+
+/// Converts a prost_types::Struct to HashMap<String, serde_json::Value>.
+fn prost_struct_to_hashmap(
+    s: &prost_types::Struct,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    s.fields
+        .iter()
+        .map(|(k, v)| (k.clone(), prost_value_to_json(v)))
+        .collect()
+}
+
 /// Converts a TupleKey proto to StoredTuple.
 ///
 /// Uses `parse_user` and `parse_object` for consistent validation across all handlers.
+/// Parses the optional condition field including name and context.
 fn tuple_key_to_stored(tk: &TupleKey) -> Option<StoredTuple> {
     let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
     // Use parse_object for consistent validation (rejects empty type or id)
     let (object_type, object_id) = parse_object(&tk.object)?;
+
+    // Parse condition if present
+    let (condition_name, condition_context) = match &tk.condition {
+        Some(cond) if !cond.name.is_empty() => {
+            let context = cond.context.as_ref().map(prost_struct_to_hashmap);
+            (Some(cond.name.clone()), context)
+        }
+        _ => (None, None),
+    };
 
     Some(StoredTuple {
         object_type: object_type.to_string(),
@@ -127,9 +174,8 @@ fn tuple_key_to_stored(tk: &TupleKey) -> Option<StoredTuple> {
         user_type: user_type.to_string(),
         user_id: user_id.to_string(),
         user_relation: user_relation.map(|s| s.to_string()),
-        // TODO(#84): Parse condition from request when API support is added
-        condition_name: None,
-        condition_context: None,
+        condition_name,
+        condition_context,
     })
 }
 
