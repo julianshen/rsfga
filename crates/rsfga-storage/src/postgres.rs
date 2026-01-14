@@ -687,192 +687,94 @@ impl DataStore for PostgresDataStore {
             });
         }
 
-        // Start a transaction
-        // Note: Transaction queries rely on SQLx pool acquire_timeout and database
-        // statement timeouts for protection against slow queries.
-        // TODO(#144): Consider wrapping entire transaction with tokio::time::timeout
-        // for comprehensive DoS protection. Requires careful handling of transaction
-        // rollback on timeout.
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::TransactionError {
-                message: format!("Failed to begin transaction: {e}"),
-            })?;
+        // Execute transaction with timeout protection.
+        // The entire transaction block is wrapped in a timeout to prevent DoS attacks
+        // from slow queries. On timeout, the transaction is automatically rolled back
+        // when `tx` is dropped.
+        let tx_result = tokio::time::timeout(self.query_timeout, async {
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .map_err(|e| StorageError::TransactionError {
+                    message: format!("Failed to begin transaction: {e}"),
+                })?;
 
-        // Batch delete using UNNEST arrays (fixes N+1 query problem)
-        if !deletes.is_empty() {
-            let object_types: Vec<&str> = deletes.iter().map(|t| t.object_type.as_str()).collect();
-            let object_ids: Vec<&str> = deletes.iter().map(|t| t.object_id.as_str()).collect();
-            let relations: Vec<&str> = deletes.iter().map(|t| t.relation.as_str()).collect();
-            let user_types: Vec<&str> = deletes.iter().map(|t| t.user_type.as_str()).collect();
-            let user_ids: Vec<&str> = deletes.iter().map(|t| t.user_id.as_str()).collect();
-            let user_relations: Vec<Option<&str>> =
-                deletes.iter().map(|t| t.user_relation.as_deref()).collect();
+            // Batch delete using UNNEST arrays (fixes N+1 query problem)
+            if !deletes.is_empty() {
+                let object_types: Vec<&str> = deletes.iter().map(|t| t.object_type.as_str()).collect();
+                let object_ids: Vec<&str> = deletes.iter().map(|t| t.object_id.as_str()).collect();
+                let relations: Vec<&str> = deletes.iter().map(|t| t.relation.as_str()).collect();
+                let user_types: Vec<&str> = deletes.iter().map(|t| t.user_type.as_str()).collect();
+                let user_ids: Vec<&str> = deletes.iter().map(|t| t.user_id.as_str()).collect();
+                let user_relations: Vec<Option<&str>> =
+                    deletes.iter().map(|t| t.user_relation.as_deref()).collect();
 
-            sqlx::query(
-                r#"
-                DELETE FROM tuples t
-                USING (
-                    SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
-                    AS d(object_type, object_id, relation, user_type, user_id, user_relation)
-                ) AS del
-                WHERE t.store_id = $1
-                  AND t.object_type = del.object_type
-                  AND t.object_id = del.object_id
-                  AND t.relation = del.relation
-                  AND t.user_type = del.user_type
-                  AND t.user_id = del.user_id
-                  AND COALESCE(t.user_relation, '') = COALESCE(del.user_relation, '')
-                "#,
-            )
-            .bind(store_id)
-            .bind(&object_types)
-            .bind(&object_ids)
-            .bind(&relations)
-            .bind(&user_types)
-            .bind(&user_ids)
-            .bind(&user_relations)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to batch delete tuples: {e}"),
-            })?;
-        }
-
-        // Batch insert using UNNEST arrays with ON CONFLICT (fixes N+1 query problem)
-        if !writes.is_empty() {
-            let object_types: Vec<&str> = writes.iter().map(|t| t.object_type.as_str()).collect();
-            let object_ids: Vec<&str> = writes.iter().map(|t| t.object_id.as_str()).collect();
-            let relations: Vec<&str> = writes.iter().map(|t| t.relation.as_str()).collect();
-            let user_types: Vec<&str> = writes.iter().map(|t| t.user_type.as_str()).collect();
-            let user_ids: Vec<&str> = writes.iter().map(|t| t.user_id.as_str()).collect();
-            let user_relations: Vec<Option<&str>> =
-                writes.iter().map(|t| t.user_relation.as_deref()).collect();
-            let condition_names: Vec<Option<&str>> =
-                writes.iter().map(|t| t.condition_name.as_deref()).collect();
-            // Serialize condition_context to JSON strings for JSONB insertion
-            let condition_contexts: Vec<Option<serde_json::Value>> = writes
-                .iter()
-                .map(|t| {
-                    t.condition_context
-                        .as_ref()
-                        .map(|ctx| serde_json::json!(ctx))
-                })
-                .collect();
-
-            // Check for condition conflicts with FOR UPDATE to prevent race conditions.
-            // OpenFGA returns 409 Conflict when writing a tuple that exists with a different
-            // condition. You must delete and re-create to change conditions.
-            //
-            // FOR UPDATE locks matching rows, preventing concurrent transactions from
-            // inserting conflicting tuples until this transaction completes.
-            //
-            // Performance impact:
-            // - Best case (no existing tuples): ~0.1-0.5ms overhead for the JOIN query
-            // - Typical case (few matches): ~0.5-2ms with row locking
-            // - Post-insert verification only runs when rows_affected < input count
-            // - The LIMIT 1 ensures we fail fast on first conflict
-            // Trade-off: Correctness over raw throughput (Invariant I1)
-            let conflict_check = sqlx::query(
-                r#"
-                SELECT
-                    t.object_type, t.object_id, t.relation,
-                    t.user_type, t.user_id, t.user_relation,
-                    t.condition_name AS existing_condition,
-                    new.condition_name AS new_condition
-                FROM tuples t
-                INNER JOIN (
-                    SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
-                    AS x(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
-                ) AS new
-                ON t.store_id = $1
-                   AND t.object_type = new.object_type
-                   AND t.object_id = new.object_id
-                   AND t.relation = new.relation
-                   AND t.user_type = new.user_type
-                   AND t.user_id = new.user_id
-                   AND COALESCE(t.user_relation, '') = COALESCE(new.user_relation, '')
-                WHERE (t.condition_name IS DISTINCT FROM new.condition_name)
-                   OR (t.condition_context IS DISTINCT FROM new.condition_context)
-                FOR UPDATE OF t
-                LIMIT 1
-                "#,
-            )
-            .bind(store_id)
-            .bind(&object_types)
-            .bind(&object_ids)
-            .bind(&relations)
-            .bind(&user_types)
-            .bind(&user_ids)
-            .bind(&user_relations)
-            .bind(&condition_names)
-            .bind(&condition_contexts)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to check for condition conflicts: {e}"),
-            })?;
-
-            if let Some(row) = conflict_check {
-                let user = format!(
-                    "{}:{}{}",
-                    row.get::<String, _>("user_type"),
-                    row.get::<String, _>("user_id"),
-                    row.get::<Option<String>, _>("user_relation")
-                        .map(|r| format!("#{r}"))
-                        .unwrap_or_default()
-                );
-                return Err(StorageError::ConditionConflict(Box::new(
-                    crate::error::ConditionConflictError {
-                        store_id: store_id.to_string(),
-                        object_type: row.get("object_type"),
-                        object_id: row.get("object_id"),
-                        relation: row.get("relation"),
-                        user,
-                        existing_condition: row.get("existing_condition"),
-                        new_condition: row.get("new_condition"),
-                    },
-                )));
+                sqlx::query(
+                    r#"
+                    DELETE FROM tuples t
+                    USING (
+                        SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+                        AS d(object_type, object_id, relation, user_type, user_id, user_relation)
+                    ) AS del
+                    WHERE t.store_id = $1
+                      AND t.object_type = del.object_type
+                      AND t.object_id = del.object_id
+                      AND t.relation = del.relation
+                      AND t.user_type = del.user_type
+                      AND t.user_id = del.user_id
+                      AND COALESCE(t.user_relation, '') = COALESCE(del.user_relation, '')
+                    "#,
+                )
+                .bind(store_id)
+                .bind(&object_types)
+                .bind(&object_ids)
+                .bind(&relations)
+                .bind(&user_types)
+                .bind(&user_ids)
+                .bind(&user_relations)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to batch delete tuples: {e}"),
+                })?;
             }
 
-            // Insert with ON CONFLICT DO NOTHING for truly identical tuples (idempotent).
-            // We've already verified no condition conflicts exist above, and FOR UPDATE
-            // locks prevent concurrent inserts with different conditions.
-            let insert_result = sqlx::query(
-                r#"
-                INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
-                SELECT $1, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context
-                FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
-                AS t(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
-                ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, (COALESCE(user_relation, '')))
-                DO NOTHING
-                "#,
-            )
-            .bind(store_id)
-            .bind(&object_types)
-            .bind(&object_ids)
-            .bind(&relations)
-            .bind(&user_types)
-            .bind(&user_ids)
-            .bind(&user_relations)
-            .bind(&condition_names)
-            .bind(&condition_contexts)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to batch write tuples: {e}"),
-            })?;
+            // Batch insert using UNNEST arrays with ON CONFLICT (fixes N+1 query problem)
+            if !writes.is_empty() {
+                let object_types: Vec<&str> = writes.iter().map(|t| t.object_type.as_str()).collect();
+                let object_ids: Vec<&str> = writes.iter().map(|t| t.object_id.as_str()).collect();
+                let relations: Vec<&str> = writes.iter().map(|t| t.relation.as_str()).collect();
+                let user_types: Vec<&str> = writes.iter().map(|t| t.user_type.as_str()).collect();
+                let user_ids: Vec<&str> = writes.iter().map(|t| t.user_id.as_str()).collect();
+                let user_relations: Vec<Option<&str>> =
+                    writes.iter().map(|t| t.user_relation.as_deref()).collect();
+                let condition_names: Vec<Option<&str>> =
+                    writes.iter().map(|t| t.condition_name.as_deref()).collect();
+                // Serialize condition_context to JSON strings for JSONB insertion
+                let condition_contexts: Vec<Option<serde_json::Value>> = writes
+                    .iter()
+                    .map(|t| {
+                        t.condition_context
+                            .as_ref()
+                            .map(|ctx| serde_json::json!(ctx))
+                    })
+                    .collect();
 
-            // Post-insert verification: if fewer rows were inserted than expected,
-            // a concurrent transaction may have inserted conflicting tuples.
-            // Re-check for conflicts to ensure we didn't miss any due to race.
-            let inserted_count = insert_result.rows_affected() as usize;
-            if inserted_count < writes.len() {
-                // Some rows weren't inserted - could be duplicates or race condition.
-                // Re-run conflict check to detect any condition conflicts that occurred.
-                let post_conflict = sqlx::query(
+                // Check for condition conflicts with FOR UPDATE to prevent race conditions.
+                // OpenFGA returns 409 Conflict when writing a tuple that exists with a different
+                // condition. You must delete and re-create to change conditions.
+                //
+                // FOR UPDATE locks matching rows, preventing concurrent transactions from
+                // inserting conflicting tuples until this transaction completes.
+                //
+                // Performance impact:
+                // - Best case (no existing tuples): ~0.1-0.5ms overhead for the JOIN query
+                // - Typical case (few matches): ~0.5-2ms with row locking
+                // - Post-insert verification only runs when rows_affected < input count
+                // - The LIMIT 1 ensures we fail fast on first conflict
+                // Trade-off: Correctness over raw throughput (Invariant I1)
+                let conflict_check = sqlx::query(
                     r#"
                     SELECT
                         t.object_type, t.object_id, t.relation,
@@ -893,6 +795,7 @@ impl DataStore for PostgresDataStore {
                        AND COALESCE(t.user_relation, '') = COALESCE(new.user_relation, '')
                     WHERE (t.condition_name IS DISTINCT FROM new.condition_name)
                        OR (t.condition_context IS DISTINCT FROM new.condition_context)
+                    FOR UPDATE OF t
                     LIMIT 1
                     "#,
                 )
@@ -908,10 +811,10 @@ impl DataStore for PostgresDataStore {
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to verify condition conflicts: {e}"),
+                    message: format!("Failed to check for condition conflicts: {e}"),
                 })?;
 
-                if let Some(row) = post_conflict {
+                if let Some(row) = conflict_check {
                     let user = format!(
                         "{}:{}{}",
                         row.get::<String, _>("user_type"),
@@ -932,18 +835,124 @@ impl DataStore for PostgresDataStore {
                         },
                     )));
                 }
-                // If no conflicts found, the skipped rows were true duplicates (same condition).
+
+                // Insert with ON CONFLICT DO NOTHING for truly identical tuples (idempotent).
+                // We've already verified no condition conflicts exist above, and FOR UPDATE
+                // locks prevent concurrent inserts with different conditions.
+                let insert_result = sqlx::query(
+                    r#"
+                    INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
+                    SELECT $1, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context
+                    FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
+                    AS t(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
+                    ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, (COALESCE(user_relation, '')))
+                    DO NOTHING
+                    "#,
+                )
+                .bind(store_id)
+                .bind(&object_types)
+                .bind(&object_ids)
+                .bind(&relations)
+                .bind(&user_types)
+                .bind(&user_ids)
+                .bind(&user_relations)
+                .bind(&condition_names)
+                .bind(&condition_contexts)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to batch write tuples: {e}"),
+                })?;
+
+                // Post-insert verification: if fewer rows were inserted than expected,
+                // a concurrent transaction may have inserted conflicting tuples.
+                // Re-check for conflicts to ensure we didn't miss any due to race.
+                let inserted_count = insert_result.rows_affected() as usize;
+                if inserted_count < writes.len() {
+                    // Some rows weren't inserted - could be duplicates or race condition.
+                    // Re-run conflict check to detect any condition conflicts that occurred.
+                    let post_conflict = sqlx::query(
+                        r#"
+                        SELECT
+                            t.object_type, t.object_id, t.relation,
+                            t.user_type, t.user_id, t.user_relation,
+                            t.condition_name AS existing_condition,
+                            new.condition_name AS new_condition
+                        FROM tuples t
+                        INNER JOIN (
+                            SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
+                            AS x(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
+                        ) AS new
+                        ON t.store_id = $1
+                           AND t.object_type = new.object_type
+                           AND t.object_id = new.object_id
+                           AND t.relation = new.relation
+                           AND t.user_type = new.user_type
+                           AND t.user_id = new.user_id
+                           AND COALESCE(t.user_relation, '') = COALESCE(new.user_relation, '')
+                        WHERE (t.condition_name IS DISTINCT FROM new.condition_name)
+                           OR (t.condition_context IS DISTINCT FROM new.condition_context)
+                        LIMIT 1
+                        "#,
+                    )
+                    .bind(store_id)
+                    .bind(&object_types)
+                    .bind(&object_ids)
+                    .bind(&relations)
+                    .bind(&user_types)
+                    .bind(&user_ids)
+                    .bind(&user_relations)
+                    .bind(&condition_names)
+                    .bind(&condition_contexts)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to verify condition conflicts: {e}"),
+                    })?;
+
+                    if let Some(row) = post_conflict {
+                        let user = format!(
+                            "{}:{}{}",
+                            row.get::<String, _>("user_type"),
+                            row.get::<String, _>("user_id"),
+                            row.get::<Option<String>, _>("user_relation")
+                                .map(|r| format!("#{r}"))
+                                .unwrap_or_default()
+                        );
+                        return Err(StorageError::ConditionConflict(Box::new(
+                            crate::error::ConditionConflictError {
+                                store_id: store_id.to_string(),
+                                object_type: row.get("object_type"),
+                                object_id: row.get("object_id"),
+                                relation: row.get("relation"),
+                                user,
+                                existing_condition: row.get("existing_condition"),
+                                new_condition: row.get("new_condition"),
+                            },
+                        )));
+                    }
+                    // If no conflicts found, the skipped rows were true duplicates (same condition).
+                }
             }
+
+            // Commit the transaction
+            tx.commit()
+                .await
+                .map_err(|e| StorageError::TransactionError {
+                    message: format!("Failed to commit transaction: {e}"),
+                })?;
+
+            Ok(())
+        })
+        .await;
+
+        match tx_result {
+            Ok(result) => result,
+            Err(_elapsed) => Err(StorageError::QueryTimeout {
+                operation: "write_tuples_transaction".to_string(),
+                timeout: self.query_timeout,
+            }),
         }
-
-        // Commit the transaction
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::TransactionError {
-                message: format!("Failed to commit transaction: {e}"),
-            })?;
-
-        Ok(())
     }
 
     #[instrument(skip(self, filter))]

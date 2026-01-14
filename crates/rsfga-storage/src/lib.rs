@@ -36,12 +36,48 @@
 //! When a query exceeds the timeout, `StorageError::QueryTimeout` is returned
 //! with details about the operation and timeout duration.
 //!
-//! ## Transaction Behavior
+//! ## Transaction Timeout Protection
 //!
-//! For transactional operations like `write_tuples`, individual queries within
-//! the transaction rely on SQLx pool `acquire_timeout` and database statement
-//! timeouts. The pre-transaction store existence check is protected by the
-//! configured query timeout.
+//! Transactional operations (`write_tuples`, `update_store`) are wrapped with
+//! `tokio::time::timeout` for comprehensive DoS protection. On timeout:
+//! - The async block is cancelled
+//! - The transaction is automatically rolled back (SQLx drop behavior)
+//! - `StorageError::QueryTimeout` is returned
+//!
+//! ## Timeout Limitations
+//!
+//! - **Cancellation granularity**: Timeout cancels at await points, not mid-query.
+//!   A long-running SQL statement will complete before timeout takes effect.
+//! - **Database-level timeouts**: For additional protection, configure database
+//!   statement timeouts (see examples below).
+//! - **Test coverage**: Integration tests for timeout behavior require database
+//!   infrastructure with artificial delays. See issue #145 for tracking.
+//!
+//! ## Database Timeout Configuration Examples
+//!
+//! ### PostgreSQL
+//! ```sql
+//! -- Session level (per connection)
+//! SET statement_timeout = '30s';
+//!
+//! -- Database level (all connections)
+//! ALTER DATABASE mydb SET statement_timeout = '30s';
+//!
+//! -- Connection string parameter
+//! -- postgres://user:pass@host/db?options=-c%20statement_timeout%3D30s
+//! ```
+//!
+//! ### MySQL/MariaDB
+//! ```sql
+//! -- Session level (per connection)
+//! SET SESSION max_execution_time = 30000;  -- milliseconds
+//!
+//! -- Global level (all connections)
+//! SET GLOBAL max_execution_time = 30000;
+//!
+//! -- Per-query hint
+//! SELECT /*+ MAX_EXECUTION_TIME(30000) */ * FROM tuples;
+//! ```
 //!
 //! # Health Checks
 //!
