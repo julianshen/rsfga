@@ -379,10 +379,13 @@ async fn test_can_call_check_service_methods() -> Result<()> {
     // Assert: Should return allowed: false
     // Note: gRPC/protobuf omits fields with default values, so "allowed": false
     // may appear as missing (empty object) or as explicit false
-    let allowed = check_response2
-        .get("allowed")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false); // Default to false if field is missing
+    // However, if "allowed" is present, it MUST be a boolean
+    let allowed = match check_response2.get("allowed") {
+        Some(v) => v
+            .as_bool()
+            .expect("'allowed' field must be a boolean when present"),
+        None => false, // Protobuf default: missing field means false
+    };
 
     assert!(
         !allowed,

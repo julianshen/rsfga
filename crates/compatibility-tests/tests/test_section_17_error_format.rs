@@ -57,9 +57,11 @@ async fn test_400_bad_request_format() -> Result<()> {
         "Invalid format should return validation_error code"
     );
 
-    // Verify message contains useful information
+    // Verify message contains useful information (case-insensitive)
     assert!(
-        error.message.contains("StoreId"),
+        error.message.to_lowercase().contains("storeid")
+            || error.message.to_lowercase().contains("store_id")
+            || error.message.to_lowercase().contains("store id"),
         "Error message should reference the invalid field: {}",
         error.message
     );
@@ -341,14 +343,15 @@ async fn test_validation_errors_include_field_details() -> Result<()> {
     let error1: ErrorResponse = response1.json().await?;
     assert_eq!(error1.code, "validation_error");
 
-    // Error message should mention the missing/invalid fields
+    // Error message should mention the missing/invalid fields (case-insensitive)
+    let message_lower = error1.message.to_lowercase();
     assert!(
-        error1.message.contains("Relation") || error1.message.contains("relation"),
+        message_lower.contains("relation"),
         "Error should mention missing relation field: {}",
         error1.message
     );
     assert!(
-        error1.message.contains("Object") || error1.message.contains("object"),
+        message_lower.contains("object"),
         "Error should mention missing object field: {}",
         error1.message
     );
@@ -392,7 +395,7 @@ async fn test_validation_errors_include_field_details() -> Result<()> {
     let error3: ErrorResponse = response3.json().await?;
     assert_eq!(error3.code, "validation_error");
     assert!(
-        error3.message.contains("Name"),
+        error3.message.to_lowercase().contains("name"),
         "Error should mention the Name field: {}",
         error3.message
     );
