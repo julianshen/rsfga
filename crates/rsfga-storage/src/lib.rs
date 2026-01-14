@@ -18,6 +18,39 @@
 //! │  mysql.rs    - MySQL/MariaDB implementation │
 //! └─────────────────────────────────────────────┘
 //! ```
+//!
+//! # Query Timeout Protection
+//!
+//! Both PostgreSQL and MySQL implementations include query timeout protection
+//! to prevent slow queries from blocking the system (DoS protection). Configure
+//! the timeout via `query_timeout_secs` in the config structs:
+//!
+//! ```rust,ignore
+//! let config = PostgresConfig {
+//!     database_url: "postgres://localhost/rsfga".to_string(),
+//!     query_timeout_secs: 30,  // Default: 30 seconds
+//!     ..Default::default()
+//! };
+//! ```
+//!
+//! When a query exceeds the timeout, `StorageError::QueryTimeout` is returned
+//! with details about the operation and timeout duration.
+//!
+//! ## Transaction Behavior
+//!
+//! For transactional operations like `write_tuples`, individual queries within
+//! the transaction rely on SQLx pool `acquire_timeout` and database statement
+//! timeouts. The pre-transaction store existence check is protected by the
+//! configured query timeout.
+//!
+//! # Health Checks
+//!
+//! All storage backends implement `health_check()` for Kubernetes liveness and
+//! readiness probes. The method returns `HealthStatus` with:
+//! - `healthy`: Whether the backend is operational
+//! - `latency`: Time taken for the health ping
+//! - `pool_stats`: Connection pool statistics (for database backends)
+//! - `message`: Backend-specific message (e.g., "postgresql", "mysql")
 
 pub mod error;
 pub mod memory;
