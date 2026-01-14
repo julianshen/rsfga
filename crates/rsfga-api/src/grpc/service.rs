@@ -6,7 +6,7 @@ use tonic::{Request, Response, Status};
 
 use rsfga_domain::cache::{CheckCache, CheckCacheConfig};
 use rsfga_domain::cel::global_cache;
-use rsfga_domain::resolver::GraphResolver;
+use rsfga_domain::resolver::{GraphResolver, ResolverConfig};
 use rsfga_server::handlers::batch::BatchCheckHandler;
 use rsfga_storage::{DataStore, DateTime, StorageError, StoredTuple, TupleFilter, Utc};
 
@@ -39,6 +39,8 @@ pub struct OpenFgaGrpcService<S: DataStore> {
     storage: Arc<S>,
     /// The batch check handler with parallel execution and deduplication.
     batch_handler: Arc<BatchCheckHandler<DataStoreTupleReader<S>, DataStoreModelReader<S>>>,
+    /// The check result cache, stored for future invalidation in write handlers.
+    cache: Arc<CheckCache>,
 }
 
 impl<S: DataStore> OpenFgaGrpcService<S> {
@@ -53,14 +55,16 @@ impl<S: DataStore> OpenFgaGrpcService<S> {
         let tuple_reader = Arc::new(DataStoreTupleReader::new(Arc::clone(&storage)));
         let model_reader = Arc::new(DataStoreModelReader::new(Arc::clone(&storage)));
 
-        // Create the graph resolver
-        let resolver = Arc::new(GraphResolver::new(
-            Arc::clone(&tuple_reader),
-            Arc::clone(&model_reader),
-        ));
-
         // Create the check cache
         let cache = Arc::new(CheckCache::new(cache_config));
+
+        // Create the graph resolver with cache integration
+        let resolver_config = ResolverConfig::default().with_cache(Arc::clone(&cache));
+        let resolver = Arc::new(GraphResolver::with_config(
+            Arc::clone(&tuple_reader),
+            Arc::clone(&model_reader),
+            resolver_config,
+        ));
 
         // Create the batch handler
         let batch_handler = Arc::new(BatchCheckHandler::new(
@@ -71,7 +75,13 @@ impl<S: DataStore> OpenFgaGrpcService<S> {
         Self {
             storage,
             batch_handler,
+            cache,
         }
+    }
+
+    /// Returns a reference to the check cache for invalidation.
+    pub fn cache(&self) -> &Arc<CheckCache> {
+        &self.cache
     }
 }
 
@@ -550,6 +560,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .write_tuples(&req.store_id, writes, deletes)
             .await
             .map_err(storage_error_to_status)?;
+
+        // Invalidate cache for this store to prevent stale auth decisions.
+        // This is a coarse-grained stopgap until fine-grained invalidation is wired.
+        self.cache.invalidate_store(&req.store_id).await;
 
         Ok(Response::new(WriteResponse {}))
     }

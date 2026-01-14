@@ -109,6 +109,15 @@ pub struct CheckCache {
     config: CheckCacheConfig,
 }
 
+impl std::fmt::Debug for CheckCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CheckCache")
+            .field("config", &self.config)
+            .field("entry_count", &self.cache.entry_count())
+            .finish()
+    }
+}
+
 impl CheckCache {
     /// Creates a new check cache with the given configuration.
     pub fn new(config: CheckCacheConfig) -> Self {

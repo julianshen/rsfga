@@ -1000,6 +1000,7 @@ async fn test_union_returns_false_when_one_branch_false_and_other_depth_limit() 
     let config = ResolverConfig {
         max_depth: 3,
         timeout: Duration::from_secs(30),
+        cache: None,
     };
     let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
 
@@ -1075,6 +1076,7 @@ async fn test_union_returns_depth_limit_error_when_all_branches_hit_depth_limit(
     let config = ResolverConfig {
         max_depth: 3,
         timeout: Duration::from_secs(30),
+        cache: None,
     };
     let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
 
@@ -2336,6 +2338,7 @@ async fn test_timeout_is_configurable() {
     let config = ResolverConfig {
         max_depth: 25,
         timeout: Duration::from_millis(100),
+        cache: None,
     };
 
     assert_eq!(config.timeout, Duration::from_millis(100));
@@ -2408,6 +2411,7 @@ async fn test_returns_timeout_error_with_context() {
     let config = ResolverConfig {
         max_depth: 25,
         timeout: Duration::from_millis(50),
+        cache: None,
     };
 
     let resolver = GraphResolver::with_config(tuple_reader.clone(), model_reader, config);
@@ -3101,6 +3105,7 @@ proptest! {
             let config = ResolverConfig {
                 max_depth: 25,
                 timeout: Duration::from_secs(1), // Short timeout
+                cache: None,
             };
 
             let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
@@ -4166,4 +4171,528 @@ async fn test_check_returns_error_for_invalid_cel_expression() {
             err
         );
     }
+}
+
+// ========== Section: Cache Integration Tests ==========
+// Issue #72: Integrate check result caching in GraphResolver
+
+use crate::cache::{CheckCache, CheckCacheConfig};
+
+#[tokio::test]
+async fn test_cache_hit_returns_cached_result() {
+    // Arrange: Create a resolver with caching enabled
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+    let config = ResolverConfig::default().with_cache(cache);
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    let request = CheckRequest::new(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+    );
+
+    // Act: First check (cache miss)
+    let result1 = resolver.check(&request).await.unwrap();
+    assert!(result1.allowed);
+
+    // Verify metrics: 1 miss
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.misses, 1);
+    assert_eq!(metrics.hits, 0);
+
+    // Act: Second check (cache hit)
+    let result2 = resolver.check(&request).await.unwrap();
+    assert!(result2.allowed);
+
+    // Verify metrics: 1 miss, 1 hit
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.misses, 1);
+    assert_eq!(metrics.hits, 1);
+}
+
+#[tokio::test]
+async fn test_cache_skipped_for_contextual_tuples() {
+    // Arrange: Create a resolver with caching enabled
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+    let config = ResolverConfig::default().with_cache(cache);
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    // Request with contextual tuples - should skip caching
+    let request = CheckRequest::new(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![ContextualTuple {
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            condition_name: None,
+            condition_context: None,
+        }],
+    );
+
+    // Act: First check (cache skipped)
+    let result1 = resolver.check(&request).await.unwrap();
+    assert!(result1.allowed);
+
+    // Verify metrics: 1 skip, 0 hits, 0 misses
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.skips, 1);
+    assert_eq!(metrics.hits, 0);
+    assert_eq!(metrics.misses, 0);
+
+    // Act: Second check (still skipped)
+    let result2 = resolver.check(&request).await.unwrap();
+    assert!(result2.allowed);
+
+    // Verify metrics: 2 skips
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.skips, 2);
+    assert_eq!(metrics.hits, 0);
+    assert_eq!(metrics.misses, 0);
+}
+
+#[tokio::test]
+async fn test_cache_stores_allowed_false_results() {
+    // Arrange: Create a resolver with caching enabled
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+    // Note: No tuple for alice - she should be denied
+
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+    let config = ResolverConfig::default().with_cache(cache);
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    let request = CheckRequest::new(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+    );
+
+    // Act: First check (cache miss, result: false)
+    let result1 = resolver.check(&request).await.unwrap();
+    assert!(!result1.allowed);
+
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.misses, 1);
+    assert_eq!(metrics.hits, 0);
+
+    // Act: Second check (cache hit, result: false)
+    let result2 = resolver.check(&request).await.unwrap();
+    assert!(!result2.allowed);
+
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.misses, 1);
+    assert_eq!(metrics.hits, 1);
+}
+
+#[tokio::test]
+async fn test_cache_isolates_different_requests() {
+    // Arrange: Create a resolver with caching enabled
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Alice can view doc1, Bob cannot
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+    let config = ResolverConfig::default().with_cache(cache);
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    // Check alice (should be allowed)
+    let request_alice = CheckRequest::new(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+    );
+    let result_alice = resolver.check(&request_alice).await.unwrap();
+    assert!(result_alice.allowed);
+
+    // Check bob (should be denied)
+    let request_bob = CheckRequest::new(
+        "store1".to_string(),
+        "user:bob".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+    );
+    let result_bob = resolver.check(&request_bob).await.unwrap();
+    assert!(!result_bob.allowed);
+
+    // Verify metrics: 2 misses (different requests)
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.misses, 2);
+    assert_eq!(metrics.hits, 0);
+
+    // Check alice again (should hit cache)
+    let result_alice2 = resolver.check(&request_alice).await.unwrap();
+    assert!(result_alice2.allowed);
+
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.misses, 2);
+    assert_eq!(metrics.hits, 1);
+}
+
+#[tokio::test]
+async fn test_cache_hit_ratio_calculation() {
+    // Arrange: Create a resolver with caching enabled
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+    let config = ResolverConfig::default().with_cache(cache);
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    let request = CheckRequest::new(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+    );
+
+    // Initial hit ratio should be 0.0
+    assert_eq!(resolver.cache_metrics().hit_ratio(), 0.0);
+
+    // First check (miss)
+    resolver.check(&request).await.unwrap();
+    assert_eq!(resolver.cache_metrics().hit_ratio(), 0.0); // 0 hits / 1 total
+
+    // Second check (hit)
+    resolver.check(&request).await.unwrap();
+    assert_eq!(resolver.cache_metrics().hit_ratio(), 0.5); // 1 hit / 2 total
+
+    // Third check (hit)
+    resolver.check(&request).await.unwrap();
+    assert!((resolver.cache_metrics().hit_ratio() - 0.666).abs() < 0.01); // ~2/3
+}
+
+#[tokio::test]
+async fn test_resolver_without_cache_has_no_metrics() {
+    // Arrange: Create a resolver without cache
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    // No cache configured
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = CheckRequest::new(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+    );
+
+    // Multiple checks should not affect metrics (no cache)
+    resolver.check(&request).await.unwrap();
+    resolver.check(&request).await.unwrap();
+
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.hits, 0);
+    assert_eq!(metrics.misses, 0);
+    assert_eq!(metrics.skips, 0);
+}
+
+#[tokio::test]
+async fn test_cache_skipped_for_request_context() {
+    // This test verifies the CRITICAL security fix:
+    // Cache must be bypassed when request.context is non-empty because
+    // CEL conditions depend on context values. Without this, a cached
+    // decision for context.enabled=true could be incorrectly returned
+    // for a request with context.enabled=false.
+    //
+    // This is a MECHANISM test: it proves the cache skip logic works.
+    // The tuple here has no condition, so context doesn't affect the outcome.
+    //
+    // A full INVARIANT test would require:
+    // 1. A tuple with a condition that evaluates based on context
+    // 2. Two checks with different context values yielding different results
+    // 3. Assert neither result came from cache
+    // TODO: Add integration test with full CEL condition evaluation
+
+    use std::collections::HashMap;
+
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+    let config = ResolverConfig::default().with_cache(cache);
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    // First request WITHOUT context - should be cached
+    let request_no_context = CheckRequest::new(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+    );
+
+    let result1 = resolver.check(&request_no_context).await.unwrap();
+    assert!(result1.allowed);
+
+    // Verify: 1 miss (cache was consulted)
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.misses, 1);
+    assert_eq!(metrics.skips, 0);
+
+    // Second request WITHOUT context - should hit cache
+    let result2 = resolver.check(&request_no_context).await.unwrap();
+    assert!(result2.allowed);
+
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.hits, 1);
+    assert_eq!(metrics.misses, 1);
+    assert_eq!(metrics.skips, 0);
+
+    // Third request WITH context - should SKIP cache (not hit, not miss)
+    let mut context = HashMap::new();
+    context.insert("enabled".to_string(), serde_json::json!(true));
+
+    let request_with_context = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+        context.clone(),
+    );
+
+    let result3 = resolver.check(&request_with_context).await.unwrap();
+    assert!(result3.allowed);
+
+    // Verify: Cache was SKIPPED (not hit, not miss, but skip)
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.hits, 1); // Unchanged
+    assert_eq!(metrics.misses, 1); // Unchanged
+    assert_eq!(metrics.skips, 1); // Incremented!
+
+    // Fourth request with DIFFERENT context - also skipped
+    let mut different_context = HashMap::new();
+    different_context.insert("enabled".to_string(), serde_json::json!(false));
+
+    let request_diff_context = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+        different_context,
+    );
+
+    let result4 = resolver.check(&request_diff_context).await.unwrap();
+    assert!(result4.allowed);
+
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.hits, 1); // Unchanged
+    assert_eq!(metrics.misses, 1); // Unchanged
+    assert_eq!(metrics.skips, 2); // Incremented again!
+}
+
+#[tokio::test]
+async fn test_cache_timeout_wrapper_does_not_break_normal_operation() {
+    // This test verifies that the 10ms timeout wrapper around cache operations
+    // does not interfere with normal cache behavior. The in-memory Moka cache
+    // is too fast to actually timeout, so we verify that:
+    // 1. Cache hits still work (get succeeds within timeout)
+    // 2. Cache inserts still work (insert succeeds within timeout)
+    // 3. Metrics are correctly tracked
+    //
+    // The timeout behavior for slow caches would increment 'skips' instead of
+    // 'hits' or 'misses', treating the cache as unavailable.
+
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+    let config = ResolverConfig::default().with_cache(cache);
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    let request = CheckRequest::new(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+    );
+
+    // Perform 100 checks to stress test the timeout wrapper
+    for i in 0..100 {
+        let result = resolver.check(&request).await.unwrap();
+        assert!(result.allowed, "Check {} should be allowed", i);
+    }
+
+    // Verify metrics: 1 miss + 99 hits, 0 skips (no timeouts occurred)
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.misses, 1, "Should have exactly 1 miss");
+    assert_eq!(metrics.hits, 99, "Should have exactly 99 hits");
+    assert_eq!(metrics.skips, 0, "Should have 0 skips (no timeouts)");
 }
