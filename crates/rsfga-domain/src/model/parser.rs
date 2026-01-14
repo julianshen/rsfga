@@ -25,8 +25,8 @@ use nom::{
 };
 
 use super::{
-    AuthorizationModel, Condition, ConditionParameter, RelationDefinition, TypeConstraint,
-    TypeDefinition, Userset,
+    AuthorizationModel, Condition, ConditionError, ConditionParameter, RelationDefinition,
+    TypeConstraint, TypeDefinition, Userset,
 };
 
 /// Parser error type with context for better error messages.
@@ -496,7 +496,7 @@ fn parse_brace_balanced_expression<'a, E: ParseError<&'a str>>(
 /// Parse condition definition: condition name(params) { expression }
 fn parse_condition_definition<
     'a,
-    E: ParseError<&'a str> + ContextError<&'a str> + FromExternalError<&'a str, &'static str>,
+    E: ParseError<&'a str> + ContextError<&'a str> + FromExternalError<&'a str, ConditionError>,
 >(
     input: &'a str,
 ) -> IResult<&'a str, Condition, E> {
@@ -548,7 +548,7 @@ fn parse_condition_definition<
 /// Parse a model element (either a condition or a type definition)
 fn parse_model_element<
     'a,
-    E: ParseError<&'a str> + ContextError<&'a str> + FromExternalError<&'a str, &'static str>,
+    E: ParseError<&'a str> + ContextError<&'a str> + FromExternalError<&'a str, ConditionError>,
 >(
     input: &'a str,
 ) -> IResult<&'a str, ModelElement, E> {
@@ -567,7 +567,7 @@ enum ModelElement {
 /// Parse a complete authorization model
 fn parse_model<
     'a,
-    E: ParseError<&'a str> + ContextError<&'a str> + FromExternalError<&'a str, &'static str>,
+    E: ParseError<&'a str> + ContextError<&'a str> + FromExternalError<&'a str, ConditionError>,
 >(
     input: &'a str,
 ) -> IResult<&'a str, AuthorizationModel, E> {

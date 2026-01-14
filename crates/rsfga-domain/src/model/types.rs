@@ -4,6 +4,7 @@ use std::fmt;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// A user identifier (e.g., "user:alice" or "group:eng#member").
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -381,6 +382,25 @@ impl From<String> for TypeConstraint {
     }
 }
 
+/// Errors that can occur when creating or validating a condition.
+///
+/// This enum provides structured, type-safe errors for condition validation,
+/// enabling programmatic error handling by callers.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ConditionError {
+    /// The condition name was empty.
+    #[error("condition name cannot be empty")]
+    EmptyName,
+
+    /// The condition expression was empty.
+    #[error("condition expression cannot be empty")]
+    EmptyExpression,
+
+    /// A condition parameter was invalid.
+    #[error("invalid parameter: {0}")]
+    InvalidParameter(String),
+}
+
 /// A condition definition that can be referenced by relation type constraints.
 ///
 /// Conditions enable ABAC (Attribute-Based Access Control) by allowing
@@ -408,15 +428,15 @@ impl Condition {
     pub fn new(
         name: impl Into<String>,
         expression: impl Into<String>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, ConditionError> {
         let name = name.into();
         let expression = expression.into();
 
         if name.is_empty() {
-            return Err("condition name cannot be empty");
+            return Err(ConditionError::EmptyName);
         }
         if expression.is_empty() {
-            return Err("condition expression cannot be empty");
+            return Err(ConditionError::EmptyExpression);
         }
 
         Ok(Self {
@@ -431,15 +451,15 @@ impl Condition {
         name: impl Into<String>,
         parameters: Vec<ConditionParameter>,
         expression: impl Into<String>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, ConditionError> {
         let name = name.into();
         let expression = expression.into();
 
         if name.is_empty() {
-            return Err("condition name cannot be empty");
+            return Err(ConditionError::EmptyName);
         }
         if expression.is_empty() {
-            return Err("condition expression cannot be empty");
+            return Err(ConditionError::EmptyExpression);
         }
 
         Ok(Self {
@@ -787,14 +807,14 @@ mod tests {
     fn test_condition_rejects_empty_name() {
         let result = Condition::new("", "expression");
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "condition name cannot be empty");
+        assert_eq!(result.unwrap_err(), ConditionError::EmptyName);
     }
 
     #[test]
     fn test_condition_rejects_empty_expression() {
         let result = Condition::new("condition_name", "");
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "condition expression cannot be empty");
+        assert_eq!(result.unwrap_err(), ConditionError::EmptyExpression);
     }
 
     #[test]
@@ -896,5 +916,29 @@ mod tests {
 
         // The "conditions" field should not appear when empty
         assert!(!json.contains("conditions"));
+    }
+
+    #[test]
+    fn test_condition_error_display() {
+        // Test that ConditionError Display works correctly
+        assert_eq!(
+            ConditionError::EmptyName.to_string(),
+            "condition name cannot be empty"
+        );
+        assert_eq!(
+            ConditionError::EmptyExpression.to_string(),
+            "condition expression cannot be empty"
+        );
+        assert_eq!(
+            ConditionError::InvalidParameter("foo".to_string()).to_string(),
+            "invalid parameter: foo"
+        );
+    }
+
+    #[test]
+    fn test_condition_error_is_eq() {
+        // Test that ConditionError implements PartialEq correctly
+        assert_eq!(ConditionError::EmptyName, ConditionError::EmptyName);
+        assert_ne!(ConditionError::EmptyName, ConditionError::EmptyExpression);
     }
 }

@@ -43,4 +43,13 @@ pub enum CelError {
         /// Duration in milliseconds before timeout
         duration_ms: u64,
     },
+
+    /// Failed to build CEL context
+    #[error("Failed to add variable '{name}' to CEL context: {message}")]
+    ContextError {
+        /// The variable name that failed to be added
+        name: String,
+        /// Description of the error
+        message: String,
+    },
 }
