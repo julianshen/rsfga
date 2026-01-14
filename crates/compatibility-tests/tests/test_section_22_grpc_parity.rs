@@ -443,16 +443,21 @@ async fn test_grpc_batch_check_matches_rest() -> Result<()> {
     );
 
     // check-2 should be denied (allowed: false or field omitted due to protobuf default)
-    let grpc_allowed2 = grpc_result["check-2"]
-        .get("allowed")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    // If "allowed" is present, it MUST be a boolean; if missing, it means false (protobuf default)
+    let grpc_allowed2 = match grpc_result["check-2"].get("allowed") {
+        Some(v) => v
+            .as_bool()
+            .expect("gRPC 'allowed' field must be a boolean when present"),
+        None => false,
+    };
     assert!(!grpc_allowed2, "gRPC check-2 should be denied");
 
-    let rest_allowed2 = rest_result["check-2"]
-        .get("allowed")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let rest_allowed2 = match rest_result["check-2"].get("allowed") {
+        Some(v) => v
+            .as_bool()
+            .expect("REST 'allowed' field must be a boolean when present"),
+        None => false,
+    };
     assert!(!rest_allowed2, "REST check-2 should be denied");
 
     // Assert parity: gRPC and REST should return the same denied result

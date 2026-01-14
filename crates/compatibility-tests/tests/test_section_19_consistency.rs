@@ -111,10 +111,31 @@ async fn test_concurrent_writes_to_same_tuple() -> Result<()> {
                             eprintln!("Request {} returned 409 Conflict: {}", i, body);
                         }
                         400 => {
-                            // Expected: tuple already exists
-                            duplicate_count += 1;
+                            // Expected: tuple already exists - verify error code
                             let body = resp.text().await.unwrap_or_default();
-                            eprintln!("Request {} returned 400 (duplicate): {}", i, body);
+                            // Parse the error response to verify it's actually a duplicate tuple error
+                            if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&body)
+                            {
+                                let error_code = error_json.get("code").and_then(|c| c.as_str());
+                                if error_code == Some("write_failed_due_to_invalid_input")
+                                    || error_code
+                                        == Some("cannot_allow_duplicate_tuples_in_one_request")
+                                {
+                                    duplicate_count += 1;
+                                    eprintln!("Request {} returned 400 (duplicate): {}", i, body);
+                                } else {
+                                    // 400 for unexpected reason - count as other error
+                                    other_error_count += 1;
+                                    eprintln!(
+                                        "Request {} returned 400 with unexpected code {:?}: {}",
+                                        i, error_code, body
+                                    );
+                                }
+                            } else {
+                                // Couldn't parse error body - count as other error
+                                other_error_count += 1;
+                                eprintln!("Request {} returned 400 (unparseable): {}", i, body);
+                            }
                         }
                         _ => {
                             other_error_count += 1;
