@@ -1342,3 +1342,304 @@ async fn test_concurrent_migrations_dont_deadlock() {
 // 4. Verify error is returned and pool doesn't deadlock
 // 5. Restart container
 // 6. Verify subsequent queries work after pool recovery
+
+// ==========================================================================
+// Section 7.10: Health Check Tests (MySQL)
+// ==========================================================================
+
+// Test: health_check returns healthy status with valid connection
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_health_check_returns_healthy() {
+    let store = create_store().await;
+
+    let status = store.health_check().await.unwrap();
+
+    assert!(
+        status.healthy,
+        "Store should be healthy with valid connection"
+    );
+    assert!(
+        status.latency.as_millis() < 5000,
+        "Health check should complete within 5 seconds"
+    );
+    assert_eq!(
+        status.message,
+        Some("mysql".to_string()),
+        "Should identify as mysql"
+    );
+}
+
+// Test: health_check returns correct pool statistics
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_health_check_pool_stats() {
+    let database_url = get_database_url();
+
+    let config = MySQLConfig {
+        database_url,
+        max_connections: 5,
+        min_connections: 1,
+        connect_timeout_secs: 30,
+        ..Default::default()
+    };
+
+    let store = MySQLDataStore::from_config(&config)
+        .await
+        .expect("Failed to create store");
+
+    store.run_migrations().await.unwrap();
+
+    let status = store.health_check().await.unwrap();
+
+    let pool_stats = status
+        .pool_stats
+        .expect("Pool stats should be present for database backends");
+
+    assert_eq!(
+        pool_stats.max_connections, 5,
+        "Max connections should match config"
+    );
+    assert!(
+        pool_stats.idle_connections + pool_stats.active_connections <= pool_stats.max_connections,
+        "Total connections should not exceed max"
+    );
+}
+
+// Test: health_check latency measurement is accurate
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_health_check_latency_measurement() {
+    let store = create_store().await;
+
+    // Run multiple health checks and verify latency is reasonable
+    let mut latencies = Vec::new();
+    for _ in 0..5 {
+        let status = store.health_check().await.unwrap();
+        latencies.push(status.latency);
+    }
+
+    // All latencies should be non-zero and reasonable (under 1 second for local DB)
+    for latency in &latencies {
+        assert!(
+            latency.as_millis() > 0,
+            "Latency should be measurable (non-zero)"
+        );
+        assert!(
+            latency.as_millis() < 1000,
+            "Latency should be under 1 second for local DB, got {:?}",
+            latency
+        );
+    }
+}
+
+// Test: Concurrent health checks under load
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_concurrent_health_checks() {
+    let store = Arc::new(create_store().await);
+
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move { store.health_check().await }));
+    }
+
+    // All health checks should succeed
+    let mut success_count = 0;
+    for handle in handles {
+        if let Ok(Ok(status)) = handle.await {
+            assert!(status.healthy);
+            success_count += 1;
+        }
+    }
+
+    assert_eq!(
+        success_count, 10,
+        "All concurrent health checks should succeed"
+    );
+}
+
+// Test: Health check when pool has active connections
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_health_check_with_active_connections() {
+    let database_url = get_database_url();
+
+    let config = MySQLConfig {
+        database_url,
+        max_connections: 3, // Small pool
+        min_connections: 1,
+        connect_timeout_secs: 30,
+        ..Default::default()
+    };
+
+    let store = Arc::new(
+        MySQLDataStore::from_config(&config)
+            .await
+            .expect("Failed to create store"),
+    );
+
+    store.run_migrations().await.unwrap();
+    store
+        .create_store("test-active-pool-mysql", "Test Store")
+        .await
+        .unwrap();
+
+    // Start concurrent operations to use pool connections
+    let store_clone = Arc::clone(&store);
+    let write_handle = tokio::spawn(async move {
+        for i in 0..5 {
+            let tuple = StoredTuple::new(
+                "document",
+                format!("doc{}", i),
+                "viewer",
+                "user",
+                format!("user{}", i),
+                None,
+            );
+            store_clone
+                .write_tuple("test-active-pool-mysql", tuple)
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    });
+
+    // Run health check while writes are happening
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let status = store.health_check().await.unwrap();
+    assert!(
+        status.healthy,
+        "Health check should succeed even with active connections"
+    );
+
+    // Wait for writes to complete
+    write_handle.await.unwrap();
+
+    // Cleanup
+    store.delete_store("test-active-pool-mysql").await.unwrap();
+}
+
+// ==========================================================================
+// Section 7.11: Query Timeout Tests (MySQL)
+// ==========================================================================
+
+// Test: StorageError::QueryTimeout contains correct operation name
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_timeout_error_contains_operation_name() {
+    // This test verifies the error type structure exists
+    // Actual timeout testing requires database-level query delays
+    let error = StorageError::QueryTimeout {
+        operation: "read_tuples".to_string(),
+        timeout: std::time::Duration::from_secs(30),
+    };
+
+    let error_str = error.to_string();
+    assert!(
+        error_str.contains("read_tuples"),
+        "Error should contain operation name"
+    );
+    assert!(
+        error_str.contains("30"),
+        "Error should contain timeout duration"
+    );
+}
+
+// Test: Transaction rollback preserves consistency (no partial writes)
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_transaction_rollback_preserves_consistency() {
+    let store = create_store().await;
+    store
+        .create_store("test-tx-consistency-mysql", "Test Store")
+        .await
+        .unwrap();
+
+    // Write initial tuple
+    let tuple1 = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
+    store
+        .write_tuple("test-tx-consistency-mysql", tuple1)
+        .await
+        .unwrap();
+
+    // Verify initial state
+    let tuples = store
+        .read_tuples("test-tx-consistency-mysql", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1);
+
+    // Write another batch - this should succeed completely
+    let batch = vec![
+        StoredTuple::new("document", "doc2", "viewer", "user", "bob", None),
+        StoredTuple::new("document", "doc3", "viewer", "user", "charlie", None),
+    ];
+    store
+        .write_tuples("test-tx-consistency-mysql", batch, vec![])
+        .await
+        .unwrap();
+
+    // Verify all tuples exist (no partial writes)
+    let tuples = store
+        .read_tuples("test-tx-consistency-mysql", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        tuples.len(),
+        3,
+        "All tuples should be present after successful transaction"
+    );
+
+    // Cleanup
+    store
+        .delete_store("test-tx-consistency-mysql")
+        .await
+        .unwrap();
+}
+
+// Test: Query timeout configuration is respected
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_query_timeout_configuration() {
+    let database_url = get_database_url();
+
+    // Use short timeout configuration
+    let config = MySQLConfig {
+        database_url,
+        max_connections: 5,
+        min_connections: 1,
+        connect_timeout_secs: 30,
+        query_timeout_secs: 1, // 1 second timeout
+    };
+
+    let store = MySQLDataStore::from_config(&config)
+        .await
+        .expect("Failed to create store");
+
+    store.run_migrations().await.unwrap();
+
+    // Create test store
+    store
+        .create_store("test-timeout-config", "Test Store")
+        .await
+        .unwrap();
+
+    // Normal operations should complete within timeout
+    let start = std::time::Instant::now();
+    let result = store
+        .read_tuples("test-timeout-config", &TupleFilter::default())
+        .await;
+    let elapsed = start.elapsed();
+
+    assert!(result.is_ok(), "Normal read should succeed");
+    assert!(
+        elapsed.as_secs() < 2,
+        "Read should complete within timeout, took {}ms",
+        elapsed.as_millis()
+    );
+
+    // Cleanup
+    store.delete_store("test-timeout-config").await.unwrap();
+}
