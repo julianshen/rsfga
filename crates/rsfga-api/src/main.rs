@@ -106,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
                 max_connections: config.storage.pool_size,
                 min_connections: 1,
                 connect_timeout_secs: config.storage.connection_timeout_secs,
+                ..Default::default()
             };
 
             let storage = PostgresDataStore::from_config(&pg_config).await?;
@@ -136,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
                 max_connections: config.storage.pool_size,
                 min_connections: 1,
                 connect_timeout_secs: config.storage.connection_timeout_secs,
+                ..Default::default()
             };
 
             let storage = MySQLDataStore::from_config(&mysql_config).await?;

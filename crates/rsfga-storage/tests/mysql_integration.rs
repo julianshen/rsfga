@@ -41,6 +41,7 @@ async fn create_store() -> MySQLDataStore {
         max_connections: 5,
         min_connections: 1,
         connect_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = MySQLDataStore::from_config(&config)
@@ -306,6 +307,7 @@ async fn test_connection_pool_limits() {
         max_connections: 2, // Small pool
         min_connections: 1,
         connect_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = MySQLDataStore::from_config(&config)
@@ -1079,6 +1081,7 @@ async fn test_pool_exhaustion_returns_timeout_error() {
         max_connections: 2,
         min_connections: 1,
         connect_timeout_secs: 1, // Very short timeout to trigger exhaustion quickly
+        ..Default::default()
     };
 
     let store = MySQLDataStore::from_config(&config)
@@ -1165,6 +1168,7 @@ async fn test_pool_recovers_after_queries_complete() {
         max_connections: 2,
         min_connections: 1,
         connect_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = MySQLDataStore::from_config(&config)
@@ -1253,6 +1257,7 @@ async fn test_concurrent_migrations_dont_deadlock() {
                 max_connections: 2,
                 min_connections: 1,
                 connect_timeout_secs: 30,
+                ..Default::default()
             };
 
             let store = MySQLDataStore::from_config(&config).await?;
@@ -1303,6 +1308,7 @@ async fn test_concurrent_migrations_dont_deadlock() {
         max_connections: 5,
         min_connections: 1,
         connect_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = MySQLDataStore::from_config(&config).await.unwrap();

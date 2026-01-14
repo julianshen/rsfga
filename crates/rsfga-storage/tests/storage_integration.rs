@@ -42,6 +42,7 @@ async fn create_postgres_store() -> PostgresDataStore {
         max_connections: 5,
         min_connections: 1,
         connect_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = PostgresDataStore::from_config(&config)
@@ -74,6 +75,7 @@ async fn create_mysql_store() -> MySQLDataStore {
         max_connections: 5,
         min_connections: 1,
         connect_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = MySQLDataStore::from_config(&config)

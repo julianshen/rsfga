@@ -38,6 +38,7 @@ async fn create_store() -> PostgresDataStore {
         max_connections: 5,
         min_connections: 1,
         connect_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = PostgresDataStore::from_config(&config)
@@ -811,6 +812,7 @@ async fn test_pool_exhaustion_on_cockroachdb() {
         max_connections: 2,
         min_connections: 1,
         connect_timeout_secs: 1, // Very short timeout to trigger exhaustion quickly
+        ..Default::default()
     };
 
     let store = PostgresDataStore::from_config(&config)
@@ -897,6 +899,7 @@ async fn test_pool_recovery_on_cockroachdb() {
         max_connections: 2,
         min_connections: 1,
         connect_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = PostgresDataStore::from_config(&config)
@@ -986,6 +989,7 @@ async fn test_concurrent_migrations_on_cockroachdb() {
                 max_connections: 2,
                 min_connections: 1,
                 connect_timeout_secs: 30,
+                ..Default::default()
             };
 
             let store = PostgresDataStore::from_config(&config).await?;
@@ -1036,6 +1040,7 @@ async fn test_concurrent_migrations_on_cockroachdb() {
         max_connections: 5,
         min_connections: 1,
         connect_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = PostgresDataStore::from_config(&config).await.unwrap();

@@ -6,7 +6,7 @@ use sqlx::Row;
 use std::collections::HashMap;
 use tracing::{debug, instrument};
 
-use crate::error::{StorageError, StorageResult};
+use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_user_filter, validate_store_id, validate_store_name,
     validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel,
@@ -17,6 +17,10 @@ use crate::traits::{
 /// OpenFGA has a 512 KB overall request limit but no specific context limit.
 /// We use 64 KB as a reasonable per-tuple limit for condition context.
 const MAX_CONDITION_CONTEXT_SIZE: usize = 64 * 1024;
+
+/// Health check timeout in seconds.
+/// Uses a shorter timeout than regular queries since health checks should be fast.
+const HEALTH_CHECK_TIMEOUT_SECS: u64 = 5;
 
 /// Validate condition_context size to prevent DoS via large JSON payloads.
 fn validate_condition_context_size(tuple: &StoredTuple) -> StorageResult<()> {
@@ -121,6 +125,12 @@ pub struct PostgresConfig {
     pub min_connections: u32,
     /// Connection timeout in seconds.
     pub connect_timeout_secs: u64,
+    /// Query timeout in seconds.
+    ///
+    /// Maximum time to wait for a query to complete. If a query exceeds this
+    /// duration, it will be cancelled and return `StorageError::QueryTimeout`.
+    /// Default: 30 seconds.
+    pub query_timeout_secs: u64,
 }
 
 // Custom Debug implementation to hide credentials in database_url
@@ -131,6 +141,7 @@ impl std::fmt::Debug for PostgresConfig {
             .field("max_connections", &self.max_connections)
             .field("min_connections", &self.min_connections)
             .field("connect_timeout_secs", &self.connect_timeout_secs)
+            .field("query_timeout_secs", &self.query_timeout_secs)
             .finish()
     }
 }
@@ -142,6 +153,7 @@ impl Default for PostgresConfig {
             max_connections: 10,
             min_connections: 1,
             connect_timeout_secs: 30,
+            query_timeout_secs: 30,
         }
     }
 }
@@ -149,12 +161,27 @@ impl Default for PostgresConfig {
 /// PostgreSQL implementation of DataStore.
 pub struct PostgresDataStore {
     pool: PgPool,
+    /// Query timeout duration.
+    query_timeout: std::time::Duration,
 }
 
 impl PostgresDataStore {
     /// Creates a new PostgreSQL data store from a connection pool.
+    ///
+    /// Uses default query timeout of 30 seconds.
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            query_timeout: std::time::Duration::from_secs(30),
+        }
+    }
+
+    /// Creates a new PostgreSQL data store from a connection pool with custom timeout.
+    pub fn with_timeout(pool: PgPool, query_timeout: std::time::Duration) -> Self {
+        Self {
+            pool,
+            query_timeout,
+        }
     }
 
     /// Creates a new PostgreSQL data store with the given configuration.
@@ -170,7 +197,10 @@ impl PostgresDataStore {
                 message: e.to_string(),
             })?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            query_timeout: std::time::Duration::from_secs(config.query_timeout_secs),
+        })
     }
 
     /// Creates a new PostgreSQL data store from a database URL.
@@ -180,6 +210,27 @@ impl PostgresDataStore {
             ..Default::default()
         };
         Self::from_config(&config).await
+    }
+
+    /// Wraps an async operation with a timeout.
+    ///
+    /// If the operation exceeds the configured query timeout, returns
+    /// `StorageError::QueryTimeout` with details about the operation.
+    ///
+    /// # Arguments
+    /// * `operation` - Human-readable name of the operation (for error messages)
+    /// * `future` - The async operation to execute
+    async fn execute_with_timeout<T, F>(&self, operation: &str, future: F) -> StorageResult<T>
+    where
+        F: std::future::Future<Output = StorageResult<T>>,
+    {
+        match tokio::time::timeout(self.query_timeout, future).await {
+            Ok(result) => result,
+            Err(_elapsed) => Err(StorageError::QueryTimeout {
+                operation: operation.to_string(),
+                timeout: self.query_timeout,
+            }),
+        }
     }
 
     /// Runs database migrations to create required tables.
@@ -372,31 +423,36 @@ impl DataStore for PostgresDataStore {
         validate_store_name(name)?;
 
         let now = chrono::Utc::now();
+        let id_owned = id.to_string();
+        let name_owned = name.to_string();
 
-        sqlx::query(
-            r#"
-            INSERT INTO stores (id, name, created_at, updated_at)
-            VALUES ($1, $2, $3, $4)
-            "#,
-        )
-        .bind(id)
-        .bind(name)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.constraint() == Some("stores_pkey") {
-                    return StorageError::StoreAlreadyExists {
-                        store_id: id.to_string(),
-                    };
+        self.execute_with_timeout("create_store", async {
+            sqlx::query(
+                r#"
+                INSERT INTO stores (id, name, created_at, updated_at)
+                VALUES ($1, $2, $3, $4)
+                "#,
+            )
+            .bind(&id_owned)
+            .bind(&name_owned)
+            .bind(now)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                if let sqlx::Error::Database(ref db_err) = e {
+                    if db_err.constraint() == Some("stores_pkey") {
+                        return StorageError::StoreAlreadyExists {
+                            store_id: id_owned.clone(),
+                        };
+                    }
                 }
-            }
-            StorageError::QueryError {
-                message: format!("Failed to create store: {e}"),
-            }
-        })?;
+                StorageError::QueryError {
+                    message: format!("Failed to create store: {e}"),
+                }
+            })
+        })
+        .await?;
 
         Ok(Store {
             id: id.to_string(),
@@ -408,19 +464,24 @@ impl DataStore for PostgresDataStore {
 
     #[instrument(skip(self))]
     async fn get_store(&self, id: &str) -> StorageResult<Store> {
-        let row = sqlx::query(
-            r#"
-            SELECT id, name, created_at, updated_at
-            FROM stores
-            WHERE id = $1
-            "#,
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to get store: {e}"),
-        })?;
+        let id_owned = id.to_string();
+        let row = self
+            .execute_with_timeout("get_store", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, name, created_at, updated_at
+                    FROM stores
+                    WHERE id = $1
+                    "#,
+                )
+                .bind(&id_owned)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to get store: {e}"),
+                })
+            })
+            .await?;
 
         match row {
             Some(row) => Ok(Store {
@@ -437,17 +498,22 @@ impl DataStore for PostgresDataStore {
 
     #[instrument(skip(self))]
     async fn delete_store(&self, id: &str) -> StorageResult<()> {
-        let result = sqlx::query(
-            r#"
-            DELETE FROM stores WHERE id = $1
-            "#,
-        )
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to delete store: {e}"),
-        })?;
+        let id_owned = id.to_string();
+        let result = self
+            .execute_with_timeout("delete_store", async {
+                sqlx::query(
+                    r#"
+                    DELETE FROM stores WHERE id = $1
+                    "#,
+                )
+                .bind(&id_owned)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to delete store: {e}"),
+                })
+            })
+            .await?;
 
         if result.rows_affected() == 0 {
             return Err(StorageError::StoreNotFound {
@@ -464,21 +530,27 @@ impl DataStore for PostgresDataStore {
         validate_store_id(id)?;
         validate_store_name(name)?;
 
-        let row = sqlx::query(
-            r#"
-            UPDATE stores
-            SET name = $2, updated_at = NOW()
-            WHERE id = $1
-            RETURNING id, name, created_at, updated_at
-            "#,
-        )
-        .bind(id)
-        .bind(name)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to update store: {e}"),
-        })?;
+        let id_owned = id.to_string();
+        let name_owned = name.to_string();
+        let row = self
+            .execute_with_timeout("update_store", async {
+                sqlx::query(
+                    r#"
+                    UPDATE stores
+                    SET name = $2, updated_at = NOW()
+                    WHERE id = $1
+                    RETURNING id, name, created_at, updated_at
+                    "#,
+                )
+                .bind(&id_owned)
+                .bind(&name_owned)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to update store: {e}"),
+                })
+            })
+            .await?;
 
         match row {
             Some(row) => Ok(Store {
@@ -495,18 +567,22 @@ impl DataStore for PostgresDataStore {
 
     #[instrument(skip(self))]
     async fn list_stores(&self) -> StorageResult<Vec<Store>> {
-        let rows = sqlx::query(
-            r#"
-            SELECT id, name, created_at, updated_at
-            FROM stores
-            ORDER BY created_at DESC
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list stores: {e}"),
-        })?;
+        let rows = self
+            .execute_with_timeout("list_stores", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, name, created_at, updated_at
+                    FROM stores
+                    ORDER BY created_at DESC
+                    "#,
+                )
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to list stores: {e}"),
+                })
+            })
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -527,21 +603,25 @@ impl DataStore for PostgresDataStore {
         let page_size = pagination.page_size.unwrap_or(100) as i64;
         let offset = parse_continuation_token(&pagination.continuation_token)?;
 
-        let rows = sqlx::query(
-            r#"
-            SELECT id, name, created_at, updated_at
-            FROM stores
-            ORDER BY created_at DESC
-            LIMIT $1 OFFSET $2
-            "#,
-        )
-        .bind(page_size)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list stores: {e}"),
-        })?;
+        let rows = self
+            .execute_with_timeout("list_stores_paginated", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, name, created_at, updated_at
+                    FROM stores
+                    ORDER BY created_at DESC
+                    LIMIT $1 OFFSET $2
+                    "#,
+                )
+                .bind(page_size)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to list stores: {e}"),
+                })
+            })
+            .await?;
 
         let items: Vec<Store> = rows
             .into_iter()
@@ -583,18 +663,23 @@ impl DataStore for PostgresDataStore {
             validate_tuple(tuple)?;
         }
 
-        // Verify store exists
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("write_tuples_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -603,6 +688,11 @@ impl DataStore for PostgresDataStore {
         }
 
         // Start a transaction
+        // Note: Transaction queries rely on SQLx pool acquire_timeout and database
+        // statement timeouts for protection against slow queries.
+        // TODO(#144): Consider wrapping entire transaction with tokio::time::timeout
+        // for comprehensive DoS protection. Requires careful handling of transaction
+        // rollback on timeout.
         let mut tx = self
             .pool
             .begin()
@@ -896,14 +986,19 @@ impl DataStore for PostgresDataStore {
         apply_tuple_filters(&mut builder, filter, user_filter);
         builder.push(" ORDER BY created_at DESC");
 
-        let rows =
-            builder
-                .build()
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to read tuples: {e}"),
-                })?;
+        // Wrap the main query with timeout protection
+        let pool = &self.pool;
+        let rows = self
+            .execute_with_timeout("read_tuples", async {
+                builder
+                    .build()
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to read tuples: {e}"),
+                    })
+            })
+            .await?;
 
         // Parse rows using shared helper
         rows.into_iter().map(row_to_stored_tuple).collect()
@@ -916,18 +1011,23 @@ impl DataStore for PostgresDataStore {
         filter: &TupleFilter,
         pagination: &PaginationOptions,
     ) -> StorageResult<PaginatedResult<StoredTuple>> {
-        // Verify store exists
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("read_tuples_paginated_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -956,14 +1056,18 @@ impl DataStore for PostgresDataStore {
         builder.push(" OFFSET ");
         builder.push_bind(offset);
 
-        let rows =
-            builder
-                .build()
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to read tuples: {e}"),
-                })?;
+        // Execute main query with timeout protection
+        let rows = self
+            .execute_with_timeout("read_tuples_paginated", async {
+                builder
+                    .build()
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to read tuples: {e}"),
+                    })
+            })
+            .await?;
 
         // Parse rows using shared helper
         let items: Vec<StoredTuple> = rows
@@ -1024,18 +1128,23 @@ impl DataStore for PostgresDataStore {
         // Validate input bounds (defense-in-depth, sqlx params prevent SQL injection)
         validate_store_id(&model.store_id)?;
 
-        // Verify store exists (needed for proper error semantics vs generic FK error)
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
-            "#,
-        )
-        .bind(&model.store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id = model.store_id.clone();
+        let store_exists: bool = self
+            .execute_with_timeout("write_authorization_model_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+                    "#,
+                )
+                .bind(&store_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -1043,23 +1152,26 @@ impl DataStore for PostgresDataStore {
             });
         }
 
-        // Insert the model
-        sqlx::query(
-            r#"
-            INSERT INTO authorization_models (id, store_id, schema_version, model_json, created_at)
-            VALUES ($1, $2, $3, $4, $5)
-            "#,
-        )
-        .bind(&model.id)
-        .bind(&model.store_id)
-        .bind(&model.schema_version)
-        .bind(&model.model_json)
-        .bind(model.created_at)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to write authorization model: {e}"),
-        })?;
+        // Insert the model (with timeout protection)
+        self.execute_with_timeout("write_authorization_model", async {
+            sqlx::query(
+                r#"
+                INSERT INTO authorization_models (id, store_id, schema_version, model_json, created_at)
+                VALUES ($1, $2, $3, $4, $5)
+                "#,
+            )
+            .bind(&model.id)
+            .bind(&model.store_id)
+            .bind(&model.schema_version)
+            .bind(&model.model_json)
+            .bind(model.created_at)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryError {
+                message: format!("Failed to write authorization model: {e}"),
+            })
+        })
+        .await?;
 
         Ok(model)
     }
@@ -1073,18 +1185,23 @@ impl DataStore for PostgresDataStore {
         // Validate input bounds
         validate_store_id(store_id)?;
 
-        // Verify store exists (needed to distinguish StoreNotFound vs ModelNotFound)
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("get_authorization_model_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -1092,21 +1209,26 @@ impl DataStore for PostgresDataStore {
             });
         }
 
-        // Fetch the model
-        let row = sqlx::query(
-            r#"
-            SELECT id, store_id, schema_version, model_json, created_at
-            FROM authorization_models
-            WHERE store_id = $1 AND id = $2
-            "#,
-        )
-        .bind(store_id)
-        .bind(model_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to get authorization model: {e}"),
-        })?;
+        // Fetch the model (with timeout protection)
+        let model_id_owned = model_id.to_string();
+        let row = self
+            .execute_with_timeout("get_authorization_model", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, store_id, schema_version, model_json, created_at
+                    FROM authorization_models
+                    WHERE store_id = $1 AND id = $2
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .bind(&model_id_owned)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to get authorization model: {e}"),
+                })
+            })
+            .await?;
 
         match row {
             Some(row) => Ok(StoredAuthorizationModel {
@@ -1130,18 +1252,23 @@ impl DataStore for PostgresDataStore {
         // Validate input bounds
         validate_store_id(store_id)?;
 
-        // Verify store exists (needed to return StoreNotFound vs empty list)
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("list_authorization_models_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -1149,21 +1276,25 @@ impl DataStore for PostgresDataStore {
             });
         }
 
-        // Fetch all models for the store (newest first, deterministic ordering)
-        let rows = sqlx::query(
-            r#"
-            SELECT id, store_id, schema_version, model_json, created_at
-            FROM authorization_models
-            WHERE store_id = $1
-            ORDER BY created_at DESC, id DESC
-            "#,
-        )
-        .bind(store_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list authorization models: {e}"),
-        })?;
+        // Fetch all models for the store (with timeout protection)
+        let rows = self
+            .execute_with_timeout("list_authorization_models", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, store_id, schema_version, model_json, created_at
+                    FROM authorization_models
+                    WHERE store_id = $1
+                    ORDER BY created_at DESC, id DESC
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to list authorization models: {e}"),
+                })
+            })
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -1186,18 +1317,23 @@ impl DataStore for PostgresDataStore {
         // Validate input bounds
         validate_store_id(store_id)?;
 
-        // Verify store exists (needed to return StoreNotFound vs empty list)
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("list_authorization_models_paginated_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -1208,24 +1344,28 @@ impl DataStore for PostgresDataStore {
         let page_size = pagination.page_size.unwrap_or(100) as i64;
         let offset = parse_continuation_token(&pagination.continuation_token)?;
 
-        // Fetch models with pagination (newest first, deterministic ordering)
-        let rows = sqlx::query(
-            r#"
-            SELECT id, store_id, schema_version, model_json, created_at
-            FROM authorization_models
-            WHERE store_id = $1
-            ORDER BY created_at DESC, id DESC
-            LIMIT $2 OFFSET $3
-            "#,
-        )
-        .bind(store_id)
-        .bind(page_size)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list authorization models: {e}"),
-        })?;
+        // Fetch models with pagination (with timeout protection)
+        let rows = self
+            .execute_with_timeout("list_authorization_models_paginated", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, store_id, schema_version, model_json, created_at
+                    FROM authorization_models
+                    WHERE store_id = $1
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT $2 OFFSET $3
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .bind(page_size)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to list authorization models: {e}"),
+                })
+            })
+            .await?;
 
         let items: Vec<StoredAuthorizationModel> = rows
             .into_iter()
@@ -1259,18 +1399,23 @@ impl DataStore for PostgresDataStore {
         // Validate input bounds
         validate_store_id(store_id)?;
 
-        // Verify store exists (needed to distinguish StoreNotFound vs ModelNotFound)
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("get_latest_authorization_model_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -1278,22 +1423,26 @@ impl DataStore for PostgresDataStore {
             });
         }
 
-        // Fetch the most recent model (deterministic ordering)
-        let row = sqlx::query(
-            r#"
-            SELECT id, store_id, schema_version, model_json, created_at
-            FROM authorization_models
-            WHERE store_id = $1
-            ORDER BY created_at DESC, id DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(store_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to get latest authorization model: {e}"),
-        })?;
+        // Fetch the most recent model (with timeout protection)
+        let row = self
+            .execute_with_timeout("get_latest_authorization_model", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, store_id, schema_version, model_json, created_at
+                    FROM authorization_models
+                    WHERE store_id = $1
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to get latest authorization model: {e}"),
+                })
+            })
+            .await?;
 
         match row {
             Some(row) => Ok(StoredAuthorizationModel {
@@ -1307,6 +1456,54 @@ impl DataStore for PostgresDataStore {
                 model_id: format!("latest (no models exist for store {store_id})"),
             }),
         }
+    }
+
+    #[instrument(skip(self))]
+    async fn health_check(&self) -> StorageResult<HealthStatus> {
+        let start = std::time::Instant::now();
+        let health_timeout = std::time::Duration::from_secs(HEALTH_CHECK_TIMEOUT_SECS);
+
+        // Execute a simple query to verify database connectivity
+        // Uses a shorter dedicated timeout (5s) since health checks should be fast
+        match tokio::time::timeout(health_timeout, async {
+            sqlx::query("SELECT 1")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::HealthCheckFailed {
+                    message: format!("database ping failed: {e}"),
+                })
+        })
+        .await
+        {
+            Ok(result) => {
+                result?;
+            }
+            Err(_elapsed) => {
+                return Err(StorageError::QueryTimeout {
+                    operation: "health_check".to_string(),
+                    timeout: health_timeout,
+                });
+            }
+        }
+
+        let latency = start.elapsed();
+
+        // Get pool statistics
+        // Note: pool.size() returns total connections, so active = size - idle
+        let total_connections = self.pool.size();
+        let idle_connections = self.pool.num_idle() as u32;
+        let pool_stats = Some(PoolStats {
+            active_connections: total_connections.saturating_sub(idle_connections),
+            idle_connections,
+            max_connections: self.pool.options().get_max_connections(),
+        });
+
+        Ok(HealthStatus {
+            healthy: true,
+            latency,
+            pool_stats,
+            message: Some("postgresql".to_string()),
+        })
     }
 }
 

@@ -10,11 +10,15 @@ use async_trait::async_trait;
 /// per tuple, this gives us room for ~9000 tuples, but we use 1000 for safety
 /// and to avoid excessively large queries that may cause timeouts.
 const WRITE_BATCH_SIZE: usize = 1000;
+
+/// Health check timeout in seconds.
+/// Uses a shorter timeout than regular queries since health checks should be fast.
+const HEALTH_CHECK_TIMEOUT_SECS: u64 = 5;
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 use sqlx::Row;
 use tracing::{debug, instrument};
 
-use crate::error::{StorageError, StorageResult};
+use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_user_filter, validate_store_id, validate_store_name,
     validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel,
@@ -37,6 +41,12 @@ pub struct MySQLConfig {
     /// connections. Note: This is passed to SQLx's `acquire_timeout()`, not
     /// TCP connect timeout.
     pub connect_timeout_secs: u64,
+    /// Query timeout in seconds.
+    ///
+    /// Maximum time to wait for a query to complete. If a query exceeds this
+    /// duration, it will be cancelled and return `StorageError::QueryTimeout`.
+    /// Default: 30 seconds.
+    pub query_timeout_secs: u64,
 }
 
 // Custom Debug implementation to hide credentials in database_url
@@ -47,6 +57,7 @@ impl std::fmt::Debug for MySQLConfig {
             .field("max_connections", &self.max_connections)
             .field("min_connections", &self.min_connections)
             .field("connect_timeout_secs", &self.connect_timeout_secs)
+            .field("query_timeout_secs", &self.query_timeout_secs)
             .finish()
     }
 }
@@ -58,6 +69,7 @@ impl Default for MySQLConfig {
             max_connections: 10,
             min_connections: 1,
             connect_timeout_secs: 30,
+            query_timeout_secs: 30,
         }
     }
 }
@@ -85,12 +97,27 @@ impl Default for MySQLConfig {
 /// and deletes in a single call succeed or fail together.
 pub struct MySQLDataStore {
     pool: MySqlPool,
+    /// Query timeout duration.
+    query_timeout: std::time::Duration,
 }
 
 impl MySQLDataStore {
     /// Creates a new MySQL data store from a connection pool.
+    ///
+    /// Uses default query timeout of 30 seconds.
     pub fn new(pool: MySqlPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            query_timeout: std::time::Duration::from_secs(30),
+        }
+    }
+
+    /// Creates a new MySQL data store from a connection pool with custom timeout.
+    pub fn with_timeout(pool: MySqlPool, query_timeout: std::time::Duration) -> Self {
+        Self {
+            pool,
+            query_timeout,
+        }
     }
 
     /// Creates a new MySQL data store with the given configuration.
@@ -106,7 +133,10 @@ impl MySQLDataStore {
                 message: e.to_string(),
             })?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            query_timeout: std::time::Duration::from_secs(config.query_timeout_secs),
+        })
     }
 
     /// Creates a new MySQL data store from a database URL.
@@ -116,6 +146,23 @@ impl MySQLDataStore {
             ..Default::default()
         };
         Self::from_config(&config).await
+    }
+
+    /// Wraps an async operation with a timeout.
+    ///
+    /// If the operation exceeds the configured query timeout, returns
+    /// `StorageError::QueryTimeout` with details about the operation.
+    async fn execute_with_timeout<T, F>(&self, operation: &str, future: F) -> StorageResult<T>
+    where
+        F: std::future::Future<Output = StorageResult<T>>,
+    {
+        match tokio::time::timeout(self.query_timeout, future).await {
+            Ok(result) => result,
+            Err(_elapsed) => Err(StorageError::QueryTimeout {
+                operation: operation.to_string(),
+                timeout: self.query_timeout,
+            }),
+        }
     }
 
     /// Runs database migrations to create required tables.
@@ -396,36 +443,41 @@ impl DataStore for MySQLDataStore {
         validate_store_name(name)?;
 
         let now = chrono::Utc::now();
+        let id_owned = id.to_string();
+        let name_owned = name.to_string();
 
-        sqlx::query(
-            r#"
-            INSERT INTO stores (id, name, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
-            "#,
-        )
-        .bind(id)
-        .bind(name)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| {
-            if let sqlx::Error::Database(db_err) = &e {
-                // Check for MySQL-specific duplicate entry error (1062 = ER_DUP_ENTRY)
-                if let Some(mysql_err) =
-                    db_err.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>()
-                {
-                    if mysql_err.number() == 1062 {
-                        return StorageError::StoreAlreadyExists {
-                            store_id: id.to_string(),
-                        };
+        self.execute_with_timeout("create_store", async {
+            sqlx::query(
+                r#"
+                INSERT INTO stores (id, name, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                "#,
+            )
+            .bind(&id_owned)
+            .bind(&name_owned)
+            .bind(now)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                if let sqlx::Error::Database(db_err) = &e {
+                    // Check for MySQL-specific duplicate entry error (1062 = ER_DUP_ENTRY)
+                    if let Some(mysql_err) =
+                        db_err.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>()
+                    {
+                        if mysql_err.number() == 1062 {
+                            return StorageError::StoreAlreadyExists {
+                                store_id: id_owned.clone(),
+                            };
+                        }
                     }
                 }
-            }
-            StorageError::QueryError {
-                message: format!("Failed to create store: {e}"),
-            }
-        })?;
+                StorageError::QueryError {
+                    message: format!("Failed to create store: {e}"),
+                }
+            })
+        })
+        .await?;
 
         Ok(Store {
             id: id.to_string(),
@@ -437,19 +489,24 @@ impl DataStore for MySQLDataStore {
 
     #[instrument(skip(self))]
     async fn get_store(&self, id: &str) -> StorageResult<Store> {
-        let row = sqlx::query(
-            r#"
-            SELECT id, name, created_at, updated_at
-            FROM stores
-            WHERE id = ?
-            "#,
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to get store: {e}"),
-        })?;
+        let id_owned = id.to_string();
+        let row = self
+            .execute_with_timeout("get_store", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, name, created_at, updated_at
+                    FROM stores
+                    WHERE id = ?
+                    "#,
+                )
+                .bind(&id_owned)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to get store: {e}"),
+                })
+            })
+            .await?;
 
         match row {
             Some(row) => Ok(Store {
@@ -466,17 +523,22 @@ impl DataStore for MySQLDataStore {
 
     #[instrument(skip(self))]
     async fn delete_store(&self, id: &str) -> StorageResult<()> {
-        let result = sqlx::query(
-            r#"
-            DELETE FROM stores WHERE id = ?
-            "#,
-        )
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to delete store: {e}"),
-        })?;
+        let id_owned = id.to_string();
+        let result = self
+            .execute_with_timeout("delete_store", async {
+                sqlx::query(
+                    r#"
+                    DELETE FROM stores WHERE id = ?
+                    "#,
+                )
+                .bind(&id_owned)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to delete store: {e}"),
+                })
+            })
+            .await?;
 
         if result.rows_affected() == 0 {
             return Err(StorageError::StoreNotFound {
@@ -494,7 +556,11 @@ impl DataStore for MySQLDataStore {
         validate_store_name(name)?;
 
         // MySQL doesn't support RETURNING, so we use a transaction to ensure
-        // atomicity between UPDATE and SELECT
+        // atomicity between UPDATE and SELECT.
+        // Note: Transaction queries rely on SQLx pool acquire_timeout and database
+        // statement timeouts for protection against slow queries.
+        // TODO(#144): Consider wrapping entire transaction with tokio::time::timeout
+        // for comprehensive DoS protection.
         let mut tx = self
             .pool
             .begin()
@@ -554,18 +620,22 @@ impl DataStore for MySQLDataStore {
 
     #[instrument(skip(self))]
     async fn list_stores(&self) -> StorageResult<Vec<Store>> {
-        let rows = sqlx::query(
-            r#"
-            SELECT id, name, created_at, updated_at
-            FROM stores
-            ORDER BY created_at DESC, id DESC
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list stores: {e}"),
-        })?;
+        let rows = self
+            .execute_with_timeout("list_stores", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, name, created_at, updated_at
+                    FROM stores
+                    ORDER BY created_at DESC, id DESC
+                    "#,
+                )
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to list stores: {e}"),
+                })
+            })
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -586,21 +656,25 @@ impl DataStore for MySQLDataStore {
         let page_size = pagination.page_size.unwrap_or(100) as i64;
         let offset = parse_continuation_token(&pagination.continuation_token)?;
 
-        let rows = sqlx::query(
-            r#"
-            SELECT id, name, created_at, updated_at
-            FROM stores
-            ORDER BY created_at DESC, id DESC
-            LIMIT ? OFFSET ?
-            "#,
-        )
-        .bind(page_size)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list stores: {e}"),
-        })?;
+        let rows = self
+            .execute_with_timeout("list_stores_paginated", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, name, created_at, updated_at
+                    FROM stores
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ? OFFSET ?
+                    "#,
+                )
+                .bind(page_size)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to list stores: {e}"),
+                })
+            })
+            .await?;
 
         let items: Vec<Store> = rows
             .into_iter()
@@ -641,18 +715,23 @@ impl DataStore for MySQLDataStore {
             validate_tuple(tuple)?;
         }
 
-        // Verify store exists
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("write_tuples_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -661,6 +740,11 @@ impl DataStore for MySQLDataStore {
         }
 
         // Start a transaction
+        // Note: Transaction queries rely on SQLx pool acquire_timeout and database
+        // statement timeouts for protection against slow queries.
+        // TODO(#144): Consider wrapping entire transaction with tokio::time::timeout
+        // for comprehensive DoS protection. Requires careful handling of transaction
+        // rollback on timeout.
         let mut tx = self
             .pool
             .begin()
@@ -831,14 +915,19 @@ impl DataStore for MySQLDataStore {
 
         builder.push(" ORDER BY created_at DESC, id DESC");
 
-        let rows =
-            builder
-                .build()
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to read tuples: {e}"),
-                })?;
+        // Wrap the main query with timeout protection
+        let pool = &self.pool;
+        let rows = self
+            .execute_with_timeout("read_tuples", async {
+                builder
+                    .build()
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to read tuples: {e}"),
+                    })
+            })
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -862,18 +951,23 @@ impl DataStore for MySQLDataStore {
         filter: &TupleFilter,
         pagination: &PaginationOptions,
     ) -> StorageResult<PaginatedResult<StoredTuple>> {
-        // Verify store exists
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("read_tuples_paginated_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -938,14 +1032,18 @@ impl DataStore for MySQLDataStore {
         builder.push(" OFFSET ");
         builder.push_bind(offset);
 
-        let rows =
-            builder
-                .build()
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to read tuples: {e}"),
-                })?;
+        // Execute main query with timeout protection
+        let rows = self
+            .execute_with_timeout("read_tuples_paginated", async {
+                builder
+                    .build()
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to read tuples: {e}"),
+                    })
+            })
+            .await?;
 
         let items: Vec<StoredTuple> = rows
             .into_iter()
@@ -1018,18 +1116,23 @@ impl DataStore for MySQLDataStore {
         // Validate input bounds (defense-in-depth, sqlx params prevent SQL injection)
         validate_store_id(&model.store_id)?;
 
-        // Verify store exists (needed for proper error semantics vs generic FK error)
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
-            "#,
-        )
-        .bind(&model.store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id = model.store_id.clone();
+        let store_exists: bool = self
+            .execute_with_timeout("write_authorization_model_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                    "#,
+                )
+                .bind(&store_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -1037,23 +1140,26 @@ impl DataStore for MySQLDataStore {
             });
         }
 
-        // Insert the model
-        sqlx::query(
-            r#"
-            INSERT INTO authorization_models (id, store_id, schema_version, model_json, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind(&model.id)
-        .bind(&model.store_id)
-        .bind(&model.schema_version)
-        .bind(&model.model_json)
-        .bind(model.created_at)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to write authorization model: {e}"),
-        })?;
+        // Insert the model (with timeout protection)
+        self.execute_with_timeout("write_authorization_model", async {
+            sqlx::query(
+                r#"
+                INSERT INTO authorization_models (id, store_id, schema_version, model_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(&model.id)
+            .bind(&model.store_id)
+            .bind(&model.schema_version)
+            .bind(&model.model_json)
+            .bind(model.created_at)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryError {
+                message: format!("Failed to write authorization model: {e}"),
+            })
+        })
+        .await?;
 
         Ok(model)
     }
@@ -1067,18 +1173,23 @@ impl DataStore for MySQLDataStore {
         // Validate input bounds
         validate_store_id(store_id)?;
 
-        // Verify store exists (needed to distinguish StoreNotFound vs ModelNotFound)
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("get_authorization_model_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -1086,21 +1197,26 @@ impl DataStore for MySQLDataStore {
             });
         }
 
-        // Fetch the model
-        let row = sqlx::query(
-            r#"
-            SELECT id, store_id, schema_version, model_json, created_at
-            FROM authorization_models
-            WHERE store_id = ? AND id = ?
-            "#,
-        )
-        .bind(store_id)
-        .bind(model_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to get authorization model: {e}"),
-        })?;
+        // Fetch the model (with timeout protection)
+        let model_id_owned = model_id.to_string();
+        let row = self
+            .execute_with_timeout("get_authorization_model", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, store_id, schema_version, model_json, created_at
+                    FROM authorization_models
+                    WHERE store_id = ? AND id = ?
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .bind(&model_id_owned)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to get authorization model: {e}"),
+                })
+            })
+            .await?;
 
         match row {
             Some(row) => Ok(StoredAuthorizationModel {
@@ -1124,18 +1240,23 @@ impl DataStore for MySQLDataStore {
         // Validate input bounds
         validate_store_id(store_id)?;
 
-        // Verify store exists (needed to return StoreNotFound vs empty list)
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("list_authorization_models_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -1143,21 +1264,25 @@ impl DataStore for MySQLDataStore {
             });
         }
 
-        // Fetch all models for the store (newest first, deterministic ordering)
-        let rows = sqlx::query(
-            r#"
-            SELECT id, store_id, schema_version, model_json, created_at
-            FROM authorization_models
-            WHERE store_id = ?
-            ORDER BY created_at DESC, id DESC
-            "#,
-        )
-        .bind(store_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list authorization models: {e}"),
-        })?;
+        // Fetch all models for the store (with timeout protection)
+        let rows = self
+            .execute_with_timeout("list_authorization_models", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, store_id, schema_version, model_json, created_at
+                    FROM authorization_models
+                    WHERE store_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to list authorization models: {e}"),
+                })
+            })
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -1180,18 +1305,23 @@ impl DataStore for MySQLDataStore {
         // Validate input bounds
         validate_store_id(store_id)?;
 
-        // Verify store exists (needed to return StoreNotFound vs empty list)
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("list_authorization_models_paginated_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -1202,24 +1332,28 @@ impl DataStore for MySQLDataStore {
         let page_size = pagination.page_size.unwrap_or(100) as i64;
         let offset = parse_continuation_token(&pagination.continuation_token)?;
 
-        // Fetch models with pagination (newest first, deterministic ordering)
-        let rows = sqlx::query(
-            r#"
-            SELECT id, store_id, schema_version, model_json, created_at
-            FROM authorization_models
-            WHERE store_id = ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT ? OFFSET ?
-            "#,
-        )
-        .bind(store_id)
-        .bind(page_size)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to list authorization models: {e}"),
-        })?;
+        // Fetch models with pagination (with timeout protection)
+        let rows = self
+            .execute_with_timeout("list_authorization_models_paginated", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, store_id, schema_version, model_json, created_at
+                    FROM authorization_models
+                    WHERE store_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ? OFFSET ?
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .bind(page_size)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to list authorization models: {e}"),
+                })
+            })
+            .await?;
 
         let items: Vec<StoredAuthorizationModel> = rows
             .into_iter()
@@ -1253,18 +1387,23 @@ impl DataStore for MySQLDataStore {
         // Validate input bounds
         validate_store_id(store_id)?;
 
-        // Verify store exists (needed to distinguish StoreNotFound vs ModelNotFound)
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("get_latest_authorization_model_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -1272,22 +1411,26 @@ impl DataStore for MySQLDataStore {
             });
         }
 
-        // Fetch the most recent model (deterministic ordering)
-        let row = sqlx::query(
-            r#"
-            SELECT id, store_id, schema_version, model_json, created_at
-            FROM authorization_models
-            WHERE store_id = ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(store_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to get latest authorization model: {e}"),
-        })?;
+        // Fetch the most recent model (with timeout protection)
+        let row = self
+            .execute_with_timeout("get_latest_authorization_model", async {
+                sqlx::query(
+                    r#"
+                    SELECT id, store_id, schema_version, model_json, created_at
+                    FROM authorization_models
+                    WHERE store_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to get latest authorization model: {e}"),
+                })
+            })
+            .await?;
 
         match row {
             Some(row) => Ok(StoredAuthorizationModel {
@@ -1301,6 +1444,54 @@ impl DataStore for MySQLDataStore {
                 model_id: format!("latest (no models exist for store {store_id})"),
             }),
         }
+    }
+
+    #[instrument(skip(self))]
+    async fn health_check(&self) -> StorageResult<HealthStatus> {
+        let start = std::time::Instant::now();
+        let health_timeout = std::time::Duration::from_secs(HEALTH_CHECK_TIMEOUT_SECS);
+
+        // Execute a simple query to verify database connectivity
+        // Uses a shorter dedicated timeout (5s) since health checks should be fast
+        match tokio::time::timeout(health_timeout, async {
+            sqlx::query("SELECT 1")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::HealthCheckFailed {
+                    message: format!("database ping failed: {e}"),
+                })
+        })
+        .await
+        {
+            Ok(result) => {
+                result?;
+            }
+            Err(_elapsed) => {
+                return Err(StorageError::QueryTimeout {
+                    operation: "health_check".to_string(),
+                    timeout: health_timeout,
+                });
+            }
+        }
+
+        let latency = start.elapsed();
+
+        // Get pool statistics
+        // Note: pool.size() returns total connections, so active = size - idle
+        let total_connections = self.pool.size();
+        let idle_connections = self.pool.num_idle() as u32;
+        let pool_stats = Some(PoolStats {
+            active_connections: total_connections.saturating_sub(idle_connections),
+            idle_connections,
+            max_connections: self.pool.options().get_max_connections(),
+        });
+
+        Ok(HealthStatus {
+            healthy: true,
+            latency,
+            pool_stats,
+            message: Some("mysql".to_string()),
+        })
     }
 }
 
