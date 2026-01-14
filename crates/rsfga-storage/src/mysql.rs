@@ -10,6 +10,10 @@ use async_trait::async_trait;
 /// per tuple, this gives us room for ~9000 tuples, but we use 1000 for safety
 /// and to avoid excessively large queries that may cause timeouts.
 const WRITE_BATCH_SIZE: usize = 1000;
+
+/// Health check timeout in seconds.
+/// Uses a shorter timeout than regular queries since health checks should be fast.
+const HEALTH_CHECK_TIMEOUT_SECS: u64 = 5;
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 use sqlx::Row;
 use tracing::{debug, instrument};
@@ -555,6 +559,8 @@ impl DataStore for MySQLDataStore {
         // atomicity between UPDATE and SELECT.
         // Note: Transaction queries rely on SQLx pool acquire_timeout and database
         // statement timeouts for protection against slow queries.
+        // TODO(#98): Consider wrapping entire transaction with tokio::time::timeout
+        // for comprehensive DoS protection.
         let mut tx = self
             .pool
             .begin()
@@ -736,6 +742,9 @@ impl DataStore for MySQLDataStore {
         // Start a transaction
         // Note: Transaction queries rely on SQLx pool acquire_timeout and database
         // statement timeouts for protection against slow queries.
+        // TODO(#98): Consider wrapping entire transaction with tokio::time::timeout
+        // for comprehensive DoS protection. Requires careful handling of transaction
+        // rollback on timeout.
         let mut tx = self
             .pool
             .begin()
@@ -1440,9 +1449,11 @@ impl DataStore for MySQLDataStore {
     #[instrument(skip(self))]
     async fn health_check(&self) -> StorageResult<HealthStatus> {
         let start = std::time::Instant::now();
+        let health_timeout = std::time::Duration::from_secs(HEALTH_CHECK_TIMEOUT_SECS);
 
-        // Execute a simple query to verify database connectivity with timeout protection
-        self.execute_with_timeout("health_check", async {
+        // Execute a simple query to verify database connectivity
+        // Uses a shorter dedicated timeout (5s) since health checks should be fast
+        match tokio::time::timeout(health_timeout, async {
             sqlx::query("SELECT 1")
                 .execute(&self.pool)
                 .await
@@ -1450,7 +1461,18 @@ impl DataStore for MySQLDataStore {
                     message: format!("database ping failed: {e}"),
                 })
         })
-        .await?;
+        .await
+        {
+            Ok(result) => {
+                result?;
+            }
+            Err(_elapsed) => {
+                return Err(StorageError::QueryTimeout {
+                    operation: "health_check".to_string(),
+                    timeout: health_timeout,
+                });
+            }
+        }
 
         let latency = start.elapsed();
 

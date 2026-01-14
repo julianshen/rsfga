@@ -18,6 +18,10 @@ use crate::traits::{
 /// We use 64 KB as a reasonable per-tuple limit for condition context.
 const MAX_CONDITION_CONTEXT_SIZE: usize = 64 * 1024;
 
+/// Health check timeout in seconds.
+/// Uses a shorter timeout than regular queries since health checks should be fast.
+const HEALTH_CHECK_TIMEOUT_SECS: u64 = 5;
+
 /// Validate condition_context size to prevent DoS via large JSON payloads.
 fn validate_condition_context_size(tuple: &StoredTuple) -> StorageResult<()> {
     if let Some(ctx) = &tuple.condition_context {
@@ -686,6 +690,9 @@ impl DataStore for PostgresDataStore {
         // Start a transaction
         // Note: Transaction queries rely on SQLx pool acquire_timeout and database
         // statement timeouts for protection against slow queries.
+        // TODO(#98): Consider wrapping entire transaction with tokio::time::timeout
+        // for comprehensive DoS protection. Requires careful handling of transaction
+        // rollback on timeout.
         let mut tx = self
             .pool
             .begin()
@@ -1454,9 +1461,11 @@ impl DataStore for PostgresDataStore {
     #[instrument(skip(self))]
     async fn health_check(&self) -> StorageResult<HealthStatus> {
         let start = std::time::Instant::now();
+        let health_timeout = std::time::Duration::from_secs(HEALTH_CHECK_TIMEOUT_SECS);
 
-        // Execute a simple query to verify database connectivity with timeout protection
-        self.execute_with_timeout("health_check", async {
+        // Execute a simple query to verify database connectivity
+        // Uses a shorter dedicated timeout (5s) since health checks should be fast
+        match tokio::time::timeout(health_timeout, async {
             sqlx::query("SELECT 1")
                 .execute(&self.pool)
                 .await
@@ -1464,7 +1473,18 @@ impl DataStore for PostgresDataStore {
                     message: format!("database ping failed: {e}"),
                 })
         })
-        .await?;
+        .await
+        {
+            Ok(result) => {
+                result?;
+            }
+            Err(_elapsed) => {
+                return Err(StorageError::QueryTimeout {
+                    operation: "health_check".to_string(),
+                    timeout: health_timeout,
+                });
+            }
+        }
 
         let latency = start.elapsed();
 
