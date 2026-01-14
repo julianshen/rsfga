@@ -64,6 +64,7 @@ COPY crates/rsfga-server/src crates/rsfga-server/src
 COPY crates/rsfga-domain/src crates/rsfga-domain/src
 COPY crates/rsfga-domain/benches crates/rsfga-domain/benches
 COPY crates/rsfga-storage/src crates/rsfga-storage/src
+COPY crates/rsfga-storage/benches crates/rsfga-storage/benches
 COPY crates/compatibility-tests/src crates/compatibility-tests/src
 
 # Touch files to invalidate the cache for actual source
