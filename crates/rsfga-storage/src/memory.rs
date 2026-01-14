@@ -538,7 +538,7 @@ impl DataStore for MemoryDataStore {
         // In-memory storage is always healthy - no external dependencies
         Ok(HealthStatus {
             healthy: true,
-            latency: std::time::Duration::from_nanos(0),
+            latency: std::time::Duration::ZERO,
             pool_stats: None, // No connection pool for in-memory storage
             message: Some("in-memory storage".to_string()),
         })

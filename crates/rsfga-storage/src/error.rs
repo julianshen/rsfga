@@ -106,7 +106,7 @@ pub type StorageResult<T> = Result<T, StorageError>;
 ///
 /// Provides detailed diagnostics about the storage backend's health,
 /// including connection pool statistics and database reachability.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HealthStatus {
     /// Whether the storage is healthy and ready to serve requests.
     pub healthy: bool,
@@ -119,7 +119,7 @@ pub struct HealthStatus {
 }
 
 /// Connection pool statistics.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolStats {
     /// Number of connections currently in use.
     pub active_connections: u32,

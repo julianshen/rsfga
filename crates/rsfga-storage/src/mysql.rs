@@ -910,18 +910,23 @@ impl DataStore for MySQLDataStore {
         filter: &TupleFilter,
         pagination: &PaginationOptions,
     ) -> StorageResult<PaginatedResult<StoredTuple>> {
-        // Verify store exists
-        let store_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
-            "#,
-        )
-        .bind(store_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to check store existence: {e}"),
-        })?;
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("read_tuples_paginated_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
 
         if !store_exists {
             return Err(StorageError::StoreNotFound {
@@ -986,14 +991,18 @@ impl DataStore for MySQLDataStore {
         builder.push(" OFFSET ");
         builder.push_bind(offset);
 
-        let rows =
-            builder
-                .build()
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to read tuples: {e}"),
-                })?;
+        // Execute main query with timeout protection
+        let rows = self
+            .execute_with_timeout("read_tuples_paginated", async {
+                builder
+                    .build()
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to read tuples: {e}"),
+                    })
+            })
+            .await?;
 
         let items: Vec<StoredTuple> = rows
             .into_iter()
@@ -1355,20 +1364,26 @@ impl DataStore for MySQLDataStore {
     async fn health_check(&self) -> StorageResult<HealthStatus> {
         let start = std::time::Instant::now();
 
-        // Execute a simple query to verify database connectivity
-        sqlx::query("SELECT 1")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| StorageError::HealthCheckFailed {
-                message: format!("database ping failed: {e}"),
-            })?;
+        // Execute a simple query to verify database connectivity with timeout protection
+        self.execute_with_timeout("health_check", async {
+            sqlx::query("SELECT 1")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::HealthCheckFailed {
+                    message: format!("database ping failed: {e}"),
+                })
+        })
+        .await?;
 
         let latency = start.elapsed();
 
         // Get pool statistics
+        // Note: pool.size() returns total connections, so active = size - idle
+        let total_connections = self.pool.size();
+        let idle_connections = self.pool.num_idle() as u32;
         let pool_stats = Some(PoolStats {
-            active_connections: self.pool.size(),
-            idle_connections: self.pool.num_idle() as u32,
+            active_connections: total_connections.saturating_sub(idle_connections),
+            idle_connections,
             max_connections: self.pool.options().get_max_connections(),
         });
 
