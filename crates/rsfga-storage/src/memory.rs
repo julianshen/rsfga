@@ -1769,9 +1769,9 @@ mod tests {
         assert_eq!(stores[0].id, store_id);
     }
 
-    // Test: health_check returns healthy status
+    // Test: health_check returns healthy status for in-memory storage
     #[tokio::test]
-    async fn test_health_check_returns_healthy() {
+    async fn test_in_memory_health_check_always_returns_healthy() {
         let store = MemoryDataStore::new();
 
         let status = store.health_check().await.unwrap();
@@ -1785,7 +1785,7 @@ mod tests {
         );
         assert_eq!(
             status.latency,
-            std::time::Duration::from_nanos(0),
+            std::time::Duration::ZERO,
             "In-memory latency should be zero"
         );
     }
