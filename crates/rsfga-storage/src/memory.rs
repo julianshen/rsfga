@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use tracing::instrument;
 
-use crate::error::{StorageError, StorageResult};
+use crate::error::{HealthStatus, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_tuple_cursor, parse_user_filter, validate_store_id,
     validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store,
@@ -532,6 +532,16 @@ impl DataStore for MemoryDataStore {
         sort_models_newest_first(&mut models);
 
         Ok(models.into_iter().next().unwrap())
+    }
+
+    async fn health_check(&self) -> StorageResult<HealthStatus> {
+        // In-memory storage is always healthy - no external dependencies
+        Ok(HealthStatus {
+            healthy: true,
+            latency: std::time::Duration::from_nanos(0),
+            pool_stats: None, // No connection pool for in-memory storage
+            message: Some("in-memory storage".to_string()),
+        })
     }
 }
 
@@ -1757,5 +1767,26 @@ mod tests {
         let stores = store.list_stores().await.unwrap();
         assert_eq!(stores.len(), 1, "Expected exactly one store in the list");
         assert_eq!(stores[0].id, store_id);
+    }
+
+    // Test: health_check returns healthy status
+    #[tokio::test]
+    async fn test_health_check_returns_healthy() {
+        let store = MemoryDataStore::new();
+
+        let status = store.health_check().await.unwrap();
+
+        assert!(status.healthy, "In-memory store should always be healthy");
+        assert!(status.pool_stats.is_none(), "In-memory store has no pool");
+        assert_eq!(
+            status.message,
+            Some("in-memory storage".to_string()),
+            "Should identify as in-memory storage"
+        );
+        assert_eq!(
+            status.latency,
+            std::time::Duration::from_nanos(0),
+            "In-memory latency should be zero"
+        );
     }
 }

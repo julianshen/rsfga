@@ -30,6 +30,7 @@ async fn create_store() -> PostgresDataStore {
         max_connections: 5,
         min_connections: 1,
         connect_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = PostgresDataStore::from_config(&config)
@@ -275,6 +276,7 @@ async fn test_connection_pool_limits() {
         max_connections: 2, // Small pool
         min_connections: 1,
         connect_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = PostgresDataStore::from_config(&config)

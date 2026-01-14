@@ -1,5 +1,6 @@
 //! Storage error types.
 
+use std::time::Duration;
 use thiserror::Error;
 
 /// Details for ConditionConflict error (boxed to reduce StorageError size).
@@ -83,7 +84,105 @@ pub enum StorageError {
     /// Internal error.
     #[error("internal storage error: {message}")]
     InternalError { message: String },
+
+    /// Query timeout error.
+    #[error("query timeout after {timeout:?}: {operation}")]
+    QueryTimeout {
+        /// The operation that timed out.
+        operation: String,
+        /// The timeout duration that was exceeded.
+        timeout: Duration,
+    },
+
+    /// Health check failed.
+    #[error("health check failed: {message}")]
+    HealthCheckFailed { message: String },
 }
 
 /// Result type for storage operations.
 pub type StorageResult<T> = Result<T, StorageError>;
+
+/// Health status of a storage backend.
+///
+/// Provides detailed diagnostics about the storage backend's health,
+/// including connection pool statistics and database reachability.
+#[derive(Debug, Clone)]
+pub struct HealthStatus {
+    /// Whether the storage is healthy and ready to serve requests.
+    pub healthy: bool,
+    /// Latency of the health check ping (e.g., `SELECT 1`).
+    pub latency: Duration,
+    /// Connection pool statistics (if applicable).
+    pub pool_stats: Option<PoolStats>,
+    /// Optional message with additional details.
+    pub message: Option<String>,
+}
+
+/// Connection pool statistics.
+#[derive(Debug, Clone)]
+pub struct PoolStats {
+    /// Number of connections currently in use.
+    pub active_connections: u32,
+    /// Number of idle connections available.
+    pub idle_connections: u32,
+    /// Maximum connections allowed in the pool.
+    pub max_connections: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_query_timeout_error_message() {
+        let error = StorageError::QueryTimeout {
+            operation: "read_tuples".to_string(),
+            timeout: Duration::from_secs(30),
+        };
+
+        let message = error.to_string();
+        assert!(
+            message.contains("read_tuples"),
+            "Error message should contain operation name"
+        );
+        assert!(
+            message.contains("30"),
+            "Error message should contain timeout duration"
+        );
+    }
+
+    #[test]
+    fn test_health_check_failed_error_message() {
+        let error = StorageError::HealthCheckFailed {
+            message: "database unreachable".to_string(),
+        };
+
+        let message = error.to_string();
+        assert!(
+            message.contains("database unreachable"),
+            "Error message should contain failure reason"
+        );
+    }
+
+    #[test]
+    fn test_health_status_struct() {
+        let status = HealthStatus {
+            healthy: true,
+            latency: Duration::from_millis(5),
+            pool_stats: Some(PoolStats {
+                active_connections: 3,
+                idle_connections: 7,
+                max_connections: 10,
+            }),
+            message: Some("postgresql".to_string()),
+        };
+
+        assert!(status.healthy);
+        assert_eq!(status.latency, Duration::from_millis(5));
+
+        let pool = status.pool_stats.unwrap();
+        assert_eq!(pool.active_connections, 3);
+        assert_eq!(pool.idle_connections, 7);
+        assert_eq!(pool.max_connections, 10);
+    }
+}

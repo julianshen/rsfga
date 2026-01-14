@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use crate::error::{StorageError, StorageResult};
+use crate::error::{HealthStatus, StorageError, StorageResult};
 
 /// Maximum length for string fields.
 const MAX_FIELD_LENGTH: usize = 255;
@@ -726,6 +726,27 @@ pub trait DataStore: Send + Sync + 'static {
         &self,
         store_id: &str,
     ) -> StorageResult<StoredAuthorizationModel>;
+
+    // Health check operations
+
+    /// Checks the health of the storage backend.
+    ///
+    /// Returns detailed health status including:
+    /// - Whether the backend is healthy and ready to serve requests
+    /// - Latency of a health check ping (e.g., `SELECT 1` for databases)
+    /// - Connection pool statistics (active/idle/max connections)
+    ///
+    /// # Use Cases
+    ///
+    /// - **Kubernetes liveness/readiness probes**: `/health` endpoint calls this
+    /// - **Startup validation**: Verify database is ready before accepting traffic
+    /// - **Monitoring**: Expose pool health metrics to observability systems
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::HealthCheckFailed` if the backend is unreachable
+    /// or unhealthy.
+    async fn health_check(&self) -> StorageResult<HealthStatus>;
 }
 
 #[cfg(test)]

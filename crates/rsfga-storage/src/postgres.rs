@@ -6,7 +6,7 @@ use sqlx::Row;
 use std::collections::HashMap;
 use tracing::{debug, instrument};
 
-use crate::error::{StorageError, StorageResult};
+use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_user_filter, validate_store_id, validate_store_name,
     validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel,
@@ -121,6 +121,12 @@ pub struct PostgresConfig {
     pub min_connections: u32,
     /// Connection timeout in seconds.
     pub connect_timeout_secs: u64,
+    /// Query timeout in seconds.
+    ///
+    /// Maximum time to wait for a query to complete. If a query exceeds this
+    /// duration, it will be cancelled and return `StorageError::QueryTimeout`.
+    /// Default: 30 seconds.
+    pub query_timeout_secs: u64,
 }
 
 // Custom Debug implementation to hide credentials in database_url
@@ -131,6 +137,7 @@ impl std::fmt::Debug for PostgresConfig {
             .field("max_connections", &self.max_connections)
             .field("min_connections", &self.min_connections)
             .field("connect_timeout_secs", &self.connect_timeout_secs)
+            .field("query_timeout_secs", &self.query_timeout_secs)
             .finish()
     }
 }
@@ -142,6 +149,7 @@ impl Default for PostgresConfig {
             max_connections: 10,
             min_connections: 1,
             connect_timeout_secs: 30,
+            query_timeout_secs: 30,
         }
     }
 }
@@ -149,12 +157,27 @@ impl Default for PostgresConfig {
 /// PostgreSQL implementation of DataStore.
 pub struct PostgresDataStore {
     pool: PgPool,
+    /// Query timeout duration.
+    query_timeout: std::time::Duration,
 }
 
 impl PostgresDataStore {
     /// Creates a new PostgreSQL data store from a connection pool.
+    ///
+    /// Uses default query timeout of 30 seconds.
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            query_timeout: std::time::Duration::from_secs(30),
+        }
+    }
+
+    /// Creates a new PostgreSQL data store from a connection pool with custom timeout.
+    pub fn with_timeout(pool: PgPool, query_timeout: std::time::Duration) -> Self {
+        Self {
+            pool,
+            query_timeout,
+        }
     }
 
     /// Creates a new PostgreSQL data store with the given configuration.
@@ -170,7 +193,10 @@ impl PostgresDataStore {
                 message: e.to_string(),
             })?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            query_timeout: std::time::Duration::from_secs(config.query_timeout_secs),
+        })
     }
 
     /// Creates a new PostgreSQL data store from a database URL.
@@ -180,6 +206,27 @@ impl PostgresDataStore {
             ..Default::default()
         };
         Self::from_config(&config).await
+    }
+
+    /// Wraps an async operation with a timeout.
+    ///
+    /// If the operation exceeds the configured query timeout, returns
+    /// `StorageError::QueryTimeout` with details about the operation.
+    ///
+    /// # Arguments
+    /// * `operation` - Human-readable name of the operation (for error messages)
+    /// * `future` - The async operation to execute
+    async fn execute_with_timeout<T, F>(&self, operation: &str, future: F) -> StorageResult<T>
+    where
+        F: std::future::Future<Output = StorageResult<T>>,
+    {
+        match tokio::time::timeout(self.query_timeout, future).await {
+            Ok(result) => result,
+            Err(_elapsed) => Err(StorageError::QueryTimeout {
+                operation: operation.to_string(),
+                timeout: self.query_timeout,
+            }),
+        }
     }
 
     /// Runs database migrations to create required tables.
@@ -896,14 +943,19 @@ impl DataStore for PostgresDataStore {
         apply_tuple_filters(&mut builder, filter, user_filter);
         builder.push(" ORDER BY created_at DESC");
 
-        let rows =
-            builder
-                .build()
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to read tuples: {e}"),
-                })?;
+        // Wrap the main query with timeout protection
+        let pool = &self.pool;
+        let rows = self
+            .execute_with_timeout("read_tuples", async {
+                builder
+                    .build()
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to read tuples: {e}"),
+                    })
+            })
+            .await?;
 
         // Parse rows using shared helper
         rows.into_iter().map(row_to_stored_tuple).collect()
@@ -1307,6 +1359,35 @@ impl DataStore for PostgresDataStore {
                 model_id: format!("latest (no models exist for store {store_id})"),
             }),
         }
+    }
+
+    #[instrument(skip(self))]
+    async fn health_check(&self) -> StorageResult<HealthStatus> {
+        let start = std::time::Instant::now();
+
+        // Execute a simple query to verify database connectivity
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::HealthCheckFailed {
+                message: format!("database ping failed: {e}"),
+            })?;
+
+        let latency = start.elapsed();
+
+        // Get pool statistics
+        let pool_stats = Some(PoolStats {
+            active_connections: self.pool.size(),
+            idle_connections: self.pool.num_idle() as u32,
+            max_connections: self.pool.options().get_max_connections(),
+        });
+
+        Ok(HealthStatus {
+            healthy: true,
+            latency,
+            pool_stats,
+            message: Some("postgresql".to_string()),
+        })
     }
 }
 

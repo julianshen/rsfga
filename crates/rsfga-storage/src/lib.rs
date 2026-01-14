@@ -26,7 +26,7 @@ pub mod postgres;
 pub mod traits;
 
 // Re-export commonly used types
-pub use error::{ConditionConflictError, StorageError, StorageResult};
+pub use error::{ConditionConflictError, HealthStatus, PoolStats, StorageError, StorageResult};
 pub use memory::MemoryDataStore;
 pub use mysql::{MySQLConfig, MySQLDataStore};
 pub use postgres::{PostgresConfig, PostgresDataStore};
