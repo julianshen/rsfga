@@ -4472,8 +4472,8 @@ async fn test_cache_hit_ratio_calculation() {
 }
 
 #[tokio::test]
-async fn test_resolver_without_cache_has_no_metrics() {
-    // Arrange: Create a resolver without cache
+async fn test_resolver_without_cache_has_zeroed_metrics() {
+    // Arrange: Create a resolver without cache (metrics exist but remain zero)
     let tuple_reader = Arc::new(MockTupleReader::new());
     let model_reader = Arc::new(MockModelReader::new());
 
@@ -4521,20 +4521,17 @@ async fn test_resolver_without_cache_has_no_metrics() {
 
 #[tokio::test]
 async fn test_cache_skipped_for_request_context() {
-    // This test verifies the CRITICAL security fix:
+    // This test verifies the CRITICAL security invariant (I4):
     // Cache must be bypassed when request.context is non-empty because
     // CEL conditions depend on context values. Without this, a cached
     // decision for context.enabled=true could be incorrectly returned
     // for a request with context.enabled=false.
     //
-    // This is a MECHANISM test: it proves the cache skip logic works.
-    // The tuple here has no condition, so context doesn't affect the outcome.
-    //
-    // A full INVARIANT test would require:
-    // 1. A tuple with a condition that evaluates based on context
-    // 2. Two checks with different context values yielding different results
-    // 3. Assert neither result came from cache
-    // TODO: Add integration test with full CEL condition evaluation
+    // This test PROVES the invariant by:
+    // 1. Creating a tuple with a condition that evaluates based on context
+    // 2. Running checks with different context values that yield DIFFERENT results
+    // 3. Asserting neither result came from cache (both skipped)
+    // 4. Proving that caching would have returned incorrect results
 
     use std::collections::HashMap;
 
@@ -4542,6 +4539,11 @@ async fn test_cache_skipped_for_request_context() {
     let model_reader = Arc::new(MockModelReader::new());
 
     tuple_reader.add_store("store1").await;
+
+    // Add condition that depends on context.enabled
+    let condition = Condition::new("is_enabled", "context.enabled == true").unwrap();
+    model_reader.add_condition("store1", condition).await;
+
     model_reader
         .add_type(
             "store1",
@@ -4556,9 +4558,18 @@ async fn test_cache_skipped_for_request_context() {
         )
         .await;
 
+    // Add tuple WITH condition - permission depends on context.enabled
     tuple_reader
-        .add_tuple(
-            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc1",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "is_enabled",
+            None,
         )
         .await;
 
@@ -4566,74 +4577,196 @@ async fn test_cache_skipped_for_request_context() {
     let config = ResolverConfig::default().with_cache(cache);
     let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
 
-    // First request WITHOUT context - should be cached
-    let request_no_context = CheckRequest::new(
+    // Request with context.enabled=true - should be ALLOWED
+    let mut context_true = HashMap::new();
+    context_true.insert("enabled".to_string(), serde_json::json!(true));
+
+    let request_enabled = CheckRequest::with_context(
         "store1".to_string(),
         "user:alice".to_string(),
         "viewer".to_string(),
         "document:doc1".to_string(),
         vec![],
+        context_true,
     );
 
-    let result1 = resolver.check(&request_no_context).await.unwrap();
-    assert!(result1.allowed);
+    let result_enabled = resolver.check(&request_enabled).await.unwrap();
+    assert!(
+        result_enabled.allowed,
+        "With context.enabled=true, access should be ALLOWED"
+    );
 
-    // Verify: 1 miss (cache was consulted)
+    // Verify: Cache was SKIPPED (context present)
     let metrics = resolver.cache_metrics().snapshot();
-    assert_eq!(metrics.misses, 1);
-    assert_eq!(metrics.skips, 0);
+    assert_eq!(
+        metrics.skips, 1,
+        "First check with context should skip cache"
+    );
+    assert_eq!(metrics.hits, 0, "Should have no cache hits");
+    assert_eq!(metrics.misses, 0, "Should have no cache misses");
 
-    // Second request WITHOUT context - should hit cache
-    let result2 = resolver.check(&request_no_context).await.unwrap();
-    assert!(result2.allowed);
+    // Request with context.enabled=false - should be DENIED
+    let mut context_false = HashMap::new();
+    context_false.insert("enabled".to_string(), serde_json::json!(false));
 
-    let metrics = resolver.cache_metrics().snapshot();
-    assert_eq!(metrics.hits, 1);
-    assert_eq!(metrics.misses, 1);
-    assert_eq!(metrics.skips, 0);
-
-    // Third request WITH context - should SKIP cache (not hit, not miss)
-    let mut context = HashMap::new();
-    context.insert("enabled".to_string(), serde_json::json!(true));
-
-    let request_with_context = CheckRequest::with_context(
+    let request_disabled = CheckRequest::with_context(
         "store1".to_string(),
         "user:alice".to_string(),
         "viewer".to_string(),
         "document:doc1".to_string(),
         vec![],
-        context.clone(),
+        context_false,
     );
 
-    let result3 = resolver.check(&request_with_context).await.unwrap();
-    assert!(result3.allowed);
+    let result_disabled = resolver.check(&request_disabled).await.unwrap();
+    assert!(
+        !result_disabled.allowed,
+        "With context.enabled=false, access should be DENIED"
+    );
 
-    // Verify: Cache was SKIPPED (not hit, not miss, but skip)
+    // Verify: Cache was SKIPPED again
     let metrics = resolver.cache_metrics().snapshot();
-    assert_eq!(metrics.hits, 1); // Unchanged
-    assert_eq!(metrics.misses, 1); // Unchanged
-    assert_eq!(metrics.skips, 1); // Incremented!
+    assert_eq!(
+        metrics.skips, 2,
+        "Second check with context should also skip cache"
+    );
+    assert_eq!(metrics.hits, 0, "Should still have no cache hits");
+    assert_eq!(metrics.misses, 0, "Should still have no cache misses");
 
-    // Fourth request with DIFFERENT context - also skipped
-    let mut different_context = HashMap::new();
-    different_context.insert("enabled".to_string(), serde_json::json!(false));
+    // CRITICAL ASSERTION: Different context values yielded DIFFERENT results
+    // This proves that if caching had occurred, it would serve INCORRECT results
+    assert_ne!(
+        result_enabled.allowed, result_disabled.allowed,
+        "SECURITY INVARIANT: Different context values MUST yield different authorization results. \
+         This proves caching would be incorrect for context-dependent conditions."
+    );
+}
 
-    let request_diff_context = CheckRequest::with_context(
+#[tokio::test]
+async fn test_context_dependent_condition_not_cached() {
+    // This test verifies the security invariant that context-dependent conditions
+    // MUST NOT be cached, because the same (user, relation, object) tuple can
+    // yield different authorization results based on the request context.
+    //
+    // Per Invariant I1 (Correctness over Performance) and I4 (Security-critical
+    // code path protection), this test proves caching would be INCORRECT.
+    //
+    // Test structure (from Issue #132):
+    // 1. Create a conditional tuple where condition depends on context
+    // 2. Check with context.enabled=true -> should be allowed, cache skipped
+    // 3. Check with context.enabled=false -> should be denied, cache skipped
+    // 4. Assert different results prove caching would be incorrect
+
+    use std::collections::HashMap;
+
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Define condition: access granted only when context.active == true
+    let condition = Condition::new("requires_active", "context.active == true").unwrap();
+    model_reader.add_condition("store1", condition).await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "resource".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "editor".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Create tuple WITH condition - access depends on context.active
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "resource",
+            "secret",
+            "editor",
+            "user",
+            "bob",
+            None,
+            "requires_active",
+            None,
+        )
+        .await;
+
+    // Create resolver WITH cache enabled
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+    let config = ResolverConfig::default().with_cache(cache);
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    // === TEST CASE 1: context.active=true -> ALLOWED ===
+    let mut active_context = HashMap::new();
+    active_context.insert("active".to_string(), serde_json::json!(true));
+
+    let request_active = CheckRequest::with_context(
         "store1".to_string(),
-        "user:alice".to_string(),
-        "viewer".to_string(),
-        "document:doc1".to_string(),
+        "user:bob".to_string(),
+        "editor".to_string(),
+        "resource:secret".to_string(),
         vec![],
-        different_context,
+        active_context,
     );
 
-    let result4 = resolver.check(&request_diff_context).await.unwrap();
-    assert!(result4.allowed);
+    let result_active = resolver.check(&request_active).await.unwrap();
 
+    // Verify: Access ALLOWED when context.active=true
+    assert!(
+        result_active.allowed,
+        "Access should be ALLOWED when context.active=true"
+    );
+
+    // Verify: Cache was SKIPPED (not hit, not miss)
     let metrics = resolver.cache_metrics().snapshot();
-    assert_eq!(metrics.hits, 1); // Unchanged
-    assert_eq!(metrics.misses, 1); // Unchanged
-    assert_eq!(metrics.skips, 2); // Incremented again!
+    assert_eq!(metrics.skips, 1, "Check with context must skip cache");
+    assert_eq!(metrics.hits, 0, "Must not have cache hits");
+    assert_eq!(metrics.misses, 0, "Must not have cache misses");
+
+    // === TEST CASE 2: context.active=false -> DENIED ===
+    let mut inactive_context = HashMap::new();
+    inactive_context.insert("active".to_string(), serde_json::json!(false));
+
+    let request_inactive = CheckRequest::with_context(
+        "store1".to_string(),
+        "user:bob".to_string(),
+        "editor".to_string(),
+        "resource:secret".to_string(),
+        vec![],
+        inactive_context,
+    );
+
+    let result_inactive = resolver.check(&request_inactive).await.unwrap();
+
+    // Verify: Access DENIED when context.active=false
+    assert!(
+        !result_inactive.allowed,
+        "Access should be DENIED when context.active=false"
+    );
+
+    // Verify: Cache was SKIPPED again
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.skips, 2, "Both checks with context must skip cache");
+    assert_eq!(metrics.hits, 0, "Still must not have cache hits");
+    assert_eq!(metrics.misses, 0, "Still must not have cache misses");
+
+    // === SECURITY PROOF ===
+    // The same (store, user, relation, object) tuple yields DIFFERENT results
+    // based solely on the context value. This PROVES caching would be incorrect:
+    // - If we cached result_active (allowed=true), then request_inactive would
+    //   incorrectly receive allowed=true from cache
+    // - This would be a security vulnerability granting unauthorized access
+    assert_ne!(
+        result_active.allowed, result_inactive.allowed,
+        "SECURITY PROOF: Same tuple with different context values yields different results. \
+         Caching would incorrectly serve stale authorization decisions."
+    );
 }
 
 #[tokio::test]
