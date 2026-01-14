@@ -257,7 +257,10 @@ impl CheckCache {
         if let Some(mut keys) = self.by_store.get_mut(&key.store_id) {
             keys.remove(key);
         }
-        if let Some(mut keys) = self.by_object.get_mut(&(key.store_id.clone(), key.object.clone())) {
+        if let Some(mut keys) = self
+            .by_object
+            .get_mut(&(key.store_id.clone(), key.object.clone()))
+        {
             keys.remove(key);
         }
 
@@ -280,7 +283,10 @@ impl CheckCache {
         for key in &keys_to_remove {
             self.cache.invalidate(key).await;
             // Also remove from by_object index
-            if let Some(mut keys) = self.by_object.get_mut(&(key.store_id.clone(), key.object.clone())) {
+            if let Some(mut keys) = self
+                .by_object
+                .get_mut(&(key.store_id.clone(), key.object.clone()))
+            {
                 keys.remove(key);
             }
         }

@@ -17,16 +17,31 @@ use tokio::runtime::Runtime;
 /// Creates a store pre-populated with N tuples for benchmarking reads.
 async fn setup_store_with_tuples(n: usize) -> Arc<MemoryDataStore> {
     let store = Arc::new(MemoryDataStore::new());
-    store.create_store("bench-store", "Benchmark").await.unwrap();
+    store
+        .create_store("bench-store", "Benchmark")
+        .await
+        .unwrap();
 
     // Write tuples in batches to avoid O(N^2) setup time
     let batch_size = 1000;
     for batch_start in (0..n).step_by(batch_size) {
         let batch_end = (batch_start + batch_size).min(n);
         let tuples: Vec<StoredTuple> = (batch_start..batch_end)
-            .map(|i| StoredTuple::new("document", format!("doc{i}"), "viewer", "user", format!("user{i}"), None))
+            .map(|i| {
+                StoredTuple::new(
+                    "document",
+                    format!("doc{i}"),
+                    "viewer",
+                    "user",
+                    format!("user{i}"),
+                    None,
+                )
+            })
             .collect();
-        store.write_tuples("bench-store", tuples, vec![]).await.unwrap();
+        store
+            .write_tuples("bench-store", tuples, vec![])
+            .await
+            .unwrap();
     }
 
     store
@@ -56,7 +71,8 @@ fn bench_write_single_tuple(c: &mut Criterion) {
                     format!("new_user{counter}"),
                     None,
                 );
-                rt.block_on(store.write_tuple("bench-store", tuple)).unwrap();
+                rt.block_on(store.write_tuple("bench-store", tuple))
+                    .unwrap();
             });
         });
     }
@@ -90,7 +106,8 @@ fn bench_write_batch(c: &mut Criterion) {
                         )
                     })
                     .collect();
-                rt.block_on(store.write_tuples("bench-store", batch, vec![])).unwrap();
+                rt.block_on(store.write_tuples("bench-store", batch, vec![]))
+                    .unwrap();
             });
         });
     }
@@ -114,7 +131,9 @@ fn bench_read_by_object_type(c: &mut Criterion) {
             };
 
             b.iter(|| {
-                let result = rt.block_on(store.read_tuples("bench-store", black_box(&filter))).unwrap();
+                let result = rt
+                    .block_on(store.read_tuples("bench-store", black_box(&filter)))
+                    .unwrap();
                 black_box(result);
             });
         });
@@ -143,7 +162,9 @@ fn bench_read_specific_object(c: &mut Criterion) {
                     object_id: Some(format!("doc{idx}")),
                     ..Default::default()
                 };
-                let result = rt.block_on(store.read_tuples("bench-store", black_box(&filter))).unwrap();
+                let result = rt
+                    .block_on(store.read_tuples("bench-store", black_box(&filter)))
+                    .unwrap();
                 black_box(result);
             });
         });
@@ -169,7 +190,9 @@ fn bench_read_by_user(c: &mut Criterion) {
                     user: Some(format!("user:user{idx}")),
                     ..Default::default()
                 };
-                let result = rt.block_on(store.read_tuples("bench-store", black_box(&filter))).unwrap();
+                let result = rt
+                    .block_on(store.read_tuples("bench-store", black_box(&filter)))
+                    .unwrap();
                 black_box(result);
             });
         });
@@ -208,7 +231,8 @@ fn bench_delete_single_tuple(c: &mut Criterion) {
                     );
 
                     let start = std::time::Instant::now();
-                    rt.block_on(store.delete_tuple("bench-store", tuple)).unwrap();
+                    rt.block_on(store.delete_tuple("bench-store", tuple))
+                        .unwrap();
                     total_time += start.elapsed();
                 }
 
@@ -237,12 +261,13 @@ fn bench_read_paginated(c: &mut Criterion) {
             };
 
             b.iter(|| {
-                let result = rt.block_on(store.read_tuples_paginated(
-                    "bench-store",
-                    black_box(&filter),
-                    black_box(&pagination),
-                ))
-                .unwrap();
+                let result = rt
+                    .block_on(store.read_tuples_paginated(
+                        "bench-store",
+                        black_box(&filter),
+                        black_box(&pagination),
+                    ))
+                    .unwrap();
                 black_box(result);
             });
         });
@@ -266,7 +291,8 @@ fn bench_write_duplicate_check(c: &mut Criterion) {
             let tuple = StoredTuple::new("document", "doc0", "viewer", "user", "user0", None);
 
             b.iter(|| {
-                rt.block_on(store.write_tuple("bench-store", black_box(tuple.clone()))).unwrap();
+                rt.block_on(store.write_tuple("bench-store", black_box(tuple.clone())))
+                    .unwrap();
             });
         });
     }
