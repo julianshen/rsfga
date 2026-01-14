@@ -1,10 +1,5 @@
 //! In-memory storage implementation for testing.
-//!
-//! Uses `HashSet<StoredTuple>` for O(1) write/delete operations instead of
-//! `Vec<StoredTuple>` which has O(N) complexity. This optimization addresses
-//! issue #30 and significantly improves performance for stores with many tuples.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -13,28 +8,18 @@ use tracing::instrument;
 
 use crate::error::{StorageError, StorageResult};
 use crate::traits::{
-    parse_continuation_token, parse_tuple_cursor, parse_user_filter, validate_store_id,
-    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store,
-    StoredAuthorizationModel, StoredTuple, TupleCursor, TupleFilter,
+    parse_continuation_token, parse_user_filter, validate_store_id, validate_store_name,
+    validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel,
+    StoredTuple, TupleFilter,
 };
 
 /// In-memory implementation of DataStore.
 ///
-/// # Performance Characteristics
-///
-/// - **Write tuple**: O(1) average (HashSet insert)
-/// - **Delete tuple**: O(1) average (HashSet remove)
-/// - **Read tuples**: O(N) where N is total tuples in store (linear scan for filtering)
-/// - **Store operations**: O(1) (DashMap lookup)
-///
-/// Uses DashMap for thread-safe concurrent access without locks, and HashSet
-/// for tuple storage to enable constant-time membership tests and modifications.
+/// Uses DashMap for thread-safe concurrent access without locks.
 #[derive(Debug, Default)]
 pub struct MemoryDataStore {
     stores: DashMap<String, Store>,
-    /// Tuples stored as HashSet for O(1) insert/delete/contains operations.
-    /// Trade-off: Read operations still require iteration, but writes are much faster.
-    tuples: DashMap<String, HashSet<StoredTuple>>,
+    tuples: DashMap<String, Vec<StoredTuple>>,
     /// Authorization models keyed by store_id.
     /// Models are stored in insertion order (newest at the end), but list methods
     /// return them newest-first (reversed) for API consistency.
@@ -194,15 +179,22 @@ impl DataStore for MemoryDataStore {
 
         let mut tuples = self.tuples.entry(store_id.to_string()).or_default();
 
-        // Process deletes - O(1) per tuple with HashSet
-        for tuple in deletes {
-            tuples.remove(&tuple);
+        // Process deletes using HashSet for O(m + n) instead of O(m * n)
+        if !deletes.is_empty() {
+            use std::collections::HashSet;
+            let delete_set: HashSet<_> = deletes.into_iter().collect();
+            tuples.retain(|t| !delete_set.contains(t));
         }
 
-        // Process writes - O(1) per tuple with HashSet
-        // HashSet::insert automatically handles duplicates (idempotent)
-        for tuple in writes {
-            tuples.insert(tuple);
+        // Process writes using HashSet for efficient duplicate checking
+        if !writes.is_empty() {
+            use std::collections::HashSet;
+            let existing: HashSet<_> = tuples.iter().cloned().collect();
+            for write in writes {
+                if !existing.contains(&write) {
+                    tuples.push(write);
+                }
+            }
         }
 
         Ok(())
@@ -329,41 +321,13 @@ impl DataStore for MemoryDataStore {
         });
 
         let page_size = pagination.page_size.unwrap_or(100) as usize;
+        let offset = parse_continuation_token(&pagination.continuation_token)? as usize;
 
-        // Use cursor-based pagination with binary search for O(log N) seek
-        let cursor = parse_tuple_cursor(&pagination.continuation_token)?;
+        let items: Vec<StoredTuple> = filtered.into_iter().skip(offset).take(page_size).collect();
 
-        let start_idx = match cursor {
-            Some(ref cursor) => {
-                // Binary search to find first tuple AFTER the cursor
-                let cursor_key = cursor.sort_key();
-                filtered
-                    .binary_search_by(|t| {
-                        let t_key = (
-                            t.object_type.as_str(),
-                            t.object_id.as_str(),
-                            t.relation.as_str(),
-                            t.user_type.as_str(),
-                            t.user_id.as_str(),
-                        );
-                        t_key.cmp(&cursor_key)
-                    })
-                    // If found, start after it; if not found, start at insertion point
-                    .map(|i| i + 1)
-                    .unwrap_or_else(|i| i)
-            }
-            None => 0,
-        };
-
-        let items: Vec<StoredTuple> = filtered
-            .into_iter()
-            .skip(start_idx)
-            .take(page_size)
-            .collect();
-
-        // Generate cursor from last item for next page
+        let next_offset = offset + items.len();
         let continuation_token = if items.len() == page_size {
-            items.last().map(|t| TupleCursor::from_tuple(t).encode())
+            Some(next_offset.to_string())
         } else {
             None
         };

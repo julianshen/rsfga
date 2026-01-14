@@ -10,16 +10,6 @@
 //! - Automatic TTL-based eviction
 //! - Memory-bounded storage
 //!
-//! # Performance Characteristics (Issue #60)
-//!
-//! - **Insert**: O(1) - hash-based insertion
-//! - **Get**: O(1) - hash-based lookup
-//! - **Invalidate single**: O(1) - direct key removal
-//! - **Invalidate by store**: O(K) where K is keys for that store (not O(N))
-//!
-//! Secondary indices enable O(1) store-based invalidation instead of
-//! scanning all N entries.
-//!
 //! # Key Design (ADR-002)
 //!
 //! Cache keys include: `(store_id, object, relation, user)` to ensure
@@ -52,9 +42,7 @@
 //! assert_eq!(cache.get(&key).await, Some(true));
 //! ```
 
-use dashmap::DashMap;
 use moka::future::Cache;
-use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
@@ -165,14 +153,6 @@ impl Hash for CacheKey {
 /// Uses Moka's async Cache for lock-free concurrent access with
 /// automatic TTL-based eviction.
 ///
-/// # Performance (Issue #60)
-///
-/// Uses secondary indices for O(1) store-based invalidation:
-/// - `by_store`: Maps store_id to all cache keys for that store
-/// - `by_object`: Maps (store_id, object) to all cache keys for that object
-///
-/// This avoids O(N) scans when invalidating entries for a specific store or object.
-///
 /// # Thread Safety
 ///
 /// This cache is fully thread-safe and can be shared across multiple
@@ -182,10 +162,6 @@ pub struct CheckCache {
     cache: Cache<CacheKey, bool>,
     /// Configuration for this cache instance.
     config: CheckCacheConfig,
-    /// Secondary index: store_id -> set of cache keys for O(1) store invalidation.
-    by_store: DashMap<String, HashSet<CacheKey>>,
-    /// Secondary index: (store_id, object) -> set of cache keys for O(1) object invalidation.
-    by_object: DashMap<(String, String), HashSet<CacheKey>>,
 }
 
 impl std::fmt::Debug for CheckCache {
@@ -193,8 +169,6 @@ impl std::fmt::Debug for CheckCache {
         f.debug_struct("CheckCache")
             .field("config", &self.config)
             .field("entry_count", &self.cache.entry_count())
-            .field("store_index_size", &self.by_store.len())
-            .field("object_index_size", &self.by_object.len())
             .finish()
     }
 }
@@ -207,12 +181,7 @@ impl CheckCache {
             .time_to_live(config.default_ttl)
             .build();
 
-        Self {
-            cache,
-            config,
-            by_store: DashMap::new(),
-            by_object: DashMap::new(),
-        }
+        Self { cache, config }
     }
 
     /// Returns the configuration for this cache.
@@ -228,18 +197,7 @@ impl CheckCache {
     /// Inserts a check result into the cache.
     ///
     /// The entry will expire after the configured TTL.
-    /// Also updates secondary indices for O(1) invalidation.
     pub async fn insert(&self, key: CacheKey, allowed: bool) {
-        // Add to secondary indices for O(1) invalidation later
-        self.by_store
-            .entry(key.store_id.clone())
-            .or_default()
-            .insert(key.clone());
-        self.by_object
-            .entry((key.store_id.clone(), key.object.clone()))
-            .or_default()
-            .insert(key.clone());
-
         self.cache.insert(key, allowed).await;
     }
 
@@ -251,42 +209,32 @@ impl CheckCache {
     }
 
     /// Manually invalidates a single cache entry.
-    /// Also removes from secondary indices.
     pub async fn invalidate(&self, key: &CacheKey) {
-        // Remove from secondary indices
-        if let Some(mut keys) = self.by_store.get_mut(&key.store_id) {
-            keys.remove(key);
-        }
-        if let Some(mut keys) = self.by_object.get_mut(&(key.store_id.clone(), key.object.clone())) {
-            keys.remove(key);
-        }
-
         self.cache.invalidate(key).await;
     }
 
     /// Invalidates all entries for a specific store.
     ///
-    /// Uses secondary index for O(K) where K is number of keys for this store,
-    /// instead of O(N) where N is total cache entries.
+    /// This iterates through all entries and removes those matching
+    /// the store_id. Note: This is an O(n) operation.
     pub async fn invalidate_store(&self, store_id: &str) {
-        // Use secondary index for O(K) lookup instead of O(N) scan
+        // Moka doesn't support predicate-based invalidation directly,
+        // so we use run_pending_tasks to trigger any pending evictions
+        // and then manually remove matching entries
+        self.cache.run_pending_tasks().await;
+
+        // Collect keys to invalidate (can't mutate while iterating)
+        // Note: Moka's iter() returns (Arc<K>, V), so we need to deref
         let keys_to_remove: Vec<CacheKey> = self
-            .by_store
-            .get(store_id)
-            .map(|keys| keys.iter().cloned().collect())
-            .unwrap_or_default();
+            .cache
+            .iter()
+            .filter(|(k, _)| k.store_id == store_id)
+            .map(|(k, _)| (*k).clone())
+            .collect();
 
-        // Remove from cache
-        for key in &keys_to_remove {
-            self.cache.invalidate(key).await;
-            // Also remove from by_object index
-            if let Some(mut keys) = self.by_object.get_mut(&(key.store_id.clone(), key.object.clone())) {
-                keys.remove(key);
-            }
+        for key in keys_to_remove {
+            self.cache.invalidate(&key).await;
         }
-
-        // Remove entire store entry from by_store index
-        self.by_store.remove(store_id);
     }
 
     /// Invalidates entries matching a predicate.
@@ -329,31 +277,19 @@ impl CheckCache {
     /// When a tuple like `user:alice#viewer@document:doc1` is written or deleted,
     /// we need to invalidate any cached check results that might be affected.
     ///
-    /// Uses secondary index for O(K) where K is keys for this (store_id, object),
-    /// instead of O(N) where N is total cache entries.
+    /// This method invalidates entries where:
+    /// - The object matches the tuple's object
+    /// - The relation matches the tuple's relation
+    /// - OR any relation that could be affected (e.g., computed relations)
     ///
     /// For now, we use a conservative approach and invalidate all entries
     /// for the affected object across all relations.
     pub async fn invalidate_for_tuple(&self, store_id: &str, object: &str, _relation: &str) {
-        // Use by_object index for O(K) lookup instead of O(N) scan
-        let index_key = (store_id.to_string(), object.to_string());
-        let keys_to_remove: Vec<CacheKey> = self
-            .by_object
-            .get(&index_key)
-            .map(|keys| keys.iter().cloned().collect())
-            .unwrap_or_default();
-
-        // Remove from cache
-        for key in &keys_to_remove {
-            self.cache.invalidate(key).await;
-            // Also remove from by_store index
-            if let Some(mut keys) = self.by_store.get_mut(&key.store_id) {
-                keys.remove(key);
-            }
-        }
-
-        // Remove entire object entry from by_object index
-        self.by_object.remove(&index_key);
+        // Conservative invalidation: invalidate all entries for this object
+        // This ensures correctness at the cost of potential over-invalidation
+        // Future optimization: use relation dependency graph for precise invalidation
+        self.invalidate_matching(|k| k.store_id == store_id && k.object == object)
+            .await;
     }
 
     /// Spawns an async invalidation task that runs in the background.
@@ -396,8 +332,6 @@ impl Clone for CheckCache {
         Self {
             cache: self.cache.clone(),
             config: self.config.clone(),
-            by_store: self.by_store.clone(),
-            by_object: self.by_object.clone(),
         }
     }
 }
