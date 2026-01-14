@@ -1419,12 +1419,10 @@ async fn test_health_check_latency_measurement() {
         latencies.push(status.latency);
     }
 
-    // All latencies should be non-zero and reasonable (under 1 second for local DB)
+    // All latencies should be reasonable (under 1 second for local DB)
+    // Note: We only check upper bound because very fast health checks may
+    // round down to 0ms at millisecond precision
     for latency in &latencies {
-        assert!(
-            latency.as_millis() > 0,
-            "Latency should be measurable (non-zero)"
-        );
         assert!(
             latency.as_millis() < 1000,
             "Latency should be under 1 second for local DB, got {:?}",
@@ -1445,19 +1443,17 @@ async fn test_concurrent_health_checks() {
         handles.push(tokio::spawn(async move { store.health_check().await }));
     }
 
-    // All health checks should succeed
-    let mut success_count = 0;
-    for handle in handles {
-        if let Ok(Ok(status)) = handle.await {
-            assert!(status.healthy);
-            success_count += 1;
-        }
-    }
+    // Collect all results - this provides clearer error messages on failure
+    let results = futures::future::join_all(handles).await;
 
-    assert_eq!(
-        success_count, 10,
-        "All concurrent health checks should succeed"
-    );
+    assert_eq!(results.len(), 10, "Expected 10 health check results");
+
+    for result in results {
+        // Unwrap both the JoinHandle and the health_check Result
+        // This will panic with a descriptive message on any failure
+        let status = result.expect("Task panicked").expect("Health check failed");
+        assert!(status.healthy);
+    }
 }
 
 // Test: Health check when pool has active connections
@@ -1547,10 +1543,12 @@ async fn test_timeout_error_contains_operation_name() {
     );
 }
 
-// Test: Transaction rollback preserves consistency (no partial writes)
+// Test: Batch write is atomic on success (all tuples written or none)
+// Note: This test verifies that successful batch writes are fully committed.
+// True rollback testing would require inducing a mid-transaction failure.
 #[tokio::test]
 #[ignore = "requires running MySQL"]
-async fn test_transaction_rollback_preserves_consistency() {
+async fn test_batch_write_is_atomic_on_success() {
     let store = create_store().await;
     store
         .create_store("test-tx-consistency-mysql", "Test Store")
@@ -1599,10 +1597,13 @@ async fn test_transaction_rollback_preserves_consistency() {
         .unwrap();
 }
 
-// Test: Query timeout configuration is respected
+// Test: Fast query succeeds when timeout is configured
+// Note: This test verifies that normal operations complete within the configured
+// timeout. True slow query timeout testing would require database-level query
+// delays (e.g., SLEEP()), but the DataStore trait doesn't expose raw query execution.
 #[tokio::test]
 #[ignore = "requires running MySQL"]
-async fn test_query_timeout_configuration() {
+async fn test_fast_query_succeeds_with_timeout_set() {
     let database_url = get_database_url();
 
     // Use short timeout configuration
@@ -1626,7 +1627,7 @@ async fn test_query_timeout_configuration() {
         .await
         .unwrap();
 
-    // Normal operations should complete within timeout
+    // Verify that normal operations complete within the timeout
     let start = std::time::Instant::now();
     let result = store
         .read_tuples("test-timeout-config", &TupleFilter::default())
