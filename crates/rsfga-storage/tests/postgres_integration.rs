@@ -1025,3 +1025,304 @@ async fn test_postgres_store_pagination_with_conditions() {
     // Cleanup
     store.delete_store("test-paginate-cond").await.unwrap();
 }
+
+// ==========================================================================
+// Section 5: Health Check Tests (PostgreSQL)
+// ==========================================================================
+
+// Test: health_check returns healthy status with valid connection
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_health_check_returns_healthy() {
+    let store = create_store().await;
+
+    let status = store.health_check().await.unwrap();
+
+    assert!(
+        status.healthy,
+        "Store should be healthy with valid connection"
+    );
+    assert!(
+        status.latency.as_millis() < 5000,
+        "Health check should complete within 5 seconds"
+    );
+    assert_eq!(
+        status.message,
+        Some("postgresql".to_string()),
+        "Should identify as postgresql"
+    );
+}
+
+// Test: health_check returns correct pool statistics
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_health_check_pool_stats() {
+    let database_url = get_database_url();
+
+    let config = PostgresConfig {
+        database_url,
+        max_connections: 5,
+        min_connections: 1,
+        connect_timeout_secs: 30,
+        ..Default::default()
+    };
+
+    let store = PostgresDataStore::from_config(&config)
+        .await
+        .expect("Failed to create store");
+
+    store.run_migrations().await.unwrap();
+
+    let status = store.health_check().await.unwrap();
+
+    let pool_stats = status
+        .pool_stats
+        .expect("Pool stats should be present for database backends");
+
+    assert_eq!(
+        pool_stats.max_connections, 5,
+        "Max connections should match config"
+    );
+    assert!(
+        pool_stats.idle_connections + pool_stats.active_connections <= pool_stats.max_connections,
+        "Total connections should not exceed max"
+    );
+}
+
+// Test: health_check latency measurement is accurate
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_health_check_latency_measurement() {
+    let store = create_store().await;
+
+    // Run multiple health checks and verify latency is reasonable
+    let mut latencies = Vec::new();
+    for _ in 0..5 {
+        let status = store.health_check().await.unwrap();
+        latencies.push(status.latency);
+    }
+
+    // All latencies should be reasonable (under 1 second for local DB)
+    // Note: We only check upper bound because very fast health checks may
+    // round down to 0ms at millisecond precision
+    for latency in &latencies {
+        assert!(
+            latency.as_millis() < 1000,
+            "Latency should be under 1 second for local DB, got {:?}",
+            latency
+        );
+    }
+}
+
+// ==========================================================================
+// Section 6: Query Timeout Tests (PostgreSQL)
+// ==========================================================================
+
+// Test: Fast query succeeds when timeout is configured
+// Note: This test verifies that normal operations complete within the configured
+// timeout. True slow query timeout testing would require database-level query
+// delays (e.g., pg_sleep), but the DataStore trait doesn't expose raw query execution.
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_fast_query_succeeds_with_timeout_set() {
+    let database_url = get_database_url();
+
+    // Use a short timeout configuration
+    let config = PostgresConfig {
+        database_url,
+        max_connections: 5,
+        min_connections: 1,
+        connect_timeout_secs: 30,
+        query_timeout_secs: 1, // 1 second timeout
+    };
+
+    let store = PostgresDataStore::from_config(&config)
+        .await
+        .expect("Failed to create store");
+
+    store.run_migrations().await.unwrap();
+    cleanup_test_stores(&store).await;
+
+    // Create a store for testing
+    store
+        .create_store("test-timeout", "Test Store")
+        .await
+        .unwrap();
+
+    // Verify that normal operations complete within the timeout
+    let start = std::time::Instant::now();
+    let result = store
+        .read_tuples("test-timeout", &TupleFilter::default())
+        .await;
+    let elapsed = start.elapsed();
+
+    assert!(result.is_ok(), "Normal read should succeed");
+    assert!(
+        elapsed.as_secs() < 2,
+        "Read should complete within timeout, took {}ms",
+        elapsed.as_millis()
+    );
+
+    // Cleanup
+    store.delete_store("test-timeout").await.unwrap();
+}
+
+// Test: StorageError::QueryTimeout contains correct operation name
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_timeout_error_contains_operation_name() {
+    // This test verifies the error type structure exists
+    // Actual timeout testing requires database-level query delays
+    let error = StorageError::QueryTimeout {
+        operation: "read_tuples".to_string(),
+        timeout: std::time::Duration::from_secs(30),
+    };
+
+    let error_str = error.to_string();
+    assert!(
+        error_str.contains("read_tuples"),
+        "Error should contain operation name"
+    );
+    assert!(
+        error_str.contains("30"),
+        "Error should contain timeout duration"
+    );
+}
+
+// Test: Batch write is atomic on success (all tuples written or none)
+// Note: This test verifies that successful batch writes are fully committed.
+// True rollback testing would require inducing a mid-transaction failure.
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_batch_write_is_atomic_on_success() {
+    let store = create_store().await;
+    store
+        .create_store("test-tx-consistency", "Test Store")
+        .await
+        .unwrap();
+
+    // Write initial tuple
+    let tuple1 = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
+    store
+        .write_tuple("test-tx-consistency", tuple1)
+        .await
+        .unwrap();
+
+    // Verify initial state
+    let tuples = store
+        .read_tuples("test-tx-consistency", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1);
+
+    // Write another batch - this should succeed completely
+    let batch = vec![
+        StoredTuple::new("document", "doc2", "viewer", "user", "bob", None),
+        StoredTuple::new("document", "doc3", "viewer", "user", "charlie", None),
+    ];
+    store
+        .write_tuples("test-tx-consistency", batch, vec![])
+        .await
+        .unwrap();
+
+    // Verify all tuples exist (no partial writes)
+    let tuples = store
+        .read_tuples("test-tx-consistency", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        tuples.len(),
+        3,
+        "All tuples should be present after successful transaction"
+    );
+
+    // Cleanup
+    store.delete_store("test-tx-consistency").await.unwrap();
+}
+
+// Test: Concurrent health checks under load
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_concurrent_health_checks() {
+    let store = Arc::new(create_store().await);
+
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move { store.health_check().await }));
+    }
+
+    // Collect all results - this provides clearer error messages on failure
+    let results = futures::future::join_all(handles).await;
+
+    assert_eq!(results.len(), 10, "Expected 10 health check results");
+
+    for result in results {
+        // Unwrap both the JoinHandle and the health_check Result
+        // This will panic with a descriptive message on any failure
+        let status = result.expect("Task panicked").expect("Health check failed");
+        assert!(status.healthy);
+    }
+}
+
+// Test: Health check when pool has active connections
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_health_check_with_active_connections() {
+    let database_url = get_database_url();
+
+    let config = PostgresConfig {
+        database_url,
+        max_connections: 3, // Small pool
+        min_connections: 1,
+        connect_timeout_secs: 30,
+        ..Default::default()
+    };
+
+    let store = Arc::new(
+        PostgresDataStore::from_config(&config)
+            .await
+            .expect("Failed to create store"),
+    );
+
+    store.run_migrations().await.unwrap();
+    cleanup_test_stores(&store).await;
+    store
+        .create_store("test-active-pool", "Test Store")
+        .await
+        .unwrap();
+
+    // Start concurrent operations to use pool connections
+    let store_clone = Arc::clone(&store);
+    let write_handle = tokio::spawn(async move {
+        for i in 0..5 {
+            let tuple = StoredTuple::new(
+                "document",
+                format!("doc{}", i),
+                "viewer",
+                "user",
+                format!("user{}", i),
+                None,
+            );
+            store_clone
+                .write_tuple("test-active-pool", tuple)
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    });
+
+    // Run health check while writes are happening
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let status = store.health_check().await.unwrap();
+    assert!(
+        status.healthy,
+        "Health check should succeed even with active connections"
+    );
+
+    // Wait for writes to complete
+    write_handle.await.unwrap();
+
+    // Cleanup
+    store.delete_store("test-active-pool").await.unwrap();
+}
