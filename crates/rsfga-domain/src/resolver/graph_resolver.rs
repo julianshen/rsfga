@@ -228,51 +228,26 @@ where
 
     /// Validates the check request.
     fn validate_request(&self, request: &CheckRequest) -> DomainResult<()> {
-        // Validate user format
+        // Validate user format: must be in type:id format (or wildcard "*")
         if request.user.is_empty() {
             return Err(DomainError::InvalidUserFormat {
                 value: request.user.clone(),
             });
         }
-
-        // User must be in type:id format (unless wildcard)
-        if request.user != "*" {
-            if !request.user.contains(':') {
-                return Err(DomainError::InvalidUserFormat {
-                    value: request.user.clone(),
-                });
-            }
-            // Validate user parts (both type and id must be non-empty)
-            let parts: Vec<&str> = request.user.splitn(2, ':').collect();
-            if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-                return Err(DomainError::InvalidUserFormat {
-                    value: request.user.clone(),
-                });
-            }
+        if request.user != "*" && !Self::is_valid_type_id(&request.user) {
+            return Err(DomainError::InvalidUserFormat {
+                value: request.user.clone(),
+            });
         }
 
-        // Validate object format (must be type:id)
-        if request.object.is_empty() {
+        // Validate object format: must be in type:id format
+        if request.object.is_empty() || !Self::is_valid_type_id(&request.object) {
             return Err(DomainError::InvalidObjectFormat {
                 value: request.object.clone(),
             });
         }
 
-        if !request.object.contains(':') {
-            return Err(DomainError::InvalidObjectFormat {
-                value: request.object.clone(),
-            });
-        }
-
-        // Validate object parts
-        let parts: Vec<&str> = request.object.splitn(2, ':').collect();
-        if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-            return Err(DomainError::InvalidObjectFormat {
-                value: request.object.clone(),
-            });
-        }
-
-        // Validate relation
+        // Validate relation: must be non-empty
         if request.relation.is_empty() {
             return Err(DomainError::InvalidRelationFormat {
                 value: request.relation.clone(),
@@ -934,15 +909,31 @@ where
         false
     }
 
-    /// Parses an object string into type and id.
-    fn parse_object<'a>(&self, object: &'a str) -> DomainResult<(&'a str, &'a str)> {
-        let parts: Vec<&str> = object.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err(DomainError::InvalidObjectFormat {
-                value: object.to_string(),
-            });
+    /// Checks if a string is in valid `type:id` format.
+    ///
+    /// Returns `true` if the value contains a colon with non-empty parts on both sides.
+    /// This is a common validation pattern used throughout the authorization model.
+    #[inline]
+    fn is_valid_type_id(value: &str) -> bool {
+        match value.split_once(':') {
+            Some((type_part, id_part)) => !type_part.is_empty() && !id_part.is_empty(),
+            None => false,
         }
-        Ok((parts[0], parts[1]))
+    }
+
+    /// Parses an object string into type and id.
+    ///
+    /// Validates that the object is in `type:id` format where both
+    /// type and id are non-empty strings.
+    fn parse_object<'a>(&self, object: &'a str) -> DomainResult<(&'a str, &'a str)> {
+        match object.split_once(':') {
+            Some((type_part, id_part)) if !type_part.is_empty() && !id_part.is_empty() => {
+                Ok((type_part, id_part))
+            }
+            _ => Err(DomainError::InvalidObjectFormat {
+                value: object.to_string(),
+            }),
+        }
     }
 
     /// Evaluates a condition for a tuple.
