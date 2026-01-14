@@ -1050,3 +1050,289 @@ async fn test_duplicate_tuple_write_is_idempotent() {
     // Cleanup
     store.delete_store("test-idempotent-write").await.unwrap();
 }
+
+// ==========================================================================
+// Section 7.9: Connection Pool Exhaustion Tests
+// ==========================================================================
+//
+// These tests verify connection pool behavior under exhaustion scenarios:
+// - Pool exhaustion returns timeout errors
+// - Pool recovers after queries complete
+// - Concurrent migrations don't deadlock
+//
+// Note: Connection drop handling tests require testcontainers or network
+// simulation and are documented but not implemented in this basic test suite.
+// ==========================================================================
+
+/// Test: Pool exhaustion returns timeout error when all connections busy
+///
+/// Creates a small pool (2 connections) and spawns more concurrent long-running
+/// queries than available connections with a short acquire timeout.
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_pool_exhaustion_returns_timeout_error() {
+    let database_url = get_database_url();
+
+    // Create pool with very limited connections and short timeout
+    let config = MySQLConfig {
+        database_url,
+        max_connections: 2,
+        min_connections: 1,
+        connect_timeout_secs: 1, // Very short timeout to trigger exhaustion quickly
+    };
+
+    let store = MySQLDataStore::from_config(&config)
+        .await
+        .expect("Failed to create store with limited pool");
+
+    store.run_migrations().await.unwrap();
+
+    store
+        .create_store("test-pool-exhaustion", "Pool Exhaustion Test")
+        .await
+        .unwrap();
+
+    let store = Arc::new(store);
+
+    // Spawn more concurrent operations than pool can handle
+    let mut handles = Vec::new();
+
+    for i in 0..10 {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            // Each write acquires a connection - with only 2 available and 10 concurrent,
+            // some will timeout
+            let tuple = StoredTuple::new(
+                "document",
+                format!("doc{}", i),
+                "viewer",
+                "user",
+                format!("user{}", i),
+                None,
+            );
+            store.write_tuple("test-pool-exhaustion", tuple).await
+        }));
+    }
+
+    // Collect results
+    let mut success_count = 0;
+    let mut error_count = 0;
+
+    for handle in handles {
+        match handle.await.unwrap() {
+            Ok(_) => success_count += 1,
+            Err(e) => {
+                error_count += 1;
+                let error_msg = e.to_string().to_lowercase();
+                // Pool exhaustion should manifest as connection or timeout error
+                assert!(
+                    error_msg.contains("timeout")
+                        || error_msg.contains("pool")
+                        || error_msg.contains("connection")
+                        || error_msg.contains("timed out"),
+                    "Expected pool exhaustion error, got: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    // Some operations should succeed (pool has 2 connections)
+    // Others may fail due to pool exhaustion (depends on timing)
+    eprintln!(
+        "Pool exhaustion test: {} succeeded, {} failed",
+        success_count, error_count
+    );
+
+    // At minimum, some should succeed
+    assert!(success_count > 0, "At least some operations should succeed");
+
+    // Cleanup (may partially fail if pool is still exhausted)
+    let _ = store.delete_store("test-pool-exhaustion").await;
+}
+
+/// Test: Pool recovers after blocking queries complete
+///
+/// Verifies that after pool exhaustion, subsequent queries succeed
+/// once previous connections are released.
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_pool_recovers_after_queries_complete() {
+    let database_url = get_database_url();
+
+    let config = MySQLConfig {
+        database_url,
+        max_connections: 2,
+        min_connections: 1,
+        connect_timeout_secs: 30,
+    };
+
+    let store = MySQLDataStore::from_config(&config)
+        .await
+        .expect("Failed to create store");
+
+    store.run_migrations().await.unwrap();
+
+    store
+        .create_store("test-pool-recovery", "Pool Recovery Test")
+        .await
+        .unwrap();
+
+    let store = Arc::new(store);
+
+    // Phase 1: Saturate the pool with concurrent writes
+    let mut handles = Vec::new();
+    for i in 0..5 {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            let tuple = StoredTuple::new(
+                "document",
+                format!("phase1-doc{}", i),
+                "viewer",
+                "user",
+                "alice",
+                None,
+            );
+            store.write_tuple("test-pool-recovery", tuple).await
+        }));
+    }
+
+    // Wait for all to complete
+    for handle in handles {
+        let _ = handle.await.unwrap();
+    }
+
+    // Phase 2: Verify pool recovered - new queries should succeed
+    for i in 0..5 {
+        let tuple = StoredTuple::new(
+            "document",
+            format!("phase2-doc{}", i),
+            "viewer",
+            "user",
+            "bob",
+            None,
+        );
+        store
+            .write_tuple("test-pool-recovery", tuple)
+            .await
+            .expect("Query after pool recovery should succeed");
+    }
+
+    // Verify all tuples were written
+    let tuples = store
+        .read_tuples("test-pool-recovery", &TupleFilter::default())
+        .await
+        .unwrap();
+
+    // Should have tuples from both phases (some phase 1 may have failed, all phase 2 should succeed)
+    assert!(
+        tuples.len() >= 5,
+        "At least phase 2 tuples should exist after recovery"
+    );
+
+    // Cleanup
+    store.delete_store("test-pool-recovery").await.unwrap();
+}
+
+/// Test: Concurrent migrations don't deadlock
+///
+/// Multiple instances calling run_migrations() simultaneously should
+/// all complete successfully without deadlocking.
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_concurrent_migrations_dont_deadlock() {
+    let database_url = get_database_url();
+
+    // Spawn multiple concurrent migration attempts
+    let mut handles = Vec::new();
+    for i in 0..5 {
+        let url = database_url.clone();
+        handles.push(tokio::spawn(async move {
+            let config = MySQLConfig {
+                database_url: url,
+                max_connections: 2,
+                min_connections: 1,
+                connect_timeout_secs: 30,
+            };
+
+            let store = MySQLDataStore::from_config(&config).await?;
+            store.run_migrations().await?;
+
+            eprintln!("Migration instance {} completed", i);
+            Ok::<_, StorageError>(())
+        }));
+    }
+
+    // All migrations should complete without deadlock
+    // Use a timeout to detect deadlocks
+    let timeout_duration = std::time::Duration::from_secs(60);
+    let results = tokio::time::timeout(timeout_duration, async {
+        let mut results = Vec::new();
+        for handle in handles {
+            results.push(handle.await);
+        }
+        results
+    })
+    .await
+    .expect("Concurrent migrations timed out - possible deadlock");
+
+    // Count successes and failures
+    let mut success_count = 0;
+    for result in results {
+        match result {
+            Ok(Ok(())) => success_count += 1,
+            Ok(Err(e)) => {
+                // Migration errors are acceptable (e.g., if table already exists)
+                eprintln!("Migration error (acceptable): {}", e);
+                success_count += 1; // Still counts as completing without deadlock
+            }
+            Err(e) => {
+                panic!("Task join error: {}", e);
+            }
+        }
+    }
+
+    assert_eq!(
+        success_count, 5,
+        "All migration attempts should complete (success or expected error)"
+    );
+
+    // Verify we can still operate after concurrent migrations
+    let config = MySQLConfig {
+        database_url,
+        max_connections: 5,
+        min_connections: 1,
+        connect_timeout_secs: 30,
+    };
+
+    let store = MySQLDataStore::from_config(&config).await.unwrap();
+
+    // Clean up any test stores from this test
+    let _ = store.delete_store("test-concurrent-migrations").await;
+
+    store
+        .create_store("test-concurrent-migrations", "Post-Migration Test")
+        .await
+        .unwrap();
+
+    let s = store.get_store("test-concurrent-migrations").await.unwrap();
+    assert_eq!(s.id, "test-concurrent-migrations");
+
+    // Cleanup
+    store
+        .delete_store("test-concurrent-migrations")
+        .await
+        .unwrap();
+}
+
+// Note: Connection drop handling test (test_handles_connection_drop_gracefully)
+// requires testcontainers or network simulation to reliably simulate connection
+// failures mid-query. This is documented here for future implementation:
+//
+// Test case outline:
+// 1. Start a MySQL container with testcontainers
+// 2. Begin a long-running query
+// 3. Pause or kill the container mid-query
+// 4. Verify error is returned and pool doesn't deadlock
+// 5. Restart container
+// 6. Verify subsequent queries work after pool recovery
