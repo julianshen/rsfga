@@ -32,12 +32,7 @@ pub enum ValidationError {
         relation_name: String,
         referenced_type: String,
     },
-    /// A relation is referenced but not defined
-    MissingRelationDefinition {
-        type_name: String,
-        relation_name: String,
-    },
-    /// Type constraint references undefined type
+    /// Type constraint references undefined type or relation
     InvalidTypeConstraint {
         type_name: String,
         relation_name: String,
@@ -89,14 +84,6 @@ impl std::fmt::Display for ValidationError {
                 f,
                 "undefined type '{}' referenced in {}#{}",
                 referenced_type, type_name, relation_name
-            ),
-            ValidationError::MissingRelationDefinition {
-                type_name,
-                relation_name,
-            } => write!(
-                f,
-                "relation '{}' referenced but not defined in type '{}'",
-                relation_name, type_name
             ),
             ValidationError::InvalidTypeConstraint {
                 type_name,
@@ -256,10 +243,10 @@ impl ModelValidator {
 
             // Check if the referenced type exists
             if !self.defined_types.contains(ref_type) {
-                errors.push(ValidationError::InvalidTypeConstraint {
+                errors.push(ValidationError::UndefinedType {
                     type_name: type_name.to_string(),
                     relation_name: relation_name.to_string(),
-                    invalid_type: constraint.type_name.clone(),
+                    referenced_type: ref_type.to_string(),
                 });
                 continue;
             }
@@ -745,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validator_rejects_invalid_type_constraints() {
+    fn test_validator_rejects_undefined_type_in_constraint() {
         let model = AuthorizationModel {
             id: None,
             schema_version: "1.1".to_string(),
@@ -770,16 +757,16 @@ mod tests {
         let result = validate(&model);
         assert!(
             result.is_err(),
-            "Invalid type constraint should fail validation"
+            "Undefined type in constraint should fail validation"
         );
         let errors = result.unwrap_err();
         assert!(
             errors.iter().any(|e| matches!(
                 e,
-                ValidationError::InvalidTypeConstraint { invalid_type, .. }
-                if invalid_type == "nonexistent"
+                ValidationError::UndefinedType { referenced_type, .. }
+                if referenced_type == "nonexistent"
             )),
-            "Should have invalid type constraint error"
+            "Should have undefined type error"
         );
     }
 
