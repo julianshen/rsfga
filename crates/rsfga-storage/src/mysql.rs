@@ -565,7 +565,7 @@ impl DataStore for MySQLDataStore {
                 .pool
                 .begin()
                 .await
-                .map_err(|e| StorageError::QueryError {
+                .map_err(|e| StorageError::TransactionError {
                     message: format!("Failed to begin transaction: {e}"),
                 })?;
 
@@ -606,9 +606,11 @@ impl DataStore for MySQLDataStore {
                 message: format!("Failed to fetch updated store: {e}"),
             })?;
 
-            tx.commit().await.map_err(|e| StorageError::QueryError {
-                message: format!("Failed to commit transaction: {e}"),
-            })?;
+            tx.commit()
+                .await
+                .map_err(|e| StorageError::TransactionError {
+                    message: format!("Failed to commit transaction: {e}"),
+                })?;
 
             Ok(Store {
                 id: row.get("id"),
