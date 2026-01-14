@@ -762,81 +762,81 @@ impl DataStore for MySQLDataStore {
                     message: format!("Failed to begin transaction: {e}"),
                 })?;
 
-        // Batch delete using tuple comparison with IN clause.
-        // This reduces N deletes from N round trips to ceil(N/BATCH_SIZE) round trips.
-        // We use `user_relation_key` (generated column) for NULL-safe comparison.
-        for chunk in deletes.chunks(WRITE_BATCH_SIZE) {
-            // Build batch DELETE query with tuple comparison
-            let mut query = String::from(
-                "DELETE FROM tuples WHERE store_id = ? AND (object_type, object_id, relation, user_type, user_id, user_relation_key) IN (",
-            );
+            // Batch delete using tuple comparison with IN clause.
+            // This reduces N deletes from N round trips to ceil(N/BATCH_SIZE) round trips.
+            // We use `user_relation_key` (generated column) for NULL-safe comparison.
+            for chunk in deletes.chunks(WRITE_BATCH_SIZE) {
+                // Build batch DELETE query with tuple comparison
+                let mut query = String::from(
+                    "DELETE FROM tuples WHERE store_id = ? AND (object_type, object_id, relation, user_type, user_id, user_relation_key) IN (",
+                );
 
-            let placeholders: Vec<String> = chunk
-                .iter()
-                .map(|_| "(?, ?, ?, ?, ?, ?)".to_string())
-                .collect();
-            query.push_str(&placeholders.join(", "));
-            query.push(')');
+                let placeholders: Vec<String> = chunk
+                    .iter()
+                    .map(|_| "(?, ?, ?, ?, ?, ?)".to_string())
+                    .collect();
+                query.push_str(&placeholders.join(", "));
+                query.push(')');
 
-            let mut query_builder = sqlx::query(&query);
-            query_builder = query_builder.bind(store_id);
+                let mut query_builder = sqlx::query(&query);
+                query_builder = query_builder.bind(store_id);
 
-            for tuple in chunk {
-                // Use empty string for NULL user_relation to match generated column
-                let user_relation_key = tuple.user_relation.as_deref().unwrap_or("");
-                query_builder = query_builder
-                    .bind(&tuple.object_type)
-                    .bind(&tuple.object_id)
-                    .bind(&tuple.relation)
-                    .bind(&tuple.user_type)
-                    .bind(&tuple.user_id)
-                    .bind(user_relation_key);
+                for tuple in chunk {
+                    // Use empty string for NULL user_relation to match generated column
+                    let user_relation_key = tuple.user_relation.as_deref().unwrap_or("");
+                    query_builder = query_builder
+                        .bind(&tuple.object_type)
+                        .bind(&tuple.object_id)
+                        .bind(&tuple.relation)
+                        .bind(&tuple.user_type)
+                        .bind(&tuple.user_id)
+                        .bind(user_relation_key);
+                }
+
+                query_builder
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to batch delete tuples: {e}"),
+                    })?;
             }
 
-            query_builder
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to batch delete tuples: {e}"),
-                })?;
-        }
+            // Insert tuples using batch INSERT with multiple VALUES, chunked to avoid
+            // exceeding MySQL's placeholder limit (~65535) and to prevent timeout issues.
+            // ON DUPLICATE KEY UPDATE id = id is a no-op for idempotency.
+            for chunk in writes.chunks(WRITE_BATCH_SIZE) {
+                // Build batch insert query for this chunk
+                let mut query = String::from(
+                    "INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation) VALUES ",
+                );
 
-        // Insert tuples using batch INSERT with multiple VALUES, chunked to avoid
-        // exceeding MySQL's placeholder limit (~65535) and to prevent timeout issues.
-        // ON DUPLICATE KEY UPDATE id = id is a no-op for idempotency.
-        for chunk in writes.chunks(WRITE_BATCH_SIZE) {
-            // Build batch insert query for this chunk
-            let mut query = String::from(
-                "INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation) VALUES ",
-            );
+                let placeholders: Vec<String> = chunk
+                    .iter()
+                    .map(|_| "(?, ?, ?, ?, ?, ?, ?)".to_string())
+                    .collect();
+                query.push_str(&placeholders.join(", "));
+                query.push_str(" ON DUPLICATE KEY UPDATE id = id");
 
-            let placeholders: Vec<String> = chunk
-                .iter()
-                .map(|_| "(?, ?, ?, ?, ?, ?, ?)".to_string())
-                .collect();
-            query.push_str(&placeholders.join(", "));
-            query.push_str(" ON DUPLICATE KEY UPDATE id = id");
+                let mut query_builder = sqlx::query(&query);
 
-            let mut query_builder = sqlx::query(&query);
+                for tuple in chunk {
+                    query_builder = query_builder
+                        .bind(store_id)
+                        .bind(&tuple.object_type)
+                        .bind(&tuple.object_id)
+                        .bind(&tuple.relation)
+                        .bind(&tuple.user_type)
+                        .bind(&tuple.user_id)
+                        .bind(&tuple.user_relation);
+                }
 
-            for tuple in chunk {
-                query_builder = query_builder
-                    .bind(store_id)
-                    .bind(&tuple.object_type)
-                    .bind(&tuple.object_id)
-                    .bind(&tuple.relation)
-                    .bind(&tuple.user_type)
-                    .bind(&tuple.user_id)
-                    .bind(&tuple.user_relation);
+                query_builder
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to batch write tuples: {e}"),
+                    })?;
             }
-
-            query_builder
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to batch write tuples: {e}"),
-                })?;
-        }
 
             // Commit the transaction
             tx.commit()
