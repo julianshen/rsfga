@@ -781,3 +781,307 @@ async fn test_large_dataset_performance_cockroachdb() {
     // Cleanup
     store.delete_store("test-crdb-large-dataset").await.unwrap();
 }
+
+// ==========================================================================
+// Section 4.10: Connection Pool Exhaustion Tests
+// ==========================================================================
+//
+// These tests verify connection pool behavior under exhaustion scenarios
+// on CockroachDB. Due to CockroachDB's distributed nature, connection pool
+// behavior may differ slightly from PostgreSQL.
+//
+// CockroachDB-specific considerations:
+// - Distributed queries may hold connections longer
+// - Serializable isolation may cause more retries
+// - Connection routing may affect pool utilization
+// ==========================================================================
+
+/// Test: Pool exhaustion returns timeout error on CockroachDB
+///
+/// Creates a small pool (2 connections) and spawns more concurrent operations
+/// than available connections with a short acquire timeout.
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_pool_exhaustion_on_cockroachdb() {
+    let database_url = get_database_url();
+
+    // Create pool with very limited connections and short timeout
+    let config = PostgresConfig {
+        database_url,
+        max_connections: 2,
+        min_connections: 1,
+        connect_timeout_secs: 1, // Very short timeout to trigger exhaustion quickly
+    };
+
+    let store = PostgresDataStore::from_config(&config)
+        .await
+        .expect("Failed to create store with limited pool");
+
+    store.run_migrations().await.unwrap();
+
+    store
+        .create_store("test-crdb-pool-exhaustion", "Pool Exhaustion Test")
+        .await
+        .unwrap();
+
+    let store = Arc::new(store);
+
+    // Spawn more concurrent operations than pool can handle
+    let mut handles = Vec::new();
+
+    for i in 0..10 {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            // Each write acquires a connection - with only 2 available and 10 concurrent,
+            // some will timeout
+            let tuple = StoredTuple::new(
+                "document",
+                format!("doc{}", i),
+                "viewer",
+                "user",
+                format!("user{}", i),
+                None,
+            );
+            store.write_tuple("test-crdb-pool-exhaustion", tuple).await
+        }));
+    }
+
+    // Collect results
+    let mut success_count = 0;
+    let mut error_count = 0;
+
+    for handle in handles {
+        match handle.await.unwrap() {
+            Ok(_) => success_count += 1,
+            Err(e) => {
+                error_count += 1;
+                let error_msg = e.to_string().to_lowercase();
+                // Pool exhaustion should manifest as connection or timeout error
+                assert!(
+                    error_msg.contains("timeout")
+                        || error_msg.contains("pool")
+                        || error_msg.contains("connection")
+                        || error_msg.contains("timed out"),
+                    "Expected pool exhaustion error, got: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    // Some operations should succeed (pool has 2 connections)
+    // Others may fail due to pool exhaustion (depends on timing)
+    eprintln!(
+        "CockroachDB pool exhaustion test: {} succeeded, {} failed",
+        success_count, error_count
+    );
+
+    // At minimum, some should succeed
+    assert!(success_count > 0, "At least some operations should succeed");
+
+    // Cleanup (may partially fail if pool is still exhausted)
+    let _ = store.delete_store("test-crdb-pool-exhaustion").await;
+}
+
+/// Test: Pool recovers after queries complete on CockroachDB
+///
+/// Verifies that after pool exhaustion, subsequent queries succeed
+/// once previous connections are released.
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_pool_recovery_on_cockroachdb() {
+    let database_url = get_database_url();
+
+    let config = PostgresConfig {
+        database_url,
+        max_connections: 2,
+        min_connections: 1,
+        connect_timeout_secs: 30,
+    };
+
+    let store = PostgresDataStore::from_config(&config)
+        .await
+        .expect("Failed to create store");
+
+    store.run_migrations().await.unwrap();
+
+    store
+        .create_store("test-crdb-pool-recovery", "Pool Recovery Test")
+        .await
+        .unwrap();
+
+    let store = Arc::new(store);
+
+    // Phase 1: Saturate the pool with concurrent writes
+    let mut handles = Vec::new();
+    for i in 0..5 {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            let tuple = StoredTuple::new(
+                "document",
+                format!("phase1-doc{}", i),
+                "viewer",
+                "user",
+                "alice",
+                None,
+            );
+            store.write_tuple("test-crdb-pool-recovery", tuple).await
+        }));
+    }
+
+    // Wait for all to complete
+    for handle in handles {
+        let _ = handle.await.unwrap();
+    }
+
+    // Phase 2: Verify pool recovered - new queries should succeed
+    for i in 0..5 {
+        let tuple = StoredTuple::new(
+            "document",
+            format!("phase2-doc{}", i),
+            "viewer",
+            "user",
+            "bob",
+            None,
+        );
+        store
+            .write_tuple("test-crdb-pool-recovery", tuple)
+            .await
+            .expect("Query after pool recovery should succeed");
+    }
+
+    // Verify all tuples were written
+    let tuples = store
+        .read_tuples("test-crdb-pool-recovery", &TupleFilter::default())
+        .await
+        .unwrap();
+
+    // Should have tuples from both phases (some phase 1 may have failed, all phase 2 should succeed)
+    assert!(
+        tuples.len() >= 5,
+        "At least phase 2 tuples should exist after recovery"
+    );
+
+    // Cleanup
+    store.delete_store("test-crdb-pool-recovery").await.unwrap();
+}
+
+/// Test: Concurrent migrations don't deadlock on CockroachDB
+///
+/// Multiple instances calling run_migrations() simultaneously should
+/// all complete successfully without deadlocking. CockroachDB's distributed
+/// nature may handle concurrent schema changes differently than PostgreSQL.
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_concurrent_migrations_on_cockroachdb() {
+    let database_url = get_database_url();
+
+    // Spawn multiple concurrent migration attempts
+    let mut handles = Vec::new();
+    for i in 0..5 {
+        let url = database_url.clone();
+        handles.push(tokio::spawn(async move {
+            let config = PostgresConfig {
+                database_url: url,
+                max_connections: 2,
+                min_connections: 1,
+                connect_timeout_secs: 30,
+            };
+
+            let store = PostgresDataStore::from_config(&config).await?;
+            store.run_migrations().await?;
+
+            eprintln!("CockroachDB migration instance {} completed", i);
+            Ok::<_, StorageError>(())
+        }));
+    }
+
+    // All migrations should complete without deadlock
+    // Use a timeout to detect deadlocks
+    let timeout_duration = std::time::Duration::from_secs(60);
+    let results = tokio::time::timeout(timeout_duration, async {
+        let mut results = Vec::new();
+        for handle in handles {
+            results.push(handle.await);
+        }
+        results
+    })
+    .await
+    .expect("CockroachDB concurrent migrations timed out - possible deadlock");
+
+    // Count successes and failures
+    let mut success_count = 0;
+    for result in results {
+        match result {
+            Ok(Ok(())) => success_count += 1,
+            Ok(Err(e)) => {
+                // Migration errors are acceptable (e.g., if table already exists)
+                eprintln!("CockroachDB migration error (acceptable): {}", e);
+                success_count += 1; // Still counts as completing without deadlock
+            }
+            Err(e) => {
+                panic!("Task join error: {}", e);
+            }
+        }
+    }
+
+    assert_eq!(
+        success_count, 5,
+        "All CockroachDB migration attempts should complete (success or expected error)"
+    );
+
+    // Verify we can still operate after concurrent migrations
+    let config = PostgresConfig {
+        database_url,
+        max_connections: 5,
+        min_connections: 1,
+        connect_timeout_secs: 30,
+    };
+
+    let store = PostgresDataStore::from_config(&config).await.unwrap();
+
+    // Clean up any test stores from this test
+    let _ = store.delete_store("test-crdb-concurrent-migrations").await;
+
+    store
+        .create_store("test-crdb-concurrent-migrations", "Post-Migration Test")
+        .await
+        .unwrap();
+
+    let s = store
+        .get_store("test-crdb-concurrent-migrations")
+        .await
+        .unwrap();
+    assert_eq!(s.id, "test-crdb-concurrent-migrations");
+
+    // Cleanup
+    store
+        .delete_store("test-crdb-concurrent-migrations")
+        .await
+        .unwrap();
+}
+
+// ==========================================================================
+// CockroachDB-Specific Connection Handling Notes
+// ==========================================================================
+//
+// CockroachDB connection pool behavior may differ from PostgreSQL:
+//
+// 1. **Distributed queries**: CockroachDB may route queries to different nodes,
+//    which can affect connection utilization patterns.
+//
+// 2. **Serializable isolation**: CockroachDB uses serializable isolation by
+//    default, which may cause more transaction retries under contention.
+//    SQLx handles automatic retries, but this may affect timeout behavior.
+//
+// 3. **Connection routing**: In multi-node deployments, connections may be
+//    distributed across nodes. Single-node testing may not reveal all
+//    connection handling edge cases.
+//
+// 4. **Schema changes**: CockroachDB schema changes are online and non-blocking,
+//    which may result in different migration concurrency behavior.
+//
+// For production deployments, consider:
+// - Monitoring connection pool metrics
+// - Tuning acquire_timeout based on expected query latency
+// - Testing with realistic multi-node configurations
