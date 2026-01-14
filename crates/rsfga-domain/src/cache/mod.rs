@@ -15,13 +15,25 @@
 //! Cache keys include: `(store_id, object, relation, user)` to ensure
 //! complete isolation between stores and precise invalidation.
 //!
+//! # Cache Safety
+//!
+//! By default, caching is **disabled** (`enabled: false`). This is a deliberate
+//! safety measure because cached positive authorization decisions (`allowed=true`)
+//! can serve stale results after tuple writes/deletes until TTL expires.
+//!
+//! Enable caching only when:
+//! 1. You understand the staleness implications for your use case
+//! 2. Write handlers properly invalidate affected cache entries
+//! 3. The TTL is acceptable for your authorization freshness requirements
+//!
 //! # Example
 //!
 //! ```rust,ignore
 //! use rsfga_domain::cache::{CheckCache, CheckCacheConfig, CacheKey};
 //! use std::time::Duration;
 //!
-//! let config = CheckCacheConfig::default();
+//! // Explicitly enable caching (opt-in for safety)
+//! let config = CheckCacheConfig::default().with_enabled(true);
 //! let cache = CheckCache::new(config);
 //!
 //! let key = CacheKey::new("store-1", "document:doc1", "viewer", "user:alice");
@@ -35,8 +47,24 @@ use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 /// Configuration for the check cache.
+///
+/// # Cache Safety
+///
+/// By default, caching is **disabled** (`enabled: false`). This is a deliberate
+/// safety measure because cached positive authorization decisions can serve
+/// stale results after tuple writes/deletes until TTL expires.
+///
+/// Enable caching only when:
+/// 1. You understand the staleness implications for your use case
+/// 2. Write handlers properly invalidate affected cache entries
+/// 3. The TTL is acceptable for your authorization freshness requirements
 #[derive(Debug, Clone)]
 pub struct CheckCacheConfig {
+    /// Whether caching is enabled.
+    ///
+    /// Defaults to `false` for safety - cached positive auth decisions can
+    /// serve stale results. Enable explicitly when staleness is acceptable.
+    pub enabled: bool,
     /// Maximum number of entries in the cache.
     pub max_capacity: u64,
     /// Default TTL for cache entries.
@@ -46,9 +74,36 @@ pub struct CheckCacheConfig {
 impl Default for CheckCacheConfig {
     fn default() -> Self {
         Self {
+            enabled: false, // Disabled by default for safety (#131)
             max_capacity: 100_000,
             default_ttl: Duration::from_secs(10),
         }
+    }
+}
+
+impl CheckCacheConfig {
+    /// Enables or disables caching.
+    ///
+    /// # Safety Note
+    ///
+    /// Enabling caching means cached positive authorization decisions may be
+    /// served after tuple writes/deletes until TTL expires or invalidation occurs.
+    /// Only enable when this staleness window is acceptable for your use case.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Sets the maximum capacity.
+    pub fn with_max_capacity(mut self, max_capacity: u64) -> Self {
+        self.max_capacity = max_capacity;
+        self
+    }
+
+    /// Sets the default TTL.
+    pub fn with_ttl(mut self, ttl: Duration) -> Self {
+        self.default_ttl = ttl;
+        self
     }
 }
 
@@ -132,6 +187,11 @@ impl CheckCache {
     /// Returns the configuration for this cache.
     pub fn config(&self) -> &CheckCacheConfig {
         &self.config
+    }
+
+    /// Returns whether caching is enabled.
+    pub fn is_enabled(&self) -> bool {
+        self.config.enabled
     }
 
     /// Inserts a check result into the cache.
@@ -281,6 +341,11 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    /// Helper to create an enabled cache config for tests.
+    fn enabled_cache_config() -> CheckCacheConfig {
+        CheckCacheConfig::default().with_enabled(true)
+    }
+
     // ============================================================
     // Section 1: Cache Structure
     // ============================================================
@@ -288,7 +353,7 @@ mod tests {
     #[tokio::test]
     async fn test_cache_creation_and_initial_state() {
         // Arrange
-        let config = CheckCacheConfig::default();
+        let config = enabled_cache_config();
 
         // Act
         let cache = CheckCache::new(config);
@@ -302,7 +367,7 @@ mod tests {
     #[tokio::test]
     async fn test_can_insert_check_result_into_cache() {
         // Arrange
-        let cache = CheckCache::new(CheckCacheConfig::default());
+        let cache = CheckCache::new(enabled_cache_config());
         let key = CacheKey::new("store-1", "document:doc1", "viewer", "user:alice");
 
         // Act
@@ -316,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn test_can_retrieve_cached_check_result() {
         // Arrange
-        let cache = CheckCache::new(CheckCacheConfig::default());
+        let cache = CheckCache::new(enabled_cache_config());
         let key = CacheKey::new("store-1", "document:doc1", "viewer", "user:alice");
         cache.insert(key.clone(), true).await;
 
@@ -330,7 +395,7 @@ mod tests {
     #[tokio::test]
     async fn test_cache_miss_returns_none() {
         // Arrange
-        let cache = CheckCache::new(CheckCacheConfig::default());
+        let cache = CheckCache::new(enabled_cache_config());
         let key = CacheKey::new("store-1", "document:doc1", "viewer", "user:alice");
         // Intentionally NOT inserting the key
 
@@ -356,7 +421,7 @@ mod tests {
     #[tokio::test]
     async fn test_different_stores_have_separate_cache_entries() {
         // Arrange
-        let cache = CheckCache::new(CheckCacheConfig::default());
+        let cache = CheckCache::new(enabled_cache_config());
 
         // Same object/relation/user but different stores
         let key_store1 = CacheKey::new("store-1", "document:doc1", "viewer", "user:alice");
@@ -371,6 +436,24 @@ mod tests {
         assert_eq!(cache.get(&key_store2).await, Some(false));
     }
 
+    #[test]
+    fn test_cache_disabled_by_default() {
+        // Arrange & Act
+        let config = CheckCacheConfig::default();
+
+        // Assert - caching should be disabled by default for safety
+        assert!(!config.enabled);
+    }
+
+    #[test]
+    fn test_cache_can_be_explicitly_enabled() {
+        // Arrange & Act
+        let config = CheckCacheConfig::default().with_enabled(true);
+
+        // Assert
+        assert!(config.enabled);
+    }
+
     // ============================================================
     // Section 2: TTL and Eviction
     // ============================================================
@@ -379,6 +462,7 @@ mod tests {
     async fn test_cached_entry_expires_after_ttl() {
         // Arrange - use a very short TTL for testing
         let config = CheckCacheConfig {
+            enabled: true,
             max_capacity: 100,
             default_ttl: Duration::from_millis(50),
         };
@@ -403,10 +487,12 @@ mod tests {
     async fn test_ttl_is_configurable() {
         // Arrange - create two caches with different TTLs
         let short_ttl_config = CheckCacheConfig {
+            enabled: true,
             max_capacity: 100,
             default_ttl: Duration::from_millis(50),
         };
         let long_ttl_config = CheckCacheConfig {
+            enabled: true,
             max_capacity: 100,
             default_ttl: Duration::from_secs(60),
         };
@@ -437,7 +523,7 @@ mod tests {
     #[tokio::test]
     async fn test_can_manually_invalidate_cache_entry() {
         // Arrange
-        let cache = CheckCache::new(CheckCacheConfig::default());
+        let cache = CheckCache::new(enabled_cache_config());
         let key = CacheKey::new("store-1", "document:doc1", "viewer", "user:alice");
         cache.insert(key.clone(), true).await;
 
@@ -454,7 +540,7 @@ mod tests {
     #[tokio::test]
     async fn test_can_invalidate_all_entries_for_store() {
         // Arrange
-        let cache = CheckCache::new(CheckCacheConfig::default());
+        let cache = CheckCache::new(enabled_cache_config());
 
         // Insert entries for two different stores
         let key_store1_a = CacheKey::new("store-1", "doc:a", "viewer", "user:alice");
@@ -477,7 +563,7 @@ mod tests {
     #[tokio::test]
     async fn test_can_invalidate_entries_matching_pattern() {
         // Arrange
-        let cache = CheckCache::new(CheckCacheConfig::default());
+        let cache = CheckCache::new(enabled_cache_config());
 
         let key_viewer = CacheKey::new("store-1", "doc:a", "viewer", "user:alice");
         let key_editor = CacheKey::new("store-1", "doc:b", "editor", "user:alice");
@@ -501,6 +587,7 @@ mod tests {
         // Arrange - this test verifies that eviction runs in background
         // and doesn't block read operations
         let config = CheckCacheConfig {
+            enabled: true,
             max_capacity: 100,
             default_ttl: Duration::from_millis(10),
         };
@@ -546,7 +633,7 @@ mod tests {
     #[tokio::test]
     async fn test_writing_tuple_invalidates_affected_cache_entries() {
         // Arrange
-        let cache = CheckCache::new(CheckCacheConfig::default());
+        let cache = CheckCache::new(enabled_cache_config());
 
         // Cache some check results for document:doc1
         let key_viewer = CacheKey::new("store-1", "document:doc1", "viewer", "user:alice");
@@ -573,7 +660,7 @@ mod tests {
     #[tokio::test]
     async fn test_deleting_tuple_invalidates_affected_cache_entries() {
         // Arrange - same setup as write test
-        let cache = CheckCache::new(CheckCacheConfig::default());
+        let cache = CheckCache::new(enabled_cache_config());
 
         let key_viewer = CacheKey::new("store-1", "document:doc1", "viewer", "user:alice");
         let key_other_user = CacheKey::new("store-1", "document:doc1", "viewer", "user:bob");
@@ -595,7 +682,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalidation_is_async_doesnt_block_write_response() {
         // Arrange
-        let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+        let cache = Arc::new(CheckCache::new(enabled_cache_config()));
 
         // Insert many entries to make invalidation take some time
         for i in 0..100 {
@@ -634,7 +721,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalidation_completes_eventually() {
         // Arrange
-        let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+        let cache = Arc::new(CheckCache::new(enabled_cache_config()));
 
         let key = CacheKey::new("store-1", "document:doc1", "viewer", "user:alice");
         cache.insert(key.clone(), true).await;
@@ -659,7 +746,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalidation_handles_errors_gracefully() {
         // Arrange - test that invalidation doesn't panic on edge cases
-        let cache = CheckCache::new(CheckCacheConfig::default());
+        let cache = CheckCache::new(enabled_cache_config());
 
         // Act - invalidate a tuple for non-existent store/object
         // This should not panic
@@ -668,7 +755,7 @@ mod tests {
             .await;
 
         // Act - invalidate on empty cache
-        let empty_cache = CheckCache::new(CheckCacheConfig::default());
+        let empty_cache = CheckCache::new(enabled_cache_config());
         empty_cache
             .invalidate_for_tuple("store-1", "document:doc1", "viewer")
             .await;
@@ -680,7 +767,7 @@ mod tests {
     #[tokio::test]
     async fn test_can_measure_staleness_window() {
         // Arrange
-        let cache = CheckCache::new(CheckCacheConfig::default());
+        let cache = CheckCache::new(enabled_cache_config());
 
         // Insert entries
         for i in 0..10 {
@@ -728,7 +815,7 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_reads_dont_block_each_other() {
         // Arrange
-        let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+        let cache = Arc::new(CheckCache::new(enabled_cache_config()));
 
         // Pre-populate cache with entries
         for i in 0..100 {
@@ -788,7 +875,7 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_writes_dont_lose_data() {
         // Arrange
-        let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+        let cache = Arc::new(CheckCache::new(enabled_cache_config()));
         let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         // Act - spawn many concurrent write tasks, each writing to different keys
@@ -844,7 +931,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_during_write_returns_valid_result() {
         // Arrange
-        let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+        let cache = Arc::new(CheckCache::new(enabled_cache_config()));
         let key = CacheKey::new("store-1", "document:doc1", "viewer", "user:alice");
 
         // Insert initial value
@@ -881,6 +968,7 @@ mod tests {
     async fn test_cache_scales_to_1000_plus_concurrent_operations() {
         // Arrange
         let cache = Arc::new(CheckCache::new(CheckCacheConfig {
+            enabled: true,
             max_capacity: 10_000,
             default_ttl: Duration::from_secs(60),
         }));
@@ -924,7 +1012,7 @@ mod tests {
     #[tokio::test]
     async fn test_no_deadlocks_under_high_contention() {
         // Arrange
-        let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+        let cache = Arc::new(CheckCache::new(enabled_cache_config()));
 
         // Create a single "hot" key that all tasks will compete for
         let hot_key = CacheKey::new("store-1", "document:hot", "viewer", "user:alice");
