@@ -107,6 +107,9 @@ fn register_default_metrics() {
         "rsfga_storage_operation_duration_seconds",
         "Storage operation duration in seconds"
     );
+
+    // Register CEL cache metrics
+    rsfga_domain::cel::register_cel_cache_metrics();
 }
 
 /// Prometheus exposition format content type.

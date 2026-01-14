@@ -17,10 +17,18 @@
 //! # Thread Safety
 //!
 //! The cache uses moka for lock-free concurrent access with LRU eviction.
+//!
+//! # Metrics
+//!
+//! The cache emits the following Prometheus metrics:
+//! - `rsfga_cel_cache_hits_total` - Number of cache hits
+//! - `rsfga_cel_cache_misses_total` - Number of cache misses
+//! - `rsfga_cel_cache_size` - Current number of cached expressions
+//! - `rsfga_cel_cache_parse_duration_seconds` - Time to parse new expressions
 
 use moka::sync::Cache;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::error::CelError;
 use super::expression::CelExpression;
@@ -113,6 +121,14 @@ impl CelExpressionCache {
     /// If the expression is already cached, returns the cached version.
     /// Otherwise, parses the expression, caches it, and returns it.
     ///
+    /// # Metrics
+    ///
+    /// This method records the following metrics:
+    /// - `rsfga_cel_cache_hits_total` - Incremented on cache hit
+    /// - `rsfga_cel_cache_misses_total` - Incremented on cache miss
+    /// - `rsfga_cel_cache_parse_duration_seconds` - Parse time for cache misses
+    /// - `rsfga_cel_cache_size` - Updated after cache modifications
+    ///
     /// # Arguments
     ///
     /// * `expression` - The CEL expression string to parse
@@ -124,18 +140,34 @@ impl CelExpressionCache {
     pub fn get_or_parse(&self, expression: &str) -> CelResult<Arc<CelExpression>> {
         // Fast path: check cache first without allocation
         if let Some(expr) = self.cache.get(expression) {
+            metrics::counter!("rsfga_cel_cache_hits_total").increment(1);
             return Ok(expr);
         }
+
+        // Record cache miss
+        metrics::counter!("rsfga_cel_cache_misses_total").increment(1);
 
         // Slow path: use try_get_with for atomic get-or-insert with fallible initialization.
         // This ensures that when multiple threads request the same expression
         // concurrently, only ONE thread parses it and all others get the same Arc.
-        self.cache
+        let start = Instant::now();
+        let result = self
+            .cache
             .try_get_with(expression.to_string(), || {
                 let parsed = CelExpression::parse(expression)?;
                 Ok(Arc::new(parsed))
             })
-            .map_err(|e: Arc<CelError>| (*e).clone())
+            .map_err(|e: Arc<CelError>| (*e).clone());
+
+        // Record parse duration (only meaningful for actual parses, but we record
+        // it for all cache misses to track the overall slow path cost)
+        metrics::histogram!("rsfga_cel_cache_parse_duration_seconds")
+            .record(start.elapsed().as_secs_f64());
+
+        // Update cache size gauge
+        metrics::gauge!("rsfga_cel_cache_size").set(self.cache.entry_count() as f64);
+
+        result
     }
 
     /// Returns the number of cached expressions.
@@ -155,13 +187,25 @@ impl CelExpressionCache {
     ///
     /// This should be called when authorization models are updated,
     /// as condition expressions may have changed.
+    ///
+    /// # Metrics
+    ///
+    /// Updates `rsfga_cel_cache_size` gauge to 0 after invalidation.
     pub fn invalidate_all(&self) {
         self.cache.invalidate_all();
+        metrics::gauge!("rsfga_cel_cache_size").set(0.0);
     }
 
     /// Invalidates a specific expression from the cache.
+    ///
+    /// # Metrics
+    ///
+    /// Updates `rsfga_cel_cache_size` gauge after invalidation.
     pub fn invalidate(&self, expression: &str) {
         self.cache.invalidate(expression);
+        // Run pending tasks to ensure the entry is removed before updating gauge
+        self.cache.run_pending_tasks();
+        metrics::gauge!("rsfga_cel_cache_size").set(self.cache.entry_count() as f64);
     }
 
     /// Runs pending maintenance tasks (eviction, expiration).
@@ -177,6 +221,39 @@ impl Default for CelExpressionCache {
     fn default() -> Self {
         Self::new(CelCacheConfig::default())
     }
+}
+
+/// Registers CEL cache metrics descriptions.
+///
+/// Call this function once during application startup to register metric
+/// descriptions with the metrics recorder. This is optional but provides
+/// better documentation in Prometheus/Grafana.
+///
+/// # Example
+///
+/// ```ignore
+/// use rsfga_domain::cel::cache::register_cel_cache_metrics;
+///
+/// // During application initialization
+/// register_cel_cache_metrics();
+/// ```
+pub fn register_cel_cache_metrics() {
+    metrics::describe_counter!(
+        "rsfga_cel_cache_hits_total",
+        "Total number of CEL expression cache hits"
+    );
+    metrics::describe_counter!(
+        "rsfga_cel_cache_misses_total",
+        "Total number of CEL expression cache misses"
+    );
+    metrics::describe_gauge!(
+        "rsfga_cel_cache_size",
+        "Current number of cached CEL expressions"
+    );
+    metrics::describe_histogram!(
+        "rsfga_cel_cache_parse_duration_seconds",
+        "Time to parse CEL expressions (on cache miss)"
+    );
 }
 
 // Global singleton for convenience (most use cases need just one cache)
@@ -405,5 +482,43 @@ mod tests {
         };
         let cache = CelExpressionCache::new(config);
         assert_eq!(cache.max_capacity(), 500);
+    }
+
+    /// Test that metrics registration doesn't panic.
+    ///
+    /// Note: This test verifies the metrics registration function works without
+    /// requiring a full metrics recorder setup. In production, metrics are
+    /// collected by the Prometheus exporter initialized in rsfga-api.
+    #[test]
+    fn test_metrics_registration_doesnt_panic() {
+        // Should not panic even without a recorder installed
+        super::register_cel_cache_metrics();
+    }
+
+    /// Test that cache operations emit metrics without panicking.
+    ///
+    /// This test verifies that the metrics macros work correctly even without
+    /// a recorder installed. The metrics crate handles this gracefully by
+    /// using a no-op recorder.
+    #[test]
+    fn test_cache_operations_emit_metrics() {
+        let cache = CelExpressionCache::new(CelCacheConfig::default());
+
+        // Cache miss (parses expression)
+        let _ = cache.get_or_parse("x > 5");
+        cache.run_pending_tasks();
+
+        // Cache hit
+        let _ = cache.get_or_parse("x > 5");
+
+        // Invalidate specific
+        cache.invalidate("x > 5");
+
+        // Invalidate all
+        let _ = cache.get_or_parse("y < 10");
+        cache.invalidate_all();
+
+        // All operations should complete without panicking
+        // Metrics are recorded but discarded without a recorder
     }
 }
