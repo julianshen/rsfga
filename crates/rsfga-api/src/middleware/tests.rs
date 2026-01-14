@@ -77,12 +77,7 @@ async fn test_metrics_are_collected() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(metrics.get_request_count(), 1);
-    assert!(
-        metrics
-            .success_count
-            .load(std::sync::atomic::Ordering::Relaxed)
-            >= 1
-    );
+    assert!(metrics.get_success_count() >= 1);
 
     // Make second request
     let response = app
@@ -105,20 +100,10 @@ async fn test_metrics_are_collected() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(metrics.get_request_count(), 3);
-    assert!(
-        metrics
-            .server_error_count
-            .load(std::sync::atomic::Ordering::Relaxed)
-            >= 1
-    );
+    assert!(metrics.get_server_error_count() >= 1);
 
     // Duration should be recorded
-    assert!(
-        metrics
-            .total_duration_us
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > 0
-    );
+    assert!(metrics.get_total_duration_us() > 0);
 }
 
 /// Test: Tracing spans are created
