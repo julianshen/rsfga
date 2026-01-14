@@ -1095,7 +1095,6 @@ async fn test_pool_exhaustion_returns_timeout_error() {
     let store = Arc::new(store);
 
     // Spawn more concurrent operations than pool can handle
-    // Using SLEEP() to hold connections
     let mut handles = Vec::new();
 
     for i in 0..10 {
