@@ -1,51 +1,8 @@
 mod common;
 
 use anyhow::Result;
-use common::{get_grpc_url, grpc_call};
+use common::{grpc_call, grpcurl_describe, grpcurl_list};
 use serde_json::json;
-use std::process::Command;
-
-// ============================================================================
-// Section 21: gRPC Service Setup Tests
-// ============================================================================
-//
-// These tests verify basic gRPC connectivity and service availability.
-// We use grpcurl for simplicity - it uses gRPC reflection to discover and
-// call services without needing compiled protobuf stubs.
-//
-// ============================================================================
-
-/// Helper to list gRPC services
-fn grpcurl_list() -> Result<Vec<String>> {
-    let url = get_grpc_url();
-    let output = Command::new("grpcurl")
-        .args(["-plaintext", &url, "list"])
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("grpcurl list failed: {}", stderr);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let services: Vec<String> = stdout.lines().map(|s| s.to_string()).collect();
-    Ok(services)
-}
-
-/// Helper to describe a gRPC service/method
-fn grpcurl_describe(target: &str) -> Result<String> {
-    let url = get_grpc_url();
-    let output = Command::new("grpcurl")
-        .args(["-plaintext", &url, "describe", target])
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("grpcurl describe failed: {}", stderr);
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
 
 // ============================================================================
 // Tests

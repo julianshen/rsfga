@@ -582,6 +582,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-health",
+ "url",
  "urlencoding",
  "uuid",
 ]
