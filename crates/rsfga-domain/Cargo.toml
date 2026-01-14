@@ -36,6 +36,9 @@ cel-interpreter = { workspace = true }
 # Tracing
 tracing = { workspace = true }
 
+# Metrics
+metrics = { workspace = true }
+
 # Time handling (for Store timestamps - consistent with rsfga-storage)
 chrono = { workspace = true }
 

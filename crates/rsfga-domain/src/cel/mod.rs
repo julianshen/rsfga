@@ -38,7 +38,7 @@ mod context;
 mod error;
 mod expression;
 
-pub use cache::{global_cache, CelCacheConfig, CelExpressionCache};
+pub use cache::{global_cache, register_cel_cache_metrics, CelCacheConfig, CelExpressionCache};
 pub use context::{CelContext, CelResult as EvalResult, CelValue};
 pub use error::CelError;
 pub use expression::CelExpression;

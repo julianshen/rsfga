@@ -2957,6 +2957,7 @@ dependencies = [
  "criterion",
  "dashmap",
  "futures",
+ "metrics",
  "mockall",
  "moka",
  "nom",
