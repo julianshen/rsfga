@@ -687,19 +687,18 @@ impl DataStore for PostgresDataStore {
             });
         }
 
-        // Start a transaction
-        // Note: Transaction queries rely on SQLx pool acquire_timeout and database
-        // statement timeouts for protection against slow queries.
-        // TODO(#144): Consider wrapping entire transaction with tokio::time::timeout
-        // for comprehensive DoS protection. Requires careful handling of transaction
-        // rollback on timeout.
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::TransactionError {
-                message: format!("Failed to begin transaction: {e}"),
-            })?;
+        // Execute transaction with timeout protection.
+        // The entire transaction block is wrapped in a timeout to prevent DoS attacks
+        // from slow queries. On timeout, the transaction is automatically rolled back
+        // when `tx` is dropped.
+        let tx_result = tokio::time::timeout(self.query_timeout, async {
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .map_err(|e| StorageError::TransactionError {
+                    message: format!("Failed to begin transaction: {e}"),
+                })?;
 
         // Batch delete using UNNEST arrays (fixes N+1 query problem)
         if !deletes.is_empty() {
@@ -936,14 +935,24 @@ impl DataStore for PostgresDataStore {
             }
         }
 
-        // Commit the transaction
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::TransactionError {
-                message: format!("Failed to commit transaction: {e}"),
-            })?;
+            // Commit the transaction
+            tx.commit()
+                .await
+                .map_err(|e| StorageError::TransactionError {
+                    message: format!("Failed to commit transaction: {e}"),
+                })?;
 
-        Ok(())
+            Ok(())
+        })
+        .await;
+
+        match tx_result {
+            Ok(result) => result,
+            Err(_elapsed) => Err(StorageError::QueryTimeout {
+                operation: "write_tuples_transaction".to_string(),
+                timeout: self.query_timeout,
+            }),
+        }
     }
 
     #[instrument(skip(self, filter))]

@@ -557,65 +557,75 @@ impl DataStore for MySQLDataStore {
 
         // MySQL doesn't support RETURNING, so we use a transaction to ensure
         // atomicity between UPDATE and SELECT.
-        // Note: Transaction queries rely on SQLx pool acquire_timeout and database
-        // statement timeouts for protection against slow queries.
-        // TODO(#144): Consider wrapping entire transaction with tokio::time::timeout
-        // for comprehensive DoS protection.
-        let mut tx = self
-            .pool
-            .begin()
+        // Execute transaction with timeout protection for DoS prevention.
+        let id_owned = id.to_string();
+        let name_owned = name.to_string();
+        let tx_result = tokio::time::timeout(self.query_timeout, async {
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to begin transaction: {e}"),
+                })?;
+
+            let result = sqlx::query(
+                r#"
+                UPDATE stores
+                SET name = ?, updated_at = NOW()
+                WHERE id = ?
+                "#,
+            )
+            .bind(&name_owned)
+            .bind(&id_owned)
+            .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to begin transaction: {e}"),
+                message: format!("Failed to update store: {e}"),
             })?;
 
-        let result = sqlx::query(
-            r#"
-            UPDATE stores
-            SET name = ?, updated_at = NOW()
-            WHERE id = ?
-            "#,
-        )
-        .bind(name)
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to update store: {e}"),
-        })?;
+            if result.rows_affected() == 0 {
+                tx.rollback().await.ok();
+                return Err(StorageError::StoreNotFound {
+                    store_id: id_owned.clone(),
+                });
+            }
 
-        if result.rows_affected() == 0 {
-            tx.rollback().await.ok();
-            return Err(StorageError::StoreNotFound {
-                store_id: id.to_string(),
-            });
-        }
+            // Fetch the updated store within the same transaction
+            let row = sqlx::query(
+                r#"
+                SELECT id, name, created_at, updated_at
+                FROM stores
+                WHERE id = ?
+                "#,
+            )
+            .bind(&id_owned)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| StorageError::QueryError {
+                message: format!("Failed to fetch updated store: {e}"),
+            })?;
 
-        // Fetch the updated store within the same transaction
-        let row = sqlx::query(
-            r#"
-            SELECT id, name, created_at, updated_at
-            FROM stores
-            WHERE id = ?
-            "#,
-        )
-        .bind(id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to fetch updated store: {e}"),
-        })?;
+            tx.commit().await.map_err(|e| StorageError::QueryError {
+                message: format!("Failed to commit transaction: {e}"),
+            })?;
 
-        tx.commit().await.map_err(|e| StorageError::QueryError {
-            message: format!("Failed to commit transaction: {e}"),
-        })?;
-
-        Ok(Store {
-            id: row.get("id"),
-            name: row.get("name"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
+            Ok(Store {
+                id: row.get("id"),
+                name: row.get("name"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            })
         })
+        .await;
+
+        match tx_result {
+            Ok(result) => result,
+            Err(_elapsed) => Err(StorageError::QueryTimeout {
+                operation: "update_store_transaction".to_string(),
+                timeout: self.query_timeout,
+            }),
+        }
     }
 
     #[instrument(skip(self))]
@@ -739,19 +749,18 @@ impl DataStore for MySQLDataStore {
             });
         }
 
-        // Start a transaction
-        // Note: Transaction queries rely on SQLx pool acquire_timeout and database
-        // statement timeouts for protection against slow queries.
-        // TODO(#144): Consider wrapping entire transaction with tokio::time::timeout
-        // for comprehensive DoS protection. Requires careful handling of transaction
-        // rollback on timeout.
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::TransactionError {
-                message: format!("Failed to begin transaction: {e}"),
-            })?;
+        // Execute transaction with timeout protection.
+        // The entire transaction block is wrapped in a timeout to prevent DoS attacks
+        // from slow queries. On timeout, the transaction is automatically rolled back
+        // when `tx` is dropped.
+        let tx_result = tokio::time::timeout(self.query_timeout, async {
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .map_err(|e| StorageError::TransactionError {
+                    message: format!("Failed to begin transaction: {e}"),
+                })?;
 
         // Batch delete using tuple comparison with IN clause.
         // This reduces N deletes from N round trips to ceil(N/BATCH_SIZE) round trips.
@@ -829,14 +838,24 @@ impl DataStore for MySQLDataStore {
                 })?;
         }
 
-        // Commit the transaction
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::TransactionError {
-                message: format!("Failed to commit transaction: {e}"),
-            })?;
+            // Commit the transaction
+            tx.commit()
+                .await
+                .map_err(|e| StorageError::TransactionError {
+                    message: format!("Failed to commit transaction: {e}"),
+                })?;
 
-        Ok(())
+            Ok(())
+        })
+        .await;
+
+        match tx_result {
+            Ok(result) => result,
+            Err(_elapsed) => Err(StorageError::QueryTimeout {
+                operation: "write_tuples_transaction".to_string(),
+                timeout: self.query_timeout,
+            }),
+        }
     }
 
     #[instrument(skip(self, filter))]
