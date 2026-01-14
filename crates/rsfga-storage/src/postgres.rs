@@ -690,7 +690,7 @@ impl DataStore for PostgresDataStore {
         // Start a transaction
         // Note: Transaction queries rely on SQLx pool acquire_timeout and database
         // statement timeouts for protection against slow queries.
-        // TODO(#98): Consider wrapping entire transaction with tokio::time::timeout
+        // TODO(#144): Consider wrapping entire transaction with tokio::time::timeout
         // for comprehensive DoS protection. Requires careful handling of transaction
         // rollback on timeout.
         let mut tx = self

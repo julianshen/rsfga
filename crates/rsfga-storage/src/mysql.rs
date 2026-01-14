@@ -559,7 +559,7 @@ impl DataStore for MySQLDataStore {
         // atomicity between UPDATE and SELECT.
         // Note: Transaction queries rely on SQLx pool acquire_timeout and database
         // statement timeouts for protection against slow queries.
-        // TODO(#98): Consider wrapping entire transaction with tokio::time::timeout
+        // TODO(#144): Consider wrapping entire transaction with tokio::time::timeout
         // for comprehensive DoS protection.
         let mut tx = self
             .pool
@@ -742,7 +742,7 @@ impl DataStore for MySQLDataStore {
         // Start a transaction
         // Note: Transaction queries rely on SQLx pool acquire_timeout and database
         // statement timeouts for protection against slow queries.
-        // TODO(#98): Consider wrapping entire transaction with tokio::time::timeout
+        // TODO(#144): Consider wrapping entire transaction with tokio::time::timeout
         // for comprehensive DoS protection. Requires careful handling of transaction
         // rollback on timeout.
         let mut tx = self
