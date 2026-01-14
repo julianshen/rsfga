@@ -561,6 +561,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
+        // Invalidate cache for this store to prevent stale auth decisions.
+        // This is a coarse-grained stopgap until fine-grained invalidation is wired.
+        self.cache.invalidate_store(&req.store_id).await;
+
         Ok(Response::new(WriteResponse {}))
     }
 

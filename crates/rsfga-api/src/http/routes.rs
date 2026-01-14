@@ -872,6 +872,10 @@ async fn write_tuples<S: DataStore>(
         .write_tuples(&store_id, writes, deletes)
         .await?;
 
+    // Invalidate cache for this store to prevent stale auth decisions.
+    // This is a coarse-grained stopgap until fine-grained invalidation is wired.
+    state.cache.invalidate_store(&store_id).await;
+
     Ok(Json(serde_json::json!({})))
 }
 

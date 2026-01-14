@@ -4635,3 +4635,64 @@ async fn test_cache_skipped_for_request_context() {
     assert_eq!(metrics.misses, 1); // Unchanged
     assert_eq!(metrics.skips, 2); // Incremented again!
 }
+
+#[tokio::test]
+async fn test_cache_timeout_wrapper_does_not_break_normal_operation() {
+    // This test verifies that the 10ms timeout wrapper around cache operations
+    // does not interfere with normal cache behavior. The in-memory Moka cache
+    // is too fast to actually timeout, so we verify that:
+    // 1. Cache hits still work (get succeeds within timeout)
+    // 2. Cache inserts still work (insert succeeds within timeout)
+    // 3. Metrics are correctly tracked
+    //
+    // The timeout behavior for slow caches would increment 'skips' instead of
+    // 'hits' or 'misses', treating the cache as unavailable.
+
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+    let config = ResolverConfig::default().with_cache(cache);
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    let request = CheckRequest::new(
+        "store1".to_string(),
+        "user:alice".to_string(),
+        "viewer".to_string(),
+        "document:doc1".to_string(),
+        vec![],
+    );
+
+    // Perform 100 checks to stress test the timeout wrapper
+    for i in 0..100 {
+        let result = resolver.check(&request).await.unwrap();
+        assert!(result.allowed, "Check {} should be allowed", i);
+    }
+
+    // Verify metrics: 1 miss + 99 hits, 0 skips (no timeouts occurred)
+    let metrics = resolver.cache_metrics().snapshot();
+    assert_eq!(metrics.misses, 1, "Should have exactly 1 miss");
+    assert_eq!(metrics.hits, 99, "Should have exactly 99 hits");
+    assert_eq!(metrics.skips, 0, "Should have 0 skips (no timeouts)");
+}
