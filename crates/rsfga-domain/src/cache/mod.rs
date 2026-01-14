@@ -230,13 +230,17 @@ impl CheckCache {
     /// The entry will expire after the configured TTL.
     /// Also updates secondary indices for O(1) invalidation.
     pub async fn insert(&self, key: CacheKey, allowed: bool) {
+        // Clone store_id once to avoid double cloning
+        let store_id = key.store_id.clone();
+        let object_key = (store_id.clone(), key.object.clone());
+
         // Add to secondary indices for O(1) invalidation later
         self.by_store
-            .entry(key.store_id.clone())
+            .entry(store_id)
             .or_default()
             .insert(key.clone());
         self.by_object
-            .entry((key.store_id.clone(), key.object.clone()))
+            .entry(object_key)
             .or_default()
             .insert(key.clone());
 
@@ -272,27 +276,20 @@ impl CheckCache {
     /// Uses secondary index for O(K) where K is number of keys for this store,
     /// instead of O(N) where N is total cache entries.
     pub async fn invalidate_store(&self, store_id: &str) {
-        // Use secondary index for O(K) lookup instead of O(N) scan
-        let keys_to_remove: Vec<CacheKey> = self
-            .by_store
-            .get(store_id)
-            .map(|keys| keys.iter().cloned().collect())
-            .unwrap_or_default();
-
-        // Remove from cache
-        for key in &keys_to_remove {
-            self.cache.invalidate(key).await;
-            // Also remove from by_object index
-            if let Some(mut keys) = self
-                .by_object
-                .get_mut(&(key.store_id.clone(), key.object.clone()))
-            {
-                keys.remove(key);
+        // Use atomic remove() to avoid TOCTOU race condition.
+        // This ensures no concurrent insert can add keys between reading and removing.
+        if let Some((_, keys_to_remove)) = self.by_store.remove(store_id) {
+            for key in &keys_to_remove {
+                self.cache.invalidate(key).await;
+                // Also remove from by_object index
+                if let Some(mut object_keys) = self
+                    .by_object
+                    .get_mut(&(key.store_id.clone(), key.object.clone()))
+                {
+                    object_keys.remove(key);
+                }
             }
         }
-
-        // Remove entire store entry from by_store index
-        self.by_store.remove(store_id);
     }
 
     /// Invalidates entries matching a predicate.
@@ -341,25 +338,18 @@ impl CheckCache {
     /// For now, we use a conservative approach and invalidate all entries
     /// for the affected object across all relations.
     pub async fn invalidate_for_tuple(&self, store_id: &str, object: &str, _relation: &str) {
-        // Use by_object index for O(K) lookup instead of O(N) scan
+        // Use atomic remove() to avoid TOCTOU race condition.
+        // This ensures no concurrent insert can add keys between reading and removing.
         let index_key = (store_id.to_string(), object.to_string());
-        let keys_to_remove: Vec<CacheKey> = self
-            .by_object
-            .get(&index_key)
-            .map(|keys| keys.iter().cloned().collect())
-            .unwrap_or_default();
-
-        // Remove from cache
-        for key in &keys_to_remove {
-            self.cache.invalidate(key).await;
-            // Also remove from by_store index
-            if let Some(mut keys) = self.by_store.get_mut(&key.store_id) {
-                keys.remove(key);
+        if let Some((_, keys_to_remove)) = self.by_object.remove(&index_key) {
+            for key in &keys_to_remove {
+                self.cache.invalidate(key).await;
+                // Also remove from by_store index
+                if let Some(mut store_keys) = self.by_store.get_mut(&key.store_id) {
+                    store_keys.remove(key);
+                }
             }
         }
-
-        // Remove entire object entry from by_object index
-        self.by_object.remove(&index_key);
     }
 
     /// Spawns an async invalidation task that runs in the background.

@@ -48,7 +48,7 @@ async fn setup_store_with_tuples(n: usize) -> Arc<MemoryDataStore> {
 }
 
 /// Benchmark: Write single tuple to store with N existing tuples.
-/// Current implementation is O(N) due to HashSet creation for duplicate check.
+/// Implementation uses HashSet for O(1) insert with built-in duplicate handling.
 fn bench_write_single_tuple(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
@@ -201,7 +201,7 @@ fn bench_read_by_user(c: &mut Criterion) {
 }
 
 /// Benchmark: Delete single tuple from store with N tuples.
-/// Current implementation is O(N) due to linear scan.
+/// Implementation uses HashSet for O(1) removal.
 fn bench_delete_single_tuple(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
@@ -276,7 +276,7 @@ fn bench_read_paginated(c: &mut Criterion) {
 }
 
 /// Benchmark: Check if tuple exists (write duplicate).
-/// Tests the duplicate detection path which is O(N) in current impl.
+/// Tests the duplicate detection path which is O(1) with HashSet.
 fn bench_write_duplicate_check(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
