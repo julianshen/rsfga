@@ -28,7 +28,7 @@ use std::{
     time::Instant,
 };
 
-use axum::http::{Request, Response};
+use axum::{extract::MatchedPath, http::{Request, Response}};
 use tower::{Layer, Service};
 
 /// Collected request metrics.
@@ -203,7 +203,13 @@ where
     fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
         let start = Instant::now();
         let method = request.method().to_string();
-        let path = request.uri().path().to_string();
+        // Use matched route pattern to avoid cardinality explosion in Prometheus.
+        // Falls back to raw path if MatchedPath is not available (e.g., 404 routes).
+        let path = request
+            .extensions()
+            .get::<MatchedPath>()
+            .map(|p| p.as_str().to_string())
+            .unwrap_or_else(|| request.uri().path().to_string());
         let metrics = std::sync::Arc::clone(&self.metrics);
         let mut inner = self.inner.clone();
 
