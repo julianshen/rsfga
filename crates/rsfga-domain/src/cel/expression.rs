@@ -122,7 +122,7 @@ impl CelExpression {
     /// assert!(result.is_truthy());
     /// ```
     pub fn evaluate(&self, context: &CelContext) -> CelResult<EvalResult> {
-        let cel_ctx = context.to_cel_context();
+        let cel_ctx = context.to_cel_context()?;
 
         // Execute the program with the context
         let result = self
@@ -189,7 +189,7 @@ impl CelExpression {
         // The Program is wrapped in Arc and is Send+Sync, so we can share it
         // across threads without re-parsing.
         let eval_future = tokio::task::spawn_blocking(move || {
-            let cel_ctx = ctx_data.to_cel_context();
+            let cel_ctx = ctx_data.to_cel_context()?;
             let result = program
                 .execute(&cel_ctx)
                 .map_err(|e| CelError::EvaluationError {

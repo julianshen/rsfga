@@ -12,6 +12,6 @@ mod types_proptest;
 
 pub use parser::{parse, ParserError, ParserResult};
 pub use types::{
-    AuthorizationModel, Condition, ConditionParameter, Object, Relation, RelationDefinition, Store,
-    Tuple, TypeConstraint, TypeDefinition, User, Userset,
+    AuthorizationModel, Condition, ConditionError, ConditionParameter, Object, Relation,
+    RelationDefinition, Store, Tuple, TypeConstraint, TypeDefinition, User, Userset,
 };

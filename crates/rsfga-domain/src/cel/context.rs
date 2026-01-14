@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use cel_interpreter::objects::Key;
 use cel_interpreter::{Context, Value};
 
+use super::CelError;
+
 /// A context for CEL expression evaluation containing variable bindings
 ///
 /// The context provides variables that can be accessed in CEL expressions
@@ -125,18 +127,23 @@ impl CelContext {
 
     /// Convert to cel_interpreter Context
     ///
-    /// Note: `add_variable` returns a `Result` which errors on duplicate variable names.
-    /// This is safe to use `expect()` because we are iterating over a `HashMap` which
-    /// guarantees unique keys, so `add_variable` will never be called with a duplicate name.
-    pub(crate) fn to_cel_context(&self) -> Context<'_> {
+    /// # Errors
+    ///
+    /// Returns `CelError::ContextError` if adding a variable to the context fails.
+    /// In practice, this should never happen because we iterate over a `HashMap`
+    /// which guarantees unique keys, and `add_variable` only fails on duplicates.
+    pub(crate) fn to_cel_context(&self) -> Result<Context<'_>, CelError> {
         let mut ctx = Context::default();
 
         for (name, value) in &self.variables {
             ctx.add_variable(name.as_str(), cel_value_to_value(value))
-                .expect("Failed to add variable to CEL context - this should not happen");
+                .map_err(|e| CelError::ContextError {
+                    name: name.clone(),
+                    message: e.to_string(),
+                })?;
         }
 
-        ctx
+        Ok(ctx)
     }
 }
 
