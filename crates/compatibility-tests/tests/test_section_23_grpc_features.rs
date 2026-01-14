@@ -1,7 +1,10 @@
 mod common;
 
 use anyhow::Result;
-use common::{create_test_store_grpc, get_grpc_url, get_openfga_url, grpc_call};
+use common::{
+    create_test_store_grpc, get_grpc_url, get_openfga_url, grpc_call, grpc_call_with_error,
+    grpcurl_describe,
+};
 use serde_json::json;
 use std::process::Command;
 
@@ -17,37 +20,15 @@ use std::process::Command;
 //
 // ============================================================================
 
-/// Execute gRPC call with grpcurl and capture full output including errors
-fn grpc_call_with_error(method: &str, data: &serde_json::Value) -> Result<(bool, String, String)> {
-    let url = get_grpc_url();
-    let data_str = serde_json::to_string(data)?;
-
-    let output = Command::new("grpcurl")
-        .args(["-plaintext", "-d", &data_str, &url, method])
-        .output()?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    Ok((output.status.success(), stdout, stderr))
-}
-
-/// Execute grpcurl to list service methods
+/// Extract method names from a service description.
+///
+/// Parses grpcurl describe output to extract RPC method names.
 fn grpcurl_list_methods(service: &str) -> Result<Vec<String>> {
-    let url = get_grpc_url();
-    let output = Command::new("grpcurl")
-        .args(["-plaintext", &url, "describe", service])
-        .output()?;
+    let description = grpcurl_describe(service)?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("grpcurl describe failed: {}", stderr);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     // Parse method names from describe output
     // Expected format: "  rpc MethodName ( .SomeRequest ) returns ( .SomeResponse );"
-    let methods: Vec<String> = stdout
+    let methods: Vec<String> = description
         .lines()
         .filter(|line| line.contains("rpc "))
         .filter_map(|line| {

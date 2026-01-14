@@ -5,8 +5,10 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
+use url::Url;
 use uuid::Uuid;
 
 // ============================================================================
@@ -125,13 +127,63 @@ pub fn get_openfga_url() -> String {
     std::env::var("OPENFGA_URL").unwrap_or_else(|_| "http://localhost:18080".to_string())
 }
 
-/// Helper function to get OpenFGA gRPC URL (port 18081)
+/// Helper function to get OpenFGA gRPC URL.
+///
+/// Returns the host:port string (without scheme) for use with grpcurl.
+///
+/// The gRPC URL can be configured via:
+/// - `OPENFGA_GRPC_URL` environment variable (host:port format, e.g., "localhost:18081")
+/// - Derived from `OPENFGA_URL` by adding 1 to the HTTP port
+///
+/// # Examples
+///
+/// ```ignore
+/// // With OPENFGA_URL=http://localhost:18080 -> returns "localhost:18081"
+/// // With OPENFGA_GRPC_URL=myhost:9090 -> returns "myhost:9090"
+/// ```
 pub fn get_grpc_url() -> String {
+    // First check if gRPC URL is explicitly set
+    if let Ok(grpc_url) = std::env::var("OPENFGA_GRPC_URL") {
+        return grpc_url;
+    }
+
+    // Otherwise derive from HTTP URL
     let http_url = get_openfga_url();
-    http_url
-        .replace(":18080", ":18081")
-        .replace("http://", "")
-        .replace("https://", "")
+
+    // Parse the URL properly
+    match Url::parse(&http_url) {
+        Ok(parsed) => {
+            let host = parsed.host_str().unwrap_or("localhost");
+            // Use port_or_known_default() to handle default ports (80 for http, 443 for https)
+            // If the scheme is unknown, fall back to OpenFGA's default port 18080
+            let http_port = parsed.port_or_known_default().unwrap_or(18080);
+            let grpc_port = http_port + 1;
+            format!("{}:{}", host, grpc_port)
+        }
+        Err(_) => {
+            // Fallback: try to extract host:port manually for malformed URLs
+            let without_scheme = http_url
+                .strip_prefix("http://")
+                .or_else(|| http_url.strip_prefix("https://"))
+                .unwrap_or(&http_url);
+
+            // Remove any path component
+            let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
+
+            // Try to increment the port if present
+            if let Some((host, port_str)) = host_port.rsplit_once(':') {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    return format!("{}:{}", host, port + 1);
+                }
+            }
+
+            // Default fallback
+            format!(
+                "{}:18081",
+                host_port.split(':').next().unwrap_or("localhost")
+            )
+        }
+    }
 }
 
 /// Helper function to create a test store
@@ -575,8 +627,6 @@ pub fn http_client() -> reqwest::Client {
 /// - Linux: Download from https://github.com/fullstorydev/grpcurl/releases
 /// - Go: `go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest`
 pub fn is_grpcurl_available() -> bool {
-    use std::process::Command;
-
     Command::new("grpcurl")
         .arg("--version")
         .output()
@@ -586,8 +636,6 @@ pub fn is_grpcurl_available() -> bool {
 
 /// Execute gRPC call with grpcurl and return parsed JSON response
 pub fn grpc_call(method: &str, data: &serde_json::Value) -> Result<serde_json::Value> {
-    use std::process::Command;
-
     let url = get_grpc_url();
     let data_str = serde_json::to_string(data)?;
 
@@ -683,8 +731,6 @@ pub fn grpc_streaming_call(
     method: &str,
     data: &serde_json::Value,
 ) -> Result<Vec<serde_json::Value>> {
-    use std::process::Command;
-
     let url = get_grpc_url();
     let data_str = serde_json::to_string(data)?;
 
@@ -711,6 +757,82 @@ pub fn create_test_store_grpc(name: &str) -> Result<String> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("CreateStore response missing 'id' field"))?;
     Ok(store_id.to_string())
+}
+
+/// Execute gRPC call with grpcurl and capture full output including errors.
+///
+/// Unlike `grpc_call` which only returns success responses, this function
+/// returns a tuple of (success, stdout, stderr) to allow inspection of
+/// error responses.
+///
+/// # Returns
+///
+/// * `(true, stdout, stderr)` - Command succeeded (exit code 0)
+/// * `(false, stdout, stderr)` - Command failed (non-zero exit code)
+pub fn grpc_call_with_error(
+    method: &str,
+    data: &serde_json::Value,
+) -> Result<(bool, String, String)> {
+    let url = get_grpc_url();
+    let data_str = serde_json::to_string(data)?;
+
+    let output = Command::new("grpcurl")
+        .args(["-plaintext", "-d", &data_str, &url, method])
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    Ok((output.status.success(), stdout, stderr))
+}
+
+/// List available gRPC services on the server.
+///
+/// Uses grpcurl's reflection to discover available services.
+///
+/// # Returns
+///
+/// A list of fully qualified service names (e.g., "openfga.v1.OpenFGAService").
+pub fn grpcurl_list() -> Result<Vec<String>> {
+    let url = get_grpc_url();
+    let output = Command::new("grpcurl")
+        .args(["-plaintext", &url, "list"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("grpcurl list failed: {}", stderr);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let services: Vec<String> = stdout.lines().map(|s| s.to_string()).collect();
+    Ok(services)
+}
+
+/// Describe a gRPC service or method.
+///
+/// Uses grpcurl's reflection to get the description of a service or method.
+///
+/// # Arguments
+///
+/// * `target` - Service name (e.g., "openfga.v1.OpenFGAService") or
+///   method name (e.g., "openfga.v1.OpenFGAService.Check")
+///
+/// # Returns
+///
+/// The protobuf description of the service or method.
+pub fn grpcurl_describe(target: &str) -> Result<String> {
+    let url = get_grpc_url();
+    let output = Command::new("grpcurl")
+        .args(["-plaintext", &url, "describe", target])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("grpcurl describe failed: {}", stderr);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 // ============================================================================
@@ -795,4 +917,102 @@ pub async fn read_tuples_filtered(
 
     let read_response: ReadResponse = response.json().await?;
     Ok(read_response.tuples)
+}
+
+// ============================================================================
+// Unit Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that get_grpc_url derives port correctly from default HTTP URL
+    #[test]
+    fn test_get_grpc_url_derives_port_from_http() {
+        // Clear any existing env vars for predictable test
+        std::env::remove_var("OPENFGA_GRPC_URL");
+        std::env::remove_var("OPENFGA_URL");
+
+        // Default should be localhost:18081 (18080 + 1)
+        let result = get_grpc_url();
+        assert_eq!(result, "localhost:18081");
+    }
+
+    /// Test that OPENFGA_GRPC_URL takes precedence
+    #[test]
+    fn test_get_grpc_url_respects_grpc_url_env_var() {
+        // Set up
+        std::env::set_var("OPENFGA_GRPC_URL", "custom-host:9999");
+        std::env::remove_var("OPENFGA_URL");
+
+        let result = get_grpc_url();
+
+        // Clean up
+        std::env::remove_var("OPENFGA_GRPC_URL");
+
+        assert_eq!(result, "custom-host:9999");
+    }
+
+    /// Test port derivation with custom OPENFGA_URL
+    #[test]
+    fn test_get_grpc_url_derives_from_custom_http_url() {
+        // Set up
+        std::env::remove_var("OPENFGA_GRPC_URL");
+        std::env::set_var("OPENFGA_URL", "http://myserver:8080");
+
+        let result = get_grpc_url();
+
+        // Clean up
+        std::env::remove_var("OPENFGA_URL");
+
+        assert_eq!(result, "myserver:8081");
+    }
+
+    /// Test with HTTPS URL
+    #[test]
+    fn test_get_grpc_url_handles_https() {
+        // Set up
+        std::env::remove_var("OPENFGA_GRPC_URL");
+        std::env::set_var("OPENFGA_URL", "https://secure.example.com:443");
+
+        let result = get_grpc_url();
+
+        // Clean up
+        std::env::remove_var("OPENFGA_URL");
+
+        assert_eq!(result, "secure.example.com:444");
+    }
+
+    /// Test URL without explicit port (uses scheme's default port)
+    #[test]
+    fn test_get_grpc_url_handles_url_without_port() {
+        // Set up
+        std::env::remove_var("OPENFGA_GRPC_URL");
+        std::env::set_var("OPENFGA_URL", "http://example.com");
+
+        let result = get_grpc_url();
+
+        // Clean up
+        std::env::remove_var("OPENFGA_URL");
+
+        // When no port specified, url crate uses scheme's default (80 for http)
+        // So gRPC port is 81
+        assert_eq!(result, "example.com:81");
+    }
+
+    /// Test URL with path component (should be stripped)
+    #[test]
+    fn test_get_grpc_url_strips_path() {
+        // Set up
+        std::env::remove_var("OPENFGA_GRPC_URL");
+        std::env::set_var("OPENFGA_URL", "http://localhost:8080/v1/api");
+
+        let result = get_grpc_url();
+
+        // Clean up
+        std::env::remove_var("OPENFGA_URL");
+
+        assert_eq!(result, "localhost:8081");
+    }
 }
