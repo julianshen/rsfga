@@ -1045,7 +1045,7 @@ where
             .evaluate_bool_with_timeout(&cel_ctx, self.config.timeout)
             .await
             .map_err(|e| DomainError::ResolverError {
-                message: format!("condition evaluation failed: {}", e),
+                message: format!("condition evaluation failed: {e}"),
             })?;
 
         Ok(result)

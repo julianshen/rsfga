@@ -205,7 +205,7 @@ impl CelExpression {
             Ok(Ok(result)) => result,
             Ok(Err(join_error)) => Err(CelError::EvaluationError {
                 expression: self.source.clone(),
-                message: format!("Task join error: {}", join_error),
+                message: format!("Task join error: {join_error}"),
             }),
             Err(_elapsed) => Err(CelError::Timeout {
                 expression: self.source.clone(),
