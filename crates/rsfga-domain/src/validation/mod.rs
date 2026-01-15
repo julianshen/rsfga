@@ -1,10 +1,13 @@
 //! Authorization model validation.
 //!
 //! Validates that authorization models are semantically correct:
+//! - Model has at least one type definition (not empty)
 //! - No cyclic relation definitions
 //! - All referenced types exist
 //! - All referenced relations exist
-//! - Type constraints are satisfied
+//! - Type constraints are satisfied (including `type#relation` format)
+//! - All referenced conditions exist in the model
+//! - All condition expressions are valid CEL syntax
 
 use std::collections::{HashMap, HashSet};
 
