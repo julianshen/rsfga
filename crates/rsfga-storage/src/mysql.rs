@@ -5,11 +5,11 @@
 
 use async_trait::async_trait;
 
-/// Maximum number of tuples to insert in a single batch INSERT statement.
+/// Default maximum number of tuples to insert in a single batch INSERT statement.
 /// MySQL has a limit on the number of placeholders (~65535). With 7 columns
 /// per tuple, this gives us room for ~9000 tuples, but we use 1000 for safety
 /// and to avoid excessively large queries that may cause timeouts.
-const WRITE_BATCH_SIZE: usize = 1000;
+const DEFAULT_WRITE_BATCH_SIZE: usize = 1000;
 
 /// Default health check timeout in seconds.
 /// Uses a shorter timeout than regular queries since health checks should be fast.
@@ -65,6 +65,19 @@ pub struct MySQLConfig {
     /// Should be shorter than query timeout for fast Kubernetes probe responses.
     /// Default: 5 seconds.
     pub health_check_timeout_secs: u64,
+    /// Maximum number of tuples per batch INSERT/DELETE operation.
+    ///
+    /// Larger values improve throughput but increase memory usage and query size.
+    /// MySQL has a limit of ~65535 placeholders per query. With 7 columns per tuple,
+    /// the max safe batch is ~9000.
+    ///
+    /// Tuning guidelines:
+    /// - **High-throughput ingestion**: Increase to 3000-5000 for better throughput
+    /// - **Constrained environments**: Decrease to 500 for lower memory usage
+    /// - **TiDB compatibility**: May need adjustment based on TiDB version
+    ///
+    /// Default: 1000 (safe for all MySQL-compatible databases)
+    pub write_batch_size: usize,
 }
 
 // Custom Debug implementation to hide credentials in database_url
@@ -79,6 +92,7 @@ impl std::fmt::Debug for MySQLConfig {
             .field("read_timeout_secs", &self.read_timeout_secs)
             .field("write_timeout_secs", &self.write_timeout_secs)
             .field("health_check_timeout_secs", &self.health_check_timeout_secs)
+            .field("write_batch_size", &self.write_batch_size)
             .finish()
     }
 }
@@ -94,6 +108,7 @@ impl Default for MySQLConfig {
             read_timeout_secs: None,
             write_timeout_secs: None,
             health_check_timeout_secs: DEFAULT_HEALTH_CHECK_TIMEOUT_SECS,
+            write_batch_size: DEFAULT_WRITE_BATCH_SIZE,
         }
     }
 }
@@ -129,12 +144,15 @@ pub struct MySQLDataStore {
     write_timeout: std::time::Duration,
     /// Health check timeout duration.
     health_check_timeout: std::time::Duration,
+    /// Maximum number of tuples per batch INSERT/DELETE operation.
+    write_batch_size: usize,
 }
 
 impl MySQLDataStore {
     /// Creates a new MySQL data store from a connection pool.
     ///
-    /// Uses default query timeout of 30 seconds for all operations.
+    /// Uses default query timeout of 30 seconds for all operations and
+    /// default write batch size of 1000.
     pub fn new(pool: MySqlPool) -> Self {
         let default_timeout = std::time::Duration::from_secs(DEFAULT_QUERY_TIMEOUT_SECS);
         Self {
@@ -143,12 +161,14 @@ impl MySQLDataStore {
             read_timeout: default_timeout,
             write_timeout: default_timeout,
             health_check_timeout: std::time::Duration::from_secs(DEFAULT_HEALTH_CHECK_TIMEOUT_SECS),
+            write_batch_size: DEFAULT_WRITE_BATCH_SIZE,
         }
     }
 
     /// Creates a new MySQL data store from a connection pool with custom timeout.
     ///
     /// The provided timeout is used for all operation types.
+    /// Uses default write batch size of 1000.
     pub fn with_timeout(pool: MySqlPool, query_timeout: std::time::Duration) -> Self {
         Self {
             pool,
@@ -156,6 +176,7 @@ impl MySQLDataStore {
             read_timeout: query_timeout,
             write_timeout: query_timeout,
             health_check_timeout: std::time::Duration::from_secs(DEFAULT_HEALTH_CHECK_TIMEOUT_SECS),
+            write_batch_size: DEFAULT_WRITE_BATCH_SIZE,
         }
     }
 
@@ -186,6 +207,7 @@ impl MySQLDataStore {
                 .map(std::time::Duration::from_secs)
                 .unwrap_or(default_timeout),
             health_check_timeout: std::time::Duration::from_secs(config.health_check_timeout_secs),
+            write_batch_size: config.write_batch_size,
         })
     }
 
@@ -899,7 +921,7 @@ impl DataStore for MySQLDataStore {
             // Batch delete using tuple comparison with IN clause.
             // This reduces N deletes from N round trips to ceil(N/BATCH_SIZE) round trips.
             // We use `user_relation_key` (generated column) for NULL-safe comparison.
-            for chunk in deletes.chunks(WRITE_BATCH_SIZE) {
+            for chunk in deletes.chunks(self.write_batch_size) {
                 // Build batch DELETE query with tuple comparison
                 let mut query = String::from(
                     "DELETE FROM tuples WHERE store_id = ? AND (object_type, object_id, relation, user_type, user_id, user_relation_key) IN (",
@@ -938,7 +960,7 @@ impl DataStore for MySQLDataStore {
             // Insert tuples using batch INSERT with multiple VALUES, chunked to avoid
             // exceeding MySQL's placeholder limit (~65535) and to prevent timeout issues.
             // ON DUPLICATE KEY UPDATE id = id is a no-op for idempotency.
-            for chunk in writes.chunks(WRITE_BATCH_SIZE) {
+            for chunk in writes.chunks(self.write_batch_size) {
                 // Build batch insert query for this chunk
                 let mut query = String::from(
                     "INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation) VALUES ",
@@ -1727,6 +1749,7 @@ mod tests {
             config.health_check_timeout_secs,
             DEFAULT_HEALTH_CHECK_TIMEOUT_SECS
         );
+        assert_eq!(config.write_batch_size, DEFAULT_WRITE_BATCH_SIZE);
     }
 
     #[test]
@@ -1747,6 +1770,26 @@ mod tests {
     }
 
     #[test]
+    fn test_mysql_config_with_custom_batch_size() {
+        // High-throughput configuration
+        let high_throughput_config = MySQLConfig {
+            write_batch_size: 5000,
+            ..Default::default()
+        };
+        assert_eq!(high_throughput_config.write_batch_size, 5000);
+
+        // Constrained environment configuration
+        let constrained_config = MySQLConfig {
+            write_batch_size: 500,
+            ..Default::default()
+        };
+        assert_eq!(constrained_config.write_batch_size, 500);
+
+        // Verify default is still 1000
+        assert_eq!(DEFAULT_WRITE_BATCH_SIZE, 1000);
+    }
+
+    #[test]
     fn test_mysql_config_debug_hides_credentials() {
         let config = MySQLConfig {
             database_url: "mysql://user:password@localhost/rsfga".to_string(),
@@ -1755,10 +1798,11 @@ mod tests {
         let debug_output = format!("{:?}", config);
         assert!(debug_output.contains("[REDACTED]"));
         assert!(!debug_output.contains("password"));
-        // Should include new timeout fields
+        // Should include timeout and batch size fields
         assert!(debug_output.contains("read_timeout_secs"));
         assert!(debug_output.contains("write_timeout_secs"));
         assert!(debug_output.contains("health_check_timeout_secs"));
+        assert!(debug_output.contains("write_batch_size"));
     }
 
     #[test]
