@@ -290,6 +290,13 @@ impl PostgresDataStore {
 
         let (status, final_result) = match result {
             Ok(Ok(value)) => ("success", Ok(value)),
+            Ok(Err(StorageError::QueryTimeout { .. })) => (
+                "timeout",
+                Err(StorageError::QueryTimeout {
+                    operation: operation.to_string(),
+                    timeout,
+                }),
+            ),
             Ok(Err(e)) => ("error", Err(e)),
             Err(_elapsed) => (
                 "timeout",

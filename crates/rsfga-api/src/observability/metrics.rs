@@ -121,11 +121,11 @@ fn register_default_metrics() {
     // Describe storage health check metrics
     metrics::describe_histogram!(
         "rsfga_storage_health_check_duration_seconds",
-        "Storage health check duration in seconds"
+        "Storage health check duration in seconds by backend and status"
     );
     metrics::describe_gauge!(
         "rsfga_storage_pool_connections",
-        "Number of database pool connections by state (active, idle, max)"
+        "Number of database pool connections by backend and state (active, idle, max)"
     );
 
     // Register CEL cache metrics
