@@ -2,7 +2,6 @@ mod common;
 
 use anyhow::Result;
 use common::{create_test_store, get_openfga_url};
-use std::time::Instant;
 
 // ============================================================================
 // Section 18: Rate Limiting & Throttling Tests
@@ -34,8 +33,6 @@ async fn test_api_rate_limiting_behavior() -> Result<()> {
     let mut success_count = 0;
     let mut rate_limited_count = 0;
 
-    let start = Instant::now();
-
     for _ in 0..100 {
         let response = client
             .get(format!("{}/stores/{}", get_openfga_url(), store_id))
@@ -49,8 +46,6 @@ async fn test_api_rate_limiting_behavior() -> Result<()> {
         }
     }
 
-    let duration = start.elapsed();
-
     // Assert: OpenFGA does not have built-in rate limiting
     assert_eq!(
         success_count, 100,
@@ -61,12 +56,8 @@ async fn test_api_rate_limiting_behavior() -> Result<()> {
         "No requests should be rate limited by default"
     );
 
-    // Performance sanity check: 100 requests should complete quickly
-    assert!(
-        duration.as_secs() < 10,
-        "100 requests should complete in < 10s, took: {:?}",
-        duration
-    );
+    // Note: No timing assertion here - wall-clock timing is unreliable on CI runners
+    // and this test is about rate limiting behavior, not performance.
 
     // Document: If rate limiting were implemented, 429 responses should include:
     // - HTTP Status: 429 Too Many Requests
