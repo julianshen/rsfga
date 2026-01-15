@@ -28,6 +28,65 @@ use crate::traits::{
     StoredTuple, TupleFilter,
 };
 
+/// Parse a database row into a StoredTuple.
+/// Shared between read_tuples and read_tuples_paginated.
+///
+/// Returns `StorageResult` for consistent error handling with PostgreSQL,
+/// even though MySQL doesn't yet support conditions.
+fn row_to_stored_tuple(row: sqlx::mysql::MySqlRow) -> StorageResult<StoredTuple> {
+    Ok(StoredTuple {
+        object_type: row.get("object_type"),
+        object_id: row.get("object_id"),
+        relation: row.get("relation"),
+        user_type: row.get("user_type"),
+        user_id: row.get("user_id"),
+        user_relation: row.get("user_relation"),
+        // MySQL storage doesn't support conditions yet
+        condition_name: None,
+        condition_context: None,
+    })
+}
+
+/// Apply filter conditions to a query builder.
+/// Shared between read_tuples and read_tuples_paginated.
+fn apply_tuple_filters<'a>(
+    builder: &mut sqlx::QueryBuilder<'a, sqlx::MySql>,
+    filter: &'a TupleFilter,
+    user_filter: Option<(String, String, Option<String>)>,
+) {
+    if let Some(ref object_type) = filter.object_type {
+        builder.push(" AND object_type = ");
+        builder.push_bind(object_type.as_str());
+    }
+
+    if let Some(ref object_id) = filter.object_id {
+        builder.push(" AND object_id = ");
+        builder.push_bind(object_id.as_str());
+    }
+
+    if let Some(ref relation) = filter.relation {
+        builder.push(" AND relation = ");
+        builder.push_bind(relation.as_str());
+    }
+
+    if let Some((user_type, user_id, user_relation)) = user_filter {
+        builder.push(" AND user_type = ");
+        builder.push_bind(user_type);
+        builder.push(" AND user_id = ");
+        builder.push_bind(user_id);
+        if let Some(rel) = user_relation {
+            builder.push(" AND user_relation = ");
+            builder.push_bind(rel);
+        } else {
+            builder.push(" AND user_relation IS NULL");
+        }
+    }
+
+    // Note: condition_name filtering is not supported in MySQL storage yet.
+    // The filter.condition_name field is checked before calling this function
+    // and returns an error if set.
+}
+
 /// MySQL configuration options.
 #[derive(Clone)]
 pub struct MySQLConfig {
@@ -1060,33 +1119,8 @@ impl DataStore for MySQLDataStore {
         );
         builder.push_bind(store_id);
 
-        if let Some(ref object_type) = filter.object_type {
-            builder.push(" AND object_type = ");
-            builder.push_bind(object_type);
-        }
-
-        if let Some(ref object_id) = filter.object_id {
-            builder.push(" AND object_id = ");
-            builder.push_bind(object_id);
-        }
-
-        if let Some(ref relation) = filter.relation {
-            builder.push(" AND relation = ");
-            builder.push_bind(relation);
-        }
-
-        if let Some((user_type, user_id, user_relation)) = user_filter {
-            builder.push(" AND user_type = ");
-            builder.push_bind(user_type);
-            builder.push(" AND user_id = ");
-            builder.push_bind(user_id);
-            if let Some(rel) = user_relation {
-                builder.push(" AND user_relation = ");
-                builder.push_bind(rel);
-            } else {
-                builder.push(" AND user_relation IS NULL");
-            }
-        }
+        // Apply filter conditions using shared helper
+        apply_tuple_filters(&mut builder, filter, user_filter);
 
         builder.push(" ORDER BY created_at DESC, id DESC");
 
@@ -1104,19 +1138,9 @@ impl DataStore for MySQLDataStore {
             })
             .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| StoredTuple {
-                object_type: row.get("object_type"),
-                object_id: row.get("object_id"),
-                relation: row.get("relation"),
-                user_type: row.get("user_type"),
-                user_id: row.get("user_id"),
-                user_relation: row.get("user_relation"),
-                condition_name: None,
-                condition_context: None,
-            })
-            .collect())
+        rows.into_iter()
+            .map(row_to_stored_tuple)
+            .collect::<StorageResult<Vec<_>>>()
     }
 
     #[instrument(skip(self, filter, pagination))]
@@ -1174,33 +1198,8 @@ impl DataStore for MySQLDataStore {
         );
         builder.push_bind(store_id);
 
-        if let Some(ref object_type) = filter.object_type {
-            builder.push(" AND object_type = ");
-            builder.push_bind(object_type);
-        }
-
-        if let Some(ref object_id) = filter.object_id {
-            builder.push(" AND object_id = ");
-            builder.push_bind(object_id);
-        }
-
-        if let Some(ref relation) = filter.relation {
-            builder.push(" AND relation = ");
-            builder.push_bind(relation);
-        }
-
-        if let Some((user_type, user_id, user_relation)) = user_filter {
-            builder.push(" AND user_type = ");
-            builder.push_bind(user_type);
-            builder.push(" AND user_id = ");
-            builder.push_bind(user_id);
-            if let Some(rel) = user_relation {
-                builder.push(" AND user_relation = ");
-                builder.push_bind(rel);
-            } else {
-                builder.push(" AND user_relation IS NULL");
-            }
-        }
+        // Apply filter conditions using shared helper
+        apply_tuple_filters(&mut builder, filter, user_filter);
 
         builder.push(" ORDER BY created_at DESC, id DESC LIMIT ");
         builder.push_bind(page_size);
@@ -1222,17 +1221,8 @@ impl DataStore for MySQLDataStore {
 
         let items: Vec<StoredTuple> = rows
             .into_iter()
-            .map(|row| StoredTuple {
-                object_type: row.get("object_type"),
-                object_id: row.get("object_id"),
-                relation: row.get("relation"),
-                user_type: row.get("user_type"),
-                user_id: row.get("user_id"),
-                user_relation: row.get("user_relation"),
-                condition_name: None,
-                condition_context: None,
-            })
-            .collect();
+            .map(row_to_stored_tuple)
+            .collect::<StorageResult<Vec<_>>>()?;
 
         let next_offset = offset + items.len() as i64;
         let continuation_token = if items.len() == page_size as usize {
