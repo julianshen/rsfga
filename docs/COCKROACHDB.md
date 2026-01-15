@@ -114,11 +114,16 @@ postgresql://rsfga_user:password@node1:26257,node2:26257,node3:26257/rsfga?sslmo
 export RSFGA_STORAGE__BACKEND=postgres
 export RSFGA_STORAGE__DATABASE_URL="postgresql://..."
 
-# Optional (with defaults)
+# Optional (with RSFGA defaults shown)
 export RSFGA_STORAGE__POOL_SIZE=10
-export RSFGA_STORAGE__CONNECTION_TIMEOUT_SECS=30
-export RSFGA_STORAGE__QUERY_TIMEOUT_SECS=30
+export RSFGA_STORAGE__CONNECT_TIMEOUT_SECS=30    # Default: 30s
+export RSFGA_STORAGE__QUERY_TIMEOUT_SECS=30      # Default: 30s
+export RSFGA_STORAGE__READ_TIMEOUT_SECS=30       # Optional, falls back to QUERY_TIMEOUT
+export RSFGA_STORAGE__WRITE_TIMEOUT_SECS=30      # Optional, falls back to QUERY_TIMEOUT
+export RSFGA_STORAGE__HEALTH_CHECK_TIMEOUT_SECS=5  # Default: 5s
 ```
+
+> **CockroachDB Note:** The default timeouts (30s) are generally appropriate for CockroachDB. For multi-region deployments with higher latency, consider increasing `query_timeout_secs` to 60s. For single-node development, the defaults work well.
 
 ### Config File
 
@@ -127,8 +132,11 @@ storage:
   backend: postgres
   database_url: "postgresql://rsfga_user:password@crdb:26257/rsfga"
   pool_size: 10
-  connection_timeout_secs: 30
-  query_timeout_secs: 30
+  connect_timeout_secs: 30       # Time to establish connection
+  query_timeout_secs: 30         # Default timeout for all queries
+  read_timeout_secs: 30          # Optional: override for read operations
+  write_timeout_secs: 60         # Optional: override for write operations (higher for multi-region)
+  health_check_timeout_secs: 5   # Health check timeout
 ```
 
 ## CockroachDB-Specific Behaviors
@@ -330,6 +338,8 @@ CREATE INDEX idx_tuples_store_relation ON tuples(store_id, relation);
 CREATE INDEX idx_tuples_condition ON tuples(store_id, condition_name) WHERE condition_name IS NOT NULL;
 ```
 
+> **Index Tuning Caveat:** These indexes cover common RSFGA query patterns. For specific workloads with unusual access patterns, use `EXPLAIN ANALYZE` to identify missing indexes. Be cautious about adding indexes as they increase write latency and storage. Monitor index usage with `SHOW STATISTICS` and remove unused indexes.
+
 ## Cluster Sizing
 
 > **Note:** The sizing recommendations below are starting points based on general workload characteristics. Your actual requirements may vary significantly. Always benchmark with representative data and traffic patterns before finalizing production sizing.
@@ -364,6 +374,8 @@ Recommended pool size = (nodes × cores) / rsfga_instances
 - 2 RSFGA instances
 - Pool size per instance = 12 / 2 = 6 (use 10 for headroom)
 
+> **Caveat:** This formula is a starting point. Actual optimal pool size depends on query complexity, connection overhead, and workload patterns. Monitor connection wait times and adjust accordingly. Too many connections can overwhelm the cluster; too few can cause request queuing.
+
 ## Best Practices
 
 ### 1. Use SSL in Production
@@ -378,13 +390,23 @@ cockroach cert create-client rsfga_user --certs-dir=certs --ca-key=certs/ca.key
 postgresql://rsfga_user@crdb:26257/rsfga?sslmode=verify-full&sslrootcert=/certs/ca.crt&sslcert=/certs/client.rsfga_user.crt&sslkey=/certs/client.rsfga_user.key
 ```
 
+> **Security Note:** Never store database credentials in plain text configuration files or environment variables in production. Use secrets management solutions such as:
+> - Kubernetes Secrets (with encryption at rest)
+> - HashiCorp Vault
+> - AWS Secrets Manager / GCP Secret Manager / Azure Key Vault
+> - Environment variable injection from CI/CD pipelines
+
 ### 2. Configure Appropriate Timeouts
 
 ```yaml
 storage:
-  connection_timeout_secs: 30  # Allow for cluster discovery
-  query_timeout_secs: 30       # Handle distributed queries
+  connect_timeout_secs: 30       # Allow for cluster discovery
+  query_timeout_secs: 30         # Default for all queries
+  write_timeout_secs: 60         # Higher for multi-region writes
+  health_check_timeout_secs: 5   # Quick health checks
 ```
+
+> **Tip:** For multi-region deployments, increase `write_timeout_secs` to accommodate cross-region consensus latency.
 
 ### 3. Monitor Cluster Health
 
