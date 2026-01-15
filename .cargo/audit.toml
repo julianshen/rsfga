@@ -11,4 +11,13 @@ ignore = [
     # use RSA for key generation/exchange, so the risk is minimal.
     # We will monitor for upstream fixes.
     "RUSTSEC-2023-0071",
+
+    # tokio-tar 0.3.1 - PAX extended headers parsing vulnerability (RUSTSEC-2025-0111)
+    # Severity: Medium
+    # Status: No fixed upgrade available
+    # Impact: This is a dev-dependency only (testcontainers). The vulnerability
+    # involves PAX header parsing which could allow file smuggling when extracting
+    # archives. RSFGA does not extract untrusted archives - testcontainers only
+    # uses it for pulling trusted Docker images. Risk is minimal for test usage.
+    "RUSTSEC-2025-0111",
 ]

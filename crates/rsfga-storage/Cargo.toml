@@ -44,6 +44,10 @@ futures = { workspace = true }
 criterion = { workspace = true }
 rand = "0.8"
 
+# Testcontainers for integration tests
+testcontainers = "0.26"
+testcontainers-modules = { version = "0.14", features = ["postgres", "mysql"] }
+
 [[bench]]
 name = "storage_benchmarks"
 harness = false
