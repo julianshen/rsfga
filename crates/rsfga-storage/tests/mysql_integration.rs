@@ -1645,3 +1645,690 @@ async fn test_fast_query_succeeds_with_timeout_set() {
     // Cleanup
     store.delete_store("test-timeout-config").await.unwrap();
 }
+
+// ==========================================================================
+// Section 7.12: Unicode and Special Characters Tests (Issue #96)
+// ==========================================================================
+
+// Test: Unicode object_ids (emoji, CJK characters)
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_unicode_object_ids() {
+    let store = create_store().await;
+    store
+        .create_store("test-unicode-objects", "Test Store")
+        .await
+        .unwrap();
+
+    // Test various Unicode characters
+    let tuples = vec![
+        // Emoji
+        StoredTuple::new("document", "doc-🚀-rocket", "viewer", "user", "alice", None),
+        // CJK characters (Chinese)
+        StoredTuple::new("document", "文档-中文", "viewer", "user", "alice", None),
+        // CJK characters (Japanese)
+        StoredTuple::new(
+            "document",
+            "ドキュメント-日本語",
+            "viewer",
+            "user",
+            "alice",
+            None,
+        ),
+        // CJK characters (Korean)
+        StoredTuple::new("document", "문서-한국어", "viewer", "user", "alice", None),
+        // Mixed emoji and text
+        StoredTuple::new(
+            "document",
+            "doc-💻📱🎮-devices",
+            "viewer",
+            "user",
+            "alice",
+            None,
+        ),
+        // Arabic
+        StoredTuple::new("document", "وثيقة-عربي", "viewer", "user", "alice", None),
+        // Cyrillic
+        StoredTuple::new(
+            "document",
+            "документ-русский",
+            "viewer",
+            "user",
+            "alice",
+            None,
+        ),
+    ];
+
+    store
+        .write_tuples("test-unicode-objects", tuples.clone(), vec![])
+        .await
+        .expect("Should write tuples with Unicode object_ids");
+
+    // Read back and verify
+    let result = store
+        .read_tuples("test-unicode-objects", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 7, "All Unicode tuples should be stored");
+
+    // Verify specific Unicode object can be filtered
+    let filter = TupleFilter {
+        object_id: Some("doc-🚀-rocket".to_string()),
+        ..Default::default()
+    };
+    let filtered = store
+        .read_tuples("test-unicode-objects", &filter)
+        .await
+        .unwrap();
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].object_id, "doc-🚀-rocket");
+
+    // Cleanup
+    store.delete_store("test-unicode-objects").await.unwrap();
+}
+
+// Test: Special characters in user_id
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_special_characters_in_user_id() {
+    let store = create_store().await;
+    store
+        .create_store("test-special-users", "Test Store")
+        .await
+        .unwrap();
+
+    // Test various special characters in user_id
+    let tuples = vec![
+        // Email-like format
+        StoredTuple::new(
+            "document",
+            "doc1",
+            "viewer",
+            "user",
+            "alice@example.com",
+            None,
+        ),
+        // UUID format
+        StoredTuple::new(
+            "document",
+            "doc2",
+            "viewer",
+            "user",
+            "550e8400-e29b-41d4-a716-446655440000",
+            None,
+        ),
+        // Underscores and hyphens
+        StoredTuple::new(
+            "document",
+            "doc3",
+            "viewer",
+            "user",
+            "user_with-special",
+            None,
+        ),
+        // Dots
+        StoredTuple::new(
+            "document",
+            "doc4",
+            "viewer",
+            "user",
+            "first.last.name",
+            None,
+        ),
+        // Plus sign (common in emails)
+        StoredTuple::new(
+            "document",
+            "doc5",
+            "viewer",
+            "user",
+            "user+tag@mail.com",
+            None,
+        ),
+    ];
+
+    store
+        .write_tuples("test-special-users", tuples.clone(), vec![])
+        .await
+        .expect("Should write tuples with special characters in user_id");
+
+    // Read back and verify
+    let result = store
+        .read_tuples("test-special-users", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        result.len(),
+        5,
+        "All tuples with special user_ids should be stored"
+    );
+
+    // Filter by specific user
+    let filter = TupleFilter {
+        user: Some("user:alice@example.com".to_string()),
+        ..Default::default()
+    };
+    let filtered = store
+        .read_tuples("test-special-users", &filter)
+        .await
+        .unwrap();
+    assert_eq!(filtered.len(), 1);
+
+    // Cleanup
+    store.delete_store("test-special-users").await.unwrap();
+}
+
+// Test: Maximum length strings (VARCHAR(255) boundary)
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_maximum_length_strings() {
+    let store = create_store().await;
+    store
+        .create_store("test-max-length", "Test Store")
+        .await
+        .unwrap();
+
+    // Create a 255-character string (typical VARCHAR limit)
+    let max_length_id: String = "x".repeat(255);
+
+    let tuple = StoredTuple::new(
+        "document",
+        max_length_id.clone(),
+        "viewer",
+        "user",
+        max_length_id.clone(),
+        None,
+    );
+
+    store
+        .write_tuple("test-max-length", tuple)
+        .await
+        .expect("Should write tuple with max length strings");
+
+    // Read back and verify
+    let result = store
+        .read_tuples("test-max-length", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].object_id.len(), 255);
+    assert_eq!(result[0].user_id.len(), 255);
+
+    // Cleanup
+    store.delete_store("test-max-length").await.unwrap();
+}
+
+// ==========================================================================
+// Section 7.13: Boundary Conditions Tests (Issue #96)
+// ==========================================================================
+
+// Test: Exactly WRITE_BATCH_SIZE tuples (1000)
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_exactly_batch_size_tuples() {
+    let store = create_store().await;
+    store
+        .create_store("test-exact-batch", "Test Store")
+        .await
+        .unwrap();
+
+    // Generate exactly 1000 tuples (WRITE_BATCH_SIZE)
+    let tuples: Vec<StoredTuple> = (0..1000)
+        .map(|i| {
+            StoredTuple::new(
+                "document",
+                format!("doc{}", i),
+                "viewer",
+                "user",
+                format!("user{}", i % 100),
+                None,
+            )
+        })
+        .collect();
+
+    store
+        .write_tuples("test-exact-batch", tuples, vec![])
+        .await
+        .expect("Should write exactly WRITE_BATCH_SIZE tuples");
+
+    // Verify count
+    let result = store
+        .read_tuples("test-exact-batch", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1000, "Exactly 1000 tuples should be stored");
+
+    // Cleanup
+    store.delete_store("test-exact-batch").await.unwrap();
+}
+
+// Test: WRITE_BATCH_SIZE + 1 tuples (1001)
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_batch_size_plus_one_tuples() {
+    let store = create_store().await;
+    store
+        .create_store("test-batch-plus-one", "Test Store")
+        .await
+        .unwrap();
+
+    // Generate 1001 tuples (WRITE_BATCH_SIZE + 1)
+    let tuples: Vec<StoredTuple> = (0..1001)
+        .map(|i| {
+            StoredTuple::new(
+                "document",
+                format!("doc{}", i),
+                "viewer",
+                "user",
+                format!("user{}", i % 100),
+                None,
+            )
+        })
+        .collect();
+
+    store
+        .write_tuples("test-batch-plus-one", tuples, vec![])
+        .await
+        .expect("Should write WRITE_BATCH_SIZE + 1 tuples (crosses chunk boundary)");
+
+    // Verify count
+    let result = store
+        .read_tuples("test-batch-plus-one", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1001, "Exactly 1001 tuples should be stored");
+
+    // Cleanup
+    store.delete_store("test-batch-plus-one").await.unwrap();
+}
+
+// Test: Empty batch writes (0 tuples)
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_empty_batch_write() {
+    let store = create_store().await;
+    store
+        .create_store("test-empty-batch", "Test Store")
+        .await
+        .unwrap();
+
+    // Write empty batch
+    store
+        .write_tuples("test-empty-batch", vec![], vec![])
+        .await
+        .expect("Empty batch write should succeed");
+
+    // Verify no tuples
+    let result = store
+        .read_tuples("test-empty-batch", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 0, "No tuples should be stored");
+
+    // Cleanup
+    store.delete_store("test-empty-batch").await.unwrap();
+}
+
+// Test: Single tuple via write_tuples (batch API with 1 element)
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_single_tuple_via_batch_api() {
+    let store = create_store().await;
+    store
+        .create_store("test-single-batch", "Test Store")
+        .await
+        .unwrap();
+
+    // Write single tuple using batch API
+    let tuples = vec![StoredTuple::new(
+        "document",
+        "single-doc",
+        "viewer",
+        "user",
+        "alice",
+        None,
+    )];
+
+    store
+        .write_tuples("test-single-batch", tuples, vec![])
+        .await
+        .expect("Single tuple batch write should succeed");
+
+    // Verify
+    let result = store
+        .read_tuples("test-single-batch", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].object_id, "single-doc");
+
+    // Cleanup
+    store.delete_store("test-single-batch").await.unwrap();
+}
+
+// ==========================================================================
+// Section 7.14: Error Recovery Tests (Issue #96)
+// ==========================================================================
+
+// Test: Duplicate deletes (deleting same tuple twice)
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_duplicate_delete() {
+    let store = create_store().await;
+    store
+        .create_store("test-dup-delete", "Test Store")
+        .await
+        .unwrap();
+
+    let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
+
+    // Write tuple
+    store
+        .write_tuple("test-dup-delete", tuple.clone())
+        .await
+        .unwrap();
+
+    // Delete once
+    store
+        .delete_tuple("test-dup-delete", tuple.clone())
+        .await
+        .expect("First delete should succeed");
+
+    // Delete again - should not error (idempotent)
+    store
+        .delete_tuple("test-dup-delete", tuple.clone())
+        .await
+        .expect("Second delete should also succeed (idempotent)");
+
+    // Verify no tuples remain
+    let result = store
+        .read_tuples("test-dup-delete", &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 0);
+
+    // Cleanup
+    store.delete_store("test-dup-delete").await.unwrap();
+}
+
+// Test: Delete of non-existent tuple
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_delete_nonexistent_tuple() {
+    let store = create_store().await;
+    store
+        .create_store("test-delete-nonexist", "Test Store")
+        .await
+        .unwrap();
+
+    let tuple = StoredTuple::new("document", "never-existed", "viewer", "user", "alice", None);
+
+    // Delete tuple that was never written - should not error
+    store
+        .delete_tuple("test-delete-nonexist", tuple)
+        .await
+        .expect("Delete of non-existent tuple should succeed (no-op)");
+
+    // Cleanup
+    store.delete_store("test-delete-nonexist").await.unwrap();
+}
+
+// ==========================================================================
+// Section 7.15: Pagination Edge Cases Tests (Issue #96)
+// ==========================================================================
+
+use rsfga_storage::PaginationOptions;
+
+// Test: Pagination with exactly page_size results
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_pagination_exactly_page_size() {
+    let store = create_store().await;
+    store
+        .create_store("test-exact-page", "Test Store")
+        .await
+        .unwrap();
+
+    // Write exactly 10 tuples
+    let tuples: Vec<StoredTuple> = (0..10)
+        .map(|i| {
+            StoredTuple::new(
+                "document",
+                format!("doc{:02}", i),
+                "viewer",
+                "user",
+                "alice",
+                None,
+            )
+        })
+        .collect();
+
+    store
+        .write_tuples("test-exact-page", tuples, vec![])
+        .await
+        .unwrap();
+
+    // Request exactly 10 items (page_size == total count)
+    let page = store
+        .read_tuples_paginated(
+            "test-exact-page",
+            &TupleFilter::default(),
+            &PaginationOptions {
+                page_size: Some(10),
+                continuation_token: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(page.items.len(), 10, "Should return all 10 items");
+    // When page_size equals total count, there may or may not be a token
+    // depending on implementation. The key is that a subsequent request
+    // with any token should return 0 items.
+
+    if page.continuation_token.is_some() {
+        let next_page = store
+            .read_tuples_paginated(
+                "test-exact-page",
+                &TupleFilter::default(),
+                &PaginationOptions {
+                    page_size: Some(10),
+                    continuation_token: page.continuation_token,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(next_page.items.len(), 0, "Next page should be empty");
+    }
+
+    // Cleanup
+    store.delete_store("test-exact-page").await.unwrap();
+}
+
+// Test: Continuation token at end of results
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_continuation_token_at_end() {
+    let store = create_store().await;
+    store
+        .create_store("test-end-token", "Test Store")
+        .await
+        .unwrap();
+
+    // Write 5 tuples
+    let tuples: Vec<StoredTuple> = (0..5)
+        .map(|i| {
+            StoredTuple::new(
+                "document",
+                format!("doc{}", i),
+                "viewer",
+                "user",
+                "alice",
+                None,
+            )
+        })
+        .collect();
+
+    store
+        .write_tuples("test-end-token", tuples, vec![])
+        .await
+        .unwrap();
+
+    // Get first page of 3
+    let page1 = store
+        .read_tuples_paginated(
+            "test-end-token",
+            &TupleFilter::default(),
+            &PaginationOptions {
+                page_size: Some(3),
+                continuation_token: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(page1.items.len(), 3);
+    assert!(
+        page1.continuation_token.is_some(),
+        "Should have token for more results"
+    );
+
+    // Get second page (remaining 2)
+    let page2 = store
+        .read_tuples_paginated(
+            "test-end-token",
+            &TupleFilter::default(),
+            &PaginationOptions {
+                page_size: Some(3),
+                continuation_token: page1.continuation_token,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(page2.items.len(), 2, "Should return remaining 2 items");
+
+    // If there's a token, the next page should be empty
+    if page2.continuation_token.is_some() {
+        let page3 = store
+            .read_tuples_paginated(
+                "test-end-token",
+                &TupleFilter::default(),
+                &PaginationOptions {
+                    page_size: Some(3),
+                    continuation_token: page2.continuation_token,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page3.items.len(), 0, "Third page should be empty");
+    }
+
+    // Cleanup
+    store.delete_store("test-end-token").await.unwrap();
+}
+
+// Test: Invalid continuation token handling
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_invalid_continuation_token() {
+    let store = create_store().await;
+    store
+        .create_store("test-invalid-token", "Test Store")
+        .await
+        .unwrap();
+
+    // Write some tuples
+    let tuples: Vec<StoredTuple> = (0..5)
+        .map(|i| {
+            StoredTuple::new(
+                "document",
+                format!("doc{}", i),
+                "viewer",
+                "user",
+                "alice",
+                None,
+            )
+        })
+        .collect();
+
+    store
+        .write_tuples("test-invalid-token", tuples, vec![])
+        .await
+        .unwrap();
+
+    // Try with completely invalid token (not valid base64)
+    let result = store
+        .read_tuples_paginated(
+            "test-invalid-token",
+            &TupleFilter::default(),
+            &PaginationOptions {
+                page_size: Some(3),
+                continuation_token: Some("not-valid-base64!!!".to_string()),
+            },
+        )
+        .await;
+
+    // Should return an error for invalid token
+    assert!(
+        result.is_err(),
+        "Invalid continuation token should return error"
+    );
+
+    // Try with valid base64 but invalid format
+    let result = store
+        .read_tuples_paginated(
+            "test-invalid-token",
+            &TupleFilter::default(),
+            &PaginationOptions {
+                page_size: Some(3),
+                continuation_token: Some(base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    "invalid-json-content",
+                )),
+            },
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Malformed continuation token should return error"
+    );
+
+    // Cleanup
+    store.delete_store("test-invalid-token").await.unwrap();
+}
+
+// Test: Empty result set pagination
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_pagination_empty_results() {
+    let store = create_store().await;
+    store
+        .create_store("test-empty-pagination", "Test Store")
+        .await
+        .unwrap();
+
+    // Don't write any tuples
+
+    // Request paginated results from empty store
+    let page = store
+        .read_tuples_paginated(
+            "test-empty-pagination",
+            &TupleFilter::default(),
+            &PaginationOptions {
+                page_size: Some(10),
+                continuation_token: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(page.items.len(), 0, "Should return empty list");
+    assert!(
+        page.continuation_token.is_none(),
+        "Should not have continuation token for empty results"
+    );
+
+    // Cleanup
+    store.delete_store("test-empty-pagination").await.unwrap();
+}
