@@ -11,9 +11,12 @@ use async_trait::async_trait;
 /// and to avoid excessively large queries that may cause timeouts.
 const WRITE_BATCH_SIZE: usize = 1000;
 
-/// Health check timeout in seconds.
+/// Default health check timeout in seconds.
 /// Uses a shorter timeout than regular queries since health checks should be fast.
-const HEALTH_CHECK_TIMEOUT_SECS: u64 = 5;
+const DEFAULT_HEALTH_CHECK_TIMEOUT_SECS: u64 = 5;
+
+/// Default query timeout in seconds.
+const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 30;
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 use sqlx::Row;
 use tracing::{debug, instrument};
@@ -41,12 +44,27 @@ pub struct MySQLConfig {
     /// connections. Note: This is passed to SQLx's `acquire_timeout()`, not
     /// TCP connect timeout.
     pub connect_timeout_secs: u64,
-    /// Query timeout in seconds.
+    /// Default query timeout in seconds.
     ///
     /// Maximum time to wait for a query to complete. If a query exceeds this
     /// duration, it will be cancelled and return `StorageError::QueryTimeout`.
     /// Default: 30 seconds.
     pub query_timeout_secs: u64,
+    /// Timeout for read operations in seconds.
+    ///
+    /// Applies to: `read_tuples`, `list_stores`, `get_store`, `get_authorization_model`, etc.
+    /// Falls back to `query_timeout_secs` if not set.
+    pub read_timeout_secs: Option<u64>,
+    /// Timeout for write operations in seconds.
+    ///
+    /// Applies to: `create_store`, `write_tuples`, `delete_store`, etc.
+    /// Falls back to `query_timeout_secs` if not set.
+    pub write_timeout_secs: Option<u64>,
+    /// Timeout for health checks in seconds.
+    ///
+    /// Should be shorter than query timeout for fast Kubernetes probe responses.
+    /// Default: 5 seconds.
+    pub health_check_timeout_secs: u64,
 }
 
 // Custom Debug implementation to hide credentials in database_url
@@ -58,6 +76,9 @@ impl std::fmt::Debug for MySQLConfig {
             .field("min_connections", &self.min_connections)
             .field("connect_timeout_secs", &self.connect_timeout_secs)
             .field("query_timeout_secs", &self.query_timeout_secs)
+            .field("read_timeout_secs", &self.read_timeout_secs)
+            .field("write_timeout_secs", &self.write_timeout_secs)
+            .field("health_check_timeout_secs", &self.health_check_timeout_secs)
             .finish()
     }
 }
@@ -69,7 +90,10 @@ impl Default for MySQLConfig {
             max_connections: 10,
             min_connections: 1,
             connect_timeout_secs: 30,
-            query_timeout_secs: 30,
+            query_timeout_secs: DEFAULT_QUERY_TIMEOUT_SECS,
+            read_timeout_secs: None,
+            write_timeout_secs: None,
+            health_check_timeout_secs: DEFAULT_HEALTH_CHECK_TIMEOUT_SECS,
         }
     }
 }
@@ -97,26 +121,41 @@ impl Default for MySQLConfig {
 /// and deletes in a single call succeed or fail together.
 pub struct MySQLDataStore {
     pool: MySqlPool,
-    /// Query timeout duration.
+    /// Default query timeout duration.
     query_timeout: std::time::Duration,
+    /// Read operation timeout duration.
+    read_timeout: std::time::Duration,
+    /// Write operation timeout duration.
+    write_timeout: std::time::Duration,
+    /// Health check timeout duration.
+    health_check_timeout: std::time::Duration,
 }
 
 impl MySQLDataStore {
     /// Creates a new MySQL data store from a connection pool.
     ///
-    /// Uses default query timeout of 30 seconds.
+    /// Uses default query timeout of 30 seconds for all operations.
     pub fn new(pool: MySqlPool) -> Self {
+        let default_timeout = std::time::Duration::from_secs(DEFAULT_QUERY_TIMEOUT_SECS);
         Self {
             pool,
-            query_timeout: std::time::Duration::from_secs(30),
+            query_timeout: default_timeout,
+            read_timeout: default_timeout,
+            write_timeout: default_timeout,
+            health_check_timeout: std::time::Duration::from_secs(DEFAULT_HEALTH_CHECK_TIMEOUT_SECS),
         }
     }
 
     /// Creates a new MySQL data store from a connection pool with custom timeout.
+    ///
+    /// The provided timeout is used for all operation types.
     pub fn with_timeout(pool: MySqlPool, query_timeout: std::time::Duration) -> Self {
         Self {
             pool,
             query_timeout,
+            read_timeout: query_timeout,
+            write_timeout: query_timeout,
+            health_check_timeout: std::time::Duration::from_secs(DEFAULT_HEALTH_CHECK_TIMEOUT_SECS),
         }
     }
 
@@ -133,9 +172,20 @@ impl MySQLDataStore {
                 message: e.to_string(),
             })?;
 
+        let default_timeout = std::time::Duration::from_secs(config.query_timeout_secs);
+
         Ok(Self {
             pool,
-            query_timeout: std::time::Duration::from_secs(config.query_timeout_secs),
+            query_timeout: default_timeout,
+            read_timeout: config
+                .read_timeout_secs
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(default_timeout),
+            write_timeout: config
+                .write_timeout_secs
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(default_timeout),
+            health_check_timeout: std::time::Duration::from_secs(config.health_check_timeout_secs),
         })
     }
 
@@ -148,21 +198,103 @@ impl MySQLDataStore {
         Self::from_config(&config).await
     }
 
-    /// Wraps an async operation with a timeout.
+    /// Wraps an async operation with a timeout and records metrics.
     ///
-    /// If the operation exceeds the configured query timeout, returns
+    /// If the operation exceeds the specified timeout, returns
     /// `StorageError::QueryTimeout` with details about the operation.
+    ///
+    /// # Arguments
+    /// * `operation` - Human-readable name of the operation (for error messages and metrics)
+    /// * `timeout` - Maximum duration to wait for the operation
+    /// * `future` - The async operation to execute
+    ///
+    /// # Metrics
+    /// - `rsfga_storage_query_duration_seconds` - Histogram of query durations
+    /// - `rsfga_storage_query_timeout_total` - Counter of timeout events
+    async fn execute_with_timeout_and_metrics<T, F>(
+        &self,
+        operation: &str,
+        timeout: std::time::Duration,
+        future: F,
+    ) -> StorageResult<T>
+    where
+        F: std::future::Future<Output = StorageResult<T>>,
+    {
+        let start = std::time::Instant::now();
+        let result = tokio::time::timeout(timeout, future).await;
+        let duration = start.elapsed().as_secs_f64();
+
+        let (status, final_result) = match result {
+            Ok(Ok(value)) => ("success", Ok(value)),
+            Ok(Err(StorageError::QueryTimeout { .. })) => (
+                "timeout",
+                Err(StorageError::QueryTimeout {
+                    operation: operation.to_string(),
+                    timeout,
+                }),
+            ),
+            Ok(Err(e)) => ("error", Err(e)),
+            Err(_elapsed) => (
+                "timeout",
+                Err(StorageError::QueryTimeout {
+                    operation: operation.to_string(),
+                    timeout,
+                }),
+            ),
+        };
+
+        // Record duration histogram
+        metrics::histogram!(
+            "rsfga_storage_query_duration_seconds",
+            "operation" => operation.to_string(),
+            "backend" => "mysql",
+            "status" => status.to_string()
+        )
+        .record(duration);
+
+        // Record timeout counter if applicable
+        if status == "timeout" {
+            metrics::counter!(
+                "rsfga_storage_query_timeout_total",
+                "operation" => operation.to_string(),
+                "backend" => "mysql"
+            )
+            .increment(1);
+        }
+
+        final_result
+    }
+
+    /// Executes a read operation with the configured read timeout.
+    #[allow(dead_code)] // Will be used when operations are migrated
+    async fn execute_read<T, F>(&self, operation: &str, future: F) -> StorageResult<T>
+    where
+        F: std::future::Future<Output = StorageResult<T>>,
+    {
+        self.execute_with_timeout_and_metrics(operation, self.read_timeout, future)
+            .await
+    }
+
+    /// Executes a write operation with the configured write timeout.
+    #[allow(dead_code)] // Will be used when operations are migrated
+    async fn execute_write<T, F>(&self, operation: &str, future: F) -> StorageResult<T>
+    where
+        F: std::future::Future<Output = StorageResult<T>>,
+    {
+        self.execute_with_timeout_and_metrics(operation, self.write_timeout, future)
+            .await
+    }
+
+    /// Wraps an async operation with default query timeout.
+    ///
+    /// This method is kept for backwards compatibility and operations that
+    /// don't fit clearly into read or write categories.
     async fn execute_with_timeout<T, F>(&self, operation: &str, future: F) -> StorageResult<T>
     where
         F: std::future::Future<Output = StorageResult<T>>,
     {
-        match tokio::time::timeout(self.query_timeout, future).await {
-            Ok(result) => result,
-            Err(_elapsed) => Err(StorageError::QueryTimeout {
-                operation: operation.to_string(),
-                timeout: self.query_timeout,
-            }),
-        }
+        self.execute_with_timeout_and_metrics(operation, self.query_timeout, future)
+            .await
     }
 
     /// Runs database migrations to create required tables.
@@ -1470,11 +1602,10 @@ impl DataStore for MySQLDataStore {
     #[instrument(skip(self))]
     async fn health_check(&self) -> StorageResult<HealthStatus> {
         let start = std::time::Instant::now();
-        let health_timeout = std::time::Duration::from_secs(HEALTH_CHECK_TIMEOUT_SECS);
 
         // Execute a simple query to verify database connectivity
-        // Uses a shorter dedicated timeout (5s) since health checks should be fast
-        match tokio::time::timeout(health_timeout, async {
+        // Uses a shorter dedicated timeout since health checks should be fast
+        let check_result = tokio::time::timeout(self.health_check_timeout, async {
             sqlx::query("SELECT 1")
                 .execute(&self.pool)
                 .await
@@ -1482,29 +1613,77 @@ impl DataStore for MySQLDataStore {
                     message: format!("database ping failed: {e}"),
                 })
         })
-        .await
-        {
+        .await;
+
+        let latency = start.elapsed();
+
+        // Determine status for metrics
+        let status = match &check_result {
+            Ok(Ok(_)) => "success",
+            Ok(Err(_)) => "error",
+            Err(_) => "timeout",
+        };
+
+        // Record health check duration
+        metrics::histogram!(
+            "rsfga_storage_health_check_duration_seconds",
+            "backend" => "mysql",
+            "status" => status.to_string()
+        )
+        .record(latency.as_secs_f64());
+
+        // Handle the result after recording metrics
+        match check_result {
             Ok(result) => {
                 result?;
             }
             Err(_elapsed) => {
+                metrics::counter!(
+                    "rsfga_storage_query_timeout_total",
+                    "operation" => "health_check",
+                    "backend" => "mysql"
+                )
+                .increment(1);
                 return Err(StorageError::QueryTimeout {
                     operation: "health_check".to_string(),
-                    timeout: health_timeout,
+                    timeout: self.health_check_timeout,
                 });
             }
         }
-
-        let latency = start.elapsed();
 
         // Get pool statistics
         // Note: pool.size() returns total connections, so active = size - idle
         let total_connections = self.pool.size();
         let idle_connections = self.pool.num_idle() as u32;
+        let active_connections = total_connections.saturating_sub(idle_connections);
+        let max_connections = self.pool.options().get_max_connections();
+
+        // Record pool connection gauges
+        metrics::gauge!(
+            "rsfga_storage_pool_connections",
+            "backend" => "mysql",
+            "state" => "active"
+        )
+        .set(active_connections as f64);
+
+        metrics::gauge!(
+            "rsfga_storage_pool_connections",
+            "backend" => "mysql",
+            "state" => "idle"
+        )
+        .set(idle_connections as f64);
+
+        metrics::gauge!(
+            "rsfga_storage_pool_connections",
+            "backend" => "mysql",
+            "state" => "max"
+        )
+        .set(max_connections as f64);
+
         let pool_stats = Some(PoolStats {
-            active_connections: total_connections.saturating_sub(idle_connections),
+            active_connections,
             idle_connections,
-            max_connections: self.pool.options().get_max_connections(),
+            max_connections,
         });
 
         Ok(HealthStatus {
@@ -1541,6 +1720,30 @@ mod tests {
         assert_eq!(config.min_connections, 1);
         assert_eq!(config.connect_timeout_secs, 30);
         assert_eq!(config.database_url, "mysql://localhost/rsfga");
+        assert_eq!(config.query_timeout_secs, DEFAULT_QUERY_TIMEOUT_SECS);
+        assert_eq!(config.read_timeout_secs, None);
+        assert_eq!(config.write_timeout_secs, None);
+        assert_eq!(
+            config.health_check_timeout_secs,
+            DEFAULT_HEALTH_CHECK_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn test_mysql_config_with_custom_timeouts() {
+        let config = MySQLConfig {
+            database_url: "mysql://localhost/test".to_string(),
+            query_timeout_secs: 60,
+            read_timeout_secs: Some(10),
+            write_timeout_secs: Some(120),
+            health_check_timeout_secs: 3,
+            ..Default::default()
+        };
+
+        assert_eq!(config.query_timeout_secs, 60);
+        assert_eq!(config.read_timeout_secs, Some(10));
+        assert_eq!(config.write_timeout_secs, Some(120));
+        assert_eq!(config.health_check_timeout_secs, 3);
     }
 
     #[test]
@@ -1552,6 +1755,10 @@ mod tests {
         let debug_output = format!("{:?}", config);
         assert!(debug_output.contains("[REDACTED]"));
         assert!(!debug_output.contains("password"));
+        // Should include new timeout fields
+        assert!(debug_output.contains("read_timeout_secs"));
+        assert!(debug_output.contains("write_timeout_secs"));
+        assert!(debug_output.contains("health_check_timeout_secs"));
     }
 
     #[test]

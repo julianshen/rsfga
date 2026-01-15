@@ -1134,6 +1134,7 @@ async fn test_fast_query_succeeds_with_timeout_set() {
         min_connections: 1,
         connect_timeout_secs: 30,
         query_timeout_secs: 1, // 1 second timeout
+        ..Default::default()
     };
 
     let store = PostgresDataStore::from_config(&config)
