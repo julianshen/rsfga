@@ -28,7 +28,10 @@ use std::{
     time::Instant,
 };
 
-use axum::{extract::MatchedPath, http::{Request, Response}};
+use axum::{
+    extract::MatchedPath,
+    http::{Request, Response},
+};
 use tower::{Layer, Service};
 
 /// Collected request metrics.
