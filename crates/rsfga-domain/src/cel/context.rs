@@ -9,10 +9,12 @@ use super::CelError;
 
 /// A context for CEL expression evaluation containing variable bindings
 ///
-/// The context provides variables that can be accessed in CEL expressions
-/// using dot notation, e.g., `context.user_department` or `request.expires_at`.
+/// The context provides variables that can be accessed in CEL expressions.
+/// For simple variables, use methods like [`set_string`](Self::set_string).
+/// For dot notation access (e.g., `context.department`), use nested maps
+/// via [`set_map`](Self::set_map).
 ///
-/// # Example
+/// # Example: Simple Variables
 ///
 /// ```ignore
 /// use rsfga_domain::cel::{CelContext, CelExpression};
@@ -21,6 +23,30 @@ use super::CelError;
 /// ctx.set_string("department", "engineering");
 ///
 /// let expr = CelExpression::parse("department == \"engineering\"")?;
+/// let result = expr.evaluate(&ctx)?;
+/// assert_eq!(result.as_bool(), Some(true));
+/// ```
+///
+/// # Example: Nested Maps for Dot Notation
+///
+/// To use dot notation like `context.department` or `request.expires_at`,
+/// you must set up nested maps. Dotted variable names (e.g.,
+/// `set_string("context.department", ...)`) will NOT enable dot notation access.
+///
+/// ```ignore
+/// use rsfga_domain::cel::{CelContext, CelValue, CelExpression};
+/// use std::collections::HashMap;
+///
+/// let mut ctx = CelContext::new();
+///
+/// // Create a nested map for "context" variable
+/// let mut context_map = HashMap::new();
+/// context_map.insert("department".to_string(), CelValue::String("engineering".to_string()));
+/// context_map.insert("level".to_string(), CelValue::Int(5));
+/// ctx.set_map("context", context_map);
+///
+/// // Now you can use dot notation: context.department, context.level
+/// let expr = CelExpression::parse("context.department == \"engineering\" && context.level > 3")?;
 /// let result = expr.evaluate(&ctx)?;
 /// assert_eq!(result.as_bool(), Some(true));
 /// ```
@@ -111,6 +137,12 @@ impl CelContext {
     }
 
     /// Set a map variable
+    ///
+    /// Use this to enable dot notation access in CEL expressions. For example,
+    /// setting a map named `"context"` with key `"department"` allows expressions
+    /// like `context.department == "engineering"`.
+    ///
+    /// See [`CelContext`] documentation for a complete example.
     pub fn set_map(&mut self, name: impl Into<String>, values: HashMap<String, CelValue>) {
         self.variables.insert(name.into(), CelValue::Map(values));
     }
