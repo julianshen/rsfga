@@ -52,8 +52,12 @@ All RSFGA storage operations have been tested on CockroachDB:
 ### Single-Node (Development/Testing)
 
 ```bash
+# Create Docker network
+docker network create rsfga-network
+
 # Start CockroachDB single-node
 docker run --name rsfga-crdb \
+    --network rsfga-network \
     -p 26257:26257 \
     -p 8090:8080 \
     -d cockroachdb/cockroach:latest \
@@ -66,10 +70,10 @@ docker exec -it rsfga-crdb cockroach sql --insecure \
 # Start RSFGA
 docker run -d \
     --name rsfga \
+    --network rsfga-network \
     -p 8080:8080 \
-    --link rsfga-crdb:crdb \
     -e RSFGA_STORAGE__BACKEND=postgres \
-    -e RSFGA_STORAGE__DATABASE_URL="postgresql://root@crdb:26257/rsfga" \
+    -e RSFGA_STORAGE__DATABASE_URL="postgresql://root@rsfga-crdb:26257/rsfga" \
     ghcr.io/julianshen/rsfga:latest
 ```
 
@@ -83,7 +87,7 @@ See [Multi-Region Deployment](#multi-region-deployment) for production cluster s
 
 CockroachDB uses PostgreSQL-compatible connection strings:
 
-```
+```text
 postgresql://[user[:password]@][host][:port]/[database][?options]
 ```
 
@@ -139,7 +143,7 @@ CockroachDB uses **Serializable isolation** by default (the strongest isolation 
 - **Potential for transaction retries**: Under high contention, CockroachDB may require transaction retries
 - **No phantom reads**: Queries within a transaction see a consistent snapshot
 
-RSFGA handles transaction retries automatically through the SQLx connection pool.
+**Note on Transaction Retries:** SQLx provides basic connection retry logic, but does not automatically handle CockroachDB's serializable transaction retries (error code 40001). Under high contention, applications may need additional retry logic. For most RSFGA workloads with proper indexing, transaction retries are rare.
 
 ### Distributed SQL Execution
 
@@ -207,26 +211,76 @@ ALTER TABLE authorization_models SET LOCALITY GLOBAL;
 
 ### Multi-Region Example
 
+> **Note:** Multi-region CockroachDB deployments are complex and require careful planning. The example below is simplified for illustration. For production deployments, consult the [CockroachDB multi-region documentation](https://www.cockroachlabs.com/docs/stable/multiregion-overview.html) and consider using the official [CockroachDB Kubernetes Operator](https://github.com/cockroachdb/cockroach-operator).
+
 ```yaml
-# Kubernetes StatefulSet for 3-region deployment
+# Simplified Kubernetes StatefulSet example (single region shown)
+# For true multi-region, deploy separate StatefulSets per region with
+# appropriate --locality flags and node affinity rules
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: cockroachdb
 spec:
-  replicas: 9  # 3 nodes per region
+  serviceName: cockroachdb
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cockroachdb
   template:
+    metadata:
+      labels:
+        app: cockroachdb
     spec:
       containers:
       - name: cockroachdb
         image: cockroachdb/cockroach:latest
+        ports:
+        - containerPort: 26257
+          name: grpc
+        - containerPort: 8080
+          name: http
         args:
         - start
         - --locality=region=us-east1,zone=us-east1-a
-        - --join=cockroachdb-0.cockroachdb,cockroachdb-3.cockroachdb,cockroachdb-6.cockroachdb
+        - --join=cockroachdb-0.cockroachdb,cockroachdb-1.cockroachdb,cockroachdb-2.cockroachdb
+        - --advertise-addr=$(POD_NAME).cockroachdb
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: datadir
+          mountPath: /cockroach/cockroach-data
+  volumeClaimTemplates:
+  - metadata:
+      name: datadir
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 100Gi
+---
+# Headless service for StatefulSet DNS
+apiVersion: v1
+kind: Service
+metadata:
+  name: cockroachdb
+spec:
+  clusterIP: None
+  selector:
+    app: cockroachdb
+  ports:
+  - port: 26257
+    name: grpc
+  - port: 8080
+    name: http
 ```
 
 ## Performance Considerations
+
+> **Disclaimer:** The performance metrics below are approximate estimates based on typical deployments with standard hardware configurations. Actual performance varies significantly based on hardware specifications, network topology, data volume, workload patterns, and cluster configuration. These figures should be used as rough guidelines only. Always benchmark your specific workload before production deployment.
 
 ### Read Performance
 
@@ -272,9 +326,13 @@ CREATE INDEX idx_tuples_store ON tuples(store_id);
 CREATE INDEX idx_tuples_object ON tuples(store_id, object_type, object_id);
 CREATE INDEX idx_tuples_user ON tuples(store_id, user_type, user_id);
 CREATE INDEX idx_tuples_relation ON tuples(store_id, object_type, object_id, relation);
+CREATE INDEX idx_tuples_store_relation ON tuples(store_id, relation);
+CREATE INDEX idx_tuples_condition ON tuples(store_id, condition_name) WHERE condition_name IS NOT NULL;
 ```
 
 ## Cluster Sizing
+
+> **Note:** The sizing recommendations below are starting points based on general workload characteristics. Your actual requirements may vary significantly. Always benchmark with representative data and traffic patterns before finalizing production sizing.
 
 ### Recommendations by Workload
 
@@ -297,7 +355,7 @@ CREATE INDEX idx_tuples_relation ON tuples(store_id, object_type, object_id, rel
 
 ### Connection Pool Sizing
 
-```
+```text
 Recommended pool size = (nodes × cores) / rsfga_instances
 ```
 
@@ -404,6 +462,7 @@ GRANT ALL ON ALL TABLES IN SCHEMA public TO rsfga_user;
 # Start CockroachDB
 docker run --name rsfga-crdb \
     -p 26257:26257 \
+    -p 8090:8080 \
     -d cockroachdb/cockroach:latest \
     start-single-node --insecure
 
