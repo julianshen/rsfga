@@ -61,6 +61,7 @@ RUN cargo build --release --bin rsfga 2>/dev/null || true
 COPY crates/rsfga-api/src crates/rsfga-api/src
 COPY crates/rsfga-api/benches crates/rsfga-api/benches
 COPY crates/rsfga-server/src crates/rsfga-server/src
+COPY crates/rsfga-server/benches crates/rsfga-server/benches
 COPY crates/rsfga-domain/src crates/rsfga-domain/src
 COPY crates/rsfga-domain/benches crates/rsfga-domain/benches
 COPY crates/rsfga-storage/src crates/rsfga-storage/src
