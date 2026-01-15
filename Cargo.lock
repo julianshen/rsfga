@@ -3322,6 +3322,7 @@ dependencies = [
  "criterion",
  "dashmap",
  "futures",
+ "metrics",
  "mockall",
  "proptest",
  "rand 0.8.5",

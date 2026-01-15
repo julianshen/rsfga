@@ -108,6 +108,26 @@ fn register_default_metrics() {
         "Storage operation duration in seconds"
     );
 
+    // Describe storage query metrics (from rsfga-storage)
+    metrics::describe_histogram!(
+        "rsfga_storage_query_duration_seconds",
+        "Storage query duration in seconds by operation, backend, and status"
+    );
+    metrics::describe_counter!(
+        "rsfga_storage_query_timeout_total",
+        "Total number of storage query timeouts by operation and backend"
+    );
+
+    // Describe storage health check metrics
+    metrics::describe_histogram!(
+        "rsfga_storage_health_check_duration_seconds",
+        "Storage health check duration in seconds"
+    );
+    metrics::describe_gauge!(
+        "rsfga_storage_pool_connections",
+        "Number of database pool connections by state (active, idle, max)"
+    );
+
     // Register CEL cache metrics
     rsfga_domain::cel::register_cel_cache_metrics();
 }

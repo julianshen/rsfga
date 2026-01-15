@@ -101,6 +101,7 @@ async fn create_postgres_store(container: &PostgresContainer) -> PostgresDataSto
         min_connections: 1,
         connect_timeout_secs: 30,
         query_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = PostgresDataStore::from_config(&config)
@@ -127,6 +128,7 @@ async fn create_postgres_store_with_config(
         min_connections: 1,
         connect_timeout_secs: 5,
         query_timeout_secs,
+        ..Default::default()
     };
 
     let store = PostgresDataStore::from_config(&config)
@@ -149,6 +151,7 @@ async fn create_mysql_store(container: &MysqlContainer) -> MySQLDataStore {
         min_connections: 1,
         connect_timeout_secs: 30,
         query_timeout_secs: 30,
+        ..Default::default()
     };
 
     let store = MySQLDataStore::from_config(&config)
@@ -175,6 +178,7 @@ async fn create_mysql_store_with_config(
         min_connections: 1,
         connect_timeout_secs: 5,
         query_timeout_secs,
+        ..Default::default()
     };
 
     let store = MySQLDataStore::from_config(&config)
