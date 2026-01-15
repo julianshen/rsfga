@@ -30,8 +30,11 @@ use crate::traits::{
 
 /// Parse a database row into a StoredTuple.
 /// Shared between read_tuples and read_tuples_paginated.
-fn row_to_stored_tuple(row: sqlx::mysql::MySqlRow) -> StoredTuple {
-    StoredTuple {
+///
+/// Returns `StorageResult` for consistent error handling with PostgreSQL,
+/// even though MySQL doesn't yet support conditions.
+fn row_to_stored_tuple(row: sqlx::mysql::MySqlRow) -> StorageResult<StoredTuple> {
+    Ok(StoredTuple {
         object_type: row.get("object_type"),
         object_id: row.get("object_id"),
         relation: row.get("relation"),
@@ -41,29 +44,29 @@ fn row_to_stored_tuple(row: sqlx::mysql::MySqlRow) -> StoredTuple {
         // MySQL storage doesn't support conditions yet
         condition_name: None,
         condition_context: None,
-    }
+    })
 }
 
 /// Apply filter conditions to a query builder.
 /// Shared between read_tuples and read_tuples_paginated.
-fn apply_tuple_filters(
-    builder: &mut sqlx::QueryBuilder<'_, sqlx::MySql>,
-    filter: &TupleFilter,
+fn apply_tuple_filters<'a>(
+    builder: &mut sqlx::QueryBuilder<'a, sqlx::MySql>,
+    filter: &'a TupleFilter,
     user_filter: Option<(String, String, Option<String>)>,
 ) {
     if let Some(ref object_type) = filter.object_type {
         builder.push(" AND object_type = ");
-        builder.push_bind(object_type.clone());
+        builder.push_bind(object_type.as_str());
     }
 
     if let Some(ref object_id) = filter.object_id {
         builder.push(" AND object_id = ");
-        builder.push_bind(object_id.clone());
+        builder.push_bind(object_id.as_str());
     }
 
     if let Some(ref relation) = filter.relation {
         builder.push(" AND relation = ");
-        builder.push_bind(relation.clone());
+        builder.push_bind(relation.as_str());
     }
 
     if let Some((user_type, user_id, user_relation)) = user_filter {
@@ -1135,7 +1138,9 @@ impl DataStore for MySQLDataStore {
             })
             .await?;
 
-        Ok(rows.into_iter().map(row_to_stored_tuple).collect())
+        rows.into_iter()
+            .map(row_to_stored_tuple)
+            .collect::<StorageResult<Vec<_>>>()
     }
 
     #[instrument(skip(self, filter, pagination))]
@@ -1214,7 +1219,10 @@ impl DataStore for MySQLDataStore {
             })
             .await?;
 
-        let items: Vec<StoredTuple> = rows.into_iter().map(row_to_stored_tuple).collect();
+        let items: Vec<StoredTuple> = rows
+            .into_iter()
+            .map(row_to_stored_tuple)
+            .collect::<StorageResult<Vec<_>>>()?;
 
         let next_offset = offset + items.len() as i64;
         let continuation_token = if items.len() == page_size as usize {
