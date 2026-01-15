@@ -30,8 +30,8 @@
 //!    - Health check recovery after database restart
 
 use rsfga_storage::{
-    DataStore, MySQLConfig, MySQLDataStore, PostgresConfig, PostgresDataStore, StoredTuple,
-    TupleFilter,
+    DataStore, MySQLConfig, MySQLDataStore, PostgresConfig, PostgresDataStore, StorageError,
+    StoredTuple, TupleFilter,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -571,58 +571,83 @@ async fn test_postgres_health_check_recovers_after_db_restart() {
 
 /// Test: Query timeout triggers on slow query (PostgreSQL)
 ///
-/// Uses pg_sleep() to induce a query that exceeds the configured timeout,
-/// verifying that StorageError::QueryTimeout is returned.
+/// Uses table locking to induce a blocked query that exceeds the configured
+/// timeout, verifying that StorageError::QueryTimeout is returned.
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn test_postgres_query_timeout_triggers_on_slow_query() {
     let container = PostgresContainer::new().await;
-    // Create store with 1 second timeout
-    let store = create_postgres_store_with_config(&container, 5, 1).await;
+    // Create store with a 2-second timeout
+    let store = Arc::new(create_postgres_store_with_config(&container, 5, 2).await);
+    store.create_store("test-timeout", "test").await.unwrap();
 
-    // Execute a query that takes longer than the timeout
-    let pool = store.pool();
-    let result = sqlx::query("SELECT pg_sleep(5)").execute(pool).await;
+    // Acquire a connection and lock the tuples table to cause a timeout
+    let mut conn = store.pool().acquire().await.unwrap();
+    sqlx::query("BEGIN; LOCK TABLE tuples IN ACCESS EXCLUSIVE MODE;")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
 
-    // Note: SQLx itself may not respect the timeout at the driver level.
-    // The timeout is enforced by our wrapper. Let's test via the DataStore API.
-    // For raw SQLx queries, we check if SQLx respects the pool timeout.
+    // This write operation should time out because the table is locked.
+    let result = store
+        .write_tuple(
+            "test-timeout",
+            StoredTuple::new("doc", "1", "viewer", "user", "alice", None),
+        )
+        .await;
 
-    // The query should either timeout or complete (depending on SQLx behavior)
-    match result {
-        Ok(_) => {
-            // If SQLx doesn't enforce timeout at this level, the query completes.
-            // This is acceptable - we document this behavior.
-            println!("Note: Raw SQLx query completed - timeout not enforced at driver level");
-        }
-        Err(e) => {
-            println!("Query error (may be timeout): {:?}", e);
-        }
-    }
+    // Assert that we received a query timeout error
+    assert!(
+        matches!(result, Err(StorageError::QueryTimeout { .. })),
+        "Expected a QueryTimeout error, but got {:?}",
+        result
+    );
+
+    // Cleanup: rollback the transaction to release the lock
+    sqlx::query("ROLLBACK").execute(&mut *conn).await.unwrap();
+    let _ = store.delete_store("test-timeout").await;
 }
 
 /// Test: Query timeout triggers on slow query (MySQL)
 ///
-/// Uses SLEEP() to induce a query that exceeds the configured timeout.
+/// Uses table locking to induce a blocked query that exceeds the configured
+/// timeout, verifying that StorageError::QueryTimeout is returned.
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn test_mysql_query_timeout_triggers_on_slow_query() {
     let container = MysqlContainer::new().await;
-    // Create store with 1 second timeout
-    let store = create_mysql_store_with_config(&container, 5, 1).await;
+    // Create store with a 2-second timeout
+    let store = Arc::new(create_mysql_store_with_config(&container, 5, 2).await);
+    store.create_store("test-timeout", "test").await.unwrap();
 
-    // Execute a query that takes longer than the timeout
-    let pool = store.pool();
-    let result = sqlx::query("SELECT SLEEP(5)").execute(pool).await;
+    // Acquire a connection and lock the tuples table to cause a timeout
+    let mut conn = store.pool().acquire().await.unwrap();
+    sqlx::query("LOCK TABLES tuples WRITE")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
 
-    match result {
-        Ok(_) => {
-            println!("Note: Raw SQLx query completed - timeout not enforced at driver level");
-        }
-        Err(e) => {
-            println!("Query error (may be timeout): {:?}", e);
-        }
-    }
+    // This write operation should time out because the table is locked.
+    let result = store
+        .write_tuple(
+            "test-timeout",
+            StoredTuple::new("doc", "1", "viewer", "user", "alice", None),
+        )
+        .await;
+
+    // Assert that we received a query timeout error
+    assert!(
+        matches!(result, Err(StorageError::QueryTimeout { .. })),
+        "Expected a QueryTimeout error, but got {:?}",
+        result
+    );
+
+    // Cleanup: unlock tables
+    sqlx::query("UNLOCK TABLES")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let _ = store.delete_store("test-timeout").await;
 }
 
 /// Test: Multiple timeouts don't exhaust the connection pool (PostgreSQL)
@@ -633,36 +658,55 @@ async fn test_mysql_query_timeout_triggers_on_slow_query() {
 #[ignore = "requires Docker"]
 async fn test_postgres_multiple_timeouts_dont_exhaust_pool() {
     let container = PostgresContainer::new().await;
-    // Create store with short timeout and adequate pool
-    let store = Arc::new(create_postgres_store_with_config(&container, 5, 2).await);
+    // Create store with a short timeout and a small pool
+    let store = Arc::new(create_postgres_store_with_config(&container, 3, 2).await);
 
     store
         .create_store("test-timeout-recovery", "Test Store")
         .await
         .unwrap();
 
-    // Trigger several timeouts via concurrent slow queries
+    // Lock the table to make all subsequent writes time out
+    let mut conn_locker = store.pool().acquire().await.unwrap();
+    sqlx::query("BEGIN; LOCK TABLE tuples IN ACCESS EXCLUSIVE MODE;")
+        .execute(&mut *conn_locker)
+        .await
+        .unwrap();
+
+    // Trigger several timeouts via concurrent writes
     let handles: Vec<_> = (0..3)
-        .map(|_| {
+        .map(|i| {
             let store = Arc::clone(&store);
             tokio::spawn(async move {
-                let pool = store.pool();
-                // This should timeout (3 second sleep with 2 second timeout)
-                let _ = sqlx::query("SELECT pg_sleep(3)").execute(pool).await;
+                let tuple =
+                    StoredTuple::new("doc", format!("doc{}", i), "viewer", "user", "alice", None);
+                // This should time out
+                store.write_tuple("test-timeout-recovery", tuple).await
             })
         })
         .collect();
 
-    // Wait for all to complete or timeout
+    // Wait for all tasks to complete
     for handle in handles {
-        let _ = handle.await;
+        let result = handle.await.unwrap();
+        assert!(
+            matches!(result, Err(StorageError::QueryTimeout { .. })),
+            "Expected QueryTimeout, got {:?}",
+            result
+        );
     }
 
-    // Give pool time to recover connections
+    // Release the lock
+    sqlx::query("ROLLBACK")
+        .execute(&mut *conn_locker)
+        .await
+        .unwrap();
+
+    // Give the pool a moment to recover if needed
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // Normal operations should still work
-    let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
+    // A normal operation should now succeed, proving the pool is healthy
+    let tuple = StoredTuple::new("document", "doc-final", "viewer", "user", "alice", None);
     let result = store.write_tuple("test-timeout-recovery", tuple).await;
 
     assert!(
@@ -680,36 +724,55 @@ async fn test_postgres_multiple_timeouts_dont_exhaust_pool() {
 #[ignore = "requires Docker"]
 async fn test_mysql_multiple_timeouts_dont_exhaust_pool() {
     let container = MysqlContainer::new().await;
-    // Create store with short timeout and adequate pool
-    let store = Arc::new(create_mysql_store_with_config(&container, 5, 2).await);
+    // Create store with a short timeout and a small pool
+    let store = Arc::new(create_mysql_store_with_config(&container, 3, 2).await);
 
     store
         .create_store("test-timeout-recovery", "Test Store")
         .await
         .unwrap();
 
-    // Trigger several timeouts via concurrent slow queries
+    // Lock the table to make all subsequent writes time out
+    let mut conn_locker = store.pool().acquire().await.unwrap();
+    sqlx::query("LOCK TABLES tuples WRITE")
+        .execute(&mut *conn_locker)
+        .await
+        .unwrap();
+
+    // Trigger several timeouts via concurrent writes
     let handles: Vec<_> = (0..3)
-        .map(|_| {
+        .map(|i| {
             let store = Arc::clone(&store);
             tokio::spawn(async move {
-                let pool = store.pool();
-                // This should timeout (3 second sleep with 2 second timeout)
-                let _ = sqlx::query("SELECT SLEEP(3)").execute(pool).await;
+                let tuple =
+                    StoredTuple::new("doc", format!("doc{}", i), "viewer", "user", "alice", None);
+                // This should time out
+                store.write_tuple("test-timeout-recovery", tuple).await
             })
         })
         .collect();
 
-    // Wait for all to complete or timeout
+    // Wait for all tasks to complete
     for handle in handles {
-        let _ = handle.await;
+        let result = handle.await.unwrap();
+        assert!(
+            matches!(result, Err(StorageError::QueryTimeout { .. })),
+            "Expected QueryTimeout, got {:?}",
+            result
+        );
     }
 
-    // Give pool time to recover connections
+    // Release the lock
+    sqlx::query("UNLOCK TABLES")
+        .execute(&mut *conn_locker)
+        .await
+        .unwrap();
+
+    // Give the pool a moment to recover if needed
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // Normal operations should still work
-    let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
+    // A normal operation should now succeed, proving the pool is healthy
+    let tuple = StoredTuple::new("document", "doc-final", "viewer", "user", "alice", None);
     let result = store.write_tuple("test-timeout-recovery", tuple).await;
 
     assert!(
@@ -730,38 +793,47 @@ async fn test_mysql_multiple_timeouts_dont_exhaust_pool() {
 #[ignore = "requires Docker"]
 async fn test_postgres_timeout_returns_promptly() {
     let container = PostgresContainer::new().await;
-    // Create store with 1 second timeout
-    let store = create_postgres_store_with_config(&container, 5, 1).await;
-
+    // Create store with a 1-second timeout
+    let store = Arc::new(create_postgres_store_with_config(&container, 5, 1).await);
     store
         .create_store("test-prompt-timeout", "Test Store")
         .await
         .unwrap();
 
-    // Time how long a slow query takes
+    // Lock the table to cause a timeout on write operations
+    let mut conn = store.pool().acquire().await.unwrap();
+    sqlx::query("BEGIN; LOCK TABLE tuples IN ACCESS EXCLUSIVE MODE;")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+
+    // Time how long the blocking operation takes
     let start = std::time::Instant::now();
-
-    // Execute slow query through the pool
-    let pool = store.pool();
-    let result = tokio::time::timeout(
-        Duration::from_secs(3),
-        sqlx::query("SELECT pg_sleep(10)").execute(pool),
-    )
-    .await;
-
+    let result = store
+        .write_tuple(
+            "test-prompt-timeout",
+            StoredTuple::new("doc", "1", "viewer", "user", "alice", None),
+        )
+        .await;
     let elapsed = start.elapsed();
 
-    // Should return within ~3 seconds (our timeout), not 10 seconds
+    // Assert that the operation returned promptly (around 1s), not indefinitely.
+    // We allow a small buffer for test environment variance.
     assert!(
-        elapsed.as_secs() < 5,
-        "Operation should return within timeout, not wait for full query. Took {:?}",
+        elapsed.as_millis() < 3000,
+        "Operation should have returned promptly after the 1s timeout, but it took {:?}",
         elapsed
     );
 
-    // Result should be timeout
-    assert!(result.is_err(), "Should have timed out");
+    // Assert that the result is a timeout error
+    assert!(
+        matches!(result, Err(StorageError::QueryTimeout { .. })),
+        "Expected a QueryTimeout error, but got {:?}",
+        result
+    );
 
     // Cleanup
+    sqlx::query("ROLLBACK").execute(&mut *conn).await.unwrap();
     let _ = store.delete_store("test-prompt-timeout").await;
 }
 
@@ -770,38 +842,50 @@ async fn test_postgres_timeout_returns_promptly() {
 #[ignore = "requires Docker"]
 async fn test_mysql_timeout_returns_promptly() {
     let container = MysqlContainer::new().await;
-    // Create store with 1 second timeout
-    let store = create_mysql_store_with_config(&container, 5, 1).await;
-
+    // Create store with a 1-second timeout
+    let store = Arc::new(create_mysql_store_with_config(&container, 5, 1).await);
     store
         .create_store("test-prompt-timeout", "Test Store")
         .await
         .unwrap();
 
-    // Time how long a slow query takes
+    // Lock the table to cause a timeout on write operations
+    let mut conn = store.pool().acquire().await.unwrap();
+    sqlx::query("LOCK TABLES tuples WRITE")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+
+    // Time how long the blocking operation takes
     let start = std::time::Instant::now();
-
-    // Execute slow query through the pool
-    let pool = store.pool();
-    let result = tokio::time::timeout(
-        Duration::from_secs(3),
-        sqlx::query("SELECT SLEEP(10)").execute(pool),
-    )
-    .await;
-
+    let result = store
+        .write_tuple(
+            "test-prompt-timeout",
+            StoredTuple::new("doc", "1", "viewer", "user", "alice", None),
+        )
+        .await;
     let elapsed = start.elapsed();
 
-    // Should return within ~3 seconds (our timeout), not 10 seconds
+    // Assert that the operation returned promptly (around 1s), not indefinitely.
+    // We allow a small buffer for test environment variance.
     assert!(
-        elapsed.as_secs() < 5,
-        "Operation should return within timeout, not wait for full query. Took {:?}",
+        elapsed.as_millis() < 3000,
+        "Operation should have returned promptly after the 1s timeout, but it took {:?}",
         elapsed
     );
 
-    // Result should be timeout
-    assert!(result.is_err(), "Should have timed out");
+    // Assert that the result is a timeout error
+    assert!(
+        matches!(result, Err(StorageError::QueryTimeout { .. })),
+        "Expected a QueryTimeout error, but got {:?}",
+        result
+    );
 
     // Cleanup
+    sqlx::query("UNLOCK TABLES")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
     let _ = store.delete_store("test-prompt-timeout").await;
 }
 
