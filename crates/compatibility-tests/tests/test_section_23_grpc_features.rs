@@ -8,6 +8,12 @@ use common::{
 use serde_json::json;
 use std::process::Command;
 
+/// URL-encode a path segment to handle special characters like `#`.
+/// The `#` character is a URL fragment delimiter and must be encoded as `%23`.
+fn encode_path_segment(segment: &str) -> String {
+    urlencoding::encode(segment).into_owned()
+}
+
 // ============================================================================
 // Section 23: gRPC-Specific Features Tests
 // ============================================================================
@@ -217,12 +223,13 @@ async fn test_grpc_error_codes_match_http() -> Result<()> {
     // Test 1: Invalid store ID format
     // gRPC: InvalidArgument, HTTP: 400
 
-    // gRPC call
-    // Note: Use "!@$" instead of "!@#" because # is a URL fragment delimiter
-    // and would be stripped from the HTTP request
+    // Use a store ID with special characters including `#`
+    let invalid_store_id = "invalid-id!@#";
+
+    // gRPC call - protobuf message body doesn't need URL encoding
     let (success, _stdout, stderr) = grpc_call_with_error(
         "openfga.v1.OpenFGAService/GetStore",
-        &json!({"store_id": "invalid-id!@$"}),
+        &json!({"store_id": invalid_store_id}),
     )?;
 
     assert!(!success, "gRPC should fail for invalid store ID");
@@ -232,9 +239,14 @@ async fn test_grpc_error_codes_match_http() -> Result<()> {
         stderr
     );
 
-    // HTTP call - same invalid request
+    // HTTP call - URL-encode the path segment to handle `#` correctly
+    // Without encoding, `#` would be treated as a fragment delimiter
     let http_response = client
-        .get(format!("{}/stores/{}", get_openfga_url(), "invalid-id!@$"))
+        .get(format!(
+            "{}/stores/{}",
+            get_openfga_url(),
+            encode_path_segment(invalid_store_id)
+        ))
         .send()
         .await?;
 
