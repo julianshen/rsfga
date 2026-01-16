@@ -369,7 +369,7 @@ mod tests {
                 let cache_clone = Arc::clone(&cache);
                 thread::spawn(move || {
                     for j in 0..100 {
-                        let expr = format!("x{} > {}", i, j);
+                        let expr = format!("x{i} > {j}");
                         cache_clone.get_or_parse(&expr).unwrap();
                     }
                 })
@@ -410,8 +410,7 @@ mod tests {
         for (i, result) in results.iter().enumerate().skip(1) {
             assert!(
                 Arc::ptr_eq(first, result),
-                "Thread {} returned different Arc than thread 0 (race condition detected)",
-                i
+                "Thread {i} returned different Arc than thread 0 (race condition detected)"
             );
         }
 
@@ -431,7 +430,7 @@ mod tests {
 
         // Add 5 expressions (at capacity)
         for i in 0..5 {
-            cache.get_or_parse(&format!("x > {}", i)).unwrap();
+            cache.get_or_parse(&format!("x > {i}")).unwrap();
         }
         cache.run_pending_tasks();
         assert_eq!(cache.entry_count(), 5);

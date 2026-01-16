@@ -512,7 +512,7 @@ async fn test_pagination_on_cockroachdb() {
         .map(|i| {
             StoredTuple::new(
                 "document",
-                format!("doc{:02}", i),
+                format!("doc{i:02}"),
                 "viewer",
                 "user",
                 "alice",
@@ -590,10 +590,10 @@ async fn test_concurrent_writes_on_cockroachdb() {
         handles.push(tokio::spawn(async move {
             let tuple = StoredTuple::new(
                 "document",
-                format!("doc{}", i),
+                format!("doc{i}"),
                 "viewer",
                 "user",
-                format!("user{}", i),
+                format!("user{i}"),
                 None,
             );
             store
@@ -641,7 +641,7 @@ async fn test_cockroachdb_basic_consistency() {
         .map(|i| {
             StoredTuple::new(
                 "document",
-                format!("doc{}", i),
+                format!("doc{i}"),
                 "viewer",
                 "user",
                 "alice",
@@ -685,7 +685,7 @@ async fn test_large_batch_on_cockroachdb() {
         .map(|i| {
             StoredTuple::new(
                 "document",
-                format!("doc{}", i),
+                format!("doc{i}"),
                 "viewer",
                 "user",
                 format!("user{}", i % 100),
@@ -731,7 +731,7 @@ async fn test_large_dataset_performance_cockroachdb() {
         .map(|i| {
             StoredTuple::new(
                 "document",
-                format!("doc{}", i),
+                format!("doc{i}"),
                 "viewer",
                 "user",
                 format!("user{}", i % 500),
@@ -758,10 +758,7 @@ async fn test_large_dataset_performance_cockroachdb() {
     assert_eq!(result.len(), 10_000);
 
     // Log performance (not asserted to avoid flaky tests)
-    eprintln!(
-        "CockroachDB 10k tuples: write={:?}, read={:?}",
-        write_duration, read_duration
-    );
+    eprintln!("CockroachDB 10k tuples: write={write_duration:?}, read={read_duration:?}");
 
     // Test filtered query performance
     let filter = TupleFilter {
@@ -777,7 +774,7 @@ async fn test_large_dataset_performance_cockroachdb() {
 
     // user42 appears at indices 42, 542, 1042, ... (every 500)
     assert_eq!(filtered.len(), 20);
-    eprintln!("CockroachDB filtered query: {:?}", filter_duration);
+    eprintln!("CockroachDB filtered query: {filter_duration:?}");
 
     // Cleanup
     store.delete_store("test-crdb-large-dataset").await.unwrap();
@@ -838,10 +835,10 @@ async fn test_pool_exhaustion_on_cockroachdb() {
             // some will timeout
             let tuple = StoredTuple::new(
                 "document",
-                format!("doc{}", i),
+                format!("doc{i}"),
                 "viewer",
                 "user",
-                format!("user{}", i),
+                format!("user{i}"),
                 None,
             );
             store.write_tuple("test-crdb-pool-exhaustion", tuple).await
@@ -864,8 +861,7 @@ async fn test_pool_exhaustion_on_cockroachdb() {
                         || error_msg.contains("pool")
                         || error_msg.contains("connection")
                         || error_msg.contains("timed out"),
-                    "Expected pool exhaustion error, got: {}",
-                    e
+                    "Expected pool exhaustion error, got: {e}"
                 );
             }
         }
@@ -873,10 +869,7 @@ async fn test_pool_exhaustion_on_cockroachdb() {
 
     // Some operations should succeed (pool has 2 connections)
     // Others may fail due to pool exhaustion (depends on timing)
-    eprintln!(
-        "CockroachDB pool exhaustion test: {} succeeded, {} failed",
-        success_count, error_count
-    );
+    eprintln!("CockroachDB pool exhaustion test: {success_count} succeeded, {error_count} failed");
 
     // At minimum, some should succeed
     assert!(success_count > 0, "At least some operations should succeed");
@@ -922,7 +915,7 @@ async fn test_pool_recovery_on_cockroachdb() {
         handles.push(tokio::spawn(async move {
             let tuple = StoredTuple::new(
                 "document",
-                format!("phase1-doc{}", i),
+                format!("phase1-doc{i}"),
                 "viewer",
                 "user",
                 "alice",
@@ -941,7 +934,7 @@ async fn test_pool_recovery_on_cockroachdb() {
     for i in 0..5 {
         let tuple = StoredTuple::new(
             "document",
-            format!("phase2-doc{}", i),
+            format!("phase2-doc{i}"),
             "viewer",
             "user",
             "bob",
@@ -995,7 +988,7 @@ async fn test_concurrent_migrations_on_cockroachdb() {
             let store = PostgresDataStore::from_config(&config).await?;
             store.run_migrations().await?;
 
-            eprintln!("CockroachDB migration instance {} completed", i);
+            eprintln!("CockroachDB migration instance {i} completed");
             Ok::<_, StorageError>(())
         }));
     }
@@ -1020,11 +1013,11 @@ async fn test_concurrent_migrations_on_cockroachdb() {
             Ok(Ok(())) => success_count += 1,
             Ok(Err(e)) => {
                 // Migration errors are acceptable (e.g., if table already exists)
-                eprintln!("CockroachDB migration error (acceptable): {}", e);
+                eprintln!("CockroachDB migration error (acceptable): {e}");
                 success_count += 1; // Still counts as completing without deadlock
             }
             Err(e) => {
-                panic!("Task join error: {}", e);
+                panic!("Task join error: {e}");
             }
         }
     }

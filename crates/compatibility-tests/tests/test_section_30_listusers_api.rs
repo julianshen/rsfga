@@ -86,24 +86,18 @@ fn validate_listusers_response(response_body: &serde_json::Value) -> &Vec<serde_
 
         assert!(
             has_object || has_userset || has_wildcard,
-            "User at index {} must have 'object', 'userset', or 'wildcard' field. Got: {}",
-            i,
-            user
+            "User at index {i} must have 'object', 'userset', or 'wildcard' field. Got: {user}"
         );
 
         // Validate object format if present
         if let Some(object) = user.get("object") {
             assert!(
                 object.get("type").and_then(|t| t.as_str()).is_some(),
-                "User at index {} 'object' field missing 'type'. Got: {}",
-                i,
-                object
+                "User at index {i} 'object' field missing 'type'. Got: {object}"
             );
             assert!(
                 object.get("id").and_then(|id| id.as_str()).is_some(),
-                "User at index {} 'object' field missing 'id'. Got: {}",
-                i,
-                object
+                "User at index {i} 'object' field missing 'id'. Got: {object}"
             );
         }
 
@@ -111,21 +105,15 @@ fn validate_listusers_response(response_body: &serde_json::Value) -> &Vec<serde_
         if let Some(userset) = user.get("userset") {
             assert!(
                 userset.get("type").and_then(|t| t.as_str()).is_some(),
-                "User at index {} 'userset' field missing 'type'. Got: {}",
-                i,
-                userset
+                "User at index {i} 'userset' field missing 'type'. Got: {userset}"
             );
             assert!(
                 userset.get("id").and_then(|id| id.as_str()).is_some(),
-                "User at index {} 'userset' field missing 'id'. Got: {}",
-                i,
-                userset
+                "User at index {i} 'userset' field missing 'id'. Got: {userset}"
             );
             assert!(
                 userset.get("relation").and_then(|r| r.as_str()).is_some(),
-                "User at index {} 'userset' field missing 'relation'. Got: {}",
-                i,
-                userset
+                "User at index {i} 'userset' field missing 'relation'. Got: {userset}"
             );
         }
 
@@ -133,9 +121,7 @@ fn validate_listusers_response(response_body: &serde_json::Value) -> &Vec<serde_
         if let Some(wildcard) = user.get("wildcard") {
             assert!(
                 wildcard.get("type").and_then(|t| t.as_str()).is_some(),
-                "User at index {} 'wildcard' field missing 'type'. Got: {}",
-                i,
-                wildcard
+                "User at index {i} 'wildcard' field missing 'type'. Got: {wildcard}"
             );
         }
     }
@@ -227,7 +213,7 @@ async fn test_listusers_returns_users_with_direct_relation() -> Result<()> {
             u.get("object").and_then(|o| {
                 let user_type = o.get("type")?.as_str()?;
                 let user_id = o.get("id")?.as_str()?;
-                Some(format!("{}:{}", user_type, user_id))
+                Some(format!("{user_type}:{user_id}"))
             })
         })
         .collect();
@@ -502,7 +488,7 @@ async fn test_listusers_with_contextual_tuples() -> Result<()> {
             u.get("object").and_then(|o| {
                 let user_type = o.get("type")?.as_str()?;
                 let user_id = o.get("id")?.as_str()?;
-                Some(format!("{}:{}", user_type, user_id))
+                Some(format!("{user_type}:{user_id}"))
             })
         })
         .collect();
@@ -603,7 +589,7 @@ async fn test_listusers_with_computed_relations() -> Result<()> {
             u.get("object").and_then(|o| {
                 let user_type = o.get("type")?.as_str()?;
                 let user_id = o.get("id")?.as_str()?;
-                Some(format!("{}:{}", user_type, user_id))
+                Some(format!("{user_type}:{user_id}"))
             })
         })
         .collect();

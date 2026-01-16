@@ -239,7 +239,7 @@ fn bench_wide_nested(c: &mut Criterion) {
     for (width, depth) in [(2, 10), (5, 5), (10, 3), (20, 2)] {
         let wide = wide_nested_union(width, depth);
         group.bench_with_input(
-            BenchmarkId::new(format!("{}x{}", width, depth), 1),
+            BenchmarkId::new(format!("{width}x{depth}"), 1),
             &wide,
             |b, input| b.iter(|| parse_userset(black_box(input), "document", "viewer")),
         );

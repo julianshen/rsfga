@@ -54,9 +54,9 @@ pub fn parse_user(user: &str) -> Option<(&str, &str, Option<&str>)> {
 /// - `"team:eng#member"` when `user_relation` is `Some("member")`
 pub fn format_user(user_type: &str, user_id: &str, user_relation: Option<&str>) -> String {
     if let Some(rel) = user_relation {
-        format!("{}:{}#{}", user_type, user_id, rel)
+        format!("{user_type}:{user_id}#{rel}")
     } else {
-        format!("{}:{}", user_type, user_id)
+        format!("{user_type}:{user_id}")
     }
 }
 

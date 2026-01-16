@@ -657,7 +657,7 @@ mod tests {
 
         // Insert many entries that will expire
         for i in 0..50 {
-            let key = CacheKey::new("store-1", format!("doc:{}", i), "viewer", "user:alice");
+            let key = CacheKey::new("store-1", format!("doc:{i}"), "viewer", "user:alice");
             cache.insert(key, true).await;
         }
 
@@ -672,7 +672,7 @@ mod tests {
 
             // Perform multiple reads
             for i in 0..100 {
-                let key = CacheKey::new("store-1", format!("doc:{}", i), "viewer", "user:alice");
+                let key = CacheKey::new("store-1", format!("doc:{i}"), "viewer", "user:alice");
                 let _ = cache_clone.get(&key).await;
             }
 
@@ -683,8 +683,7 @@ mod tests {
         let read_duration = read_task.await.unwrap();
         assert!(
             read_duration < Duration::from_millis(100),
-            "Reads took too long: {:?}",
-            read_duration
+            "Reads took too long: {read_duration:?}"
         );
     }
 
@@ -750,7 +749,7 @@ mod tests {
         for i in 0..100 {
             let key = CacheKey::new(
                 "store-1",
-                format!("document:doc{}", i),
+                format!("document:doc{i}"),
                 "viewer",
                 "user:alice",
             );
@@ -772,8 +771,7 @@ mod tests {
         // Assert - spawning should be nearly instant (under 1ms)
         assert!(
             spawn_duration < Duration::from_millis(1),
-            "Spawning invalidation took too long: {:?}",
-            spawn_duration
+            "Spawning invalidation took too long: {spawn_duration:?}"
         );
 
         // Wait for invalidation to complete to verify it works
@@ -835,7 +833,7 @@ mod tests {
         for i in 0..10 {
             let key = CacheKey::new(
                 "store-1",
-                format!("document:doc{}", i),
+                format!("document:doc{i}"),
                 "viewer",
                 "user:alice",
             );
@@ -846,7 +844,7 @@ mod tests {
         let mut durations = Vec::new();
         for i in 0..10 {
             let duration = cache
-                .timed_invalidate_for_tuple("store-1", &format!("document:doc{}", i), "viewer")
+                .timed_invalidate_for_tuple("store-1", &format!("document:doc{i}"), "viewer")
                 .await;
             durations.push(duration);
         }
@@ -858,8 +856,7 @@ mod tests {
         // Note: In tests with small data, this should be well under 1ms
         assert!(
             *p99 < Duration::from_millis(100),
-            "Staleness window p99 too high: {:?}",
-            p99
+            "Staleness window p99 too high: {p99:?}"
         );
 
         // Log the measurement for informational purposes
@@ -883,7 +880,7 @@ mod tests {
         for i in 0..100 {
             let key = CacheKey::new(
                 "store-1",
-                format!("document:doc{}", i),
+                format!("document:doc{i}"),
                 "viewer",
                 "user:alice",
             );
@@ -901,7 +898,7 @@ mod tests {
                 for i in 0..100 {
                     let key = CacheKey::new(
                         "store-1",
-                        format!("document:doc{}", i),
+                        format!("document:doc{i}"),
                         "viewer",
                         "user:alice",
                     );
@@ -927,9 +924,7 @@ mod tests {
         for (task_id, duration) in &results {
             assert!(
                 *duration < Duration::from_millis(100),
-                "Task {} took too long: {:?}",
-                task_id,
-                duration
+                "Task {task_id} took too long: {duration:?}"
             );
         }
     }
@@ -950,7 +945,7 @@ mod tests {
                 for i in 0..100 {
                     let key = CacheKey::new(
                         "store-1",
-                        format!("document:task{}_doc{}", task_id, i),
+                        format!("document:task{task_id}_doc{i}"),
                         "viewer",
                         "user:alice",
                     );
@@ -975,16 +970,14 @@ mod tests {
             for i in 0..100 {
                 let key = CacheKey::new(
                     "store-1",
-                    format!("document:task{}_doc{}", task_id, i),
+                    format!("document:task{task_id}_doc{i}"),
                     "viewer",
                     "user:alice",
                 );
                 assert_eq!(
                     cache.get(&key).await,
                     Some(true),
-                    "Missing entry for task {} doc {}",
-                    task_id,
-                    i
+                    "Missing entry for task {task_id} doc {i}"
                 );
             }
         }
@@ -1021,8 +1014,7 @@ mod tests {
         // Assert - read should return either Some(false) or Some(true), never None or garbage
         assert!(
             read_result == Some(false) || read_result == Some(true),
-            "Got unexpected result: {:?}",
-            read_result
+            "Got unexpected result: {read_result:?}"
         );
     }
 
@@ -1066,8 +1058,7 @@ mod tests {
         // Assert - should complete within reasonable time (1 second for 1000 ops)
         assert!(
             duration < Duration::from_secs(1),
-            "1000 concurrent operations took too long: {:?}",
-            duration
+            "1000 concurrent operations took too long: {duration:?}"
         );
     }
 

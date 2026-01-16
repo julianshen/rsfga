@@ -975,7 +975,7 @@ where
             model
                 .find_condition(condition_name)
                 .ok_or_else(|| DomainError::ResolverError {
-                    message: format!("condition not found: {}", condition_name),
+                    message: format!("condition not found: {condition_name}"),
                 })?;
 
         // Get the parsed CEL expression from cache (or parse and cache it)

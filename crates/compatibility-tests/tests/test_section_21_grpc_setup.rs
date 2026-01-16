@@ -19,8 +19,7 @@ async fn test_can_connect_to_openfga_grpc_service() -> Result<()> {
         services
             .iter()
             .any(|s| s.contains("openfga.v1.OpenFGAService")),
-        "OpenFGA gRPC service should be available. Found: {:?}",
-        services
+        "OpenFGA gRPC service should be available. Found: {services:?}"
     );
 
     // Also verify health service is available
@@ -389,8 +388,7 @@ async fn test_can_call_check_service_methods() -> Result<()> {
 
     assert!(
         !allowed,
-        "Check should return allowed: false for non-existent tuple, got: {:?}",
-        check_response2
+        "Check should return allowed: false for non-existent tuple, got: {check_response2:?}"
     );
 
     Ok(())

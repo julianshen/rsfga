@@ -251,8 +251,7 @@ where
                             return BatchCheckItemResult {
                                 allowed: false,
                                 error: Some(format!(
-                                    "singleflight retry limit exceeded ({} retries)",
-                                    MAX_SINGLEFLIGHT_RETRIES
+                                    "singleflight retry limit exceeded ({MAX_SINGLEFLIGHT_RETRIES} retries)"
                                 )),
                             };
                         }

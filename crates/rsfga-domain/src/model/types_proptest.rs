@@ -7,13 +7,13 @@ mod tests {
     /// Strategy to generate valid user identifiers in type:id format
     fn valid_user_strategy() -> impl Strategy<Value = String> {
         // Generate type:id format like "user:alice" or "group:engineers"
-        ("[a-z]{1,10}", "[a-z0-9]{1,20}").prop_map(|(t, id)| format!("{}:{}", t, id))
+        ("[a-z]{1,10}", "[a-z0-9]{1,20}").prop_map(|(t, id)| format!("{t}:{id}"))
     }
 
     /// Strategy to generate valid userset references in type:id#relation format
     fn userset_reference_strategy() -> impl Strategy<Value = String> {
         ("[a-z]{1,10}", "[a-z0-9]{1,10}", "[a-z]{1,10}")
-            .prop_map(|(t, id, rel)| format!("{}:{}#{}", t, id, rel))
+            .prop_map(|(t, id, rel)| format!("{t}:{id}#{rel}"))
     }
 
     proptest! {
@@ -53,7 +53,7 @@ mod tests {
             obj_id in "[a-z0-9]{1,10}"
         ) {
             use crate::model::Object;
-            let input = format!("{}:{}", obj_type, obj_id);
+            let input = format!("{obj_type}:{obj_id}");
             let parsed = Object::parse(&input);
             prop_assert!(parsed.is_ok());
             let obj = parsed.unwrap();
@@ -68,7 +68,7 @@ mod tests {
             object in "[a-z0-9:]{3,20}"
         ) {
             use crate::model::Tuple;
-            let user = format!("{}:{}", user_type, user_id);
+            let user = format!("{user_type}:{user_id}");
             // Non-empty strings for all fields should succeed
             if !relation.is_empty() && !object.is_empty() {
                 let tuple = Tuple::new(&user, &relation, &object);

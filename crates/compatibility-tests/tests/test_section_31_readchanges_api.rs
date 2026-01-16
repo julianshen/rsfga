@@ -251,8 +251,7 @@ async fn test_readchanges_with_type_filter() -> Result<()> {
 
         assert!(
             obj.starts_with("document:"),
-            "Filtered changes should only include documents, got: {}",
-            obj
+            "Filtered changes should only include documents, got: {obj}"
         );
     }
 
@@ -269,9 +268,9 @@ async fn test_readchanges_pagination_page_size() -> Result<()> {
     let tuples: Vec<_> = (0..10)
         .map(|i| {
             (
-                format!("user:user{}", i),
+                format!("user:user{i}"),
                 "viewer".to_string(),
-                format!("document:doc{}", i),
+                format!("document:doc{i}"),
             )
         })
         .collect();
@@ -335,9 +334,9 @@ async fn test_readchanges_continuation_token() -> Result<()> {
     let tuples: Vec<_> = (0..10)
         .map(|i| {
             (
-                format!("user:user{}", i),
+                format!("user:user{i}"),
                 "viewer".to_string(),
-                format!("document:doc{}", i),
+                format!("document:doc{i}"),
             )
         })
         .collect();
@@ -590,8 +589,7 @@ async fn test_readchanges_type_filter_mismatch_with_token() -> Result<()> {
         status.is_success()
             || status == StatusCode::BAD_REQUEST
             || status == StatusCode::UNPROCESSABLE_ENTITY,
-        "Should either succeed or return validation error, got: {}",
-        status
+        "Should either succeed or return validation error, got: {status}"
     );
 
     Ok(())
@@ -664,9 +662,9 @@ async fn test_readchanges_chronological_order() -> Result<()> {
         write_tuples(
             &store_id,
             vec![(
-                &format!("user:user{}", i),
+                &format!("user:user{i}"),
                 "viewer",
-                &format!("document:doc{}", i),
+                &format!("document:doc{i}"),
             )],
         )
         .await?;

@@ -244,10 +244,7 @@ mod tests {
             let result = CelExpression::parse(expr_str);
             assert!(
                 result.is_err(),
-                "Should reject invalid {} expression '{}' but got: {:?}",
-                desc,
-                expr_str,
-                result
+                "Should reject invalid {desc} expression '{expr_str}' but got: {result:?}"
             );
 
             // Verify error contains the original expression
@@ -262,8 +259,7 @@ mod tests {
                 );
                 assert!(
                     !message.is_empty(),
-                    "Error message should not be empty for '{}'",
-                    desc
+                    "Error message should not be empty for '{desc}'"
                 );
             }
         }
@@ -316,7 +312,7 @@ mod tests {
         let result = expr.evaluate(&ctx);
 
         // Assert
-        assert!(result.is_ok(), "Evaluation should succeed: {:?}", result);
+        assert!(result.is_ok(), "Evaluation should succeed: {result:?}");
         let eval_result = result.unwrap();
         assert_eq!(eval_result.as_bool(), Some(true));
     }
@@ -339,7 +335,7 @@ mod tests {
         ctx.set_map("context", context_map);
 
         let result = expr.evaluate(&ctx);
-        assert!(result.is_ok(), "Evaluation should succeed: {:?}", result);
+        assert!(result.is_ok(), "Evaluation should succeed: {result:?}");
         assert!(result.unwrap().is_truthy());
     }
 
@@ -356,7 +352,7 @@ mod tests {
         ctx.set_map("request", request_map);
 
         let result = expr.evaluate(&ctx);
-        assert!(result.is_ok(), "Evaluation should succeed: {:?}", result);
+        assert!(result.is_ok(), "Evaluation should succeed: {result:?}");
         assert!(result.unwrap().is_truthy());
     }
 
@@ -417,8 +413,7 @@ mod tests {
         let result = expr.evaluate(&ctx);
         assert!(
             result.is_ok(),
-            "Timestamp comparison should succeed: {:?}",
-            result
+            "Timestamp comparison should succeed: {result:?}"
         );
         assert!(result.unwrap().is_truthy());
     }
@@ -435,8 +430,7 @@ mod tests {
         let result = expr.evaluate(&ctx);
         assert!(
             result.is_ok(),
-            "Duration comparison should succeed: {:?}",
-            result
+            "Duration comparison should succeed: {result:?}"
         );
         assert!(result.unwrap().is_truthy());
     }
@@ -511,8 +505,7 @@ mod tests {
             .await;
         assert!(
             result.is_ok(),
-            "Normal evaluation should complete within timeout: {:?}",
-            result
+            "Normal evaluation should complete within timeout: {result:?}"
         );
         assert!(result.unwrap().is_truthy());
 
@@ -535,8 +528,7 @@ mod tests {
         // Production code should use reasonable timeouts (e.g., 100ms to 1s).
         assert!(
             result.is_ok() || matches!(result, Err(CelError::Timeout { .. })),
-            "Should either succeed quickly or timeout: {:?}",
-            result
+            "Should either succeed quickly or timeout: {result:?}"
         );
 
         // Test 3: Verify timeout error contains expression and duration
@@ -572,7 +564,7 @@ mod tests {
                 assert_eq!(*duration_ms, 0, "Duration should be captured");
             }
             Err(e) => {
-                panic!("Unexpected error type: {:?}", e);
+                panic!("Unexpected error type: {e:?}");
             }
         }
 

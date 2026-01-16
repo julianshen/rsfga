@@ -1785,7 +1785,7 @@ mod tests {
             database_url: "mysql://user:password@localhost/rsfga".to_string(),
             ..Default::default()
         };
-        let debug_output = format!("{:?}", config);
+        let debug_output = format!("{config:?}");
         assert!(debug_output.contains("[REDACTED]"));
         assert!(!debug_output.contains("password"));
         // Should include timeout and batch size fields

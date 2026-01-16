@@ -111,7 +111,7 @@ impl TiDbContainer {
 
         // TiDB defaults to root user with no password
         // Need to create test database
-        let connection_string = format!("mysql://root@127.0.0.1:{}/test", host_port);
+        let connection_string = format!("mysql://root@127.0.0.1:{host_port}/test");
 
         // Wait a bit more for TiDB to fully initialize
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -387,7 +387,7 @@ async fn testcontainers_tidb_pagination() {
     for i in 0..10 {
         let tuple = StoredTuple::new(
             "document",
-            format!("doc{}", i),
+            format!("doc{i}"),
             "viewer",
             "user",
             "alice",
@@ -431,9 +431,9 @@ async fn testcontainers_tidb_autoincrement_behavior() {
 
     // Create multiple stores to test AUTO_INCREMENT
     for i in 0..5 {
-        let store_id = format!("tidb-autoinc-{}", i);
+        let store_id = format!("tidb-autoinc-{i}");
         store
-            .create_store(&store_id, &format!("Test Store {}", i))
+            .create_store(&store_id, &format!("Test Store {i}"))
             .await
             .expect("Should create store");
     }
@@ -449,7 +449,7 @@ async fn testcontainers_tidb_autoincrement_behavior() {
     // Cleanup
     for i in 0..5 {
         store
-            .delete_store(&format!("tidb-autoinc-{}", i))
+            .delete_store(&format!("tidb-autoinc-{i}"))
             .await
             .unwrap();
     }
@@ -506,10 +506,10 @@ async fn test_tidb_concurrent_writes() {
         let store_id = "tidb-concurrent".to_string();
         let tuple = StoredTuple::new(
             "document",
-            format!("doc{}", i),
+            format!("doc{i}"),
             "viewer",
             "user",
-            format!("user{}", i),
+            format!("user{i}"),
             None,
         );
 
