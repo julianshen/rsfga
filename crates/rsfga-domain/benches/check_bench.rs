@@ -58,7 +58,7 @@ impl BenchTupleReader {
         user_type: &str,
         user_id: &str,
     ) {
-        let key = format!("{}:{}:{}:{}", store_id, object_type, object_id, relation);
+        let key = format!("{store_id}:{object_type}:{object_id}:{relation}");
         let tuple = StoredTupleRef::new(user_type, user_id, None);
         self.tuples.entry(key).or_default().push(tuple);
     }
@@ -73,7 +73,7 @@ impl TupleReader for BenchTupleReader {
         object_id: &str,
         relation: &str,
     ) -> DomainResult<Vec<StoredTupleRef>> {
-        let key = format!("{}:{}:{}:{}", store_id, object_type, object_id, relation);
+        let key = format!("{store_id}:{object_type}:{object_id}:{relation}");
         Ok(self.tuples.get(&key).cloned().unwrap_or_default())
     }
 
@@ -111,7 +111,7 @@ impl ModelReader for BenchModelReader {
         store_id: &str,
         type_name: &str,
     ) -> DomainResult<TypeDefinition> {
-        let key = format!("{}:{}", store_id, type_name);
+        let key = format!("{store_id}:{type_name}");
         self.type_definitions
             .get(&key)
             .cloned()
@@ -172,7 +172,7 @@ fn create_direct_relation_setup() -> (Arc<BenchTupleReader>, Arc<BenchModelReade
         tuple_reader.add_tuple(
             "bench-store",
             "document",
-            &format!("doc{}", i),
+            &format!("doc{i}"),
             "viewer",
             "user",
             "alice",
@@ -232,7 +232,7 @@ fn create_union_relation_setup() -> (Arc<BenchTupleReader>, Arc<BenchModelReader
         tuple_reader.add_tuple(
             "bench-store",
             "document",
-            &format!("doc{}", i),
+            &format!("doc{i}"),
             "viewer",
             "user",
             "alice",
@@ -335,7 +335,7 @@ fn bench_repeated_check(c: &mut Criterion) {
                 "bench-store".to_string(),
                 "user:alice".to_string(),
                 "viewer".to_string(),
-                format!("document:doc{}", i),
+                format!("document:doc{i}"),
                 vec![],
             );
             let _ = resolver.check(&request).await;
@@ -444,7 +444,7 @@ fn bench_tuple_count_scalability(c: &mut Criterion) {
                 tuple_reader.add_tuple(
                     "bench-store",
                     "document",
-                    &format!("doc{}", i),
+                    &format!("doc{i}"),
                     "viewer",
                     "user",
                     "alice",
@@ -518,7 +518,7 @@ fn bench_cel_cache(c: &mut Criterion) {
     group.bench_function("cache_miss", |b| {
         b.iter(|| {
             counter += 1;
-            let expr = format!("x > {}", counter);
+            let expr = format!("x > {counter}");
             let result = cache_miss.get_or_parse(black_box(&expr));
             black_box(result)
         })

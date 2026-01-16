@@ -438,14 +438,14 @@ async fn test_batch_check_rpc_rejects_oversized_batch() {
     let checks: Vec<BatchCheckItem> = (0..51)
         .map(|i| BatchCheckItem {
             tuple_key: Some(TupleKey {
-                user: format!("user:user{}", i),
+                user: format!("user:user{i}"),
                 relation: "viewer".to_string(),
-                object: format!("document:doc{}", i),
+                object: format!("document:doc{i}"),
                 condition: None,
             }),
             contextual_tuples: None,
             context: None,
-            correlation_id: format!("check-{}", i),
+            correlation_id: format!("check-{i}"),
         })
         .collect();
 
@@ -483,14 +483,14 @@ async fn test_batch_check_rpc_accepts_max_batch_size() {
     let checks: Vec<BatchCheckItem> = (0..50)
         .map(|i| BatchCheckItem {
             tuple_key: Some(TupleKey {
-                user: format!("user:user{}", i),
+                user: format!("user:user{i}"),
                 relation: "viewer".to_string(),
-                object: format!("document:doc{}", i),
+                object: format!("document:doc{i}"),
                 condition: None,
             }),
             contextual_tuples: None,
             context: None,
-            correlation_id: format!("check-{}", i),
+            correlation_id: format!("check-{i}"),
         })
         .collect();
 
@@ -719,14 +719,14 @@ async fn test_grpc_errors_map_correctly_to_status_codes() {
     for i in 0..100 {
         checks.push(BatchCheckItem {
             tuple_key: Some(TupleKey {
-                user: format!("user:{}", i),
+                user: format!("user:{i}"),
                 relation: "viewer".to_string(),
-                object: format!("doc:{}", i),
+                object: format!("doc:{i}"),
                 condition: None,
             }),
             contextual_tuples: None,
             context: None,
-            correlation_id: format!("check-{}", i),
+            correlation_id: format!("check-{i}"),
         });
     }
 

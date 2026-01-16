@@ -42,7 +42,7 @@ async fn test_api_rate_limiting_behavior() -> Result<()> {
         match response.status().as_u16() {
             200 => success_count += 1,
             429 => rate_limited_count += 1,
-            status => panic!("Unexpected status code: {}", status),
+            status => panic!("Unexpected status code: {status}"),
         }
     }
 
@@ -100,8 +100,7 @@ async fn test_rate_limit_headers() -> Result<()> {
     for header in &rate_limit_headers {
         assert!(
             headers.get(*header).is_none(),
-            "OpenFGA should not return {} header (no built-in rate limiting)",
-            header
+            "OpenFGA should not return {header} header (no built-in rate limiting)"
         );
     }
 

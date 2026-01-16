@@ -158,7 +158,7 @@ pub fn get_grpc_url() -> String {
             // If the scheme is unknown, fall back to OpenFGA's default port 18080
             let http_port = parsed.port_or_known_default().unwrap_or(18080);
             let grpc_port = http_port + 1;
-            format!("{}:{}", host, grpc_port)
+            format!("{host}:{grpc_port}")
         }
         Err(_) => {
             // Fallback: try to extract host:port manually for malformed URLs
@@ -585,9 +585,9 @@ pub async fn write_sequential_tuples(store_id: &str, count: usize) -> Result<()>
     let tuples: Vec<_> = (0..count)
         .map(|i| {
             (
-                format!("user:user{}", i),
+                format!("user:user{i}"),
                 "viewer".to_string(),
-                format!("document:doc{}", i),
+                format!("document:doc{i}"),
             )
         })
         .collect();
@@ -649,7 +649,7 @@ pub fn grpc_call(method: &str, data: &serde_json::Value) -> Result<serde_json::V
     if !output.status.success() {
         // Always fail when grpcurl exits with non-zero status.
         // Tests that need to inspect error responses should use grpc_call_with_error.
-        anyhow::bail!("grpcurl failed: {} {}", stderr, stdout);
+        anyhow::bail!("grpcurl failed: {stderr} {stdout}");
     }
 
     if stdout.trim().is_empty() {
@@ -740,7 +740,7 @@ pub fn grpc_streaming_call(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("grpcurl streaming call failed: {}", stderr);
+        anyhow::bail!("grpcurl streaming call failed: {stderr}");
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -801,7 +801,7 @@ pub fn grpcurl_list() -> Result<Vec<String>> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("grpcurl list failed: {}", stderr);
+        anyhow::bail!("grpcurl list failed: {stderr}");
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -829,7 +829,7 @@ pub fn grpcurl_describe(target: &str) -> Result<String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("grpcurl describe failed: {}", stderr);
+        anyhow::bail!("grpcurl describe failed: {stderr}");
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())

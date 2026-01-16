@@ -67,10 +67,7 @@ async fn test_batch_check_multiple_tuples() -> Result<()> {
     let status = response.status();
     if !status.is_success() {
         let error_body = response.text().await?;
-        panic!(
-            "Batch check should succeed, got status: {}. Response: {}",
-            status, error_body
-        );
+        panic!("Batch check should succeed, got status: {status}. Response: {error_body}");
     }
 
     let response_body: serde_json::Value = response.json().await?;
@@ -340,9 +337,9 @@ async fn test_batch_check_large_batch() -> Result<()> {
     let tuples: Vec<_> = (0..MAX_BATCH_SIZE)
         .map(|i| {
             (
-                format!("user:user{}", i),
+                format!("user:user{i}"),
                 "viewer".to_string(),
-                format!("document:doc{}", i),
+                format!("document:doc{i}"),
             )
         })
         .collect();
@@ -402,9 +399,7 @@ async fn test_batch_check_large_batch() -> Result<()> {
     assert_eq!(
         results.len(),
         MAX_BATCH_SIZE,
-        "Batch check should return {} results for {} checks",
-        MAX_BATCH_SIZE,
-        MAX_BATCH_SIZE
+        "Batch check should return {MAX_BATCH_SIZE} results for {MAX_BATCH_SIZE} checks"
     );
 
     // Assert: All should be allowed
@@ -414,8 +409,7 @@ async fn test_batch_check_large_batch() -> Result<()> {
 
     assert!(
         all_allowed,
-        "All {} checks should return allowed=true",
-        MAX_BATCH_SIZE
+        "All {MAX_BATCH_SIZE} checks should return allowed=true"
     );
 
     Ok(())
@@ -494,10 +488,7 @@ async fn test_batch_check_deduplication() -> Result<()> {
 
     // Note: We can't definitively verify deduplication without internal metrics,
     // but if this completes quickly (< 100ms), it likely deduplicated
-    println!(
-        "Batch check with 50 duplicate requests took: {:?}",
-        duration
-    );
+    println!("Batch check with 50 duplicate requests took: {duration:?}");
 
     Ok(())
 }

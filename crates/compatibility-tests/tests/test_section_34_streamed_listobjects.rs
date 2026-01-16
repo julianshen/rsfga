@@ -232,7 +232,7 @@ async fn test_streamed_listobjects_large_result_set() -> Result<()> {
             (
                 "user:alice".to_string(),
                 "viewer".to_string(),
-                format!("document:doc{}", i),
+                format!("document:doc{i}"),
             )
         })
         .collect();

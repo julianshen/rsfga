@@ -372,9 +372,7 @@ async fn test_check_without_required_context_returns_error() -> Result<()> {
     // OpenFGA may return 400 error OR return allowed: false when context is missing
     assert!(
         status == StatusCode::BAD_REQUEST || body["allowed"].as_bool() == Some(false),
-        "Check without required context should return error or false, got status: {}, body: {:?}",
-        status,
-        body
+        "Check without required context should return error or false, got status: {status}, body: {body:?}"
     );
 
     Ok(())
@@ -434,9 +432,7 @@ async fn test_check_with_partial_context_returns_error() -> Result<()> {
     // Document actual behavior - may error or return false for missing params
     assert!(
         status == StatusCode::BAD_REQUEST || body["allowed"].as_bool() == Some(false),
-        "Check with partial context should return error or false, got status: {}, body: {:?}",
-        status,
-        body
+        "Check with partial context should return error or false, got status: {status}, body: {body:?}"
     );
 
     Ok(())
@@ -496,9 +492,7 @@ async fn test_check_with_wrong_context_type_returns_error() -> Result<()> {
     // Document actual behavior - invalid type should cause error or false
     assert!(
         status == StatusCode::BAD_REQUEST || body["allowed"].as_bool() == Some(false),
-        "Check with wrong context type should return error or false, got status: {}, body: {:?}",
-        status,
-        body
+        "Check with wrong context type should return error or false, got status: {status}, body: {body:?}"
     );
 
     Ok(())
@@ -1002,8 +996,7 @@ async fn test_contextual_tuples_with_conditions() -> Result<()> {
         // Document if not supported
         assert!(
             status == StatusCode::BAD_REQUEST,
-            "If not supported, should return 400, got: {}",
-            status
+            "If not supported, should return 400, got: {status}"
         );
     }
 

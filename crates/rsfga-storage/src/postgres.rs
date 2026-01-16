@@ -1748,7 +1748,7 @@ mod tests {
             ..Default::default()
         };
 
-        let debug_str = format!("{:?}", config);
+        let debug_str = format!("{config:?}");
         assert!(debug_str.contains("[REDACTED]"));
         assert!(!debug_str.contains("password"));
         // Should include new timeout fields

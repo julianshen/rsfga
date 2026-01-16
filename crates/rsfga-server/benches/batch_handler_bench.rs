@@ -47,7 +47,7 @@ impl BenchTupleReader {
         user_type: &str,
         user_id: &str,
     ) {
-        let key = format!("{}:{}:{}:{}", store_id, object_type, object_id, relation);
+        let key = format!("{store_id}:{object_type}:{object_id}:{relation}");
         let tuple = StoredTupleRef::new(user_type, user_id, None);
         self.tuples.entry(key).or_default().push(tuple);
     }
@@ -62,7 +62,7 @@ impl TupleReader for BenchTupleReader {
         object_id: &str,
         relation: &str,
     ) -> DomainResult<Vec<StoredTupleRef>> {
-        let key = format!("{}:{}:{}:{}", store_id, object_type, object_id, relation);
+        let key = format!("{store_id}:{object_type}:{object_id}:{relation}");
         Ok(self.tuples.get(&key).cloned().unwrap_or_default())
     }
 
@@ -100,7 +100,7 @@ impl ModelReader for BenchModelReader {
         store_id: &str,
         type_name: &str,
     ) -> DomainResult<TypeDefinition> {
-        let key = format!("{}:{}", store_id, type_name);
+        let key = format!("{store_id}:{type_name}");
         self.type_definitions
             .get(&key)
             .cloned()
@@ -160,10 +160,10 @@ fn create_batch_check_setup() -> (Arc<BenchTupleReader>, Arc<BenchModelReader>) 
             tuple_reader.add_tuple(
                 "bench-store",
                 "document",
-                &format!("doc{}", doc_id),
+                &format!("doc{doc_id}"),
                 "viewer",
                 "user",
-                &format!("user{}", user_id),
+                &format!("user{user_id}"),
             );
         }
     }
@@ -189,7 +189,7 @@ fn generate_batch_with_duplicates(batch_size: usize, duplicate_ratio: f64) -> Ve
             BatchCheckItem {
                 user: "user:user0".to_string(),
                 relation: "viewer".to_string(),
-                object: format!("document:doc{}", doc_idx),
+                object: format!("document:doc{doc_idx}"),
             }
         })
         .collect()
@@ -316,7 +316,7 @@ fn bench_deduplication_benefit(c: &mut Criterion) {
         .map(|i| BatchCheckItem {
             user: format!("user:user{}", i % 10),
             relation: "viewer".to_string(),
-            object: format!("document:doc{}", i),
+            object: format!("document:doc{i}"),
         })
         .collect();
 
