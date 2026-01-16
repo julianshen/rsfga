@@ -39,7 +39,7 @@ impl MockTupleReader {
         user_id: &str,
         user_relation: Option<&str>,
     ) {
-        let key = format!("{}:{}:{}:{}", store_id, object_type, object_id, relation);
+        let key = format!("{store_id}:{object_type}:{object_id}:{relation}");
         let tuple = StoredTupleRef::new(user_type, user_id, user_relation.map(|s| s.to_string()));
         self.tuples
             .write()
@@ -59,7 +59,7 @@ impl MockTupleReader {
         user_type: &str,
         user_id: &str,
     ) {
-        let key = format!("{}:{}:{}:{}", store_id, object_type, object_id, relation);
+        let key = format!("{store_id}:{object_type}:{object_id}:{relation}");
         if let Some(tuples) = self.tuples.write().await.get_mut(&key) {
             tuples.retain(|t| t.user_type != user_type || t.user_id != user_id);
         }
@@ -79,7 +79,7 @@ impl MockTupleReader {
         condition_name: &str,
         condition_context: Option<HashMap<String, serde_json::Value>>,
     ) {
-        let key = format!("{}:{}:{}:{}", store_id, object_type, object_id, relation);
+        let key = format!("{store_id}:{object_type}:{object_id}:{relation}");
         let tuple = StoredTupleRef::with_condition(
             user_type,
             user_id,
@@ -105,7 +105,7 @@ impl TupleReader for MockTupleReader {
         object_id: &str,
         relation: &str,
     ) -> DomainResult<Vec<StoredTupleRef>> {
-        let key = format!("{}:{}:{}:{}", store_id, object_type, object_id, relation);
+        let key = format!("{store_id}:{object_type}:{object_id}:{relation}");
         Ok(self
             .tuples
             .read()
@@ -167,7 +167,7 @@ impl ModelReader for MockModelReader {
         store_id: &str,
         type_name: &str,
     ) -> DomainResult<TypeDefinition> {
-        let key = format!("{}:{}", store_id, type_name);
+        let key = format!("{store_id}:{type_name}");
         self.type_definitions
             .read()
             .await

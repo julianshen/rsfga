@@ -201,9 +201,7 @@ async fn test_null_values_in_context() -> Result<()> {
     // Null should either cause error, return false, or be handled gracefully
     assert!(
         status.is_success() || status.as_u16() == 400,
-        "Null value in context should be handled, got status: {}, body: {:?}",
-        status,
-        body
+        "Null value in context should be handled, got status: {status}, body: {body:?}"
     );
 
     Ok(())
@@ -303,8 +301,7 @@ async fn test_very_long_string_values_in_context() -> Result<()> {
     let status = response.status();
     assert!(
         status.is_success() || status.as_u16() == 400,
-        "Very long string should be handled gracefully, got: {}",
-        status
+        "Very long string should be handled gracefully, got: {status}"
     );
 
     Ok(())
@@ -386,7 +383,7 @@ async fn test_large_list_values_in_context() -> Result<()> {
         .await?;
 
     // Create large list (1000 items)
-    let large_list: Vec<String> = (0..1000).map(|i| format!("item-{}", i)).collect();
+    let large_list: Vec<String> = (0..1000).map(|i| format!("item-{i}")).collect();
     // Add target to the list
     let mut items = large_list;
     items.push("target".to_string());
@@ -411,8 +408,7 @@ async fn test_large_list_values_in_context() -> Result<()> {
     let status = response.status();
     assert!(
         status.is_success() || status.as_u16() == 400,
-        "Large list should be handled gracefully, got: {}",
-        status
+        "Large list should be handled gracefully, got: {status}"
     );
 
     if status.is_success() {
@@ -533,8 +529,7 @@ async fn test_deeply_nested_map_values_in_context() -> Result<()> {
     let status = response.status();
     assert!(
         status.is_success() || status.as_u16() == 400,
-        "Nested map should be handled, got: {}",
-        status
+        "Nested map should be handled, got: {status}"
     );
 
     Ok(())
@@ -641,15 +636,13 @@ async fn test_cel_expression_timeout_behavior() -> Result<()> {
     // CEL should complete quickly (within reasonable time)
     assert!(
         elapsed.as_secs() < 5,
-        "CEL expression should complete quickly, took: {:?}",
-        elapsed
+        "CEL expression should complete quickly, took: {elapsed:?}"
     );
 
     let status = response.status();
     assert!(
         status.is_success(),
-        "Complex CEL expression should succeed, got: {}",
-        status
+        "Complex CEL expression should succeed, got: {status}"
     );
 
     Ok(())
@@ -750,9 +743,7 @@ async fn test_cel_expression_undefined_variable() -> Result<()> {
     // Undefined variable should cause error or return false
     assert!(
         status.as_u16() == 400 || body["allowed"].as_bool() == Some(false),
-        "Undefined variable access should error or return false, got status: {}, body: {:?}",
-        status,
-        body
+        "Undefined variable access should error or return false, got status: {status}, body: {body:?}"
     );
 
     Ok(())
@@ -859,9 +850,7 @@ async fn test_cel_expression_division_by_zero() -> Result<()> {
         status.as_u16() == 400
             || status.as_u16() == 500
             || body["allowed"].as_bool() == Some(false),
-        "Division by zero should be handled gracefully, got status: {}, body: {:?}",
-        status,
-        body
+        "Division by zero should be handled gracefully, got status: {status}, body: {body:?}"
     );
 
     Ok(())

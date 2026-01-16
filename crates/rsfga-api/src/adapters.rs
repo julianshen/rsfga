@@ -67,8 +67,7 @@ fn parse_child_array(
         .and_then(|v| v.as_array())
         .ok_or_else(|| DomainError::ModelParseError {
             message: format!(
-                "{} requires 'child' array: type '{}', relation '{}'",
-                key, type_name, rel_name
+                "{key} requires 'child' array: type '{type_name}', relation '{rel_name}'"
             ),
         })?;
 
@@ -77,8 +76,7 @@ fn parse_child_array(
     if children.is_empty() {
         return Err(DomainError::ModelParseError {
             message: format!(
-                "{} requires at least one child: type '{}', relation '{}'",
-                key, type_name, rel_name
+                "{key} requires at least one child: type '{type_name}', relation '{rel_name}'"
             ),
         });
     }
@@ -100,8 +98,7 @@ fn parse_userset_inner(
     if depth > MAX_PARSE_DEPTH {
         return Err(DomainError::ModelParseError {
             message: format!(
-                "relation definition exceeds max nesting depth of {}: type '{}', relation '{}'",
-                MAX_PARSE_DEPTH, type_name, rel_name
+                "relation definition exceeds max nesting depth of {MAX_PARSE_DEPTH}: type '{type_name}', relation '{rel_name}'"
             ),
         });
     }
@@ -110,8 +107,7 @@ fn parse_userset_inner(
         .as_object()
         .ok_or_else(|| DomainError::ModelParseError {
             message: format!(
-                "relation definition must be an object: type '{}', relation '{}'",
-                type_name, rel_name
+                "relation definition must be an object: type '{type_name}', relation '{rel_name}'"
             ),
         })?;
 
@@ -128,8 +124,7 @@ fn parse_userset_inner(
         let relation = cu.get("relation").and_then(|v| v.as_str()).ok_or_else(|| {
             DomainError::ModelParseError {
                 message: format!(
-                    "computedUserset requires 'relation' field: type '{}', relation '{}'",
-                    type_name, rel_name
+                    "computedUserset requires 'relation' field: type '{type_name}', relation '{rel_name}'"
                 ),
             }
         })?;
@@ -149,8 +144,7 @@ fn parse_userset_inner(
             .and_then(|v| v.as_str())
             .ok_or_else(|| DomainError::ModelParseError {
                 message: format!(
-                    "tupleToUserset requires 'tupleset.relation' field: type '{}', relation '{}'",
-                    type_name, rel_name
+                    "tupleToUserset requires 'tupleset.relation' field: type '{type_name}', relation '{rel_name}'"
                 ),
             })?;
         let computed_userset = ttu
@@ -160,8 +154,7 @@ fn parse_userset_inner(
             .and_then(|v| v.as_str())
             .ok_or_else(|| DomainError::ModelParseError {
                 message: format!(
-                    "tupleToUserset requires 'computedUserset.relation' field: type '{}', relation '{}'",
-                    type_name, rel_name
+                    "tupleToUserset requires 'computedUserset.relation' field: type '{type_name}', relation '{rel_name}'"
                 ),
             })?;
         return Ok(Userset::TupleToUserset {
@@ -193,16 +186,14 @@ fn parse_userset_inner(
             .get("base")
             .ok_or_else(|| DomainError::ModelParseError {
                 message: format!(
-                    "exclusion requires 'base' field: type '{}', relation '{}'",
-                    type_name, rel_name
+                    "exclusion requires 'base' field: type '{type_name}', relation '{rel_name}'"
                 ),
             })?;
         let subtract = exclusion
             .get("subtract")
             .ok_or_else(|| DomainError::ModelParseError {
                 message: format!(
-                    "exclusion requires 'subtract' field: type '{}', relation '{}'",
-                    type_name, rel_name
+                    "exclusion requires 'subtract' field: type '{type_name}', relation '{rel_name}'"
                 ),
             })?;
         return Ok(Userset::Exclusion {
@@ -220,8 +211,7 @@ fn parse_userset_inner(
     let keys: Vec<_> = obj.keys().collect();
     Err(DomainError::ModelParseError {
         message: format!(
-            "unknown relation definition keys {:?}: type '{}', relation '{}'",
-            keys, type_name, rel_name
+            "unknown relation definition keys {keys:?}: type '{type_name}', relation '{rel_name}'"
         ),
     })
 }
@@ -259,8 +249,7 @@ fn parse_type_constraints(
         let user_type = item.get("type").and_then(|t| t.as_str()).ok_or_else(|| {
             DomainError::ModelParseError {
                 message: format!(
-                    "directly_related_user_types[{}] missing 'type' field: type '{}', relation '{}'",
-                    idx, type_name, rel_name
+                    "directly_related_user_types[{idx}] missing 'type' field: type '{type_name}', relation '{rel_name}'"
                 ),
             }
         })?;
@@ -268,7 +257,7 @@ fn parse_type_constraints(
         let condition = item.get("condition").and_then(|c| c.as_str());
 
         let full_type = if let Some(relation) = item.get("relation").and_then(|r| r.as_str()) {
-            format!("{}#{}", user_type, relation)
+            format!("{user_type}#{relation}")
         } else {
             user_type.to_string()
         };
@@ -320,7 +309,7 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
             .read_tuples(store_id, &filter)
             .await
             .map_err(|e| DomainError::ResolverError {
-                message: format!("storage error: {}", e),
+                message: format!("storage error: {e}"),
             })?;
 
         // Convert StoredTuple to StoredTupleRef
@@ -343,7 +332,7 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
             Ok(_) => Ok(true),
             Err(rsfga_storage::StorageError::StoreNotFound { .. }) => Ok(false),
             Err(e) => Err(DomainError::ResolverError {
-                message: format!("storage error: {}", e),
+                message: format!("storage error: {e}"),
             }),
         }
     }
@@ -432,13 +421,13 @@ impl<S: DataStore> DataStoreModelReader<S> {
             .get_latest_authorization_model(store_id)
             .await
             .map_err(|e| DomainError::ResolverError {
-                message: format!("storage error: {}", e),
+                message: format!("storage error: {e}"),
             })?;
 
         // Parse the stored model JSON into an AuthorizationModel
         let model_json: serde_json::Value = serde_json::from_str(&stored_model.model_json)
             .map_err(|e| DomainError::ModelParseError {
-                message: format!("failed to parse model JSON: {}", e),
+                message: format!("failed to parse model JSON: {e}"),
             })?;
 
         // Build AuthorizationModel from the parsed JSON
@@ -767,8 +756,7 @@ mod tests {
         // Complex relations should now be parsed correctly
         assert!(
             result.is_ok(),
-            "Failed to parse complex relation: {:?}",
-            result
+            "Failed to parse complex relation: {result:?}"
         );
         let model = result.unwrap();
 
@@ -796,7 +784,7 @@ mod tests {
                     Userset::ComputedUserset { relation } if relation == "editor"
                 ));
             }
-            other => panic!("Expected Union, got {:?}", other),
+            other => panic!("Expected Union, got {other:?}"),
         }
     }
 
@@ -855,7 +843,7 @@ mod tests {
         // Note: moka uses approximate LRU, so we test that the cache doesn't grow unbounded
         for i in 0..10 {
             let model = AuthorizationModel::with_types("1.1", vec![]);
-            reader.cache.insert(format!("store-{}", i), model).await;
+            reader.cache.insert(format!("store-{i}"), model).await;
         }
 
         // Run pending tasks to ensure eviction happens
@@ -1510,7 +1498,7 @@ mod tests {
 
         let reader = DataStoreModelReader::new(storage);
         let result = reader.get_model("test-store").await;
-        assert!(result.is_ok(), "Failed to parse model: {:?}", result);
+        assert!(result.is_ok(), "Failed to parse model: {result:?}");
 
         let model = result.unwrap();
 

@@ -179,7 +179,7 @@ impl From<StorageError> for ApiError {
     fn from(err: StorageError) -> Self {
         match &err {
             StorageError::StoreNotFound { store_id } => {
-                ApiError::not_found(format!("store not found: {}", store_id))
+                ApiError::not_found(format!("store not found: {store_id}"))
             }
             StorageError::InvalidInput { message } => ApiError::invalid_input(message),
             _ => {
@@ -198,12 +198,11 @@ fn batch_check_error_to_api_error(err: rsfga_server::handlers::batch::BatchCheck
     use rsfga_server::handlers::batch::BatchCheckError;
     match err {
         BatchCheckError::EmptyBatch => ApiError::invalid_input("batch request cannot be empty"),
-        BatchCheckError::BatchTooLarge { size, max } => ApiError::invalid_input(format!(
-            "batch size {} exceeds maximum allowed {}",
-            size, max
-        )),
+        BatchCheckError::BatchTooLarge { size, max } => {
+            ApiError::invalid_input(format!("batch size {size} exceeds maximum allowed {max}"))
+        }
         BatchCheckError::InvalidCheck { index, message } => {
-            ApiError::invalid_input(format!("invalid check at index {}: {}", index, message))
+            ApiError::invalid_input(format!("invalid check at index {index}: {message}"))
         }
         BatchCheckError::DomainError(msg) => {
             // Log full error details for debugging - DO NOT expose to clients
@@ -466,8 +465,7 @@ async fn write_authorization_model<S: DataStore>(
     let model_json_str = model_json.to_string();
     if model_json_str.len() > MAX_AUTHORIZATION_MODEL_SIZE {
         return Err(ApiError::invalid_input(format!(
-            "authorization model exceeds maximum size of {} bytes",
-            MAX_AUTHORIZATION_MODEL_SIZE
+            "authorization model exceeds maximum size of {MAX_AUTHORIZATION_MODEL_SIZE} bytes"
         )));
     }
 
@@ -501,7 +499,7 @@ async fn get_authorization_model<S: DataStore>(
         .await
         .map_err(|e| match e {
             StorageError::ModelNotFound { model_id } => {
-                ApiError::not_found(format!("authorization model not found: {}", model_id))
+                ApiError::not_found(format!("authorization model not found: {model_id}"))
             }
             other => ApiError::from(other),
         })?;

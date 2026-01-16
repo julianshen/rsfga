@@ -47,7 +47,7 @@ async fn test_end_to_end_authorization_flow_works() {
     // Bob is a viewer of document:readme
     let (status, _) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/write", store_id),
+        &format!("/stores/{store_id}/write"),
         serde_json::json!({
             "writes": {
                 "tuple_keys": [
@@ -71,7 +71,7 @@ async fn test_end_to_end_authorization_flow_works() {
     // Step 3: Check permissions - Alice should be owner
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/check", store_id),
+        &format!("/stores/{store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -87,7 +87,7 @@ async fn test_end_to_end_authorization_flow_works() {
     // Step 4: Check permissions - Bob should be viewer
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/check", store_id),
+        &format!("/stores/{store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:bob",
@@ -103,7 +103,7 @@ async fn test_end_to_end_authorization_flow_works() {
     // Step 5: Check permissions - Bob should NOT be owner
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/check", store_id),
+        &format!("/stores/{store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:bob",
@@ -119,7 +119,7 @@ async fn test_end_to_end_authorization_flow_works() {
     // Step 6: Check permissions - Charlie has no access
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/check", store_id),
+        &format!("/stores/{store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:charlie",
@@ -159,7 +159,7 @@ async fn test_multiple_concurrent_clients_work_correctly() {
     {
         let (status, _) = post_json(
             create_test_app(&storage),
-            &format!("/stores/{}/write", store_id),
+            &format!("/stores/{store_id}/write"),
             serde_json::json!({
                 "writes": {
                     "tuple_keys": [
@@ -185,7 +185,7 @@ async fn test_multiple_concurrent_clients_work_correctly() {
 
                 let (status, response) = post_json(
                     app,
-                    &format!("/stores/{}/check", store_id),
+                    &format!("/stores/{store_id}/check"),
                     serde_json::json!({
                         "tuple_key": {
                             "user": user,
@@ -211,8 +211,8 @@ async fn test_multiple_concurrent_clients_work_correctly() {
 
     // Verify all requests succeeded with correct results
     for (i, status, allowed) in results {
-        assert_eq!(status, StatusCode::OK, "Request {} should succeed", i);
-        assert!(allowed, "Request {} should be allowed", i);
+        assert_eq!(status, StatusCode::OK, "Request {i} should succeed");
+        assert!(allowed, "Request {i} should be allowed");
     }
 }
 
@@ -251,7 +251,7 @@ async fn test_large_authorization_models_work() {
 
         let (status, _) = post_json(
             create_test_app(&storage),
-            &format!("/stores/{}/write", store_id),
+            &format!("/stores/{store_id}/write"),
             serde_json::json!({
                 "writes": {
                     "tuple_keys": tuples
@@ -259,12 +259,7 @@ async fn test_large_authorization_models_work() {
             }),
         )
         .await;
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "Batch {} write should succeed",
-            batch
-        );
+        assert_eq!(status, StatusCode::OK, "Batch {batch} write should succeed");
     }
 
     // Verify we can check permissions for tuples at various positions
@@ -276,7 +271,7 @@ async fn test_large_authorization_models_work() {
     for idx in check_positions {
         let (status, response) = post_json(
             create_test_app(&storage),
-            &format!("/stores/{}/check", store_id),
+            &format!("/stores/{store_id}/check"),
             serde_json::json!({
                 "tuple_key": {
                     "user": format!("user:user{}", idx),
@@ -289,8 +284,7 @@ async fn test_large_authorization_models_work() {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             response["allowed"], true,
-            "user{} should have viewer on doc{}",
-            idx, idx
+            "user{idx} should have viewer on doc{idx}"
         );
     }
 
@@ -298,7 +292,7 @@ async fn test_large_authorization_models_work() {
     let last_doc_idx = LARGE_MODEL_TUPLE_COUNT - 1;
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/check", store_id),
+        &format!("/stores/{store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:user0",
@@ -353,7 +347,7 @@ async fn test_deep_hierarchies_work() {
 
     let (status, _) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/write", store_id),
+        &format!("/stores/{store_id}/write"),
         serde_json::json!({
             "writes": {
                 "tuple_keys": tuples
@@ -366,7 +360,7 @@ async fn test_deep_hierarchies_work() {
     // Verify Alice is owner of folder0
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/check", store_id),
+        &format!("/stores/{store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -451,7 +445,7 @@ async fn test_batch_check_deduplicates_identical_requests() {
     // Write a single tuple
     let (status, _) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/write", store_id),
+        &format!("/stores/{store_id}/write"),
         serde_json::json!({
             "writes": {
                 "tuple_keys": [
@@ -484,7 +478,7 @@ async fn test_batch_check_deduplicates_identical_requests() {
 
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/batch-check", store_id),
+        &format!("/stores/{store_id}/batch-check"),
         serde_json::json!({
             "checks": checks
         }),
@@ -502,11 +496,10 @@ async fn test_batch_check_deduplicates_identical_requests() {
 
     // All should be allowed: true
     for i in 0..10 {
-        let check_result = &result[&format!("dup-check-{}", i)];
+        let check_result = &result[&format!("dup-check-{i}")];
         assert_eq!(
             check_result["allowed"], true,
-            "dup-check-{} should be allowed",
-            i
+            "dup-check-{i} should be allowed"
         );
     }
 }
@@ -547,7 +540,7 @@ async fn test_batch_check_parallel_execution_correctness() {
 
     let (status, _) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/write", store_id),
+        &format!("/stores/{store_id}/write"),
         serde_json::json!({
             "writes": {
                 "tuple_keys": write_tuples
@@ -573,7 +566,7 @@ async fn test_batch_check_parallel_execution_correctness() {
 
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/batch-check", store_id),
+        &format!("/stores/{store_id}/batch-check"),
         serde_json::json!({
             "checks": checks
         }),
@@ -586,7 +579,7 @@ async fn test_batch_check_parallel_execution_correctness() {
 
     // Verify correctness: users 0-24 allowed, users 25-49 denied
     for i in 0..50 {
-        let check_result = &result[&format!("parallel-{}", i)];
+        let check_result = &result[&format!("parallel-{i}")];
         let expected = i < 25;
         assert_eq!(
             check_result["allowed"],
@@ -635,7 +628,7 @@ async fn test_batch_check_handles_max_items() {
 
     let (status, _) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/write", store_id),
+        &format!("/stores/{store_id}/write"),
         serde_json::json!({
             "writes": {
                 "tuple_keys": write_tuples
@@ -661,7 +654,7 @@ async fn test_batch_check_handles_max_items() {
 
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{}/batch-check", store_id),
+        &format!("/stores/{store_id}/batch-check"),
         serde_json::json!({
             "checks": checks
         }),
@@ -673,11 +666,7 @@ async fn test_batch_check_handles_max_items() {
     let result = response["result"].as_object().unwrap();
     assert_eq!(result.len(), 50, "Should have 50 results");
     for i in 0..50 {
-        let check_result = &result[&format!("check-{}", i)];
-        assert_eq!(
-            check_result["allowed"], true,
-            "check-{} should be allowed",
-            i
-        );
+        let check_result = &result[&format!("check-{i}")];
+        assert_eq!(check_result["allowed"], true, "check-{i} should be allowed");
     }
 }

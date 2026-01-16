@@ -63,7 +63,7 @@ async fn test_expand_with_deep_relation_tree() -> Result<()> {
     let mut tuples = Vec::new();
     for i in 1..20 {
         tuples.push((
-            format!("folder:level{}", i),
+            format!("folder:level{i}"),
             "parent".to_string(),
             format!("folder:level{}", i + 1),
         ));
@@ -261,7 +261,7 @@ async fn test_listobjects_with_large_result_set() -> Result<()> {
                 (
                     "user:charlie".to_string(),
                     "viewer".to_string(),
-                    format!("document:doc{}", i),
+                    format!("document:doc{i}"),
                 )
             })
             .collect();
@@ -320,8 +320,7 @@ async fn test_listobjects_with_large_result_set() -> Result<()> {
     // Performance check: Should complete in reasonable time (sanity check, not strict benchmark)
     assert!(
         duration.as_secs() < 2,
-        "ListObjects with 1000 results should complete in < 2s, got: {:?}",
-        duration
+        "ListObjects with 1000 results should complete in < 2s, got: {duration:?}"
     );
 
     Ok(())

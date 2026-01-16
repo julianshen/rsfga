@@ -240,9 +240,9 @@ fn test_accepts_batch_near_max_size() {
     let handler = create_test_handler();
     let checks: Vec<BatchCheckItem> = (0..45) // Below MAX_BATCH_SIZE (50)
         .map(|i| BatchCheckItem {
-            user: format!("user:user{}", i),
+            user: format!("user:user{i}"),
             relation: "viewer".to_string(),
-            object: format!("document:doc{}", i),
+            object: format!("document:doc{i}"),
         })
         .collect();
     let request = BatchCheckRequest::new("store1", checks);
@@ -261,9 +261,9 @@ fn test_rejects_batch_exceeding_max_size() {
     let handler = create_test_handler();
     let checks: Vec<BatchCheckItem> = (0..51) // MAX_BATCH_SIZE + 1
         .map(|i| BatchCheckItem {
-            user: format!("user:user{}", i),
+            user: format!("user:user{i}"),
             relation: "viewer".to_string(),
-            object: format!("document:doc{}", i),
+            object: format!("document:doc{i}"),
         })
         .collect();
     let request = BatchCheckRequest::new("store1", checks);
@@ -288,9 +288,9 @@ fn test_accepts_batch_at_max_size() {
     let handler = create_test_handler();
     let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
         .map(|i| BatchCheckItem {
-            user: format!("user:user{}", i),
+            user: format!("user:user{i}"),
             relation: "viewer".to_string(),
-            object: format!("document:doc{}", i),
+            object: format!("document:doc{i}"),
         })
         .collect();
     let request = BatchCheckRequest::new("store1", checks);
@@ -986,8 +986,7 @@ async fn test_unique_checks_execute_in_parallel() {
     // If parallel, total time should be ~50ms (not 5*50=250ms)
     assert!(
         elapsed < Duration::from_millis(200),
-        "Parallel execution should be faster than sequential, took {:?}",
-        elapsed
+        "Parallel execution should be faster than sequential, took {elapsed:?}"
     );
 }
 
@@ -1044,9 +1043,9 @@ async fn test_batch_processes_faster_than_sequential() {
     // Create batch with 10 unique checks
     let checks: Vec<BatchCheckItem> = (0..10)
         .map(|i| BatchCheckItem {
-            user: format!("user:user{}", i),
+            user: format!("user:user{i}"),
             relation: "viewer".to_string(),
-            object: format!("document:doc{}", i),
+            object: format!("document:doc{i}"),
         })
         .collect();
     let request = BatchCheckRequest::new("store1", checks);
@@ -1064,8 +1063,7 @@ async fn test_batch_processes_faster_than_sequential() {
     // Use 150ms as threshold to account for some overhead
     assert!(
         elapsed < Duration::from_millis(150),
-        "Batch should be faster than sequential (10*20ms=200ms), took {:?}",
-        elapsed
+        "Batch should be faster than sequential (10*20ms=200ms), took {elapsed:?}"
     );
 }
 
@@ -1133,9 +1131,9 @@ async fn test_parallel_execution_uses_all_available_concurrency() {
     // Create batch with MAX_BATCH_SIZE unique checks
     let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
         .map(|i| BatchCheckItem {
-            user: format!("user:user{}", i),
+            user: format!("user:user{i}"),
             relation: "viewer".to_string(),
-            object: format!("document:doc{}", i),
+            object: format!("document:doc{i}"),
         })
         .collect();
     let request = BatchCheckRequest::new("store1", checks);
@@ -1147,8 +1145,7 @@ async fn test_parallel_execution_uses_all_available_concurrency() {
     let max = max_concurrent.load(Ordering::SeqCst);
     assert!(
         max > 1,
-        "Checks should execute in parallel, max concurrent was {}",
-        max
+        "Checks should execute in parallel, max concurrent was {max}"
     );
     // TODO(#86): When explicit concurrency limits are added (e.g., MAX_CONCURRENT = 32),
     // add assertion: assert!(max <= MAX_CONCURRENT, "Should respect limit");
@@ -1171,7 +1168,7 @@ async fn test_handles_partial_failures_gracefully() {
             // Fail for odd document numbers
             if object_id.ends_with('1') || object_id.ends_with('3') {
                 Err(DomainError::ResolverError {
-                    message: format!("failed for {}", object_id),
+                    message: format!("failed for {object_id}"),
                 })
             } else {
                 Ok(vec![StoredTupleRef {
@@ -1340,8 +1337,7 @@ async fn test_batch_of_max_identical_checks_executes_only_once() {
     let actual_calls = call_count.load(Ordering::SeqCst);
     assert_eq!(
         actual_calls, 1,
-        "{} identical checks should execute only 1 check, got {}",
-        MAX_BATCH_SIZE, actual_calls
+        "{MAX_BATCH_SIZE} identical checks should execute only 1 check, got {actual_calls}"
     );
 }
 
@@ -1422,14 +1418,12 @@ async fn test_batch_throughput_target() {
     // In production benchmarks (M1.8), we'll validate the actual target
     assert!(
         checks_per_second > 100.0, // Conservative threshold for CI
-        "Batch throughput should be reasonable, got {:.0} checks/s",
-        checks_per_second
+        "Batch throughput should be reasonable, got {checks_per_second:.0} checks/s"
     );
 
     // Log actual throughput for visibility (won't cause test failure)
     println!(
-        "Batch throughput: {:.0} checks/s ({} checks in {:?})",
-        checks_per_second, MAX_BATCH_SIZE, elapsed
+        "Batch throughput: {checks_per_second:.0} checks/s ({MAX_BATCH_SIZE} checks in {elapsed:?})"
     );
 }
 
@@ -1587,9 +1581,9 @@ async fn test_batch_handler_respects_runtime_concurrency() {
     // Create batch with 20 unique checks (much more than concurrency limit)
     let checks: Vec<BatchCheckItem> = (0..20)
         .map(|i| BatchCheckItem {
-            user: format!("user:user{}", i),
+            user: format!("user:user{i}"),
             relation: "viewer".to_string(),
-            object: format!("document:doc{}", i),
+            object: format!("document:doc{i}"),
         })
         .collect();
 
@@ -1600,15 +1594,12 @@ async fn test_batch_handler_respects_runtime_concurrency() {
     let observed_max = max_concurrent.load(Ordering::SeqCst);
     assert!(
         observed_max <= concurrency_limit,
-        "Max concurrent {} exceeded limit {}",
-        observed_max,
-        concurrency_limit
+        "Max concurrent {observed_max} exceeded limit {concurrency_limit}"
     );
 
     // Also verify that some parallelism did occur (max > 1)
     assert!(
         observed_max > 1,
-        "Expected some parallelism (max > 1), but got {}",
-        observed_max
+        "Expected some parallelism (max > 1), but got {observed_max}"
     );
 }

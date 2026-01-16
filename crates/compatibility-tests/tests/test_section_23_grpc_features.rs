@@ -235,8 +235,7 @@ async fn test_grpc_error_codes_match_http() -> Result<()> {
     assert!(!success, "gRPC should fail for invalid store ID");
     assert!(
         stderr.contains("InvalidArgument"),
-        "gRPC error should be InvalidArgument: {}",
-        stderr
+        "gRPC error should be InvalidArgument: {stderr}"
     );
 
     // HTTP call - URL-encode the path segment to handle `#` correctly
@@ -272,8 +271,7 @@ async fn test_grpc_error_codes_match_http() -> Result<()> {
             || stderr.contains("NotFound")
             || stderr.contains("Code(")
             || stderr.contains("store"),
-        "gRPC error should indicate store not found: {}",
-        stderr
+        "gRPC error should indicate store not found: {stderr}"
     );
 
     // HTTP equivalent
@@ -301,8 +299,7 @@ async fn test_grpc_error_codes_match_http() -> Result<()> {
     assert!(!success, "gRPC should fail for missing required field");
     assert!(
         stderr.contains("InvalidArgument"),
-        "gRPC error should be InvalidArgument for validation: {}",
-        stderr
+        "gRPC error should be InvalidArgument for validation: {stderr}"
     );
 
     Ok(())
@@ -335,15 +332,13 @@ async fn test_grpc_error_details_format() -> Result<()> {
 
     assert!(
         stderr.contains("Code:") || stderr.contains("code"),
-        "Error should contain error code: {}",
-        stderr
+        "Error should contain error code: {stderr}"
     );
     assert!(
         stderr.contains("Message:")
             || stderr.contains("message")
             || stderr.contains("type_definitions"),
-        "Error should contain message or description: {}",
-        stderr
+        "Error should contain message or description: {stderr}"
     );
 
     // Test 2: Check that successful responses don't contain error fields
@@ -383,8 +378,7 @@ async fn test_grpc_error_details_format() -> Result<()> {
         error_lower.contains("user")
             || error_lower.contains("empty")
             || error_lower.contains("required"),
-        "Error message should indicate the specific validation issue: {}",
-        stderr
+        "Error message should indicate the specific validation issue: {stderr}"
     );
 
     Ok(())

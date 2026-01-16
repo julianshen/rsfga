@@ -365,8 +365,7 @@ async fn test_validation_errors_return_400_with_details() {
     let mut checks = Vec::new();
     for i in 0..100 {
         checks.push(format!(
-            r#"{{"tuple_key": {{"user": "user:{}", "relation": "viewer", "object": "doc:{}"}}, "correlation_id": "check-{}"}}"#,
-            i, i, i
+            r#"{{"tuple_key": {{"user": "user:{i}", "relation": "viewer", "object": "doc:{i}"}}, "correlation_id": "check-{i}"}}"#
         ));
     }
     let body = format!(r#"{{"checks": [{}]}}"#, checks.join(","));
@@ -1144,10 +1143,10 @@ async fn test_list_authorization_models_pagination_works() {
     // Create 3 models
     for i in 0..3 {
         let model = StoredAuthorizationModel::new(
-            format!("model-{}", i),
+            format!("model-{i}"),
             "test-store",
             "1.1",
-            format!(r#"{{"type_definitions": [{{"type": "type{}"}}]}}"#, i),
+            format!(r#"{{"type_definitions": [{{"type": "type{i}"}}]}}"#),
         );
         storage.write_authorization_model(model).await.unwrap();
     }
@@ -1185,8 +1184,7 @@ async fn test_list_authorization_models_pagination_works() {
             Request::builder()
                 .method("GET")
                 .uri(format!(
-                    "/stores/test-store/authorization-models?page_size=2&continuation_token={}",
-                    token
+                    "/stores/test-store/authorization-models?page_size=2&continuation_token={token}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
