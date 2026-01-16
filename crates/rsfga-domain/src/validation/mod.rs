@@ -60,21 +60,17 @@ impl std::fmt::Display for ValidationError {
                 type_name,
                 relation_name,
                 cycle_path,
-            } => write!(
-                f,
-                "cyclic relation definition in {}#{}: {}",
-                type_name,
-                relation_name,
-                cycle_path.join(" -> ")
-            ),
+            } => {
+                let path = cycle_path.join(" -> ");
+                write!(f, "cyclic relation definition in {type_name}#{relation_name}: {path}")
+            }
             ValidationError::UndefinedRelation {
                 type_name,
                 relation_name,
                 referenced_relation,
             } => write!(
                 f,
-                "undefined relation '{}' referenced in {}#{}",
-                referenced_relation, type_name, relation_name
+                "undefined relation '{referenced_relation}' referenced in {type_name}#{relation_name}"
             ),
             ValidationError::UndefinedType {
                 type_name,
@@ -82,8 +78,7 @@ impl std::fmt::Display for ValidationError {
                 referenced_type,
             } => write!(
                 f,
-                "undefined type '{}' referenced in {}#{}",
-                referenced_type, type_name, relation_name
+                "undefined type '{referenced_type}' referenced in {type_name}#{relation_name}"
             ),
             ValidationError::InvalidTypeConstraint {
                 type_name,
@@ -91,8 +86,7 @@ impl std::fmt::Display for ValidationError {
                 invalid_type,
             } => write!(
                 f,
-                "invalid type constraint '{}' in {}#{}",
-                invalid_type, type_name, relation_name
+                "invalid type constraint '{invalid_type}' in {type_name}#{relation_name}"
             ),
             ValidationError::EmptyModel => {
                 write!(f, "model must have at least one type definition")
@@ -103,16 +97,14 @@ impl std::fmt::Display for ValidationError {
                 condition_name,
             } => write!(
                 f,
-                "undefined condition '{}' referenced in {}#{}",
-                condition_name, type_name, relation_name
+                "undefined condition '{condition_name}' referenced in {type_name}#{relation_name}"
             ),
             ValidationError::InvalidConditionExpression {
                 condition_name,
                 error_message,
             } => write!(
                 f,
-                "invalid CEL expression in condition '{}': {}",
-                condition_name, error_message
+                "invalid CEL expression in condition '{condition_name}': {error_message}"
             ),
         }
     }
