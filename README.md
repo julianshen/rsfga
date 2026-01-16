@@ -8,13 +8,16 @@
 
 ## Status
 
-**Current Phase**: Phase 1 - MVP Implementation (Milestone 1.9: Production Readiness)
+**Current Phase**: Phase 1 - MVP Implementation ✅ Complete (~918 tests)
 
 | Component | Status |
 |-----------|--------|
-| OpenFGA Compatibility Test Suite | ✅ Complete (150+ tests) |
+| OpenFGA Compatibility Test Suite | ✅ Complete (194 tests) |
 | Type System & DSL Parser | ✅ Complete |
-| Storage Layer (Memory + PostgreSQL) | ✅ Complete |
+| Storage Layer (Memory) | ✅ Complete |
+| Storage Layer (PostgreSQL) | ✅ Complete |
+| Storage Layer (MySQL/MariaDB/TiDB) | ✅ Complete |
+| Storage Layer (CockroachDB) | ✅ Complete |
 | Graph Resolver | ✅ Complete |
 | Batch Check Handler | ✅ Complete |
 | REST & gRPC APIs | ✅ Complete |
@@ -36,7 +39,7 @@
 ### Prerequisites
 
 - Rust 1.75+ ([Install Rust](https://rustup.rs/))
-- PostgreSQL 14+ (optional, for persistent storage)
+- PostgreSQL 14+ / MySQL 8.0+ / CockroachDB (optional, for persistent storage)
 
 ### Installation
 
