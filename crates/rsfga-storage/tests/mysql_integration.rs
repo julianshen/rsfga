@@ -330,10 +330,10 @@ async fn test_connection_pool_limits() {
         handles.push(tokio::spawn(async move {
             let tuple = StoredTuple {
                 object_type: "document".to_string(),
-                object_id: format!("doc{i}"),
+                object_id: format!("doc{}", i),
                 relation: "viewer".to_string(),
                 user_type: "user".to_string(),
-                user_id: format!("user{i}"),
+                user_id: format!("user{}", i),
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
@@ -442,10 +442,10 @@ async fn test_concurrent_writes_isolation() {
         handles.push(tokio::spawn(async move {
             let tuple = StoredTuple {
                 object_type: "document".to_string(),
-                object_id: format!("doc{i}"),
+                object_id: format!("doc{}", i),
                 relation: "viewer".to_string(),
                 user_type: "user".to_string(),
-                user_id: format!("user{i}"),
+                user_id: format!("user{}", i),
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
@@ -488,10 +488,10 @@ async fn test_concurrent_access_across_threads() {
             for j in 0..100 {
                 let tuple = StoredTuple {
                     object_type: "doc".to_string(),
-                    object_id: format!("doc-{i}-{j}"),
+                    object_id: format!("doc-{}-{}", i, j),
                     relation: "viewer".to_string(),
                     user_type: "user".to_string(),
-                    user_id: format!("user-{i}"),
+                    user_id: format!("user-{}", i),
                     user_relation: None,
                     condition_name: None,
                     condition_context: None,
@@ -536,7 +536,7 @@ async fn test_batch_insert_large_batch_chunking() {
     let tuples: Vec<StoredTuple> = (0..1500)
         .map(|i| StoredTuple {
             object_type: "document".to_string(),
-            object_id: format!("batch-doc-{i}"),
+            object_id: format!("batch-doc-{}", i),
             relation: "viewer".to_string(),
             user_type: "user".to_string(),
             user_id: format!("batch-user-{}", i % 50), // 50 unique users
@@ -593,7 +593,7 @@ async fn test_batch_delete_large_batch_chunking() {
     let tuples: Vec<StoredTuple> = (0..1500)
         .map(|i| StoredTuple {
             object_type: "document".to_string(),
-            object_id: format!("delete-doc-{i}"),
+            object_id: format!("delete-doc-{}", i),
             relation: "viewer".to_string(),
             user_type: "user".to_string(),
             user_id: format!("delete-user-{}", i % 50),
@@ -727,7 +727,7 @@ async fn test_large_dataset_performance() {
     for i in 0..10_000 {
         tuples.push(StoredTuple {
             object_type: "document".to_string(),
-            object_id: format!("doc{i}"),
+            object_id: format!("doc{}", i),
             relation: "viewer".to_string(),
             user_type: "user".to_string(),
             user_id: format!("user{}", i % 100), // 100 unique users
@@ -821,21 +821,25 @@ async fn test_indexes_created() {
     // Check for our custom indexes
     assert!(
         index_names.iter().any(|n| n.contains("idx_tuples_store")),
-        "Missing store index. Found: {index_names:?}"
+        "Missing store index. Found: {:?}",
+        index_names
     );
     assert!(
         index_names.iter().any(|n| n.contains("idx_tuples_object")),
-        "Missing object index. Found: {index_names:?}"
+        "Missing object index. Found: {:?}",
+        index_names
     );
     assert!(
         index_names.iter().any(|n| n.contains("idx_tuples_user")),
-        "Missing user index. Found: {index_names:?}"
+        "Missing user index. Found: {:?}",
+        index_names
     );
     assert!(
         index_names
             .iter()
             .any(|n| n.contains("idx_tuples_relation")),
-        "Missing relation index. Found: {index_names:?}"
+        "Missing relation index. Found: {:?}",
+        index_names
     );
 }
 
@@ -886,10 +890,10 @@ async fn test_large_result_set_pagination() {
     for i in 0..100 {
         tuples.push(StoredTuple {
             object_type: "document".to_string(),
-            object_id: format!("doc{i:03}"),
+            object_id: format!("doc{:03}", i),
             relation: "viewer".to_string(),
             user_type: "user".to_string(),
-            user_id: format!("user{i:03}"),
+            user_id: format!("user{:03}", i),
             user_relation: None,
             condition_name: None,
             condition_context: None,
@@ -1103,10 +1107,10 @@ async fn test_pool_exhaustion_returns_timeout_error() {
             // some will timeout
             let tuple = StoredTuple::new(
                 "document",
-                format!("doc{i}"),
+                format!("doc{}", i),
                 "viewer",
                 "user",
-                format!("user{i}"),
+                format!("user{}", i),
                 None,
             );
             store.write_tuple("test-pool-exhaustion", tuple).await
@@ -1129,7 +1133,8 @@ async fn test_pool_exhaustion_returns_timeout_error() {
                         || error_msg.contains("pool")
                         || error_msg.contains("connection")
                         || error_msg.contains("timed out"),
-                    "Expected pool exhaustion error, got: {e}"
+                    "Expected pool exhaustion error, got: {}",
+                    e
                 );
             }
         }
@@ -1137,7 +1142,10 @@ async fn test_pool_exhaustion_returns_timeout_error() {
 
     // Some operations should succeed (pool has 2 connections)
     // Others may fail due to pool exhaustion (depends on timing)
-    eprintln!("Pool exhaustion test: {success_count} succeeded, {error_count} failed");
+    eprintln!(
+        "Pool exhaustion test: {} succeeded, {} failed",
+        success_count, error_count
+    );
 
     // At minimum, some should succeed
     assert!(success_count > 0, "At least some operations should succeed");
@@ -1183,7 +1191,7 @@ async fn test_pool_recovers_after_queries_complete() {
         handles.push(tokio::spawn(async move {
             let tuple = StoredTuple::new(
                 "document",
-                format!("phase1-doc{i}"),
+                format!("phase1-doc{}", i),
                 "viewer",
                 "user",
                 "alice",
@@ -1202,7 +1210,7 @@ async fn test_pool_recovers_after_queries_complete() {
     for i in 0..5 {
         let tuple = StoredTuple::new(
             "document",
-            format!("phase2-doc{i}"),
+            format!("phase2-doc{}", i),
             "viewer",
             "user",
             "bob",
@@ -1255,7 +1263,7 @@ async fn test_concurrent_migrations_dont_deadlock() {
             let store = MySQLDataStore::from_config(&config).await?;
             store.run_migrations().await?;
 
-            eprintln!("Migration instance {i} completed");
+            eprintln!("Migration instance {} completed", i);
             Ok::<_, StorageError>(())
         }));
     }
@@ -1280,11 +1288,11 @@ async fn test_concurrent_migrations_dont_deadlock() {
             Ok(Ok(())) => success_count += 1,
             Ok(Err(e)) => {
                 // Migration errors are acceptable (e.g., if table already exists)
-                eprintln!("Migration error (acceptable): {e}");
+                eprintln!("Migration error (acceptable): {}", e);
                 success_count += 1; // Still counts as completing without deadlock
             }
             Err(e) => {
-                panic!("Task join error: {e}");
+                panic!("Task join error: {}", e);
             }
         }
     }
@@ -1417,7 +1425,8 @@ async fn test_health_check_latency_measurement() {
     for latency in &latencies {
         assert!(
             latency.as_millis() < 1000,
-            "Latency should be under 1 second for local DB, got {latency:?}"
+            "Latency should be under 1 second for local DB, got {:?}",
+            latency
         );
     }
 }
@@ -1479,10 +1488,10 @@ async fn test_health_check_with_active_connections() {
         for i in 0..5 {
             let tuple = StoredTuple::new(
                 "document",
-                format!("doc{i}"),
+                format!("doc{}", i),
                 "viewer",
                 "user",
-                format!("user{i}"),
+                format!("user{}", i),
                 None,
             );
             store_clone
@@ -1867,7 +1876,7 @@ async fn test_exactly_batch_size_tuples() {
         .map(|i| {
             StoredTuple::new(
                 "document",
-                format!("doc{i}"),
+                format!("doc{}", i),
                 "viewer",
                 "user",
                 format!("user{}", i % 100),
@@ -1907,7 +1916,7 @@ async fn test_batch_size_plus_one_tuples() {
         .map(|i| {
             StoredTuple::new(
                 "document",
-                format!("doc{i}"),
+                format!("doc{}", i),
                 "viewer",
                 "user",
                 format!("user{}", i % 100),
@@ -2084,7 +2093,7 @@ async fn test_pagination_exactly_page_size() {
         .map(|i| {
             StoredTuple::new(
                 "document",
-                format!("doc{i:02}"),
+                format!("doc{:02}", i),
                 "viewer",
                 "user",
                 "alice",
@@ -2150,7 +2159,7 @@ async fn test_continuation_token_at_end() {
         .map(|i| {
             StoredTuple::new(
                 "document",
-                format!("doc{i}"),
+                format!("doc{}", i),
                 "viewer",
                 "user",
                 "alice",
@@ -2233,7 +2242,7 @@ async fn test_invalid_continuation_token() {
         .map(|i| {
             StoredTuple::new(
                 "document",
-                format!("doc{i}"),
+                format!("doc{}", i),
                 "viewer",
                 "user",
                 "alice",

@@ -284,7 +284,8 @@ async fn test_writing_tuple_with_mismatched_context_types_returns_400() -> Resul
     let status = response.status();
     assert!(
         status == StatusCode::BAD_REQUEST || status.is_success(),
-        "Writing tuple with mismatched context type should return 400 or succeed (with validation at check time), got: {status}"
+        "Writing tuple with mismatched context type should return 400 or succeed (with validation at check time), got: {}",
+        status
     );
 
     Ok(())
@@ -425,7 +426,8 @@ async fn test_can_delete_tuple_with_condition() -> Result<()> {
 
     assert!(
         tuples.is_empty(),
-        "Tuple should be deleted, but found: {tuples:?}"
+        "Tuple should be deleted, but found: {:?}",
+        tuples
     );
 
     Ok(())

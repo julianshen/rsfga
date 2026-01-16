@@ -36,7 +36,7 @@ async fn test_can_start_openfga_via_docker_compose() -> Result<()> {
 fn start_docker_compose() -> Result<()> {
     // Get path to compatibility-tests crate root
     let crate_root = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-    let compose_file = format!("{crate_root}/docker-compose.yml");
+    let compose_file = format!("{}/docker-compose.yml", crate_root);
 
     let output = Command::new("docker-compose")
         .args(["-f", &compose_file, "up", "-d"])
@@ -60,7 +60,7 @@ fn start_docker_compose() -> Result<()> {
 fn stop_docker_compose() -> Result<()> {
     // Get path to compatibility-tests crate root
     let crate_root = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-    let compose_file = format!("{crate_root}/docker-compose.yml");
+    let compose_file = format!("{}/docker-compose.yml", crate_root);
 
     let output = Command::new("docker-compose")
         .args([
@@ -107,7 +107,7 @@ fn stop_docker_compose() -> Result<()> {
 fn check_openfga_running() -> Result<bool> {
     // Get path to compatibility-tests crate root
     let crate_root = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-    let compose_file = format!("{crate_root}/docker-compose.yml");
+    let compose_file = format!("{}/docker-compose.yml", crate_root);
 
     let output = Command::new("docker-compose")
         .args([
@@ -259,7 +259,7 @@ async fn test_can_clean_up_test_stores() -> Result<()> {
 
     // Act: Delete the store
     let delete_response = client
-        .delete(format!("http://localhost:18080/stores/{store_id}"))
+        .delete(format!("http://localhost:18080/stores/{}", store_id))
         .send()
         .await?;
 
@@ -272,7 +272,7 @@ async fn test_can_clean_up_test_stores() -> Result<()> {
 
     // Verify: Store no longer exists (GET should return 404)
     let get_response = client
-        .get(format!("http://localhost:18080/stores/{store_id}"))
+        .get(format!("http://localhost:18080/stores/{}", store_id))
         .send()
         .await?;
 

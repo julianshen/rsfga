@@ -54,8 +54,10 @@ impl PostgresContainer {
     async fn new() -> Self {
         let container = Postgres::default().start().await.unwrap();
         let host_port = container.get_host_port_ipv4(5432).await.unwrap();
-        let connection_string =
-            format!("postgres://postgres:postgres@127.0.0.1:{host_port}/postgres");
+        let connection_string = format!(
+            "postgres://postgres:postgres@127.0.0.1:{}/postgres",
+            host_port
+        );
         Self {
             container,
             connection_string,
@@ -79,7 +81,7 @@ impl MysqlContainer {
         let container = Mysql::default().start().await.unwrap();
         let host_port = container.get_host_port_ipv4(3306).await.unwrap();
         // Default MySQL image uses root with no password
-        let connection_string = format!("mysql://root@127.0.0.1:{host_port}/test");
+        let connection_string = format!("mysql://root@127.0.0.1:{}/test", host_port);
         Self {
             container,
             connection_string,
@@ -445,12 +447,12 @@ async fn test_postgres_health_check_under_pool_exhaustion() {
         }
         Ok(Err(e)) => {
             // Error is acceptable under pool exhaustion
-            println!("Health check error (acceptable): {e:?}");
+            println!("Health check error (acceptable): {:?}", e);
         }
         Err(_) => {
             // Timeout is acceptable under pool exhaustion
             let elapsed = start.elapsed();
-            println!("Health check timed out after {elapsed:?} (acceptable)");
+            println!("Health check timed out after {:?} (acceptable)", elapsed);
         }
     }
 
@@ -504,12 +506,12 @@ async fn test_mysql_health_check_under_pool_exhaustion() {
         }
         Ok(Err(e)) => {
             // Error is acceptable under pool exhaustion
-            println!("Health check error (acceptable): {e:?}");
+            println!("Health check error (acceptable): {:?}", e);
         }
         Err(_) => {
             // Timeout is acceptable under pool exhaustion
             let elapsed = start.elapsed();
-            println!("Health check timed out after {elapsed:?} (acceptable)");
+            println!("Health check timed out after {:?} (acceptable)", elapsed);
         }
     }
 
@@ -601,7 +603,8 @@ async fn test_postgres_query_timeout_triggers_on_slow_query() {
     // Assert that we received a query timeout error
     assert!(
         matches!(result, Err(StorageError::QueryTimeout { .. })),
-        "Expected a QueryTimeout error, but got {result:?}"
+        "Expected a QueryTimeout error, but got {:?}",
+        result
     );
 
     // Cleanup: rollback the transaction to release the lock
@@ -639,7 +642,8 @@ async fn test_mysql_query_timeout_triggers_on_slow_query() {
     // Assert that we received a query timeout error
     assert!(
         matches!(result, Err(StorageError::QueryTimeout { .. })),
-        "Expected a QueryTimeout error, but got {result:?}"
+        "Expected a QueryTimeout error, but got {:?}",
+        result
     );
 
     // Cleanup: unlock tables
@@ -679,7 +683,7 @@ async fn test_postgres_multiple_timeouts_dont_exhaust_pool() {
             let store = Arc::clone(&store);
             tokio::spawn(async move {
                 let tuple =
-                    StoredTuple::new("doc", format!("doc{i}"), "viewer", "user", "alice", None);
+                    StoredTuple::new("doc", format!("doc{}", i), "viewer", "user", "alice", None);
                 // This should time out
                 store.write_tuple("test-timeout-recovery", tuple).await
             })
@@ -691,7 +695,8 @@ async fn test_postgres_multiple_timeouts_dont_exhaust_pool() {
         let result = handle.await.unwrap();
         assert!(
             matches!(result, Err(StorageError::QueryTimeout { .. })),
-            "Expected QueryTimeout, got {result:?}"
+            "Expected QueryTimeout, got {:?}",
+            result
         );
     }
 
@@ -710,7 +715,8 @@ async fn test_postgres_multiple_timeouts_dont_exhaust_pool() {
 
     assert!(
         result.is_ok(),
-        "Write should succeed after timeout recovery: {result:?}"
+        "Write should succeed after timeout recovery: {:?}",
+        result
     );
 
     // Cleanup
@@ -743,7 +749,7 @@ async fn test_mysql_multiple_timeouts_dont_exhaust_pool() {
             let store = Arc::clone(&store);
             tokio::spawn(async move {
                 let tuple =
-                    StoredTuple::new("doc", format!("doc{i}"), "viewer", "user", "alice", None);
+                    StoredTuple::new("doc", format!("doc{}", i), "viewer", "user", "alice", None);
                 // This should time out
                 store.write_tuple("test-timeout-recovery", tuple).await
             })
@@ -755,7 +761,8 @@ async fn test_mysql_multiple_timeouts_dont_exhaust_pool() {
         let result = handle.await.unwrap();
         assert!(
             matches!(result, Err(StorageError::QueryTimeout { .. })),
-            "Expected QueryTimeout, got {result:?}"
+            "Expected QueryTimeout, got {:?}",
+            result
         );
     }
 
@@ -774,7 +781,8 @@ async fn test_mysql_multiple_timeouts_dont_exhaust_pool() {
 
     assert!(
         result.is_ok(),
-        "Write should succeed after timeout recovery: {result:?}"
+        "Write should succeed after timeout recovery: {:?}",
+        result
     );
 
     // Cleanup
@@ -817,13 +825,15 @@ async fn test_postgres_timeout_returns_promptly() {
     // We allow a small buffer for test environment variance.
     assert!(
         elapsed.as_millis() < 3000,
-        "Operation should have returned promptly after the 1s timeout, but it took {elapsed:?}"
+        "Operation should have returned promptly after the 1s timeout, but it took {:?}",
+        elapsed
     );
 
     // Assert that the result is a timeout error
     assert!(
         matches!(result, Err(StorageError::QueryTimeout { .. })),
-        "Expected a QueryTimeout error, but got {result:?}"
+        "Expected a QueryTimeout error, but got {:?}",
+        result
     );
 
     // Cleanup
@@ -864,13 +874,15 @@ async fn test_mysql_timeout_returns_promptly() {
     // We allow a small buffer for test environment variance.
     assert!(
         elapsed.as_millis() < 3000,
-        "Operation should have returned promptly after the 1s timeout, but it took {elapsed:?}"
+        "Operation should have returned promptly after the 1s timeout, but it took {:?}",
+        elapsed
     );
 
     // Assert that the result is a timeout error
     assert!(
         matches!(result, Err(StorageError::QueryTimeout { .. })),
-        "Expected a QueryTimeout error, but got {result:?}"
+        "Expected a QueryTimeout error, but got {:?}",
+        result
     );
 
     // Cleanup
@@ -904,10 +916,10 @@ async fn test_postgres_concurrent_operations_with_container() {
             tokio::spawn(async move {
                 let tuple = StoredTuple::new(
                     "document",
-                    format!("doc{i}"),
+                    format!("doc{}", i),
                     "viewer",
                     "user",
-                    format!("user{i}"),
+                    format!("user{}", i),
                     None,
                 );
                 store.write_tuple("test-concurrent", tuple).await
@@ -950,10 +962,10 @@ async fn test_mysql_concurrent_operations_with_container() {
             tokio::spawn(async move {
                 let tuple = StoredTuple::new(
                     "document",
-                    format!("doc{i}"),
+                    format!("doc{}", i),
                     "viewer",
                     "user",
-                    format!("user{i}"),
+                    format!("user{}", i),
                     None,
                 );
                 store.write_tuple("test-concurrent", tuple).await

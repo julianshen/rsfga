@@ -335,7 +335,9 @@ async fn test_unicode_in_identifiers() -> Result<()> {
         assert_eq!(
             tuples.len(),
             1,
-            "Should read back the Unicode tuple for {user}, {object}"
+            "Should read back the Unicode tuple for {}, {}",
+            user,
+            object
         );
     }
 

@@ -839,10 +839,10 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let tuple = StoredTuple {
                     object_type: "document".to_string(),
-                    object_id: format!("doc{i}"),
+                    object_id: format!("doc{}", i),
                     relation: "viewer".to_string(),
                     user_type: "user".to_string(),
-                    user_id: format!("user{i}"),
+                    user_id: format!("user{}", i),
                     user_relation: None,
                     condition_name: None,
                     condition_context: None,
@@ -876,10 +876,10 @@ mod tests {
         for i in 0..50 {
             let tuple = StoredTuple {
                 object_type: "document".to_string(),
-                object_id: format!("doc{i}"),
+                object_id: format!("doc{}", i),
                 relation: "viewer".to_string(),
                 user_type: "user".to_string(),
-                user_id: format!("user{i}"),
+                user_id: format!("user{}", i),
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
@@ -896,10 +896,10 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let tuple = StoredTuple {
                     object_type: "document".to_string(),
-                    object_id: format!("doc{i}"),
+                    object_id: format!("doc{}", i),
                     relation: "viewer".to_string(),
                     user_type: "user".to_string(),
-                    user_id: format!("user{i}"),
+                    user_id: format!("user{}", i),
                     user_relation: None,
                     condition_name: None,
                     condition_context: None,
@@ -1080,10 +1080,10 @@ mod tests {
         for i in 0..10 {
             let tuple = StoredTuple {
                 object_type: "document".to_string(),
-                object_id: format!("doc{i}"),
+                object_id: format!("doc{}", i),
                 relation: "viewer".to_string(),
                 user_type: "user".to_string(),
-                user_id: format!("user{i}"),
+                user_id: format!("user{}", i),
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
@@ -1136,7 +1136,7 @@ mod tests {
         // Create 5 stores
         for i in 0..5 {
             store
-                .create_store(&format!("store{i}"), &format!("Store {i}"))
+                .create_store(&format!("store{}", i), &format!("Store {}", i))
                 .await
                 .unwrap();
         }
@@ -1181,10 +1181,10 @@ mod tests {
                 } else {
                     "folder".to_string()
                 },
-                object_id: format!("obj{i}"),
+                object_id: format!("obj{}", i),
                 relation: "viewer".to_string(),
                 user_type: "user".to_string(),
-                user_id: format!("user{i}"),
+                user_id: format!("user{}", i),
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
@@ -1723,7 +1723,7 @@ mod tests {
         let handles: Vec<_> = (0..num_tasks)
             .map(|i| {
                 let store = Arc::clone(&store);
-                let name = format!("Store {i}");
+                let name = format!("Store {}", i);
                 tokio::spawn(async move { store.create_store(store_id, &name).await })
             })
             .collect();
@@ -1758,7 +1758,8 @@ mod tests {
         for failure in failures {
             assert!(
                 matches!(failure, Err(StorageError::StoreAlreadyExists { .. })),
-                "Expected StoreAlreadyExists error, got {failure:?}"
+                "Expected StoreAlreadyExists error, got {:?}",
+                failure
             );
         }
 

@@ -149,7 +149,8 @@ async fn test_check_with_unspecified_consistency() -> Result<()> {
     let status = response.status();
     assert!(
         status.is_success() || status.is_client_error(),
-        "UNSPECIFIED consistency should either succeed or return client error, got: {status}"
+        "UNSPECIFIED consistency should either succeed or return client error, got: {}",
+        status
     );
 
     if status.is_success() {
@@ -161,7 +162,10 @@ async fn test_check_with_unspecified_consistency() -> Result<()> {
         );
     } else {
         // Document that UNSPECIFIED is not accepted
-        eprintln!("INFO: UNSPECIFIED consistency value returned status: {status} (acceptable)");
+        eprintln!(
+            "INFO: UNSPECIFIED consistency value returned status: {} (acceptable)",
+            status
+        );
     }
 
     Ok(())
@@ -350,7 +354,8 @@ async fn test_invalid_consistency_value_error() -> Result<()> {
     let status = response.status();
     assert!(
         status.is_success() || status.is_client_error(),
-        "Invalid consistency value should either be ignored (success) or rejected (client error), got: {status}"
+        "Invalid consistency value should either be ignored (success) or rejected (client error), got: {}",
+        status
     );
 
     if status.is_success() {
@@ -363,7 +368,10 @@ async fn test_invalid_consistency_value_error() -> Result<()> {
             "Response should have 'allowed' field even with invalid consistency"
         );
     } else {
-        eprintln!("INFO: Invalid consistency value rejected with status: {status} (acceptable)");
+        eprintln!(
+            "INFO: Invalid consistency value rejected with status: {} (acceptable)",
+            status
+        );
     }
 
     Ok(())
@@ -410,7 +418,8 @@ async fn test_batchcheck_accepts_consistency_parameter() -> Result<()> {
     let status = response.status();
     assert!(
         status.is_success() || status.is_client_error(),
-        "BatchCheck with consistency should either succeed or return client error, got: {status}"
+        "BatchCheck with consistency should either succeed or return client error, got: {}",
+        status
     );
 
     if status.is_success() {
@@ -419,7 +428,8 @@ async fn test_batchcheck_accepts_consistency_parameter() -> Result<()> {
         assert!(result.is_some(), "BatchCheck should return result");
     } else {
         eprintln!(
-            "INFO: BatchCheck with consistency returned status: {status} (may not be supported in this version)"
+            "INFO: BatchCheck with consistency returned status: {} (may not be supported in this version)",
+            status
         );
     }
 
@@ -466,7 +476,8 @@ async fn test_listusers_accepts_consistency_parameter() -> Result<()> {
 
     assert!(
         status.is_success() || status.is_client_error(),
-        "ListUsers with consistency should either succeed or return client error, got: {status}"
+        "ListUsers with consistency should either succeed or return client error, got: {}",
+        status
     );
 
     if status.is_success() {
@@ -474,7 +485,10 @@ async fn test_listusers_accepts_consistency_parameter() -> Result<()> {
         let users = body.get("users").and_then(|u| u.as_array());
         assert!(users.is_some(), "ListUsers should return users array");
     } else {
-        eprintln!("INFO: ListUsers with consistency returned status: {status}");
+        eprintln!(
+            "INFO: ListUsers with consistency returned status: {}",
+            status
+        );
     }
 
     Ok(())

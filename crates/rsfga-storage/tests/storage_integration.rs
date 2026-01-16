@@ -325,7 +325,7 @@ async fn test_large_dataset_performance_memory() {
     for i in 0..10_000 {
         tuples.push(StoredTuple {
             object_type: "document".to_string(),
-            object_id: format!("doc{i}"),
+            object_id: format!("doc{}", i),
             relation: "viewer".to_string(),
             user_type: "user".to_string(),
             user_id: format!("user{}", i % 100), // 100 unique users
@@ -405,7 +405,7 @@ async fn test_large_dataset_performance_postgres() {
     for i in 0..10_000 {
         tuples.push(StoredTuple {
             object_type: "document".to_string(),
-            object_id: format!("doc{i}"),
+            object_id: format!("doc{}", i),
             relation: "viewer".to_string(),
             user_type: "user".to_string(),
             user_id: format!("user{}", i % 100), // 100 unique users
@@ -486,7 +486,7 @@ async fn test_large_dataset_performance_mysql() {
     for i in 0..10_000 {
         tuples.push(StoredTuple {
             object_type: "document".to_string(),
-            object_id: format!("doc{i}"),
+            object_id: format!("doc{}", i),
             relation: "viewer".to_string(),
             user_type: "user".to_string(),
             user_id: format!("user{}", i % 100), // 100 unique users
@@ -682,10 +682,10 @@ async fn test_concurrent_access_across_threads() {
             for j in 0..100 {
                 let tuple = StoredTuple {
                     object_type: "doc".to_string(),
-                    object_id: format!("doc-{i}-{j}"),
+                    object_id: format!("doc-{}-{}", i, j),
                     relation: "viewer".to_string(),
                     user_type: "user".to_string(),
-                    user_id: format!("user-{i}"),
+                    user_id: format!("user-{}", i),
                     user_relation: None,
                     condition_name: None,
                     condition_context: None,
@@ -729,10 +729,10 @@ async fn run_pagination_test<S: DataStore>(store: &S, store_id: &str) {
     let tuples: Vec<StoredTuple> = (0..25)
         .map(|i| StoredTuple {
             object_type: "document".to_string(),
-            object_id: format!("doc{i}"),
+            object_id: format!("doc{}", i),
             relation: "viewer".to_string(),
             user_type: "user".to_string(),
-            user_id: format!("user{i}"),
+            user_id: format!("user{}", i),
             user_relation: None,
             condition_name: None,
             condition_context: None,
@@ -843,7 +843,7 @@ async fn run_update_store_not_found_test<S: DataStore>(store: &S) {
         StorageError::StoreNotFound { store_id } => {
             assert_eq!(store_id, "non-existent-store-id");
         }
-        e => panic!("Expected StoreNotFound, got {e:?}"),
+        e => panic!("Expected StoreNotFound, got {:?}", e),
     }
 }
 
@@ -947,7 +947,7 @@ async fn test_update_store_concurrent_memory() {
         let store_id = store_id.to_string();
         handles.push(tokio::spawn(async move {
             store
-                .update_store(&store_id, &format!("Name from task {i}"))
+                .update_store(&store_id, &format!("Name from task {}", i))
                 .await
         }));
     }
@@ -955,7 +955,7 @@ async fn test_update_store_concurrent_memory() {
     // All updates should succeed (no panics or errors)
     for handle in handles {
         let result = handle.await.unwrap();
-        assert!(result.is_ok(), "Concurrent update failed: {result:?}");
+        assert!(result.is_ok(), "Concurrent update failed: {:?}", result);
     }
 
     // Verify the store has some valid name (one of the updates won)
@@ -980,10 +980,11 @@ async fn test_update_store_validates_store_id() {
         StorageError::InvalidInput { message } => {
             assert!(
                 message.contains("store_id"),
-                "Error message should mention store_id: {message}"
+                "Error message should mention store_id: {}",
+                message
             );
         }
-        e => panic!("Expected InvalidInput, got {e:?}"),
+        e => panic!("Expected InvalidInput, got {:?}", e),
     }
 
     // Store id with only whitespace should fail
@@ -1008,10 +1009,11 @@ async fn test_update_store_validates_name() {
         StorageError::InvalidInput { message } => {
             assert!(
                 message.contains("name"),
-                "Error message should mention name: {message}"
+                "Error message should mention name: {}",
+                message
             );
         }
-        e => panic!("Expected InvalidInput, got {e:?}"),
+        e => panic!("Expected InvalidInput, got {:?}", e),
     }
 
     // Clean up
@@ -1032,10 +1034,11 @@ async fn test_update_store_rejects_long_store_id() {
         StorageError::InvalidInput { message } => {
             assert!(
                 message.contains("store_id") && message.contains("maximum length"),
-                "Error message should mention store_id and maximum length: {message}"
+                "Error message should mention store_id and maximum length: {}",
+                message
             );
         }
-        e => panic!("Expected InvalidInput, got {e:?}"),
+        e => panic!("Expected InvalidInput, got {:?}", e),
     }
 }
 
@@ -1056,10 +1059,11 @@ async fn test_update_store_rejects_long_name() {
         StorageError::InvalidInput { message } => {
             assert!(
                 message.contains("name") && message.contains("maximum length"),
-                "Error message should mention name and maximum length: {message}"
+                "Error message should mention name and maximum length: {}",
+                message
             );
         }
-        e => panic!("Expected InvalidInput, got {e:?}"),
+        e => panic!("Expected InvalidInput, got {:?}", e),
     }
 
     // Clean up

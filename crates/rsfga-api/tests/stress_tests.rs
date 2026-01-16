@@ -62,7 +62,7 @@ async fn test_server_handles_1000_concurrent_requests() {
     // Write some tuples
     let (status, _) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{store_id}/write"),
+        &format!("/stores/{}/write", store_id),
         serde_json::json!({
             "writes": {
                 "tuple_keys": [
@@ -92,7 +92,7 @@ async fn test_server_handles_1000_concurrent_requests() {
                 let app = create_test_app(&storage);
                 let (status, _) = post_json(
                     app,
-                    &format!("/stores/{store_id}/check"),
+                    &format!("/stores/{}/check", store_id),
                     serde_json::json!({
                         "tuple_key": {
                             "user": if i % 2 == 0 { "user:alice" } else { "user:bob" },
@@ -121,21 +121,29 @@ async fn test_server_handles_1000_concurrent_requests() {
     // Verify results
     assert_eq!(
         errors, 0,
-        "Should have no errors with {STRESS_TEST_CONCURRENT_REQUESTS} concurrent requests"
+        "Should have no errors with {} concurrent requests",
+        STRESS_TEST_CONCURRENT_REQUESTS
     );
     assert_eq!(
         successes, STRESS_TEST_CONCURRENT_REQUESTS as u64,
-        "All {STRESS_TEST_CONCURRENT_REQUESTS} requests should succeed"
+        "All {} requests should succeed",
+        STRESS_TEST_CONCURRENT_REQUESTS
     );
 
     // Performance check: should complete in reasonable time
     // Note: This is a soft assertion - actual performance depends on hardware
     assert!(
         elapsed < STRESS_TEST_TIMEOUT,
-        "{STRESS_TEST_CONCURRENT_REQUESTS} concurrent requests should complete within {STRESS_TEST_TIMEOUT:?}, took {elapsed:?}"
+        "{} concurrent requests should complete within {:?}, took {:?}",
+        STRESS_TEST_CONCURRENT_REQUESTS,
+        STRESS_TEST_TIMEOUT,
+        elapsed
     );
 
-    println!("Stress test completed: {successes} successes, {errors} errors in {elapsed:?}");
+    println!(
+        "Stress test completed: {} successes, {} errors in {:?}",
+        successes, errors, elapsed
+    );
 }
 
 /// Test: No memory leaks under sustained load (basic check)
@@ -165,7 +173,7 @@ async fn test_sustained_load_stability() {
     // Write test data
     let (status, _) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{store_id}/write"),
+        &format!("/stores/{}/write", store_id),
         serde_json::json!({
             "writes": {
                 "tuple_keys": [
@@ -196,7 +204,7 @@ async fn test_sustained_load_stability() {
                     let app = create_test_app(&storage);
                     let (status, _) = post_json(
                         app,
-                        &format!("/stores/{store_id}/check"),
+                        &format!("/stores/{}/check", store_id),
                         serde_json::json!({
                             "tuple_key": {
                                 "user": "user:alice",
@@ -235,11 +243,13 @@ async fn test_sustained_load_stability() {
     // Verify reasonable throughput maintained
     assert!(
         total_requests > 100,
-        "Should process significant number of requests: got {total_requests}"
+        "Should process significant number of requests: got {}",
+        total_requests
     );
 
     println!(
-        "Sustained load test: {total_requests} requests in {elapsed:?} ({throughput:.0} req/s), {total_errors} errors"
+        "Sustained load test: {} requests in {:?} ({:.0} req/s), {} errors",
+        total_requests, elapsed, throughput, total_errors
     );
 }
 
@@ -270,7 +280,7 @@ async fn test_graceful_degradation_under_overload() {
     // Write test data
     let (status, _) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{store_id}/write"),
+        &format!("/stores/{}/write", store_id),
         serde_json::json!({
             "writes": {
                 "tuple_keys": [
@@ -299,7 +309,7 @@ async fn test_graceful_degradation_under_overload() {
                 let app = create_test_app(&storage);
                 let (status, _) = post_json(
                     app,
-                    &format!("/stores/{store_id}/check"),
+                    &format!("/stores/{}/check", store_id),
                     serde_json::json!({
                         "tuple_key": {
                             "user": "user:alice",
@@ -336,7 +346,8 @@ async fn test_graceful_degradation_under_overload() {
     // We expect mostly successes for in-memory storage
     // Note: With rate limiting enabled, some 429s would be acceptable
     println!(
-        "Overload test: {successes} successes, {client_errors} client errors, {server_errors} server errors"
+        "Overload test: {} successes, {} client errors, {} server errors",
+        successes, client_errors, server_errors
     );
 
     // Verify the system processed most requests
@@ -403,7 +414,7 @@ async fn test_high_write_throughput() {
                 let app = create_test_app(&storage);
                 let (status, _) = post_json(
                     app,
-                    &format!("/stores/{store_id}/write"),
+                    &format!("/stores/{}/write", store_id),
                     serde_json::json!({
                         "writes": {
                             "tuple_keys": [

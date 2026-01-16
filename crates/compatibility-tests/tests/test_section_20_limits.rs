@@ -463,7 +463,7 @@ async fn test_maximum_relation_depth() -> Result<()> {
     let mut tuples = Vec::new();
     for i in 1..24 {
         tuples.push((
-            format!("folder:level{i}"),
+            format!("folder:level{}", i),
             "parent".to_string(),
             format!("folder:level{}", i + 1),
         ));
@@ -575,7 +575,8 @@ async fn test_request_timeout_behavior() -> Result<()> {
     );
     assert!(
         duration.as_secs() < 5,
-        "Simple check should complete in < 5s (took {duration:?})"
+        "Simple check should complete in < 5s (took {:?})",
+        duration
     );
 
     // Document: OpenFGA server-side timeouts are configured via:

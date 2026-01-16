@@ -300,10 +300,10 @@ async fn test_connection_pool_limits() {
         handles.push(tokio::spawn(async move {
             let tuple = StoredTuple {
                 object_type: "document".to_string(),
-                object_id: format!("doc{i}"),
+                object_id: format!("doc{}", i),
                 relation: "viewer".to_string(),
                 user_type: "user".to_string(),
-                user_id: format!("user{i}"),
+                user_id: format!("user{}", i),
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
@@ -374,10 +374,10 @@ async fn test_concurrent_writes_isolation() {
         handles.push(tokio::spawn(async move {
             let tuple = StoredTuple {
                 object_type: "document".to_string(),
-                object_id: format!("doc{i}"),
+                object_id: format!("doc{}", i),
                 relation: "viewer".to_string(),
                 user_type: "user".to_string(),
-                user_id: format!("user{i}"),
+                user_id: format!("user{}", i),
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
@@ -427,21 +427,25 @@ async fn test_indexes_created() {
     // Check for our custom indexes
     assert!(
         index_names.iter().any(|n| n.contains("idx_tuples_store")),
-        "Missing store index. Found: {index_names:?}"
+        "Missing store index. Found: {:?}",
+        index_names
     );
     assert!(
         index_names.iter().any(|n| n.contains("idx_tuples_object")),
-        "Missing object index. Found: {index_names:?}"
+        "Missing object index. Found: {:?}",
+        index_names
     );
     assert!(
         index_names.iter().any(|n| n.contains("idx_tuples_user")),
-        "Missing user index. Found: {index_names:?}"
+        "Missing user index. Found: {:?}",
+        index_names
     );
     assert!(
         index_names
             .iter()
             .any(|n| n.contains("idx_tuples_relation")),
-        "Missing relation index. Found: {index_names:?}"
+        "Missing relation index. Found: {:?}",
+        index_names
     );
 }
 
@@ -460,10 +464,10 @@ async fn test_large_result_set_ordering() {
     for i in 0..100 {
         tuples.push(StoredTuple {
             object_type: "document".to_string(),
-            object_id: format!("doc{i:03}"),
+            object_id: format!("doc{:03}", i),
             relation: "viewer".to_string(),
             user_type: "user".to_string(),
-            user_id: format!("user{i:03}"),
+            user_id: format!("user{:03}", i),
             user_relation: None,
             condition_name: None,
             condition_context: None,
@@ -754,7 +758,8 @@ async fn test_postgres_store_condition_conflict_on_different_condition() {
     // Should return ConditionConflict error (409 Conflict in OpenFGA)
     assert!(
         matches!(result, Err(StorageError::ConditionConflict(_))),
-        "Expected ConditionConflict error, got: {result:?}"
+        "Expected ConditionConflict error, got: {:?}",
+        result
     );
 
     // Original tuple should still exist with no condition
@@ -832,7 +837,7 @@ async fn test_postgres_store_rejects_oversized_condition_context() {
     // Each entry is ~100 bytes, need ~650 entries for 65KB
     for i in 0..700 {
         large_context.insert(
-            format!("key_{i:04}"),
+            format!("key_{:04}", i),
             serde_json::json!(format!(
                 "value_{:04}_padding_to_make_it_larger_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
                 i
@@ -856,7 +861,8 @@ async fn test_postgres_store_rejects_oversized_condition_context() {
     // Should return InvalidInput error due to size limit
     assert!(
         matches!(result, Err(StorageError::InvalidInput { .. })),
-        "Expected InvalidInput error for oversized condition_context, got: {result:?}"
+        "Expected InvalidInput error for oversized condition_context, got: {:?}",
+        result
     );
 
     // Cleanup
@@ -894,10 +900,10 @@ async fn test_postgres_store_pagination_with_conditions() {
 
         tuples.push(StoredTuple {
             object_type: "document".to_string(),
-            object_id: format!("doc{i:02}"),
+            object_id: format!("doc{:02}", i),
             relation: "viewer".to_string(),
             user_type: "user".to_string(),
-            user_id: format!("user{i:02}"),
+            user_id: format!("user{:02}", i),
             user_relation: None,
             condition_name: condition,
             condition_context: context,
@@ -934,7 +940,8 @@ async fn test_postgres_store_pagination_with_conditions() {
                 // Tuples with conditions should have both name and context preserved
                 assert!(
                     name == "time_bound" || name == "ip_check",
-                    "Expected known condition name, got: {name}"
+                    "Expected known condition name, got: {}",
+                    name
                 );
                 assert!(
                     ctx.contains_key("index"),
@@ -945,7 +952,10 @@ async fn test_postgres_store_pagination_with_conditions() {
                 // Tuples without conditions should have neither name nor context
             }
             (Some(name), None) => {
-                panic!("Test data invariant violated: condition_name '{name}' should have context");
+                panic!(
+                    "Test data invariant violated: condition_name '{}' should have context",
+                    name
+                );
             }
             (None, Some(_)) => {
                 panic!("Test data invariant violated: condition_context without condition_name");
@@ -1098,7 +1108,8 @@ async fn test_health_check_latency_measurement() {
     for latency in &latencies {
         assert!(
             latency.as_millis() < 1000,
-            "Latency should be under 1 second for local DB, got {latency:?}"
+            "Latency should be under 1 second for local DB, got {:?}",
+            latency
         );
     }
 }
@@ -1288,10 +1299,10 @@ async fn test_health_check_with_active_connections() {
         for i in 0..5 {
             let tuple = StoredTuple::new(
                 "document",
-                format!("doc{i}"),
+                format!("doc{}", i),
                 "viewer",
                 "user",
-                format!("user{i}"),
+                format!("user{}", i),
                 None,
             );
             store_clone

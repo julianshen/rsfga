@@ -509,14 +509,15 @@ storage:
             let result = config.validate();
 
             if should_err {
-                assert!(result.is_err(), "Expected error for backend '{backend}'");
+                assert!(result.is_err(), "Expected error for backend '{}'", backend);
                 let err = result.unwrap_err();
                 assert!(
                     err.to_string().contains("database_url"),
-                    "Error for '{backend}' should contain 'database_url'"
+                    "Error for '{}' should contain 'database_url'",
+                    backend
                 );
             } else {
-                assert!(result.is_ok(), "Expected ok for backend '{backend}'");
+                assert!(result.is_ok(), "Expected ok for backend '{}'", backend);
             }
         }
 

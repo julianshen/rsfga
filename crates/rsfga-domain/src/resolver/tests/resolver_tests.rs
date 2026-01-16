@@ -728,14 +728,14 @@ async fn test_union_executes_branches_in_parallel() {
     let mut children = vec![];
     for i in 0..10 {
         children.push(Userset::ComputedUserset {
-            relation: format!("branch{i}"),
+            relation: format!("branch{}", i),
         });
     }
 
     let mut relations = vec![];
     for i in 0..10 {
         relations.push(RelationDefinition {
-            name: format!("branch{i}"),
+            name: format!("branch{}", i),
             type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         });
@@ -905,7 +905,8 @@ async fn test_union_returns_cycle_error_when_all_branches_cycle() {
     let result = resolver.check(&request).await;
     assert!(
         matches!(result, Err(DomainError::CycleDetected { .. })),
-        "Union with all cyclic branches should return CycleDetected error, got {result:?}"
+        "Union with all cyclic branches should return CycleDetected error, got {:?}",
+        result
     );
 }
 
@@ -1018,7 +1019,8 @@ async fn test_union_returns_false_when_one_branch_false_and_other_depth_limit() 
     let result = resolver.check(&request).await;
     assert!(
         matches!(result, Ok(CheckResult { allowed: false })),
-        "Union with one false branch and one depth-limited branch should return false, got {result:?}"
+        "Union with one false branch and one depth-limited branch should return false, got {:?}",
+        result
     );
 }
 
@@ -1095,7 +1097,8 @@ async fn test_union_returns_depth_limit_error_when_all_branches_hit_depth_limit(
             result,
             Err(DomainError::DepthLimitExceeded { .. }) | Err(DomainError::CycleDetected { .. })
         ),
-        "Union with all depth-limited branches should return path-termination error, got {result:?}"
+        "Union with all depth-limited branches should return path-termination error, got {:?}",
+        result
     );
 }
 
@@ -1252,14 +1255,14 @@ async fn test_intersection_executes_branches_in_parallel() {
     let mut children = vec![];
     for i in 0..5 {
         children.push(Userset::ComputedUserset {
-            relation: format!("req{i}"),
+            relation: format!("req{}", i),
         });
     }
 
     let mut relations = vec![];
     for i in 0..5 {
         relations.push(RelationDefinition {
-            name: format!("req{i}"),
+            name: format!("req{}", i),
             type_constraints: vec!["user".into()],
             rewrite: Userset::This,
         });
@@ -1287,7 +1290,7 @@ async fn test_intersection_executes_branches_in_parallel() {
                 "store1",
                 "document",
                 "doc1",
-                &format!("req{i}"),
+                &format!("req{}", i),
                 "user",
                 "alice",
                 None,
@@ -1576,7 +1579,8 @@ async fn test_exclusion_returns_false_when_base_false_despite_subtract_cycle() {
     let result = resolver.check(&request).await;
     assert!(
         result.is_ok(),
-        "Exclusion with base=false should not error despite cyclic subtract: {result:?}"
+        "Exclusion with base=false should not error despite cyclic subtract: {:?}",
+        result
     );
     assert!(
         !result.unwrap().allowed,
@@ -1659,7 +1663,8 @@ async fn test_exclusion_returns_false_when_subtract_true_despite_base_cycle() {
     let result = resolver.check(&request).await;
     assert!(
         result.is_ok(),
-        "Exclusion with subtract=true should not error despite cyclic base: {result:?}"
+        "Exclusion with subtract=true should not error despite cyclic base: {:?}",
+        result
     );
     assert!(
         !result.unwrap().allowed,
@@ -1742,7 +1747,8 @@ async fn test_exclusion_returns_cycle_error_when_both_branches_cycle() {
     let result = resolver.check(&request).await;
     assert!(
         matches!(result, Err(DomainError::CycleDetected { .. })),
-        "Exclusion with both cyclic branches should return CycleDetected, got {result:?}"
+        "Exclusion with both cyclic branches should return CycleDetected, got {:?}",
+        result
     );
 }
 
@@ -1819,7 +1825,8 @@ async fn test_exclusion_propagates_error_when_base_true_and_subtract_errors() {
     let result = resolver.check(&request).await;
     assert!(
         matches!(result, Err(DomainError::CycleDetected { .. })),
-        "Exclusion with base=true and cyclic subtract should return error, got {result:?}"
+        "Exclusion with base=true and cyclic subtract should return error, got {:?}",
+        result
     );
 }
 
@@ -1972,7 +1979,7 @@ async fn test_depth_limit_prevents_stack_overflow() {
 
     // Create deep chain: level0.viewer -> level1.viewer -> ... -> levelN.viewer
     for i in 0..30 {
-        let type_name = format!("level{i}");
+        let type_name = format!("level{}", i);
         let rewrite = if i == 0 {
             Userset::This
         } else {
@@ -2012,7 +2019,7 @@ async fn test_depth_limit_prevents_stack_overflow() {
         tuple_reader
             .add_tuple(
                 "store1",
-                &format!("level{i}"),
+                &format!("level{}", i),
                 "obj",
                 "parent",
                 &format!("level{}", i - 1),
@@ -2061,7 +2068,7 @@ async fn test_returns_depth_limit_exceeded_error() {
 
     // Create chain that exceeds depth limit
     for i in 0..30 {
-        let type_name = format!("type{i}");
+        let type_name = format!("type{}", i);
         model_reader
             .add_type(
                 "store1",
@@ -2095,7 +2102,7 @@ async fn test_returns_depth_limit_exceeded_error() {
         tuple_reader
             .add_tuple(
                 "store1",
-                &format!("type{i}"),
+                &format!("type{}", i),
                 "obj",
                 "parent",
                 &format!("type{}", i - 1),
@@ -2423,7 +2430,7 @@ async fn test_returns_timeout_error_with_context() {
         Err(DomainError::Timeout { duration_ms }) => {
             assert_eq!(duration_ms, 50);
         }
-        _ => panic!("Expected Timeout error, got {result:?}"),
+        _ => panic!("Expected Timeout error, got {:?}", result),
     }
 }
 
@@ -2513,7 +2520,7 @@ async fn test_depth_limit_at_boundary_24_succeeds() {
 
     // Create chain of exactly 24 levels
     for i in 0..25 {
-        let type_name = format!("level{i}");
+        let type_name = format!("level{}", i);
         let rewrite = if i == 0 {
             Userset::This
         } else {
@@ -2553,7 +2560,7 @@ async fn test_depth_limit_at_boundary_24_succeeds() {
         tuple_reader
             .add_tuple(
                 "store1",
-                &format!("level{i}"),
+                &format!("level{}", i),
                 "obj",
                 "parent",
                 &format!("level{}", i - 1),
@@ -2992,13 +2999,18 @@ use proptest::prelude::*;
 
 /// Strategy to generate valid user identifiers
 fn user_strategy() -> impl Strategy<Value = String> {
-    "[a-z]{1,10}".prop_map(|s| format!("user:{s}"))
+    "[a-z]{1,10}".prop_map(|s| format!("user:{}", s))
 }
 
 /// Strategy to generate valid object identifiers
 fn object_strategy() -> impl Strategy<Value = (String, String, String)> {
-    ("[a-z]{1,10}", "[a-z0-9]{1,10}")
-        .prop_map(|(type_name, id)| (type_name.clone(), id.clone(), format!("{type_name}:{id}")))
+    ("[a-z]{1,10}", "[a-z0-9]{1,10}").prop_map(|(type_name, id)| {
+        (
+            type_name.clone(),
+            id.clone(),
+            format!("{}:{}", type_name, id),
+        )
+    })
 }
 
 /// Strategy to generate valid relation names
@@ -3158,9 +3170,9 @@ proptest! {
 
             let request = CheckRequest {
                 store_id: "store1".to_string(),
-                user: format!("user:{user_name}"),
+                user: format!("user:{}", user_name),
                 relation: "viewer".to_string(),
-                object: format!("document:{object_id}"),
+                object: format!("document:{}", object_id),
                 contextual_tuples: Arc::new(vec![]),
                 context: Arc::new(std::collections::HashMap::new()),
             };
@@ -3211,9 +3223,9 @@ proptest! {
             // Check for user before adding tuple for OTHER user
             let request = CheckRequest {
                 store_id: "store1".to_string(),
-                user: format!("user:{user_name}"),
+                user: format!("user:{}", user_name),
                 relation: "viewer".to_string(),
-                object: format!("document:{object_id}"),
+                object: format!("document:{}", object_id),
                 contextual_tuples: Arc::new(vec![]),
                 context: Arc::new(std::collections::HashMap::new()),
             };
@@ -3279,9 +3291,9 @@ proptest! {
             // Check access to other_object before deleting tuple for object_id
             let request = CheckRequest {
                 store_id: "store1".to_string(),
-                user: format!("user:{user_name}"),
+                user: format!("user:{}", user_name),
                 relation: "viewer".to_string(),
-                object: format!("document:{other_object}"),
+                object: format!("document:{}", other_object),
                 contextual_tuples: Arc::new(vec![]),
                 context: Arc::new(std::collections::HashMap::new()),
             };
@@ -3502,10 +3514,11 @@ async fn test_check_without_required_context_returns_error() {
         DomainError::ResolverError { message } => {
             assert!(
                 message.contains("condition evaluation failed"),
-                "Error should indicate condition evaluation failed: {message}"
+                "Error should indicate condition evaluation failed: {}",
+                message
             );
         }
-        _ => panic!("Expected ResolverError but got: {error:?}"),
+        _ => panic!("Expected ResolverError but got: {:?}", error),
     }
 }
 
@@ -4079,7 +4092,8 @@ async fn test_check_returns_error_for_nonexistent_condition() {
     let err = result.expect_err("Should return error when condition is not found in model");
     assert!(
         err.to_string().contains("condition not found"),
-        "Error message should indicate condition not found: {err}"
+        "Error message should indicate condition not found: {}",
+        err
     );
 }
 
@@ -4153,7 +4167,8 @@ async fn test_check_returns_error_for_invalid_cel_expression() {
         assert!(
             err.to_string().contains("failed to parse")
                 || err.to_string().contains("condition evaluation failed"),
-            "Error should indicate CEL parse/eval failure: {err}"
+            "Error should indicate CEL parse/eval failure: {}",
+            err
         );
     }
 }
@@ -4805,7 +4820,7 @@ async fn test_cache_timeout_wrapper_does_not_break_normal_operation() {
     // Perform 100 checks to stress test the timeout wrapper
     for i in 0..100 {
         let result = resolver.check(&request).await.unwrap();
-        assert!(result.allowed, "Check {i} should be allowed");
+        assert!(result.allowed, "Check {} should be allowed", i);
     }
 
     // Verify metrics: 1 miss + 99 hits, 0 skips (no timeouts occurred)

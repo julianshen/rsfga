@@ -51,12 +51,16 @@ async fn test_check_latency_direct_relation() -> Result<()> {
     let avg_latency = total_duration / iterations;
 
     // Assert: Performance baseline documented
-    println!("OpenFGA direct relation check average latency: {avg_latency:?}");
+    println!(
+        "OpenFGA direct relation check average latency: {:?}",
+        avg_latency
+    );
 
     // Sanity check: Should complete in reasonable time (< 1 second per check)
     assert!(
         avg_latency.as_millis() < 1000,
-        "Direct relation check should complete in < 1s, got: {avg_latency:?}"
+        "Direct relation check should complete in < 1s, got: {:?}",
+        avg_latency
     );
 
     Ok(())
@@ -170,11 +174,15 @@ async fn test_check_latency_computed_union() -> Result<()> {
     let avg_latency = total_duration / iterations;
 
     // Assert: Performance baseline documented
-    println!("OpenFGA union relation check average latency: {avg_latency:?}");
+    println!(
+        "OpenFGA union relation check average latency: {:?}",
+        avg_latency
+    );
 
     assert!(
         avg_latency.as_millis() < 1000,
-        "Union relation check should complete in < 1s, got: {avg_latency:?}"
+        "Union relation check should complete in < 1s, got: {:?}",
+        avg_latency
     );
 
     Ok(())
@@ -299,11 +307,15 @@ async fn test_check_latency_deep_nested() -> Result<()> {
     let avg_latency = total_duration / iterations;
 
     // Assert: Performance baseline documented
-    println!("OpenFGA deep nested (5-hop) check average latency: {avg_latency:?}");
+    println!(
+        "OpenFGA deep nested (5-hop) check average latency: {:?}",
+        avg_latency
+    );
 
     assert!(
         avg_latency.as_millis() < 2000,
-        "Deep nested check should complete in < 2s, got: {avg_latency:?}"
+        "Deep nested check should complete in < 2s, got: {:?}",
+        avg_latency
     );
 
     Ok(())

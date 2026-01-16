@@ -60,7 +60,8 @@ async fn is_schema_1_2_supported(store_id: &str) -> bool {
             } else {
                 // 5xx errors or other unexpected status - log warning but treat as unsupported
                 eprintln!(
-                    "WARNING: Unexpected status {status} when checking schema 1.2 support. Treating as unsupported."
+                    "WARNING: Unexpected status {} when checking schema 1.2 support. Treating as unsupported.",
+                    status
                 );
                 false
             }
@@ -68,7 +69,8 @@ async fn is_schema_1_2_supported(store_id: &str) -> bool {
         Err(e) => {
             // Network or other transient errors - log warning
             eprintln!(
-                "WARNING: Network error checking schema 1.2 support: {e}. Treating as unsupported."
+                "WARNING: Network error checking schema 1.2 support: {}. Treating as unsupported.",
+                e
             );
             false
         }

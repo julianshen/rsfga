@@ -118,7 +118,8 @@ async fn test_read_returns_tuple_with_condition_name() -> Result<()> {
 
     assert!(
         condition.is_object(),
-        "Tuple should include condition, got: {tuple:?}"
+        "Tuple should include condition, got: {:?}",
+        tuple
     );
     assert_eq!(
         condition["name"].as_str(),
@@ -195,7 +196,8 @@ async fn test_read_returns_tuple_with_condition_context() -> Result<()> {
     let context = &condition["context"];
     assert!(
         context.is_object() || condition["name"].is_string(),
-        "Condition context should be returned, got: {condition:?}"
+        "Condition context should be returned, got: {:?}",
+        condition
     );
 
     Ok(())

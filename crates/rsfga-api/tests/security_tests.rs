@@ -59,7 +59,7 @@ async fn test_sql_injection_in_user_field_rejected() {
     for payload in injection_payloads {
         let (status, _) = post_json(
             create_test_app(&storage),
-            &format!("/stores/{store_id}/check"),
+            &format!("/stores/{}/check", store_id),
             serde_json::json!({
                 "tuple_key": {
                     "user": payload,
@@ -74,7 +74,9 @@ async fn test_sql_injection_in_user_field_rejected() {
         // Should NEVER cause 500 (server error indicating SQL execution)
         assert!(
             status == StatusCode::OK || status == StatusCode::BAD_REQUEST,
-            "SQL injection payload '{payload}' should be handled safely, got {status}"
+            "SQL injection payload '{}' should be handled safely, got {}",
+            payload,
+            status
         );
     }
 }
@@ -102,7 +104,7 @@ async fn test_sql_injection_in_object_field_rejected() {
     for payload in injection_payloads {
         let (status, _) = post_json(
             create_test_app(&storage),
-            &format!("/stores/{store_id}/check"),
+            &format!("/stores/{}/check", store_id),
             serde_json::json!({
                 "tuple_key": {
                     "user": "user:alice",
@@ -115,7 +117,9 @@ async fn test_sql_injection_in_object_field_rejected() {
 
         assert!(
             status == StatusCode::OK || status == StatusCode::BAD_REQUEST,
-            "SQL injection in object '{payload}' should be handled safely, got {status}"
+            "SQL injection in object '{}' should be handled safely, got {}",
+            payload,
+            status
         );
     }
 }
@@ -143,7 +147,8 @@ async fn test_sql_injection_in_store_name_rejected() {
         // Should NOT cause server error
         assert!(
             status == StatusCode::CREATED || status == StatusCode::BAD_REQUEST,
-            "SQL injection in store name should be handled safely, got {status}"
+            "SQL injection in store name should be handled safely, got {}",
+            status
         );
     }
 }
@@ -172,7 +177,9 @@ async fn test_malformed_json_rejected() {
 
         assert!(
             status.is_client_error(),
-            "Malformed JSON '{payload}' should return client error, got {status}"
+            "Malformed JSON '{}' should return client error, got {}",
+            payload,
+            status
         );
     }
 }
@@ -199,7 +206,8 @@ async fn test_oversized_payload_rejected() {
     // Must NOT cause server error (5xx)
     assert!(
         !status.is_server_error(),
-        "Oversized payload must not cause server error, got {status}"
+        "Oversized payload must not cause server error, got {}",
+        status
     );
 
     // Verify behavior based on status:
@@ -216,7 +224,8 @@ async fn test_oversized_payload_rejected() {
         );
     } else {
         panic!(
-            "Unexpected status {status} for oversized payload - expected client error or CREATED"
+            "Unexpected status {} for oversized payload - expected client error or CREATED",
+            status
         );
     }
 }
@@ -249,7 +258,7 @@ async fn test_special_characters_handled_safely() {
     for user in special_chars {
         let (status, _) = post_json(
             create_test_app(&storage),
-            &format!("/stores/{store_id}/check"),
+            &format!("/stores/{}/check", store_id),
             serde_json::json!({
                 "tuple_key": {
                     "user": user,
@@ -263,7 +272,9 @@ async fn test_special_characters_handled_safely() {
         // Should be handled safely without server errors
         assert!(
             !status.is_server_error(),
-            "Special char '{user}' should not cause server error, got {status}"
+            "Special char '{}' should not cause server error, got {}",
+            user,
+            status
         );
     }
 }
@@ -285,7 +296,7 @@ async fn test_null_bytes_rejected() {
     // Null byte in user field
     let (status, _) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{store_id}/check"),
+        &format!("/stores/{}/check", store_id),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice\0admin",
@@ -344,7 +355,7 @@ async fn test_authorization_model_cannot_be_bypassed() {
     // Write a legitimate tuple
     let (status, _) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{store_id}/write"),
+        &format!("/stores/{}/write", store_id),
         serde_json::json!({
             "writes": {
                 "tuple_keys": [
@@ -359,7 +370,7 @@ async fn test_authorization_model_cannot_be_bypassed() {
     // Attempt bypass: Check with modified user ID (case manipulation)
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{store_id}/check"),
+        &format!("/stores/{}/check", store_id),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:ALICE",  // Different case
@@ -379,7 +390,7 @@ async fn test_authorization_model_cannot_be_bypassed() {
     // Attempt bypass: Check non-existent relation
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{store_id}/check"),
+        &format!("/stores/{}/check", store_id),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -424,7 +435,7 @@ async fn test_cross_store_access_prevented() {
     // Write tuple to store A
     let (status, _) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{store_a_id}/write"),
+        &format!("/stores/{}/write", store_a_id),
         serde_json::json!({
             "writes": {
                 "tuple_keys": [
@@ -439,7 +450,7 @@ async fn test_cross_store_access_prevented() {
     // Verify access in store A
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{store_a_id}/check"),
+        &format!("/stores/{}/check", store_a_id),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -455,7 +466,7 @@ async fn test_cross_store_access_prevented() {
     // Verify NO access in store B (cross-store isolation)
     let (status, response) = post_json(
         create_test_app(&storage),
-        &format!("/stores/{store_b_id}/check"),
+        &format!("/stores/{}/check", store_b_id),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -488,7 +499,7 @@ async fn test_path_traversal_rejected() {
     for store_id in traversal_attempts {
         let (status, _) = post_json(
             create_test_app(&storage),
-            &format!("/stores/{store_id}/check"),
+            &format!("/stores/{}/check", store_id),
             serde_json::json!({
                 "tuple_key": {
                     "user": "user:alice",
@@ -503,7 +514,9 @@ async fn test_path_traversal_rejected() {
         // Should NOT return server error (indicating path traversal worked)
         assert!(
             !status.is_server_error(),
-            "Path traversal '{store_id}' should not cause server error, got {status}"
+            "Path traversal '{}' should not cause server error, got {}",
+            store_id,
+            status
         );
     }
 }

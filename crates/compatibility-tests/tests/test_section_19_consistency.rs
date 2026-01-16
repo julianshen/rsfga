@@ -108,7 +108,7 @@ async fn test_concurrent_writes_to_same_tuple() -> Result<()> {
                             // Expected: transactional conflict
                             conflict_count += 1;
                             let body = resp.text().await.unwrap_or_default();
-                            eprintln!("Request {i} returned 409 Conflict: {body}");
+                            eprintln!("Request {} returned 409 Conflict: {}", i, body);
                         }
                         400 => {
                             // Expected: tuple already exists - verify error code
@@ -122,34 +122,35 @@ async fn test_concurrent_writes_to_same_tuple() -> Result<()> {
                                         == Some("cannot_allow_duplicate_tuples_in_one_request")
                                 {
                                     duplicate_count += 1;
-                                    eprintln!("Request {i} returned 400 (duplicate): {body}");
+                                    eprintln!("Request {} returned 400 (duplicate): {}", i, body);
                                 } else {
                                     // 400 for unexpected reason - count as other error
                                     other_error_count += 1;
                                     eprintln!(
-                                        "Request {i} returned 400 with unexpected code {error_code:?}: {body}"
+                                        "Request {} returned 400 with unexpected code {:?}: {}",
+                                        i, error_code, body
                                     );
                                 }
                             } else {
                                 // Couldn't parse error body - count as other error
                                 other_error_count += 1;
-                                eprintln!("Request {i} returned 400 (unparseable): {body}");
+                                eprintln!("Request {} returned 400 (unparseable): {}", i, body);
                             }
                         }
                         _ => {
                             other_error_count += 1;
                             let body = resp.text().await.unwrap_or_default();
-                            eprintln!("Request {i} returned {status}: {body}");
+                            eprintln!("Request {} returned {}: {}", i, status, body);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Request {i} failed: {e}");
+                    eprintln!("Request {} failed: {}", i, e);
                     other_error_count += 1;
                 }
             },
             Err(e) => {
-                eprintln!("Task join error: {e}");
+                eprintln!("Task join error: {}", e);
                 other_error_count += 1;
             }
         }
@@ -158,7 +159,8 @@ async fn test_concurrent_writes_to_same_tuple() -> Result<()> {
     // Key assertion: At least one write should succeed
     assert!(
         success_count >= 1,
-        "At least one concurrent write should succeed (got {success_count})"
+        "At least one concurrent write should succeed (got {})",
+        success_count
     );
 
     // Expected errors are 409 Conflict or 400 duplicate tuple
@@ -234,8 +236,8 @@ async fn test_read_after_write_consistency() -> Result<()> {
 
     // Perform 20 write-then-read cycles to verify consistency
     for i in 0..20 {
-        let user = format!("user:test{i}");
-        let object = format!("document:doc{i}");
+        let user = format!("user:test{}", i);
+        let object = format!("document:doc{}", i);
 
         // Write tuple
         let write_request = json!({
@@ -256,7 +258,8 @@ async fn test_read_after_write_consistency() -> Result<()> {
 
         assert!(
             write_response.status().is_success(),
-            "Write {i} should succeed"
+            "Write {} should succeed",
+            i
         );
 
         // Immediately read - should see the new tuple
@@ -285,7 +288,8 @@ async fn test_read_after_write_consistency() -> Result<()> {
         assert_eq!(
             tuples.len(),
             1,
-            "Iteration {i}: Read immediately after write should return the tuple"
+            "Iteration {}: Read immediately after write should return the tuple",
+            i
         );
     }
 
@@ -503,7 +507,7 @@ async fn test_check_with_stale_model_id() -> Result<()> {
         });
 
         let _new_model_id = create_authorization_model(&store_id, model).await?;
-        eprintln!("Created model version {i}");
+        eprintln!("Created model version {}", i);
     }
 
     let client = reqwest::Client::new();

@@ -27,7 +27,7 @@ async fn rest_call(
             "GET" => client.get(&url),
             "POST" => client.post(&url),
             "DELETE" => client.delete(&url),
-            _ => anyhow::bail!("Unsupported method: {method}"),
+            _ => anyhow::bail!("Unsupported method: {}", method),
         };
         if let Some(json_data) = data {
             builder = builder.json(json_data);
@@ -39,7 +39,7 @@ async fn rest_call(
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        anyhow::bail!("REST call failed with status {status}: {text}");
+        anyhow::bail!("REST call failed with status {}: {}", status, text);
     }
 
     let text = response.text().await?;
@@ -122,7 +122,7 @@ async fn test_grpc_store_get_matches_rest() -> Result<()> {
     )?;
 
     // Get via REST
-    let rest_response = rest_call(&client, "GET", &format!("/stores/{store_id}"), None).await?;
+    let rest_response = rest_call(&client, "GET", &format!("/stores/{}", store_id), None).await?;
 
     // Assert: Both should return same data
     assert_eq!(
@@ -168,8 +168,13 @@ async fn test_grpc_store_delete_matches_rest() -> Result<()> {
     )?;
 
     // Delete via REST
-    let rest_delete =
-        rest_call(&client, "DELETE", &format!("/stores/{rest_store_id}"), None).await?;
+    let rest_delete = rest_call(
+        &client,
+        "DELETE",
+        &format!("/stores/{}", rest_store_id),
+        None,
+    )
+    .await?;
 
     // Assert: Both should return empty object
     assert!(grpc_delete.is_object(), "gRPC delete should return object");
@@ -213,7 +218,7 @@ async fn test_grpc_check_matches_rest() -> Result<()> {
     rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/authorization-models"),
+        &format!("/stores/{}/authorization-models", store_id),
         Some(&model),
     )
     .await?;
@@ -232,7 +237,7 @@ async fn test_grpc_check_matches_rest() -> Result<()> {
     rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/write"),
+        &format!("/stores/{}/write", store_id),
         Some(&write_data),
     )
     .await?;
@@ -254,7 +259,7 @@ async fn test_grpc_check_matches_rest() -> Result<()> {
     let rest_check = rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/check"),
+        &format!("/stores/{}/check", store_id),
         Some(&json!({
             "tuple_key": {
                 "user": "user:parity-user",
@@ -314,7 +319,7 @@ async fn test_grpc_batch_check_matches_rest() -> Result<()> {
     rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/authorization-models"),
+        &format!("/stores/{}/authorization-models", store_id),
         Some(&model),
     )
     .await?;
@@ -333,7 +338,7 @@ async fn test_grpc_batch_check_matches_rest() -> Result<()> {
     rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/write"),
+        &format!("/stores/{}/write", store_id),
         Some(&write_data),
     )
     .await?;
@@ -368,7 +373,7 @@ async fn test_grpc_batch_check_matches_rest() -> Result<()> {
     let rest_batch = rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/batch-check"),
+        &format!("/stores/{}/batch-check", store_id),
         Some(&json!({
             "checks": [
                 {
@@ -498,7 +503,7 @@ async fn test_grpc_write_matches_rest() -> Result<()> {
     rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/authorization-models"),
+        &format!("/stores/{}/authorization-models", store_id),
         Some(&model),
     )
     .await?;
@@ -522,7 +527,7 @@ async fn test_grpc_write_matches_rest() -> Result<()> {
     let rest_write = rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/write"),
+        &format!("/stores/{}/write", store_id),
         Some(&json!({
             "writes": {
                 "tuple_keys": [{
@@ -611,7 +616,7 @@ async fn test_grpc_read_matches_rest() -> Result<()> {
     rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/authorization-models"),
+        &format!("/stores/{}/authorization-models", store_id),
         Some(&model),
     )
     .await?;
@@ -620,7 +625,7 @@ async fn test_grpc_read_matches_rest() -> Result<()> {
     rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/write"),
+        &format!("/stores/{}/write", store_id),
         Some(&json!({
             "writes": {
                 "tuple_keys": [{
@@ -650,7 +655,7 @@ async fn test_grpc_read_matches_rest() -> Result<()> {
     let rest_read = rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/read"),
+        &format!("/stores/{}/read", store_id),
         Some(&json!({
             "tuple_key": {
                 "user": "user:reader",
@@ -719,7 +724,7 @@ async fn test_grpc_expand_matches_rest() -> Result<()> {
     rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/authorization-models"),
+        &format!("/stores/{}/authorization-models", store_id),
         Some(&model),
     )
     .await?;
@@ -728,7 +733,7 @@ async fn test_grpc_expand_matches_rest() -> Result<()> {
     rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/write"),
+        &format!("/stores/{}/write", store_id),
         Some(&json!({
             "writes": {
                 "tuple_keys": [{
@@ -757,7 +762,7 @@ async fn test_grpc_expand_matches_rest() -> Result<()> {
     let rest_expand = rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/expand"),
+        &format!("/stores/{}/expand", store_id),
         Some(&json!({
             "tuple_key": {
                 "relation": "viewer",
@@ -824,7 +829,7 @@ async fn test_grpc_listobjects_matches_rest() -> Result<()> {
     rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/authorization-models"),
+        &format!("/stores/{}/authorization-models", store_id),
         Some(&model),
     )
     .await?;
@@ -833,7 +838,7 @@ async fn test_grpc_listobjects_matches_rest() -> Result<()> {
     rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/write"),
+        &format!("/stores/{}/write", store_id),
         Some(&json!({
             "writes": {
                 "tuple_keys": [
@@ -861,7 +866,7 @@ async fn test_grpc_listobjects_matches_rest() -> Result<()> {
     let rest_list = rest_call(
         &client,
         "POST",
-        &format!("/stores/{store_id}/list-objects"),
+        &format!("/stores/{}/list-objects", store_id),
         Some(&json!({
             "type": "document",
             "relation": "viewer",

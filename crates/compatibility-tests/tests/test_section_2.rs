@@ -13,17 +13,20 @@ fn test_can_generate_valid_user_identifiers() -> Result<()> {
         // Assert: Verify format is correct (user:<id>)
         assert!(
             user_identifier.starts_with("user:"),
-            "User identifier should start with 'user:', got: {user_identifier}"
+            "User identifier should start with 'user:', got: {}",
+            user_identifier
         );
         assert!(
             user_identifier.contains(user_id),
-            "User identifier should contain the user ID, got: {user_identifier}"
+            "User identifier should contain the user ID, got: {}",
+            user_identifier
         );
 
         // Verify it's a valid format for OpenFGA
         assert!(
             is_valid_user_format(&user_identifier),
-            "User identifier should be valid: {user_identifier}"
+            "User identifier should be valid: {}",
+            user_identifier
         );
     }
 
@@ -57,7 +60,7 @@ fn test_can_generate_valid_user_identifiers() -> Result<()> {
 
 /// Generate a user identifier in OpenFGA format
 fn generate_user_identifier(user_id: &str) -> String {
-    format!("user:{user_id}")
+    format!("user:{}", user_id)
 }
 
 /// Check if a string is a valid user identifier format
@@ -110,7 +113,8 @@ fn test_can_generate_valid_object_identifiers() -> Result<()> {
         // Assert: Verify format is correct (type:id)
         assert!(
             object_identifier.contains(':'),
-            "Object identifier should contain ':', got: {object_identifier}"
+            "Object identifier should contain ':', got: {}",
+            object_identifier
         );
 
         let parts: Vec<&str> = object_identifier.split(':').collect();
@@ -134,7 +138,8 @@ fn test_can_generate_valid_object_identifiers() -> Result<()> {
         // Verify it's a valid format for OpenFGA
         assert!(
             is_valid_object_format(&object_identifier),
-            "Object identifier should be valid: {object_identifier}"
+            "Object identifier should be valid: {}",
+            object_identifier
         );
     }
 
@@ -165,7 +170,7 @@ fn test_can_generate_valid_object_identifiers() -> Result<()> {
 
 /// Generate an object identifier in OpenFGA format
 fn generate_object_identifier(object_type: &str, object_id: &str) -> String {
-    format!("{object_type}:{object_id}")
+    format!("{}:{}", object_type, object_id)
 }
 
 /// Check if a string is a valid object identifier format
@@ -229,7 +234,8 @@ fn test_can_generate_valid_relation_names() -> Result<()> {
     for relation_name in relation_names {
         assert!(
             is_valid_relation_name(relation_name),
-            "Relation name should be valid: {relation_name}"
+            "Relation name should be valid: {}",
+            relation_name
         );
     }
 
@@ -381,11 +387,13 @@ fn test_can_generate_authorization_models_with_direct_relations() -> Result<()> 
     for (relation_name, relation_def) in &document_type.relations {
         assert!(
             relation_def.is_direct,
-            "Relation '{relation_name}' should be direct"
+            "Relation '{}' should be direct",
+            relation_name
         );
         assert!(
             relation_def.allowed_types.contains(&"user".to_string()),
-            "Relation '{relation_name}' should allow 'user' type"
+            "Relation '{}' should allow 'user' type",
+            relation_name
         );
     }
 

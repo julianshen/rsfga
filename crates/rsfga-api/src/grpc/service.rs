@@ -117,7 +117,7 @@ impl<S: DataStore> OpenFgaGrpcService<S> {
 fn storage_error_to_status(err: StorageError) -> Status {
     match &err {
         StorageError::StoreNotFound { store_id } => {
-            Status::not_found(format!("store not found: {store_id}"))
+            Status::not_found(format!("store not found: {}", store_id))
         }
         StorageError::TupleNotFound { .. } => Status::not_found(err.to_string()),
         StorageError::InvalidInput { message } => Status::invalid_argument(message),
@@ -134,11 +134,12 @@ fn batch_check_error_to_status(err: rsfga_server::handlers::batch::BatchCheckErr
     use rsfga_server::handlers::batch::BatchCheckError;
     match err {
         BatchCheckError::EmptyBatch => Status::invalid_argument("batch request cannot be empty"),
-        BatchCheckError::BatchTooLarge { size, max } => {
-            Status::invalid_argument(format!("batch size {size} exceeds maximum allowed {max}"))
-        }
+        BatchCheckError::BatchTooLarge { size, max } => Status::invalid_argument(format!(
+            "batch size {} exceeds maximum allowed {}",
+            size, max
+        )),
         BatchCheckError::InvalidCheck { index, message } => {
-            Status::invalid_argument(format!("invalid check at index {index}: {message}"))
+            Status::invalid_argument(format!("invalid check at index {}: {}", index, message))
         }
         BatchCheckError::DomainError(msg) => {
             // Log full error details for debugging - DO NOT expose to clients
@@ -457,14 +458,16 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         for (index, item) in req.checks.into_iter().enumerate() {
             let tuple_key = item.tuple_key.ok_or_else(|| {
                 Status::invalid_argument(format!(
-                    "tuple_key is required for check at index {index}"
+                    "tuple_key is required for check at index {}",
+                    index
                 ))
             })?;
 
             // Validate correlation_id length to prevent DoS via excessive memory allocation
             if item.correlation_id.len() > MAX_CORRELATION_ID_LENGTH {
                 return Err(Status::invalid_argument(format!(
-                    "correlation_id at index {index} exceeds maximum length of {MAX_CORRELATION_ID_LENGTH} bytes"
+                    "correlation_id at index {} exceeds maximum length of {} bytes",
+                    index, MAX_CORRELATION_ID_LENGTH
                 )));
             }
 

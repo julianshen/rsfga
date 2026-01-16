@@ -162,17 +162,18 @@ async fn test_measure_check_latency_simple_condition() -> Result<()> {
     let p99 = latencies[(iterations as f64 * 0.99) as usize];
 
     println!("\n=== Simple Condition Check Latency ===");
-    println!("Iterations: {iterations}");
-    println!("Average: {avg:.0}µs");
-    println!("P50: {p50:.0}µs");
-    println!("P95: {p95:.0}µs");
-    println!("P99: {p99:.0}µs");
+    println!("Iterations: {}", iterations);
+    println!("Average: {:.0}µs", avg);
+    println!("P50: {:.0}µs", p50);
+    println!("P95: {:.0}µs", p95);
+    println!("P99: {:.0}µs", p99);
     println!("======================================\n");
 
     // Baseline assertion - should be reasonably fast
     assert!(
         avg < 100_000.0, // 100ms average as upper bound
-        "Simple condition check should be fast, got avg: {avg:.0}µs"
+        "Simple condition check should be fast, got avg: {:.0}µs",
+        avg
     );
 
     Ok(())
@@ -301,17 +302,18 @@ async fn test_measure_check_latency_complex_condition() -> Result<()> {
     let p99 = latencies[(iterations as f64 * 0.99) as usize];
 
     println!("\n=== Complex Condition Check Latency ===");
-    println!("Iterations: {iterations}");
-    println!("Average: {avg:.0}µs");
-    println!("P50: {p50:.0}µs");
-    println!("P95: {p95:.0}µs");
-    println!("P99: {p99:.0}µs");
+    println!("Iterations: {}", iterations);
+    println!("Average: {:.0}µs", avg);
+    println!("P50: {:.0}µs", p50);
+    println!("P95: {:.0}µs", p95);
+    println!("P99: {:.0}µs", p99);
     println!("=======================================\n");
 
     // Baseline assertion
     assert!(
         avg < 100_000.0,
-        "Complex condition check should be reasonably fast, got avg: {avg:.0}µs"
+        "Complex condition check should be reasonably fast, got avg: {:.0}µs",
+        avg
     );
 
     Ok(())
@@ -325,7 +327,7 @@ async fn test_measure_batch_check_with_conditions() -> Result<()> {
     let client = shared_client();
 
     // Write multiple tuples with conditions
-    let users: Vec<String> = (0..10).map(|i| format!("user:batch-user-{i}")).collect();
+    let users: Vec<String> = (0..10).map(|i| format!("user:batch-user-{}", i)).collect();
     let tuple_keys: Vec<serde_json::Value> = users
         .iter()
         .map(|user| {
@@ -415,17 +417,18 @@ async fn test_measure_batch_check_with_conditions() -> Result<()> {
     let avg_per_check = avg / checks_per_batch as f64;
 
     println!("\n=== Batch Check with Conditions Latency ===");
-    println!("Batch size: {checks_per_batch} checks");
-    println!("Iterations: {iterations}");
-    println!("Average (total): {avg:.0}µs");
-    println!("Average (per check): {avg_per_check:.0}µs");
-    println!("P50 (total): {p50:.0}µs");
+    println!("Batch size: {} checks", checks_per_batch);
+    println!("Iterations: {}", iterations);
+    println!("Average (total): {:.0}µs", avg);
+    println!("Average (per check): {:.0}µs", avg_per_check);
+    println!("P50 (total): {:.0}µs", p50);
     println!("===========================================\n");
 
     // Baseline assertion
     assert!(
         avg < 500_000.0, // 500ms for batch of 10
-        "Batch check with conditions should be reasonably fast, got avg: {avg:.0}µs"
+        "Batch check with conditions should be reasonably fast, got avg: {:.0}µs",
+        avg
     );
 
     Ok(())
@@ -541,17 +544,18 @@ async fn test_compare_conditional_vs_non_conditional_latency() -> Result<()> {
     let overhead = ((cond_avg - non_cond_avg) / non_cond_avg * 100.0).max(0.0);
 
     println!("\n=== Conditional vs Non-Conditional Check Comparison ===");
-    println!("Iterations: {iterations}");
-    println!("Non-conditional average: {non_cond_avg:.0}µs");
-    println!("Conditional average: {cond_avg:.0}µs");
-    println!("Condition overhead: {overhead:.1}%");
+    println!("Iterations: {}", iterations);
+    println!("Non-conditional average: {:.0}µs", non_cond_avg);
+    println!("Conditional average: {:.0}µs", cond_avg);
+    println!("Condition overhead: {:.1}%", overhead);
     println!("======================================================\n");
 
     // Document the overhead - CEL evaluation adds some latency
     // This is expected and acceptable for the flexibility it provides
     assert!(
         cond_avg < 100_000.0,
-        "Conditional check should still be fast, got avg: {cond_avg:.0}µs"
+        "Conditional check should still be fast, got avg: {:.0}µs",
+        cond_avg
     );
 
     Ok(())

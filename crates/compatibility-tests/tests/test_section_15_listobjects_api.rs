@@ -346,7 +346,8 @@ async fn test_listobjects_with_type_filter() -> Result<()> {
     for object_id in &object_ids {
         assert!(
             object_id.starts_with("document:"),
-            "All results should be documents, got: {object_id}"
+            "All results should be documents, got: {}",
+            object_id
         );
     }
 

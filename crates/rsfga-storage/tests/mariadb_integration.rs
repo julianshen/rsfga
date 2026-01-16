@@ -91,7 +91,7 @@ impl MariaDbContainer {
         let container = Mariadb::default().start().await.unwrap();
         let host_port = container.get_host_port_ipv4(3306).await.unwrap();
         // Default MariaDB image uses root with no password
-        let connection_string = format!("mysql://root@127.0.0.1:{host_port}/test");
+        let connection_string = format!("mysql://root@127.0.0.1:{}/test", host_port);
         Self {
             container,
             connection_string,
@@ -372,7 +372,7 @@ async fn testcontainers_mariadb_pagination() {
     for i in 0..10 {
         let tuple = StoredTuple::new(
             "document",
-            format!("doc{i}"),
+            format!("doc{}", i),
             "viewer",
             "user",
             "alice",
