@@ -812,7 +812,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         // Validate object type format
         if let Err(e) = validate_object_type(&req.r#type) {
-             return Err(Status::invalid_argument(e.to_string()));
+            return Err(Status::invalid_argument(e.to_string()));
         }
 
         // Validate context if provided (DoS protection)
@@ -824,8 +824,8 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             // We convert to JSON map early to check.
             let context_map = prost_struct_to_hashmap(context_struct.clone())
                 .map_err(|e| Status::invalid_argument(format!("invalid context: {}", e)))?;
-            
-             if estimate_context_size(&context_map) > MAX_CONDITION_CONTEXT_SIZE {
+
+            if estimate_context_size(&context_map) > MAX_CONDITION_CONTEXT_SIZE {
                 return Err(Status::invalid_argument(format!(
                     "context size exceeds maximum of {MAX_CONDITION_CONTEXT_SIZE} bytes"
                 )));
