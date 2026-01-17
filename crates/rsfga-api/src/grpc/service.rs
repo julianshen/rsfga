@@ -134,47 +134,17 @@ fn storage_error_to_status(err: StorageError) -> Status {
 
 /// Converts a DomainError to a tonic Status.
 fn domain_error_to_status(err: DomainError) -> Status {
-    match &err {
-        DomainError::DepthLimitExceeded { max_depth } => {
-            Status::invalid_argument(format!("depth limit exceeded (max: {})", max_depth))
-        }
-        DomainError::CycleDetected { path } => {
-            Status::invalid_argument(format!("cycle detected in authorization model: {}", path))
-        }
-        DomainError::Timeout { duration_ms } => {
-            tracing::error!("Authorization check timeout after {}ms", duration_ms);
+    use crate::errors::{classify_domain_error, DomainErrorKind};
+
+    match classify_domain_error(&err) {
+        DomainErrorKind::InvalidInput(msg) => Status::invalid_argument(msg),
+        DomainErrorKind::NotFound(msg) => Status::not_found(msg),
+        DomainErrorKind::Timeout(msg) => {
+            tracing::error!("{}", msg);
             Status::deadline_exceeded("authorization check timeout")
         }
-        DomainError::TypeNotFound { type_name } => {
-            Status::invalid_argument(format!("type not found: {}", type_name))
-        }
-        DomainError::RelationNotFound {
-            type_name,
-            relation,
-        } => Status::invalid_argument(format!(
-            "relation '{}' not found on type '{}'",
-            relation, type_name
-        )),
-        DomainError::InvalidUserFormat { value } => {
-            Status::invalid_argument(format!("invalid user format: {}", value))
-        }
-        DomainError::InvalidObjectFormat { value } => {
-            Status::invalid_argument(format!("invalid object format: {}", value))
-        }
-        DomainError::InvalidRelationFormat { value } => {
-            Status::invalid_argument(format!("invalid relation format: {}", value))
-        }
-        DomainError::ResolverError { message } => {
-            // Check if this is a "store not found" error from the resolver
-            if message.starts_with("store not found:") {
-                Status::not_found(message.clone())
-            } else {
-                tracing::error!("Resolver error: {}", message);
-                Status::internal("internal error during authorization check")
-            }
-        }
-        _ => {
-            tracing::error!("Domain error: {}", err);
+        DomainErrorKind::Internal(msg) => {
+            tracing::error!("Domain error: {}", msg);
             Status::internal("internal error during authorization check")
         }
     }
@@ -458,21 +428,31 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                     .into_iter()
                     .map(|tk| {
                         if let Some(condition) = tk.condition {
-                            ContextualTuple::with_condition(
+                            let context = condition
+                                .context
+                                .map(prost_struct_to_hashmap)
+                                .transpose()
+                                .map_err(|e| {
+                                    Status::invalid_argument(format!(
+                                        "invalid condition context for tuple '{}#{}@{}': {}",
+                                        tk.object, tk.relation, tk.user, e
+                                    ))
+                                })?;
+
+                            Ok(ContextualTuple::with_condition(
                                 &tk.user,
                                 &tk.relation,
                                 &tk.object,
                                 &condition.name,
-                                condition
-                                    .context
-                                    .and_then(|s| prost_struct_to_hashmap(s).ok()),
-                            )
+                                context,
+                            ))
                         } else {
-                            ContextualTuple::new(&tk.user, &tk.relation, &tk.object)
+                            Ok(ContextualTuple::new(&tk.user, &tk.relation, &tk.object))
                         }
                     })
-                    .collect()
+                    .collect::<Result<Vec<_>, Status>>()
             })
+            .transpose()?
             .unwrap_or_default();
 
         // Create domain check request

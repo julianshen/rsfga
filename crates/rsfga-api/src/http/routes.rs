@@ -194,47 +194,17 @@ impl From<StorageError> for ApiError {
 
 impl From<DomainError> for ApiError {
     fn from(err: DomainError) -> Self {
-        match &err {
-            DomainError::DepthLimitExceeded { max_depth } => {
-                ApiError::invalid_input(format!("depth limit exceeded (max: {})", max_depth))
-            }
-            DomainError::CycleDetected { path } => {
-                ApiError::invalid_input(format!("cycle detected in authorization model: {}", path))
-            }
-            DomainError::Timeout { duration_ms } => {
-                error!("Authorization check timeout after {}ms", duration_ms);
+        use crate::errors::{classify_domain_error, DomainErrorKind};
+
+        match classify_domain_error(&err) {
+            DomainErrorKind::InvalidInput(msg) => ApiError::invalid_input(msg),
+            DomainErrorKind::NotFound(msg) => ApiError::not_found(msg),
+            DomainErrorKind::Timeout(msg) => {
+                error!("{}", msg);
                 ApiError::internal_error("authorization check timeout")
             }
-            DomainError::TypeNotFound { type_name } => {
-                ApiError::invalid_input(format!("type not found: {}", type_name))
-            }
-            DomainError::RelationNotFound {
-                type_name,
-                relation,
-            } => ApiError::invalid_input(format!(
-                "relation '{}' not found on type '{}'",
-                relation, type_name
-            )),
-            DomainError::InvalidUserFormat { value } => {
-                ApiError::invalid_input(format!("invalid user format: {}", value))
-            }
-            DomainError::InvalidObjectFormat { value } => {
-                ApiError::invalid_input(format!("invalid object format: {}", value))
-            }
-            DomainError::InvalidRelationFormat { value } => {
-                ApiError::invalid_input(format!("invalid relation format: {}", value))
-            }
-            DomainError::ResolverError { message } => {
-                // Check if this is a "store not found" error from the resolver
-                if message.starts_with("store not found:") {
-                    ApiError::not_found(message.clone())
-                } else {
-                    error!("Resolver error: {}", message);
-                    ApiError::internal_error("internal error during authorization check")
-                }
-            }
-            _ => {
-                error!("Domain error: {}", err);
+            DomainErrorKind::Internal(msg) => {
+                error!("Domain error: {}", msg);
                 ApiError::internal_error("internal error during authorization check")
             }
         }
