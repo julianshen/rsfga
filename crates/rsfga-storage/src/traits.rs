@@ -386,6 +386,8 @@ pub struct StoredTuple {
     /// Optional condition context (parameters) as JSON key-value pairs.
     /// Only meaningful when condition_name is set.
     pub condition_context: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// Timestamp when this tuple was created (OpenFGA compatibility).
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl StoredTuple {
@@ -407,6 +409,7 @@ impl StoredTuple {
             user_relation,
             condition_name: None,
             condition_context: None,
+            created_at: None,
         }
     }
 
@@ -431,6 +434,7 @@ impl StoredTuple {
             user_relation,
             condition_name: Some(condition_name.into()),
             condition_context,
+            created_at: None,
         }
     }
 

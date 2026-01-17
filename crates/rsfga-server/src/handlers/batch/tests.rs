@@ -145,11 +145,13 @@ fn test_can_parse_batch_check_request() {
     // Arrange
     let checks = vec![
         BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
         },
         BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: "user:bob".to_string(),
             relation: "editor".to_string(),
             object: "document:doc2".to_string(),
@@ -174,11 +176,13 @@ fn test_validates_each_check_in_batch() {
         "store1",
         vec![
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "".to_string(), // Invalid: empty user
                 relation: "viewer".to_string(),
                 object: "document:doc2".to_string(),
@@ -221,6 +225,7 @@ fn test_accepts_batch_with_single_check() {
     let request = BatchCheckRequest::new(
         "store1",
         vec![BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
@@ -240,6 +245,7 @@ fn test_accepts_batch_near_max_size() {
     let handler = create_test_handler();
     let checks: Vec<BatchCheckItem> = (0..45) // Below MAX_BATCH_SIZE (50)
         .map(|i| BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: format!("user:user{i}"),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),
@@ -261,6 +267,7 @@ fn test_rejects_batch_exceeding_max_size() {
     let handler = create_test_handler();
     let checks: Vec<BatchCheckItem> = (0..51) // MAX_BATCH_SIZE + 1
         .map(|i| BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: format!("user:user{i}"),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),
@@ -288,6 +295,7 @@ fn test_accepts_batch_at_max_size() {
     let handler = create_test_handler();
     let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
         .map(|i| BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: format!("user:user{i}"),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),
@@ -315,16 +323,19 @@ fn test_identifies_duplicate_checks_in_batch() {
         "store1",
         vec![
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(), // Duplicate
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:bob".to_string(), // Different user
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
@@ -401,6 +412,7 @@ async fn test_executes_unique_checks_only_once() {
         "store1",
         vec![
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
@@ -474,16 +486,19 @@ async fn test_maps_results_back_to_original_positions() {
         "store1",
         vec![
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc2".to_string(),
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(), // Duplicate of first
@@ -511,16 +526,19 @@ async fn test_preserves_request_order_in_response() {
         "store1",
         vec![
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:bob".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc2".to_string(),
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:charlie".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc3".to_string(),
@@ -603,6 +621,7 @@ async fn test_concurrent_requests_for_same_check_share_result() {
         BatchCheckRequest::new(
             "store1",
             vec![BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
@@ -700,6 +719,7 @@ async fn test_singleflight_groups_expire_after_completion() {
         BatchCheckRequest::new(
             "store1",
             vec![BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
@@ -786,6 +806,7 @@ async fn test_errors_dont_poison_singleflight_group() {
         BatchCheckRequest::new(
             "store1",
             vec![BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
@@ -851,6 +872,7 @@ async fn test_singleflight_handles_timeouts_correctly() {
     let request = BatchCheckRequest::new(
         "store1",
         vec![BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
@@ -940,26 +962,31 @@ async fn test_unique_checks_execute_in_parallel() {
         "store1",
         vec![
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:bob".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc2".to_string(),
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:charlie".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc3".to_string(),
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:dave".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc4".to_string(),
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:eve".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc5".to_string(),
@@ -1043,6 +1070,7 @@ async fn test_batch_processes_faster_than_sequential() {
     // Create batch with 10 unique checks
     let checks: Vec<BatchCheckItem> = (0..10)
         .map(|i| BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: format!("user:user{i}"),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),
@@ -1131,6 +1159,7 @@ async fn test_parallel_execution_uses_all_available_concurrency() {
     // Create batch with MAX_BATCH_SIZE unique checks
     let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
         .map(|i| BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: format!("user:user{i}"),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),
@@ -1210,21 +1239,25 @@ async fn test_handles_partial_failures_gracefully() {
         "store1",
         vec![
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc0".to_string(), // Success
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(), // Fail
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc2".to_string(), // Success
             },
             BatchCheckItem {
+                context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc3".to_string(), // Fail
@@ -1319,6 +1352,7 @@ async fn test_batch_of_max_identical_checks_executes_only_once() {
     // Create batch with MAX_BATCH_SIZE identical checks
     let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
         .map(|_| BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
@@ -1395,6 +1429,7 @@ async fn test_batch_throughput_target() {
     // OpenFGA limits batches to 50 items, so we test at that limit
     let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
         .map(|i| BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: format!("user:user{}", i % 10), // 10 unique users
             relation: "viewer".to_string(),
             object: format!("document:doc{}", i % 25), // 25 unique docs
@@ -1438,6 +1473,7 @@ fn test_memory_usage_scales_with_unique_checks() {
     // Use different modulos to get cross-product of (user, object) pairs
     let checks_with_duplicates: Vec<BatchCheckItem> = (0..1000)
         .map(|i| BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: format!("user:user{}", i % 10), // 10 unique users
             relation: "viewer".to_string(),
             object: format!("document:doc{}", (i / 10) % 10), // 10 unique docs
@@ -1581,6 +1617,7 @@ async fn test_batch_handler_respects_runtime_concurrency() {
     // Create batch with 20 unique checks (much more than concurrency limit)
     let checks: Vec<BatchCheckItem> = (0..20)
         .map(|i| BatchCheckItem {
+            context: std::collections::HashMap::new(),
             user: format!("user:user{i}"),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),
@@ -1602,4 +1639,174 @@ async fn test_batch_handler_respects_runtime_concurrency() {
         observed_max > 1,
         "Expected some parallelism (max > 1), but got {observed_max}"
     );
+}
+
+// ============================================================
+// Section 6: Context-Aware Deduplication
+// ============================================================
+
+/// Test: Checks with same user/relation/object but different context are NOT deduplicated.
+///
+/// CRITICAL: This is a security-sensitive test. Different contexts can produce different
+/// authorization results. For example, a time-based condition like `current_time < expiry`
+/// would return different results for different context values.
+///
+/// Regression test for PR review comment about context in CheckKey.
+#[test]
+fn test_checks_with_different_context_are_not_deduplicated() {
+    let handler = create_test_handler();
+
+    // Same user/relation/object but different context
+    let mut context1 = std::collections::HashMap::new();
+    context1.insert(
+        "current_time".to_string(),
+        serde_json::json!("2024-01-01T00:00:00Z"),
+    );
+
+    let mut context2 = std::collections::HashMap::new();
+    context2.insert(
+        "current_time".to_string(),
+        serde_json::json!("2024-12-31T00:00:00Z"),
+    );
+
+    let request = BatchCheckRequest::new(
+        "store1",
+        vec![
+            BatchCheckItem {
+                context: context1,
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+            },
+            BatchCheckItem {
+                context: context2, // Different context!
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+            },
+        ],
+    );
+
+    // Act
+    let (total, unique) = handler.dedup_stats(&request);
+
+    // Assert - both checks should be unique because contexts differ
+    assert_eq!(total, 2);
+    assert_eq!(
+        unique, 2,
+        "Checks with different context should NOT be deduplicated"
+    );
+}
+
+/// Test: Checks with same context ARE deduplicated correctly.
+#[test]
+fn test_checks_with_same_context_are_deduplicated() {
+    let handler = create_test_handler();
+
+    let mut context = std::collections::HashMap::new();
+    context.insert(
+        "current_time".to_string(),
+        serde_json::json!("2024-01-01T00:00:00Z"),
+    );
+
+    let request = BatchCheckRequest::new(
+        "store1",
+        vec![
+            BatchCheckItem {
+                context: context.clone(),
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+            },
+            BatchCheckItem {
+                context: context.clone(), // Same context!
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+            },
+        ],
+    );
+
+    // Act
+    let (total, unique) = handler.dedup_stats(&request);
+
+    // Assert - identical checks (including context) should be deduplicated
+    assert_eq!(total, 2);
+    assert_eq!(unique, 1, "Checks with same context should be deduplicated");
+}
+
+/// Test: Context key ordering doesn't affect deduplication.
+///
+/// Ensures that {"a": 1, "b": 2} and {"b": 2, "a": 1} are treated as equal.
+#[test]
+fn test_context_dedup_is_order_independent() {
+    let handler = create_test_handler();
+
+    // Create two contexts with same content but different insertion order
+    let mut context1 = std::collections::HashMap::new();
+    context1.insert("a".to_string(), serde_json::json!(1));
+    context1.insert("b".to_string(), serde_json::json!(2));
+
+    let mut context2 = std::collections::HashMap::new();
+    context2.insert("b".to_string(), serde_json::json!(2));
+    context2.insert("a".to_string(), serde_json::json!(1));
+
+    let request = BatchCheckRequest::new(
+        "store1",
+        vec![
+            BatchCheckItem {
+                context: context1,
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+            },
+            BatchCheckItem {
+                context: context2,
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+            },
+        ],
+    );
+
+    // Act
+    let (total, unique) = handler.dedup_stats(&request);
+
+    // Assert - contexts with same content (regardless of insertion order) should be deduplicated
+    assert_eq!(total, 2);
+    assert_eq!(
+        unique, 1,
+        "Contexts with same content should be deduplicated regardless of key order"
+    );
+}
+
+/// Test: Empty context and absent context are treated as equal.
+#[test]
+fn test_empty_and_absent_context_are_equal() {
+    let handler = create_test_handler();
+
+    let request = BatchCheckRequest::new(
+        "store1",
+        vec![
+            BatchCheckItem {
+                context: std::collections::HashMap::new(), // Empty context
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+            },
+            BatchCheckItem {
+                context: Default::default(), // Also empty (default)
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+            },
+        ],
+    );
+
+    // Act
+    let (total, unique) = handler.dedup_stats(&request);
+
+    // Assert
+    assert_eq!(total, 2);
+    assert_eq!(unique, 1, "Empty contexts should be deduplicated");
 }

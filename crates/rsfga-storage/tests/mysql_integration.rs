@@ -337,6 +337,7 @@ async fn test_connection_pool_limits() {
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
+                created_at: None,
             };
             store.write_tuple("test-pool-limits", tuple).await
         }));
@@ -449,6 +450,7 @@ async fn test_concurrent_writes_isolation() {
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
+                created_at: None,
             };
             store.write_tuple("test-isolation", tuple).await.unwrap();
         }));
@@ -495,6 +497,7 @@ async fn test_concurrent_access_across_threads() {
                     user_relation: None,
                     condition_name: None,
                     condition_context: None,
+                    created_at: None,
                 };
                 store.write_tuple("test-concurrent", tuple).await.unwrap();
             }
@@ -543,6 +546,7 @@ async fn test_batch_insert_large_batch_chunking() {
             user_relation: None,
             condition_name: None,
             condition_context: None,
+            created_at: None,
         })
         .collect();
 
@@ -600,6 +604,7 @@ async fn test_batch_delete_large_batch_chunking() {
             user_relation: None,
             condition_name: None,
             condition_context: None,
+            created_at: None,
         })
         .collect();
 
@@ -734,6 +739,7 @@ async fn test_large_dataset_performance() {
             user_relation: None,
             condition_name: None,
             condition_context: None,
+            created_at: None,
         });
     }
 
@@ -893,6 +899,7 @@ async fn test_large_result_set_pagination() {
             user_relation: None,
             condition_name: None,
             condition_context: None,
+            created_at: None,
         });
     }
 

@@ -74,6 +74,7 @@ fn row_to_stored_tuple(row: sqlx::postgres::PgRow) -> StorageResult<StoredTuple>
         user_relation: row.get("user_relation"),
         condition_name: row.get("condition_name"),
         condition_context: parse_condition_context(condition_context)?,
+        created_at: row.get("created_at"),
     })
 }
 
@@ -1362,7 +1363,7 @@ impl DataStore for PostgresDataStore {
 
         // Build query with shared filter logic
         let mut builder: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "SELECT object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context FROM tuples WHERE store_id = ",
+            "SELECT object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context, created_at FROM tuples WHERE store_id =",
         );
         builder.push_bind(store_id);
         apply_tuple_filters(&mut builder, filter, user_filter);
@@ -1429,7 +1430,7 @@ impl DataStore for PostgresDataStore {
 
         // Build query with shared filter logic
         let mut builder: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "SELECT object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context FROM tuples WHERE store_id = ",
+            "SELECT object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context, created_at FROM tuples WHERE store_id =",
         );
         builder.push_bind(store_id);
         apply_tuple_filters(&mut builder, filter, user_filter);

@@ -332,6 +332,7 @@ async fn test_large_dataset_performance_memory() {
             user_relation: None,
             condition_name: None,
             condition_context: None,
+            created_at: None,
         });
     }
 
@@ -412,6 +413,7 @@ async fn test_large_dataset_performance_postgres() {
             user_relation: None,
             condition_name: None,
             condition_context: None,
+            created_at: None,
         });
     }
 
@@ -493,6 +495,7 @@ async fn test_large_dataset_performance_mysql() {
             user_relation: None,
             condition_name: None,
             condition_context: None,
+            created_at: None,
         });
     }
 
@@ -689,6 +692,7 @@ async fn test_concurrent_access_across_threads() {
                     user_relation: None,
                     condition_name: None,
                     condition_context: None,
+                    created_at: None,
                 };
                 store
                     .write_tuple("integration-concurrent", tuple)
@@ -736,6 +740,7 @@ async fn run_pagination_test<S: DataStore>(store: &S, store_id: &str) {
             user_relation: None,
             condition_name: None,
             condition_context: None,
+            created_at: None,
         })
         .collect();
 

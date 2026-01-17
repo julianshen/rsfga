@@ -369,6 +369,7 @@ fn tuple_key_to_stored(tk: TupleKey) -> Result<StoredTuple, TupleKeyParseError> 
         user_relation: user_relation.map(|s| s.to_string()),
         condition_name,
         condition_context,
+        created_at: None,
     })
 }
 
@@ -562,11 +563,23 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 )));
             }
 
+            // Parse context from gRPC Struct if present
+            let context = if let Some(ctx) = item.context {
+                prost_struct_to_hashmap(ctx).map_err(|_| {
+                    Status::invalid_argument(format!(
+                        "check at index {index} has invalid context (NaN or Infinity values not allowed)"
+                    ))
+                })?
+            } else {
+                std::collections::HashMap::new()
+            };
+
             correlation_ids.push(item.correlation_id);
             server_checks.push(ServerBatchCheckItem {
                 user: tuple_key.user,
                 relation: tuple_key.relation,
                 object: tuple_key.object,
+                context,
             });
         }
 

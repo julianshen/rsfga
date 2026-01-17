@@ -284,6 +284,7 @@ async fn testcontainers_tidb_tuples_with_conditions() {
         user_relation: None,
         condition_name: Some("ip_allowlist".to_string()),
         condition_context: Some(context),
+        created_at: None,
     };
 
     store

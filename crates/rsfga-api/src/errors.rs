@@ -60,6 +60,18 @@ pub fn classify_domain_error(err: &DomainError) -> DomainErrorKind {
             // Check if this is a "store not found" error from the resolver
             if message.starts_with("store not found:") {
                 DomainErrorKind::NotFound(message.clone())
+            } else if message.contains("No such key:") {
+                // Missing context parameter - this is a client error
+                DomainErrorKind::InvalidInput(format!(
+                    "missing required context parameter: {}",
+                    message
+                ))
+            } else if message.starts_with("condition not found:") {
+                // Condition referenced in tuple doesn't exist in model
+                DomainErrorKind::InvalidInput(message.clone())
+            } else if message.contains("condition evaluation failed:") {
+                // CEL evaluation errors due to invalid context
+                DomainErrorKind::InvalidInput(message.clone())
             } else {
                 DomainErrorKind::Internal(message.clone())
             }

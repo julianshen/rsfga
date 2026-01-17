@@ -33,8 +33,8 @@ mod types;
 
 pub use handler::{BatchCheckHandler, DEFAULT_BATCH_CONCURRENCY};
 pub use types::{
-    BatchCheckError, BatchCheckItem, BatchCheckItemResult, BatchCheckRequest, BatchCheckResponse,
-    BatchCheckResult, MAX_BATCH_SIZE,
+    BatchCheckError, BatchCheckItem, BatchCheckItemErrorKind, BatchCheckItemResult,
+    BatchCheckRequest, BatchCheckResponse, BatchCheckResult, MAX_BATCH_SIZE,
 };
 
 #[cfg(test)]

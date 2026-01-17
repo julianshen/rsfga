@@ -3,11 +3,14 @@
 use dashmap::DashMap;
 use tokio::sync::broadcast;
 
+use super::types::BatchCheckItemErrorKind;
+
 /// Result type for singleflight operations.
 #[derive(Debug, Clone)]
 pub struct SingleflightResult {
     pub allowed: bool,
     pub error: Option<String>,
+    pub error_kind: Option<BatchCheckItemErrorKind>,
 }
 
 /// Result of trying to acquire a singleflight slot.
