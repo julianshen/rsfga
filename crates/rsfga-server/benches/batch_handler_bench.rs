@@ -351,10 +351,119 @@ fn bench_deduplication_benefit(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark context serialization impact on deduplication (ADR-003 validation).
+///
+/// Context is included in CheckKey for proper deduplication. This benchmark
+/// measures the overhead of serializing context to a deterministic string
+/// for hash comparison. Uses BTreeMap internally for key ordering.
+///
+/// Tests:
+/// - No context (baseline)
+/// - Small context (2 keys)
+/// - Medium context (10 keys)
+/// - Large context (50 keys)
+fn bench_context_serialization_impact(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let (tuple_reader, model_reader) = create_batch_check_setup();
+    let resolver = Arc::new(GraphResolver::new(tuple_reader, model_reader));
+    let cache = Arc::new(CheckCache::new(CheckCacheConfig::default()));
+    let handler = BatchCheckHandler::new(Arc::clone(&resolver), cache);
+
+    let batch_size = 50;
+
+    let mut group = c.benchmark_group("context_serialization_impact");
+    group.throughput(Throughput::Elements(batch_size as u64));
+
+    // Helper to create context with N keys
+    fn make_context(num_keys: usize) -> HashMap<String, serde_json::Value> {
+        (0..num_keys)
+            .map(|i| (format!("key_{i}"), serde_json::json!(format!("value_{i}"))))
+            .collect()
+    }
+
+    // No context (baseline)
+    let no_context_checks: Vec<_> = (0..batch_size)
+        .map(|i| BatchCheckItem {
+            context: HashMap::new(),
+            user: format!("user:user{}", i % 10),
+            relation: "viewer".to_string(),
+            object: format!("document:doc{}", i % 25),
+        })
+        .collect();
+
+    group.bench_function("no_context", |b| {
+        b.to_async(&rt).iter(|| async {
+            let request = BatchCheckRequest::new("bench-store", no_context_checks.clone());
+            let result = handler.check(black_box(request)).await;
+            black_box(result)
+        })
+    });
+
+    // Small context (2 keys)
+    let small_context = make_context(2);
+    let small_context_checks: Vec<_> = (0..batch_size)
+        .map(|i| BatchCheckItem {
+            context: small_context.clone(),
+            user: format!("user:user{}", i % 10),
+            relation: "viewer".to_string(),
+            object: format!("document:doc{}", i % 25),
+        })
+        .collect();
+
+    group.bench_function("small_context_2_keys", |b| {
+        b.to_async(&rt).iter(|| async {
+            let request = BatchCheckRequest::new("bench-store", small_context_checks.clone());
+            let result = handler.check(black_box(request)).await;
+            black_box(result)
+        })
+    });
+
+    // Medium context (10 keys)
+    let medium_context = make_context(10);
+    let medium_context_checks: Vec<_> = (0..batch_size)
+        .map(|i| BatchCheckItem {
+            context: medium_context.clone(),
+            user: format!("user:user{}", i % 10),
+            relation: "viewer".to_string(),
+            object: format!("document:doc{}", i % 25),
+        })
+        .collect();
+
+    group.bench_function("medium_context_10_keys", |b| {
+        b.to_async(&rt).iter(|| async {
+            let request = BatchCheckRequest::new("bench-store", medium_context_checks.clone());
+            let result = handler.check(black_box(request)).await;
+            black_box(result)
+        })
+    });
+
+    // Large context (50 keys)
+    let large_context = make_context(50);
+    let large_context_checks: Vec<_> = (0..batch_size)
+        .map(|i| BatchCheckItem {
+            context: large_context.clone(),
+            user: format!("user:user{}", i % 10),
+            relation: "viewer".to_string(),
+            object: format!("document:doc{}", i % 25),
+        })
+        .collect();
+
+    group.bench_function("large_context_50_keys", |b| {
+        b.to_async(&rt).iter(|| async {
+            let request = BatchCheckRequest::new("bench-store", large_context_checks.clone());
+            let result = handler.check(black_box(request)).await;
+            black_box(result)
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_batch_handler_deduplication,
     bench_batch_handler_scaling,
     bench_deduplication_benefit,
+    bench_context_serialization_impact,
 );
 criterion_main!(benches);
