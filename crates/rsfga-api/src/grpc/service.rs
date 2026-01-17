@@ -839,6 +839,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         Ok(Response::new(ListObjectsResponse {
             objects: result.objects,
+            truncated: result.truncated,
         }))
     }
 

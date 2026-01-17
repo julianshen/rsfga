@@ -612,6 +612,38 @@ pub trait DataStore: Send + Sync + 'static {
         self.write_tuples(store_id, vec![], tuples).await
     }
 
+    /// Lists objects of specific type.
+    ///
+    /// Used by ListObjects API to get candidate objects.
+    /// Should implement DISTINCT logic to return unique object IDs.
+    ///
+    /// # Errors
+    /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
+    async fn list_objects_by_type(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        limit: usize,
+    ) -> StorageResult<Vec<String>> {
+        // Default implementation (inefficient fallback)
+        let filter = TupleFilter {
+            object_type: Some(object_type.to_string()),
+            ..Default::default()
+        };
+        let tuples = self.read_tuples(store_id, &filter).await?;
+        let mut seen = std::collections::HashSet::new();
+        Ok(tuples
+            .into_iter()
+            .filter_map(|t| {
+                if seen.len() < limit && seen.insert(t.object_id.clone()) {
+                    Some(t.object_id)
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
+
     // Transaction support
     //
     // Note: Individual transaction control is NOT currently supported by any implementation.

@@ -277,6 +277,7 @@ message ListObjectsRequest {
 
 message ListObjectsResponse {
   repeated string objects = 1;
+  bool truncated = 2;
 }
 
 // ============================================================

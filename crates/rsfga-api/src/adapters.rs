@@ -343,37 +343,12 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
         object_type: &str,
         max_count: usize,
     ) -> DomainResult<Vec<String>> {
-        // Query tuples with just the object_type filter to get all objects of this type
-        let filter = rsfga_storage::TupleFilter {
-            object_type: Some(object_type.to_string()),
-            object_id: None,
-            relation: None,
-            user: None,
-            condition_name: None,
-        };
-
-        let tuples = self
-            .storage
-            .read_tuples(store_id, &filter)
+        self.storage
+            .list_objects_by_type(store_id, object_type, max_count)
             .await
             .map_err(|e| DomainError::ResolverError {
                 message: format!("storage error: {e}"),
-            })?;
-
-        // Extract unique object IDs and apply the limit
-        let mut seen = std::collections::HashSet::new();
-        let object_ids: Vec<String> = tuples
-            .into_iter()
-            .filter_map(|t| {
-                if seen.len() < max_count && seen.insert(t.object_id.clone()) {
-                    Some(t.object_id)
-                } else {
-                    None
-                }
             })
-            .collect();
-
-        Ok(object_ids)
     }
 }
 
