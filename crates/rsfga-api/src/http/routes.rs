@@ -810,7 +810,7 @@ pub struct ExpandResponseBody {
 }
 
 /// A node in the expansion tree.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 pub struct ExpandNodeBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -822,6 +822,43 @@ pub struct ExpandNodeBody {
     pub intersection: Option<ExpandNodesBody>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub difference: Option<ExpandDifferenceBody>,
+}
+
+impl ExpandNodeBody {
+    fn new_leaf(name: String, leaf: ExpandLeafBody) -> Self {
+        Self {
+            name: Some(name),
+            leaf: Some(leaf),
+            ..Default::default()
+        }
+    }
+
+    fn new_union(name: String, nodes: Vec<ExpandNodeBody>) -> Self {
+        Self {
+            name: Some(name),
+            union: Some(ExpandNodesBody { nodes }),
+            ..Default::default()
+        }
+    }
+
+    fn new_intersection(name: String, nodes: Vec<ExpandNodeBody>) -> Self {
+        Self {
+            name: Some(name),
+            intersection: Some(ExpandNodesBody { nodes }),
+            ..Default::default()
+        }
+    }
+
+    fn new_difference(name: String, base: ExpandNodeBody, subtract: ExpandNodeBody) -> Self {
+        Self {
+            name: Some(name),
+            difference: Some(ExpandDifferenceBody {
+                base: Box::new(base),
+                subtract: Box::new(subtract),
+            }),
+            ..Default::default()
+        }
+    }
 }
 
 /// Container for child nodes in union/intersection.
@@ -838,7 +875,7 @@ pub struct ExpandDifferenceBody {
 }
 
 /// A leaf node containing users or references.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 pub struct ExpandLeafBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub users: Option<ExpandUsersBody>,
@@ -846,6 +883,32 @@ pub struct ExpandLeafBody {
     pub computed: Option<ExpandComputedBody>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tuple_to_userset: Option<ExpandTupleToUsersetBody>,
+}
+
+impl ExpandLeafBody {
+    fn new_users(users: Vec<String>) -> Self {
+        Self {
+            users: Some(ExpandUsersBody { users }),
+            ..Default::default()
+        }
+    }
+
+    fn new_computed(userset: String) -> Self {
+        Self {
+            computed: Some(ExpandComputedBody { userset }),
+            ..Default::default()
+        }
+    }
+
+    fn new_tuple_to_userset(tupleset: String, computed_userset: String) -> Self {
+        Self {
+            tuple_to_userset: Some(ExpandTupleToUsersetBody {
+                tupleset,
+                computed_userset,
+            }),
+            ..Default::default()
+        }
+    }
 }
 
 /// Direct users in a leaf node.
@@ -872,67 +935,34 @@ fn expand_node_to_body(node: rsfga_domain::resolver::ExpandNode) -> ExpandNodeBo
     use rsfga_domain::resolver::{ExpandLeafValue, ExpandNode};
 
     match node {
-        ExpandNode::Leaf(leaf) => ExpandNodeBody {
-            name: Some(leaf.name),
-            leaf: Some(match leaf.value {
-                ExpandLeafValue::Users(users) => ExpandLeafBody {
-                    users: Some(ExpandUsersBody { users }),
-                    computed: None,
-                    tuple_to_userset: None,
-                },
-                ExpandLeafValue::Computed { userset } => ExpandLeafBody {
-                    users: None,
-                    computed: Some(ExpandComputedBody { userset }),
-                    tuple_to_userset: None,
-                },
+        ExpandNode::Leaf(leaf) => {
+            let leaf_body = match leaf.value {
+                ExpandLeafValue::Users(users) => ExpandLeafBody::new_users(users),
+                ExpandLeafValue::Computed { userset } => ExpandLeafBody::new_computed(userset),
                 ExpandLeafValue::TupleToUserset {
                     tupleset,
                     computed_userset,
-                } => ExpandLeafBody {
-                    users: None,
-                    computed: None,
-                    tuple_to_userset: Some(ExpandTupleToUsersetBody {
-                        tupleset,
-                        computed_userset,
-                    }),
-                },
-            }),
-            union: None,
-            intersection: None,
-            difference: None,
-        },
-        ExpandNode::Union { name, nodes } => ExpandNodeBody {
-            name: Some(name),
-            leaf: None,
-            union: Some(ExpandNodesBody {
-                nodes: nodes.into_iter().map(expand_node_to_body).collect(),
-            }),
-            intersection: None,
-            difference: None,
-        },
-        ExpandNode::Intersection { name, nodes } => ExpandNodeBody {
-            name: Some(name),
-            leaf: None,
-            union: None,
-            intersection: Some(ExpandNodesBody {
-                nodes: nodes.into_iter().map(expand_node_to_body).collect(),
-            }),
-            difference: None,
-        },
+                } => ExpandLeafBody::new_tuple_to_userset(tupleset, computed_userset),
+            };
+            ExpandNodeBody::new_leaf(leaf.name, leaf_body)
+        }
+        ExpandNode::Union { name, nodes } => {
+            let child_nodes = nodes.into_iter().map(expand_node_to_body).collect();
+            ExpandNodeBody::new_union(name, child_nodes)
+        }
+        ExpandNode::Intersection { name, nodes } => {
+            let child_nodes = nodes.into_iter().map(expand_node_to_body).collect();
+            ExpandNodeBody::new_intersection(name, child_nodes)
+        }
         ExpandNode::Difference {
             name,
             base,
             subtract,
-        } => ExpandNodeBody {
-            name: Some(name),
-            leaf: None,
-            union: None,
-            intersection: None,
-            difference: Some(ExpandDifferenceBody {
-                base: Box::new(expand_node_to_body(*base)),
-                subtract: Box::new(expand_node_to_body(*subtract)),
-            }),
-        },
+        } => ExpandNodeBody::new_difference(
+            name,
+            expand_node_to_body(*base),
+            expand_node_to_body(*subtract),
+        ),
     }
 }
 

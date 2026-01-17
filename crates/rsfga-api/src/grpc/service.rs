@@ -415,40 +415,46 @@ fn expand_node_to_proto(node: rsfga_domain::resolver::ExpandNode) -> Node {
     use rsfga_domain::resolver::{ExpandLeafValue, ExpandNode as DomainExpandNode};
 
     match node {
-        DomainExpandNode::Leaf(leaf) => Node {
-            name: leaf.name,
-            value: Some(crate::proto::openfga::v1::node::Value::Leaf(
-                match leaf.value {
-                    ExpandLeafValue::Users(users) => Leaf {
-                        value: Some(crate::proto::openfga::v1::leaf::Value::Users(Users {
-                            users,
-                        })),
+        DomainExpandNode::Leaf(leaf) => {
+            // Extract object from leaf.name (format: "type:id#relation") before moving name
+            // The tupleset relation is on the same object being expanded
+            let object_for_tupleset = leaf.name.split('#').next().unwrap_or("").to_string();
+            Node {
+                name: leaf.name,
+                value: Some(crate::proto::openfga::v1::node::Value::Leaf(
+                    match leaf.value {
+                        ExpandLeafValue::Users(users) => Leaf {
+                            value: Some(crate::proto::openfga::v1::leaf::Value::Users(Users {
+                                users,
+                            })),
+                        },
+                        ExpandLeafValue::Computed { userset } => Leaf {
+                            value: Some(crate::proto::openfga::v1::leaf::Value::Computed(
+                                Computed { userset },
+                            )),
+                        },
+                        ExpandLeafValue::TupleToUserset {
+                            tupleset,
+                            computed_userset,
+                        } => Leaf {
+                            value: Some(crate::proto::openfga::v1::leaf::Value::TupleToUserset(
+                                TupleToUserset {
+                                    tupleset: Some(ObjectRelation {
+                                        object: object_for_tupleset,
+                                        relation: tupleset,
+                                    }),
+                                    // computed_userset object is unknown without further resolution
+                                    computed_userset: Some(ObjectRelation {
+                                        object: String::new(),
+                                        relation: computed_userset,
+                                    }),
+                                },
+                            )),
+                        },
                     },
-                    ExpandLeafValue::Computed { userset } => Leaf {
-                        value: Some(crate::proto::openfga::v1::leaf::Value::Computed(Computed {
-                            userset,
-                        })),
-                    },
-                    ExpandLeafValue::TupleToUserset {
-                        tupleset,
-                        computed_userset,
-                    } => Leaf {
-                        value: Some(crate::proto::openfga::v1::leaf::Value::TupleToUserset(
-                            TupleToUserset {
-                                tupleset: Some(ObjectRelation {
-                                    object: String::new(),
-                                    relation: tupleset,
-                                }),
-                                computed_userset: Some(ObjectRelation {
-                                    object: String::new(),
-                                    relation: computed_userset,
-                                }),
-                            },
-                        )),
-                    },
-                },
-            )),
-        },
+                )),
+            }
+        }
         DomainExpandNode::Union { name, nodes } => Node {
             name,
             value: Some(crate::proto::openfga::v1::node::Value::Union(Nodes {

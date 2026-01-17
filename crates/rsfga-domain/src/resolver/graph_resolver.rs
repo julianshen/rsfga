@@ -244,6 +244,9 @@ where
     ) -> DomainResult<super::types::ExpandResult> {
         use super::types::{ExpandResult, UsersetTree};
 
+        // Validate request inputs
+        self.validate_expand_request(request)?;
+
         // Check if store exists
         if !self.tuple_reader.store_exists(&request.store_id).await? {
             return Err(DomainError::StoreNotFound {
@@ -354,11 +357,11 @@ where
                 }
 
                 crate::model::Userset::Union { children } => {
-                    // Expand all children
-                    let mut nodes = Vec::with_capacity(children.len());
-                    for child in children {
-                        let node = self
-                            .expand_userset(
+                    // Expand all children in parallel for better performance
+                    let futures: Vec<_> = children
+                        .iter()
+                        .map(|child| {
+                            self.expand_userset(
                                 store_id,
                                 object_type,
                                 object_id,
@@ -366,9 +369,9 @@ where
                                 child,
                                 depth + 1,
                             )
-                            .await?;
-                        nodes.push(node);
-                    }
+                        })
+                        .collect();
+                    let nodes = futures::future::try_join_all(futures).await?;
 
                     Ok(ExpandNode::Union {
                         name: format!("{}:{}#{}", object_type, object_id, relation),
@@ -377,11 +380,11 @@ where
                 }
 
                 crate::model::Userset::Intersection { children } => {
-                    // Expand all children
-                    let mut nodes = Vec::with_capacity(children.len());
-                    for child in children {
-                        let node = self
-                            .expand_userset(
+                    // Expand all children in parallel for better performance
+                    let futures: Vec<_> = children
+                        .iter()
+                        .map(|child| {
+                            self.expand_userset(
                                 store_id,
                                 object_type,
                                 object_id,
@@ -389,9 +392,9 @@ where
                                 child,
                                 depth + 1,
                             )
-                            .await?;
-                        nodes.push(node);
-                    }
+                        })
+                        .collect();
+                    let nodes = futures::future::try_join_all(futures).await?;
 
                     Ok(ExpandNode::Intersection {
                         name: format!("{}:{}#{}", object_type, object_id, relation),
@@ -400,20 +403,26 @@ where
                 }
 
                 crate::model::Userset::Exclusion { base, subtract } => {
-                    // Expand base and subtract
-                    let base_node = self
-                        .expand_userset(store_id, object_type, object_id, relation, base, depth + 1)
-                        .await?;
-                    let subtract_node = self
-                        .expand_userset(
+                    // Expand base and subtract in parallel for better performance
+                    let (base_node, subtract_node) = futures::future::try_join(
+                        self.expand_userset(
+                            store_id,
+                            object_type,
+                            object_id,
+                            relation,
+                            base,
+                            depth + 1,
+                        ),
+                        self.expand_userset(
                             store_id,
                             object_type,
                             object_id,
                             relation,
                             subtract,
                             depth + 1,
-                        )
-                        .await?;
+                        ),
+                    )
+                    .await?;
 
                     Ok(ExpandNode::Difference {
                         name: format!("{}:{}#{}", object_type, object_id, relation),
@@ -439,6 +448,25 @@ where
             });
         }
 
+        // Validate object format: must be in type:id format
+        if request.object.is_empty() || !Self::is_valid_type_id(&request.object) {
+            return Err(DomainError::InvalidObjectFormat {
+                value: request.object.clone(),
+            });
+        }
+
+        // Validate relation: must be non-empty
+        if request.relation.is_empty() {
+            return Err(DomainError::InvalidRelationFormat {
+                value: request.relation.clone(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Validates the expand request.
+    fn validate_expand_request(&self, request: &super::types::ExpandRequest) -> DomainResult<()> {
         // Validate object format: must be in type:id format
         if request.object.is_empty() || !Self::is_valid_type_id(&request.object) {
             return Err(DomainError::InvalidObjectFormat {
