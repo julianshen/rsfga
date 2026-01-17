@@ -814,13 +814,20 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .unwrap_or_default();
 
         // Create domain request
+        let context = req
+            .context
+            .map(prost_struct_to_hashmap)
+            .transpose()
+            .map_err(|e| Status::invalid_argument(format!("invalid context: {}", e)))?
+            .unwrap_or_default();
+
         let list_request = DomainListObjectsRequest::with_context(
             req.store_id,
             req.user,
             req.relation,
             req.r#type,
             contextual_tuples,
-            std::collections::HashMap::new(),
+            context,
         );
 
         // Call the resolver with DoS protection limit

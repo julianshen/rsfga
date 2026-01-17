@@ -1331,6 +1331,8 @@ pub struct ListObjectsRequestBody {
     pub authorization_model_id: Option<String>,
     #[serde(default)]
     pub contextual_tuples: Option<ContextualTuplesBody>,
+    #[serde(default)]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Response for list objects operation (stub).
@@ -1374,7 +1376,7 @@ async fn list_objects<S: DataStore>(
         body.relation,
         body.r#type,
         contextual_tuples,
-        std::collections::HashMap::new(),
+        body.context.unwrap_or_default(),
     );
 
     // Call the resolver with DoS protection limit
