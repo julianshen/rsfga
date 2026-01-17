@@ -342,29 +342,13 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
         store_id: &str,
         object_type: &str,
     ) -> DomainResult<Vec<String>> {
-        use std::collections::HashSet;
-
-        // Read all tuples of the given object type
-        let filter = rsfga_storage::TupleFilter {
-            object_type: Some(object_type.to_string()),
-            object_id: None,
-            relation: None,
-            user: None,
-            condition_name: None,
-        };
-
-        let tuples = self
-            .storage
-            .read_tuples(store_id, &filter)
+        // Use the optimized storage method that performs SELECT DISTINCT at the database level
+        self.storage
+            .list_object_ids_by_type(store_id, object_type)
             .await
             .map_err(|e| DomainError::ResolverError {
                 message: format!("storage error: {e}"),
-            })?;
-
-        // Extract unique object IDs
-        let object_ids: HashSet<String> = tuples.into_iter().map(|t| t.object_id).collect();
-
-        Ok(object_ids.into_iter().collect())
+            })
     }
 }
 

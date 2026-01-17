@@ -602,6 +602,24 @@ pub trait DataStore: Send + Sync + 'static {
         pagination: &PaginationOptions,
     ) -> StorageResult<PaginatedResult<StoredTuple>>;
 
+    /// Lists distinct object IDs for a given object type.
+    ///
+    /// This is an optimized method for the ListObjects API that uses
+    /// `SELECT DISTINCT object_id` at the database level instead of
+    /// fetching all tuples and deduplicating in memory.
+    ///
+    /// # Arguments
+    /// * `store_id` - The store to query
+    /// * `object_type` - The object type to filter by
+    ///
+    /// # Returns
+    /// A vector of unique object IDs for the given type.
+    async fn list_object_ids_by_type(
+        &self,
+        store_id: &str,
+        object_type: &str,
+    ) -> StorageResult<Vec<String>>;
+
     /// Deletes a single tuple from storage.
     async fn delete_tuple(&self, store_id: &str, tuple: StoredTuple) -> StorageResult<()> {
         self.write_tuples(store_id, vec![], vec![tuple]).await

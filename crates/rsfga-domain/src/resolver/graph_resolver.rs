@@ -443,10 +443,13 @@ where
             }
         }
 
-        // Check each candidate object
-        let mut accessible_objects = Vec::new();
+        // Check each candidate object in parallel for performance.
+        // Use buffer_unordered to run multiple checks concurrently with a configurable limit.
+        use futures::stream::{self, StreamExt};
 
-        for object in candidate_objects {
+        const CONCURRENT_CHECKS_LIMIT: usize = 50;
+
+        let checks = candidate_objects.into_iter().map(|object| {
             let check_request = CheckRequest {
                 store_id: request.store_id.clone(),
                 user: request.user.clone(),
@@ -455,21 +458,28 @@ where
                 contextual_tuples: request.contextual_tuples.clone(),
                 context: request.context.clone(),
             };
-
-            // Perform the check - if allowed, add to results
-            match self.check(&check_request).await {
-                Ok(result) if result.allowed => {
-                    accessible_objects.push(object);
-                }
-                Ok(_) => {
-                    // Not allowed, skip
-                }
-                Err(_) => {
-                    // Error during check, skip this object
-                    // (could be due to cycles, depth limits, etc.)
+            async move {
+                match self.check(&check_request).await {
+                    Ok(result) if result.allowed => Some(object),
+                    Ok(_) => None, // Not allowed
+                    Err(e) => {
+                        // Log at warn level for observability (could be cycles, depth limits, etc.)
+                        tracing::warn!(
+                            object = %object,
+                            error = %e,
+                            "Skipping object in ListObjects due to check error"
+                        );
+                        None
+                    }
                 }
             }
-        }
+        });
+
+        let mut accessible_objects: Vec<String> = stream::iter(checks)
+            .buffer_unordered(CONCURRENT_CHECKS_LIMIT)
+            .filter_map(|res| async { res })
+            .collect()
+            .await;
 
         // Sort for deterministic output
         accessible_objects.sort();
