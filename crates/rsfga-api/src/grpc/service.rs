@@ -268,34 +268,10 @@ fn hashmap_to_prost_struct(
     }
 }
 
-/// Maximum allowed condition name length (security constraint I4).
-const MAX_CONDITION_NAME_LENGTH: usize = 256;
-
-/// Maximum allowed condition context size in bytes (constraint C11: Fail Fast with Bounds).
-const MAX_CONDITION_CONTEXT_SIZE: usize = 10 * 1024; // 10KB
-
-/// Maximum allowed JSON nesting depth (constraint C11: Fail Fast with Bounds).
-/// Prevents stack overflow during serialization of deeply nested structures.
-const MAX_JSON_DEPTH: usize = 10;
-
-/// Checks if a prost_types::Value exceeds the maximum nesting depth.
-fn exceeds_max_depth(value: &prost_types::Value, current_depth: usize) -> bool {
-    if current_depth > MAX_JSON_DEPTH {
-        return true;
-    }
-    use prost_types::value::Kind;
-    match &value.kind {
-        Some(Kind::StructValue(s)) => s
-            .fields
-            .values()
-            .any(|v| exceeds_max_depth(v, current_depth + 1)),
-        Some(Kind::ListValue(l)) => l
-            .values
-            .iter()
-            .any(|v| exceeds_max_depth(v, current_depth + 1)),
-        _ => false,
-    }
-}
+// Use shared validation functions from the validation module
+use crate::validation::{
+    is_valid_condition_name, prost_value_exceeds_max_depth, MAX_CONDITION_CONTEXT_SIZE,
+};
 
 /// Error returned when tuple key parsing fails.
 /// Contains the original user/object strings for error messages (avoids cloning in happy path).
@@ -303,16 +279,6 @@ struct TupleKeyParseError {
     user: String,
     object: String,
     reason: &'static str,
-}
-
-/// Validates a condition name format (security constraint I4).
-/// Allows only alphanumeric, underscore, hyphen characters with max 256 chars.
-fn is_valid_condition_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_CONDITION_NAME_LENGTH
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Converts a TupleKey proto to StoredTuple (takes ownership to avoid clones).
@@ -352,7 +318,11 @@ fn tuple_key_to_stored(tk: TupleKey) -> Result<StoredTuple, TupleKeyParseError> 
             // Convert and validate context (constraint C11)
             let context = if let Some(ctx) = cond.context {
                 // Check depth limit to prevent stack overflow
-                if ctx.fields.values().any(|v| exceeds_max_depth(v, 1)) {
+                if ctx
+                    .fields
+                    .values()
+                    .any(|v| prost_value_exceeds_max_depth(v, 1))
+                {
                     return Err(TupleKeyParseError {
                         user: tk.user,
                         object: tk.object,
@@ -827,22 +797,103 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             }),
         }))
     }
-
     async fn list_objects(
         &self,
         request: Request<ListObjectsRequest>,
     ) -> Result<Response<ListObjectsResponse>, Status> {
+        use crate::validation::{
+            estimate_context_size, json_exceeds_max_depth, validate_relation_format,
+            validate_user_format, MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
+            MAX_LIST_OBJECTS_CANDIDATES,
+        };
+        use rsfga_domain::resolver::ListObjectsRequest as DomainListObjectsRequest;
+        use rsfga_storage::traits::validate_object_type;
+
         let req = request.into_inner();
 
-        // Validate store exists
-        let _ = self
-            .storage
-            .get_store(&req.store_id)
-            .await
-            .map_err(storage_error_to_status)?;
+        // Validate object type format
+        if let Err(e) = validate_object_type(&req.r#type) {
+            return Err(Status::invalid_argument(e.to_string()));
+        }
 
-        // ListObjects not yet implemented
-        Ok(Response::new(ListObjectsResponse { objects: vec![] }))
+        // Validate user format
+        if let Some(err) = validate_user_format(&req.user) {
+            return Err(Status::invalid_argument(err));
+        }
+
+        // Validate relation format
+        if let Some(err) = validate_relation_format(&req.relation) {
+            return Err(Status::invalid_argument(err));
+        }
+        let mut validated_context_map = None;
+        if let Some(context_struct) = &req.context {
+            // Check size (approximate from Struct)
+            // Note: This is an estimation. For strict limits, we might want to check the byte size of the request.
+            // But checking the converted JSON size is consistent with HTTP.
+            // We convert to JSON map early to check.
+            let context_map = prost_struct_to_hashmap(context_struct.clone())
+                .map_err(|e| Status::invalid_argument(format!("invalid context: {}", e)))?;
+
+            if estimate_context_size(&context_map) > MAX_CONDITION_CONTEXT_SIZE {
+                return Err(Status::invalid_argument(format!(
+                    "context size exceeds maximum of {MAX_CONDITION_CONTEXT_SIZE} bytes"
+                )));
+            }
+
+            // Check nesting depth
+            for value in context_map.values() {
+                if json_exceeds_max_depth(value, 2) {
+                    return Err(Status::invalid_argument(format!(
+                        "context nested too deeply (max depth {MAX_JSON_DEPTH})"
+                    )));
+                }
+            }
+
+            validated_context_map = Some(context_map);
+        }
+
+        // Convert contextual tuples if provided
+        let contextual_tuples = req
+            .contextual_tuples
+            .map(|ct| {
+                ct.tuple_keys
+                    .into_iter()
+                    .filter_map(|tk| {
+                        let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
+                        let (object_type, object_id) = parse_object(&tk.object)?;
+                        Some(rsfga_domain::resolver::ContextualTuple::new(
+                            format_user(user_type, user_id, user_relation),
+                            tk.relation,
+                            format!("{object_type}:{object_id}"),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Create domain request using validated context if available
+        let context = validated_context_map.unwrap_or_default();
+
+        let list_request = DomainListObjectsRequest::with_context(
+            req.store_id,
+            req.user,
+            req.relation,
+            req.r#type,
+            contextual_tuples,
+            context,
+        );
+
+        // Call the resolver with DoS protection limit
+        let result = self
+            .resolver
+            .list_objects(&list_request, MAX_LIST_OBJECTS_CANDIDATES)
+            .await
+            .map_err(domain_error_to_status)?;
+
+        Ok(Response::new(ListObjectsResponse {
+            objects: result.objects,
+            truncated: result.truncated,
+        }))
     }
 
     async fn list_users(

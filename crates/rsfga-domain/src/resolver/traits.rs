@@ -21,6 +21,22 @@ pub trait TupleReader: Send + Sync {
 
     /// Checks if a store exists.
     async fn store_exists(&self, store_id: &str) -> DomainResult<bool>;
+
+    /// Gets all object IDs of a given type in a store, limited by max_count.
+    ///
+    /// Used by ListObjects to get candidate objects for permission checks.
+    /// The limit parameter provides DoS protection (constraint C11).
+    ///
+    /// Default implementation returns an empty list. Override to enable ListObjects.
+    async fn get_objects_of_type(
+        &self,
+        _store_id: &str,
+        _object_type: &str,
+        _max_count: usize,
+    ) -> DomainResult<Vec<String>> {
+        // Default: return empty list (ListObjects not supported)
+        Ok(Vec::new())
+    }
 }
 
 /// Trait for authorization model operations needed by the resolver.

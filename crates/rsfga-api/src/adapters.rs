@@ -448,6 +448,20 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
             }),
         }
     }
+
+    async fn get_objects_of_type(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        max_count: usize,
+    ) -> DomainResult<Vec<String>> {
+        self.storage
+            .list_objects_by_type(store_id, object_type, max_count)
+            .await
+            .map_err(|e| DomainError::ResolverError {
+                message: format!("storage error: {e}"),
+            })
+    }
 }
 
 /// Adapter that implements `ModelReader` using a `DataStore`.

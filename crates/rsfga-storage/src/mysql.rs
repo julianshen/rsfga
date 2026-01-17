@@ -23,9 +23,9 @@ use tracing::{debug, instrument};
 
 use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
-    parse_continuation_token, parse_user_filter, validate_store_id, validate_store_name,
-    validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel,
-    StoredTuple, TupleFilter,
+    parse_continuation_token, parse_user_filter, validate_object_type, validate_store_id,
+    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store,
+    StoredAuthorizationModel, StoredTuple, TupleFilter,
 };
 
 /// Parse a database row into a StoredTuple.
@@ -1966,6 +1966,70 @@ impl DataStore for MySQLDataStore {
             pool_stats,
             message: Some("mysql".to_string()),
         })
+    }
+    async fn list_objects_by_type(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        limit: usize,
+    ) -> StorageResult<Vec<String>> {
+        // Validate input bounds
+        validate_store_id(store_id)?;
+        validate_object_type(object_type)?;
+
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("list_objects_by_type_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Efficient query using DISTINCT
+        let object_type_owned = object_type.to_string();
+        let limit = limit as u64;
+
+        let rows = self
+            .execute_with_timeout("list_objects_by_type", async {
+                sqlx::query(
+                    r#"
+                    SELECT DISTINCT object_id
+                    FROM tuples
+                    WHERE store_id = ? AND object_type = ?
+                    ORDER BY object_id
+                    LIMIT ?
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .bind(&object_type_owned)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to list objects by type: {e}"),
+                })
+            })
+            .await?;
+
+        let objects = rows.into_iter().map(|row| row.get("object_id")).collect();
+
+        Ok(objects)
     }
 }
 

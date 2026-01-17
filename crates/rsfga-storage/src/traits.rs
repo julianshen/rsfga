@@ -149,6 +149,35 @@ pub fn validate_store_name(name: &str) -> StorageResult<()> {
     Ok(())
 }
 
+/// Validate object type format.
+///
+/// # Errors
+/// Returns `StorageError::InvalidInput` if the type is empty or too long.
+pub fn validate_object_type(object_type: &str) -> StorageResult<()> {
+    if object_type.is_empty() {
+        return Err(StorageError::InvalidInput {
+            message: "object_type cannot be empty".to_string(),
+        });
+    }
+    if object_type.len() > MAX_FIELD_LENGTH {
+        return Err(StorageError::InvalidInput {
+            message: format!("object_type exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
+        });
+    }
+    // SQL Injection prevention: ensure no colons or special characters
+    // Only allow alphanumeric, underscore, and dash
+    if object_type.contains(':')
+        || !object_type
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(StorageError::InvalidInput {
+            message: format!("object_type contains invalid characters: {}", object_type),
+        });
+    }
+    Ok(())
+}
+
 /// Validate a stored tuple at the storage layer.
 ///
 /// This performs **structural validation** only:
@@ -177,16 +206,8 @@ pub fn validate_store_name(name: &str) -> StorageResult<()> {
 ///
 /// Returns `StorageError::InvalidInput` if any field is empty or too long.
 pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
-    if tuple.object_type.is_empty() {
-        return Err(StorageError::InvalidInput {
-            message: "object_type cannot be empty".to_string(),
-        });
-    }
-    if tuple.object_type.len() > MAX_FIELD_LENGTH {
-        return Err(StorageError::InvalidInput {
-            message: format!("object_type exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
-        });
-    }
+    validate_object_type(&tuple.object_type)?;
+
     if tuple.object_id.is_empty() {
         return Err(StorageError::InvalidInput {
             message: "object_id cannot be empty".to_string(),
@@ -537,6 +558,10 @@ pub struct PaginatedResult<T> {
 ///
 /// Implementations must be thread-safe (Send + Sync) and support
 /// async operations.
+///
+/// - **Validation**: Implementations should enforce data integrity (e.g., max lengths, allowed characters).
+///   Note: This validation is a safety net for persistence. User-facing validation (400 Bad Request)
+///   should primarily happen at the API layer to provide helpful error messages.
 #[async_trait]
 pub trait DataStore: Send + Sync + 'static {
     // Store operations
@@ -614,6 +639,38 @@ pub trait DataStore: Send + Sync + 'static {
     /// Deletes multiple tuples from storage.
     async fn delete_tuples(&self, store_id: &str, tuples: Vec<StoredTuple>) -> StorageResult<()> {
         self.write_tuples(store_id, vec![], tuples).await
+    }
+
+    /// Lists objects of specific type.
+    ///
+    /// Used by ListObjects API to get candidate objects.
+    /// Should implement DISTINCT logic to return unique object IDs.
+    ///
+    /// # Design Rationale (ADR: ListObjects Storage Query)
+    ///
+    /// Each storage backend must implement this efficiently using DISTINCT queries
+    /// rather than fetching all tuples and deduplicating in Rust. This prevents:
+    /// - O(n) memory usage for stores with many tuples per object type
+    /// - CPU overhead of in-memory deduplication
+    /// - Network bandwidth waste transferring duplicate data
+    ///
+    /// PostgreSQL and MySQL implementations use `SELECT DISTINCT object_id ... LIMIT ?`
+    /// which pushes deduplication to the database engine where it's most efficient.
+    ///
+    /// # Errors
+    /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
+    async fn list_objects_by_type(
+        &self,
+        _store_id: &str,
+        _object_type: &str,
+        _limit: usize,
+    ) -> StorageResult<Vec<String>> {
+        // Default implementation (Safe fail):
+        // Return error to force stores to implement efficient logic.
+        // Prevents OOM crashes from fetching all tuples.
+        Err(StorageError::InternalError {
+            message: "list_objects_by_type not implemented for this store".to_string(),
+        })
     }
 
     // Transaction support

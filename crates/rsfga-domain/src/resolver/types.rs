@@ -191,6 +191,65 @@ impl ExpandRequest {
     }
 }
 
+// ============================================================
+// ListObjects API Types
+// ============================================================
+
+/// Request for listing objects accessible to a user.
+#[derive(Debug, Clone)]
+pub struct ListObjectsRequest {
+    /// The store ID to query.
+    pub store_id: String,
+    /// The user to check permissions for.
+    pub user: String,
+    /// The relation to check (e.g., "viewer").
+    pub relation: String,
+    /// The object type to list (e.g., "document").
+    pub object_type: String,
+    /// Contextual tuples to consider during the check.
+    pub contextual_tuples: Arc<Vec<ContextualTuple>>,
+    /// CEL evaluation context variables.
+    pub context: Arc<HashMap<String, serde_json::Value>>,
+}
+
+impl ListObjectsRequest {
+    /// Creates a new ListObjectsRequest without contextual tuples or context.
+    pub fn new(
+        store_id: impl Into<String>,
+        user: impl Into<String>,
+        relation: impl Into<String>,
+        object_type: impl Into<String>,
+    ) -> Self {
+        Self {
+            store_id: store_id.into(),
+            user: user.into(),
+            relation: relation.into(),
+            object_type: object_type.into(),
+            contextual_tuples: Arc::new(Vec::new()),
+            context: Arc::new(HashMap::new()),
+        }
+    }
+
+    /// Creates a new ListObjectsRequest with contextual tuples and context.
+    pub fn with_context(
+        store_id: impl Into<String>,
+        user: impl Into<String>,
+        relation: impl Into<String>,
+        object_type: impl Into<String>,
+        contextual_tuples: Vec<ContextualTuple>,
+        context: HashMap<String, serde_json::Value>,
+    ) -> Self {
+        Self {
+            store_id: store_id.into(),
+            user: user.into(),
+            relation: relation.into(),
+            object_type: object_type.into(),
+            contextual_tuples: Arc::new(contextual_tuples),
+            context: Arc::new(context),
+        }
+    }
+}
+
 /// Result of expanding a relation tree.
 #[derive(Debug, Clone)]
 pub struct ExpandResult {
@@ -268,4 +327,14 @@ pub enum ExpandLeafValue {
         tupleset: String,
         computed_userset: String,
     },
+}
+
+/// Result of listing objects accessible to a user.
+#[derive(Debug, Clone)]
+pub struct ListObjectsResult {
+    /// Object IDs that the user has the specified relation to.
+    /// Format: "type:id" (e.g., "document:readme")
+    pub objects: Vec<String>,
+    /// Whether the results were truncated due to limits.
+    pub truncated: bool,
 }

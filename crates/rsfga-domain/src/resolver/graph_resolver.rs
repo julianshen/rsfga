@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::timeout;
+use tracing::warn;
 
 /// Timeout for cache operations (get/insert).
 /// Cache should never block authorization checks; treat timeout as "cache unavailable".
@@ -1278,6 +1279,175 @@ where
             })?;
 
         Ok(result)
+    }
+
+    /// Lists objects of a given type that a user has a specific relation to.
+    ///
+    /// # DoS Protection (Constraint C11)
+    ///
+    /// This method applies a hard limit of `max_candidates` on the number of
+    /// candidate objects to check. This prevents memory exhaustion attacks
+    /// where an attacker could enumerate a large number of objects.
+    ///
+    /// The default limit is 1,000 objects, matching OpenFGA's default behavior.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Query all objects of the requested type (up to max_candidates limit)
+    /// 2. For each candidate object, run a parallel permission check
+    /// 3. Return objects where the check returns true
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let request = ListObjectsRequest::new(
+    ///     "store-id",
+    ///     "user:alice",
+    ///     "viewer",
+    ///     "document",
+    /// );
+    /// let result = resolver.list_objects(&request, 1000).await?;
+    /// // result.objects = ["document:readme", "document:design"]
+    /// ```
+    pub async fn list_objects(
+        &self,
+        request: &super::types::ListObjectsRequest,
+        max_candidates: usize,
+    ) -> DomainResult<super::types::ListObjectsResult> {
+        // Check if store exists
+        if !self.tuple_reader.store_exists(&request.store_id).await? {
+            return Err(DomainError::StoreNotFound {
+                store_id: request.store_id.clone(),
+            });
+        }
+
+        // Validate that the user is not a wildcard (not allowed for ListObjects)
+        if request.user.contains('*') {
+            return Err(DomainError::InvalidUserFormat {
+                value: request.user.clone(),
+            });
+        }
+
+        // Validate user format
+        if !Self::is_valid_type_id(&request.user) {
+            return Err(DomainError::InvalidUserFormat {
+                value: request.user.clone(),
+            });
+        }
+
+        // Validate relation format
+        if request.relation.is_empty() {
+            return Err(DomainError::InvalidRelationFormat {
+                value: request.relation.clone(),
+            });
+        }
+
+        // Validate object type format (must not be empty, must not contain colon)
+        if request.object_type.is_empty() || request.object_type.contains(':') {
+            return Err(DomainError::InvalidObjectFormat {
+                value: request.object_type.clone(),
+            });
+        }
+
+        // Get all objects of the requested type (limited to max_candidates + 1 for truncation detection)
+        // This is the DoS protection: we bound the number of candidates BEFORE
+        // running expensive permission checks.
+        let limit = max_candidates.saturating_add(1);
+        let mut candidates = self
+            .tuple_reader
+            .get_objects_of_type(&request.store_id, &request.object_type, limit)
+            .await?;
+
+        // Check if we hit the limit (truncation detection)
+        let truncated = if candidates.len() > max_candidates {
+            candidates.pop(); // Remove the extra candidate
+            true
+        } else {
+            false
+        };
+
+        // Early exit: skip expensive permission checks if no candidates found
+        if candidates.is_empty() {
+            return Ok(super::ListObjectsResult {
+                objects: Vec::new(),
+                truncated: false,
+            });
+        }
+
+        // Run parallel permission checks on candidates with concurrency limit
+        // Constraint C11: Fail Fast with Bounds - we limit concurrency to avoid
+        // exhausting resources even effectively "bounded" tasks.
+        const MAX_CONCURRENT_CHECKS: usize = 50;
+        // Per-operation timeout for individual permission checks.
+        // Prevents a single slow check from blocking the entire operation.
+        const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+        // Track if any errors occurred during permission checks
+        let had_errors = std::sync::atomic::AtomicBool::new(false);
+
+        // Clone shared data once outside the loop to avoid per-candidate cloning
+        let shared_contextual_tuples = request.contextual_tuples.clone();
+        let shared_context = request.context.clone();
+
+        let objects = futures::stream::iter(candidates)
+            .map(|object_id| {
+                let check_request = CheckRequest::with_context(
+                    request.store_id.clone(),
+                    request.user.clone(),
+                    request.relation.clone(),
+                    format!("{}:{}", request.object_type, object_id),
+                    shared_contextual_tuples.as_ref().clone(),
+                    shared_context.as_ref().clone(),
+                );
+                async move {
+                    // Apply per-operation timeout to prevent indefinite blocking
+                    let result = timeout(CHECK_TIMEOUT, self.check(&check_request)).await;
+                    (object_id, result)
+                }
+            })
+            .buffer_unordered(MAX_CONCURRENT_CHECKS)
+            .filter_map(|(object_id, result)| {
+                let had_errors = &had_errors;
+                async move {
+                    match result {
+                        Ok(Ok(CheckResult { allowed: true })) => {
+                            Some(format!("{}:{}", request.object_type, object_id))
+                        }
+                        Ok(Ok(CheckResult { allowed: false })) => None,
+                        Ok(Err(e)) => {
+                            warn!(
+                                store_id = %request.store_id,
+                                object_type = %request.object_type,
+                                object_id = %object_id,
+                                error = %e,
+                                "Permission check failed during list_objects"
+                            );
+                            had_errors.store(true, std::sync::atomic::Ordering::Relaxed);
+                            None
+                        }
+                        Err(_timeout) => {
+                            warn!(
+                                store_id = %request.store_id,
+                                object_type = %request.object_type,
+                                object_id = %object_id,
+                                "Permission check timed out during list_objects"
+                            );
+                            had_errors.store(true, std::sync::atomic::Ordering::Relaxed);
+                            None
+                        }
+                    }
+                }
+            })
+            .collect::<Vec<_>>()
+            .await;
+
+        // Truncated if we hit the limit OR if any errors occurred (incomplete results)
+        let result_truncated = truncated || had_errors.load(std::sync::atomic::Ordering::Relaxed);
+
+        Ok(super::types::ListObjectsResult {
+            objects,
+            truncated: result_truncated,
+        })
     }
 }
 

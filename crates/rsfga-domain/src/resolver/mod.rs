@@ -41,5 +41,6 @@ pub use graph_resolver::{CacheMetrics, CacheMetricsSnapshot, GraphResolver};
 pub use traits::{ModelReader, TupleReader};
 pub use types::{
     CheckRequest, CheckResult, ContextualTuple, ExpandLeaf, ExpandLeafValue, ExpandNode,
-    ExpandRequest, ExpandResult, StoredTupleRef, UsersetTree,
+    ExpandRequest, ExpandResult, ListObjectsRequest, ListObjectsResult, StoredTupleRef,
+    UsersetTree,
 };

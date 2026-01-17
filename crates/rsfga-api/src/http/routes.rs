@@ -1151,31 +1151,10 @@ async fn write_tuples<S: DataStore>(
     Ok(Json(serde_json::json!({})))
 }
 
-/// Maximum allowed condition name length (security constraint I4).
-const MAX_CONDITION_NAME_LENGTH: usize = 256;
-
-/// Maximum allowed condition context size in bytes (constraint C11: Fail Fast with Bounds).
-const MAX_CONDITION_CONTEXT_SIZE: usize = 10 * 1024; // 10KB
-
-/// Maximum allowed JSON nesting depth (constraint C11: Fail Fast with Bounds).
-/// Prevents stack overflow during serialization of deeply nested structures.
-const MAX_JSON_DEPTH: usize = 10;
-
-/// Checks if a serde_json::Value exceeds the maximum nesting depth.
-fn json_exceeds_max_depth(value: &serde_json::Value, current_depth: usize) -> bool {
-    if current_depth > MAX_JSON_DEPTH {
-        return true;
-    }
-    match value {
-        serde_json::Value::Object(obj) => obj
-            .values()
-            .any(|v| json_exceeds_max_depth(v, current_depth + 1)),
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .any(|v| json_exceeds_max_depth(v, current_depth + 1)),
-        _ => false,
-    }
-}
+// Use shared validation functions from the validation module
+use crate::validation::{
+    is_valid_condition_name, json_exceeds_max_depth, MAX_CONDITION_CONTEXT_SIZE,
+};
 
 /// Error returned when tuple key parsing fails.
 /// Contains the original user/object strings for error messages (avoids cloning in happy path).
@@ -1183,16 +1162,6 @@ struct TupleKeyParseError {
     user: String,
     object: String,
     reason: &'static str,
-}
-
-/// Validates a condition name format (security constraint I4).
-/// Allows only alphanumeric, underscore, hyphen characters with max 256 chars.
-fn is_valid_condition_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_CONDITION_NAME_LENGTH
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Parses a tuple key into a StoredTuple (takes ownership to avoid clones).
@@ -1685,22 +1654,113 @@ pub struct ListObjectsRequestBody {
     pub authorization_model_id: Option<String>,
     #[serde(default)]
     pub contextual_tuples: Option<ContextualTuplesBody>,
+    #[serde(default)]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Response for list objects operation (stub).
 #[derive(Debug, Serialize)]
 pub struct ListObjectsResponseBody {
     pub objects: Vec<String>,
+    pub truncated: bool,
 }
 
 async fn list_objects<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
-    JsonBadRequest(_body): JsonBadRequest<ListObjectsRequestBody>,
+    JsonBadRequest(body): JsonBadRequest<ListObjectsRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store exists
-    let _ = state.storage.get_store(&store_id).await?;
+    use crate::validation::{
+        estimate_context_size, json_exceeds_max_depth, validate_relation_format,
+        validate_user_format, MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
+        MAX_LIST_OBJECTS_CANDIDATES,
+    };
+    use rsfga_domain::resolver::ListObjectsRequest;
+    use rsfga_storage::traits::validate_object_type;
+    use tracing::warn;
 
-    // ListObjects is not yet implemented - return empty list
-    Ok(Json(ListObjectsResponseBody { objects: vec![] }))
+    // Validate input format (API layer validation)
+    validate_object_type(&body.r#type)?;
+
+    // Validate user format
+    if let Some(err) = validate_user_format(&body.user) {
+        return Err(ApiError::invalid_input(err));
+    }
+
+    // Validate relation format
+    if let Some(err) = validate_relation_format(&body.relation) {
+        return Err(ApiError::invalid_input(err));
+    }
+
+    // Validate context if provided (DoS protection)
+    if let Some(ctx) = &body.context {
+        if estimate_context_size(ctx) > MAX_CONDITION_CONTEXT_SIZE {
+            return Err(ApiError::invalid_input(format!(
+                "context size exceeds maximum of {MAX_CONDITION_CONTEXT_SIZE} bytes"
+            )));
+        }
+
+        // Check nesting depth for each value in context map.
+        // We pass depth=2 because context is already at depth 1 (the map itself),
+        // so values start at depth 2. MAX_JSON_DEPTH (5) limits total nesting from the root.
+        for value in ctx.values() {
+            if json_exceeds_max_depth(value, 2) {
+                return Err(ApiError::invalid_input(format!(
+                    "context nested too deeply (max depth {MAX_JSON_DEPTH})"
+                )));
+            }
+        }
+    }
+
+    // Convert contextual tuples if provided
+    let contextual_tuples = body
+        .contextual_tuples
+        .map(|ct| {
+            ct.tuple_keys
+                .into_iter()
+                .filter_map(|tk| {
+                    let user = parse_user(&tk.user);
+                    if user.is_none() {
+                        warn!("Invalid user format in contextual tuple: {}", tk.user);
+                        return None;
+                    }
+                    let (user_type, user_id, user_relation) = user.unwrap();
+
+                    let object = parse_object(&tk.object);
+                    if object.is_none() {
+                        warn!("Invalid object format in contextual tuple: {}", tk.object);
+                        return None;
+                    }
+                    let (object_type, object_id) = object.unwrap();
+
+                    Some(rsfga_domain::resolver::ContextualTuple::new(
+                        format_user(user_type, user_id, user_relation),
+                        tk.relation,
+                        format!("{object_type}:{object_id}"),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Create domain request
+    let list_request = ListObjectsRequest::with_context(
+        store_id,
+        body.user,
+        body.relation,
+        body.r#type,
+        contextual_tuples,
+        body.context.unwrap_or_default(),
+    );
+
+    // Call the resolver with DoS protection limit
+    let result = state
+        .resolver
+        .list_objects(&list_request, MAX_LIST_OBJECTS_CANDIDATES)
+        .await?;
+
+    Ok(Json(ListObjectsResponseBody {
+        objects: result.objects,
+        truncated: result.truncated,
+    }))
 }
