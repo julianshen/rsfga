@@ -85,7 +85,7 @@ SELECT 'user_relation', COUNT(*) FROM tuples WHERE CHAR_LENGTH(user_relation) > 
 
 ### Error Message (if validation fails)
 
-```
+```text
 Migration blocked: Found data exceeding new column limits.
 
 Affected rows:
@@ -124,9 +124,11 @@ ALTER TABLE authorization_models MODIFY store_id CHAR(26) NOT NULL;
 
 - `crates/rsfga-storage/src/mysql.rs`
   - Update CREATE TABLE statements with new column sizes
-  - Add schema version tracking
-  - Add `validate_column_size_migration()` function
-  - Add `migrate_to_v2_column_sizes()` function
+  - Add `migrate_column_sizes_if_needed()` function (detects if migration needed)
+  - Add `validate_column_sizes_for_migration()` function (checks for oversized data)
+  - Add `apply_column_size_migration()` function (applies ALTER TABLE statements)
+- `crates/rsfga-storage/src/error.rs`
+  - Add `MigrationBlocked` error variant
 
 ### Tables Affected
 

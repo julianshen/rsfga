@@ -104,7 +104,7 @@ pub enum StorageError {
     /// (e.g., for MariaDB/TiDB compatibility) and existing data exceeds the new limits.
     /// The message includes details about which fields have oversized data and
     /// instructions for viewing and fixing the affected rows.
-    #[error("migration blocked: {message}")]
+    #[error("{message}")]
     MigrationBlocked { message: String },
 }
 

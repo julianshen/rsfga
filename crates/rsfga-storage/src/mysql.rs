@@ -594,7 +594,9 @@ impl MySQLDataStore {
         )
         .fetch_one(&self.pool)
         .await
-        .unwrap_or(false);
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check migration status: {e}"),
+        })?;
 
         if !needs_migration {
             return Ok(());
@@ -692,7 +694,9 @@ impl MySQLDataStore {
             sqlx::query_scalar("SELECT COUNT(*) FROM stores WHERE CHAR_LENGTH(id) > 26")
                 .fetch_one(&self.pool)
                 .await
-                .unwrap_or(0);
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to validate stores table: {e}"),
+                })?;
 
         if stores_oversized > 0 {
             return Err(StorageError::MigrationBlocked {
@@ -714,7 +718,9 @@ impl MySQLDataStore {
         )
         .fetch_all(&self.pool)
         .await
-        .unwrap_or_default();
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to validate authorization_models table: {e}"),
+        })?;
 
         let model_problems: Vec<(String, i64)> = models_oversized
             .into_iter()
@@ -741,8 +747,44 @@ impl MySQLDataStore {
     ///
     /// This should only be called after `validate_column_sizes_for_migration`
     /// confirms all data fits within new limits.
+    ///
+    /// # Migration Order
+    ///
+    /// Tables are migrated in dependency order to respect foreign key constraints:
+    /// 1. `stores` (parent table - referenced by tuples and authorization_models)
+    /// 2. `authorization_models` (references stores)
+    /// 3. `tuples` (references stores)
+    ///
+    /// # Idempotency
+    ///
+    /// MySQL's ALTER TABLE MODIFY is idempotent - running it multiple times with
+    /// the same column definition has no effect. This makes partial migration
+    /// recovery safe: if migration fails partway, re-running will complete it.
     async fn apply_column_size_migration(&self) -> StorageResult<()> {
-        // Migrate tuples table columns
+        // 1. Migrate stores table first (parent table for FK constraints)
+        sqlx::query("ALTER TABLE stores MODIFY id CHAR(26) NOT NULL")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryError {
+                message: format!("Failed to alter stores table: {e}"),
+            })?;
+
+        // 2. Migrate authorization_models table (references stores.id)
+        let model_alterations = [
+            "ALTER TABLE authorization_models MODIFY id CHAR(26) NOT NULL",
+            "ALTER TABLE authorization_models MODIFY store_id CHAR(26) NOT NULL",
+        ];
+
+        for sql in model_alterations {
+            sqlx::query(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to alter authorization_models table: {e}"),
+                })?;
+        }
+
+        // 3. Migrate tuples table last (references stores.id)
         let tuples_alterations = [
             "ALTER TABLE tuples MODIFY store_id CHAR(26) NOT NULL",
             "ALTER TABLE tuples MODIFY object_type VARCHAR(128) NOT NULL",
@@ -759,29 +801,6 @@ impl MySQLDataStore {
                 .await
                 .map_err(|e| StorageError::QueryError {
                     message: format!("Failed to alter tuples table: {e}"),
-                })?;
-        }
-
-        // Migrate stores table
-        sqlx::query("ALTER TABLE stores MODIFY id CHAR(26) NOT NULL")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to alter stores table: {e}"),
-            })?;
-
-        // Migrate authorization_models table
-        let model_alterations = [
-            "ALTER TABLE authorization_models MODIFY id CHAR(26) NOT NULL",
-            "ALTER TABLE authorization_models MODIFY store_id CHAR(26) NOT NULL",
-        ];
-
-        for sql in model_alterations {
-            sqlx::query(sql)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to alter authorization_models table: {e}"),
                 })?;
         }
 
