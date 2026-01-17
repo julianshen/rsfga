@@ -198,7 +198,9 @@ mod tests {
     #[test]
     fn test_migration_blocked_error_message() {
         let error = StorageError::MigrationBlocked {
-            message: "Migration blocked: Found data exceeding limits.\n  - user_id > 128 chars: 3 rows".to_string(),
+            message:
+                "Migration blocked: Found data exceeding limits.\n  - user_id > 128 chars: 3 rows"
+                    .to_string(),
         };
 
         let message = error.to_string();
