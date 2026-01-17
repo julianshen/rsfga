@@ -1352,7 +1352,7 @@ where
         // Get all objects of the requested type (limited to max_candidates + 1 for truncation detection)
         // This is the DoS protection: we bound the number of candidates BEFORE
         // running expensive permission checks.
-        let limit = max_candidates + 1;
+        let limit = max_candidates.saturating_add(1);
         let mut candidates = self
             .tuple_reader
             .get_objects_of_type(&request.store_id, &request.object_type, limit)
