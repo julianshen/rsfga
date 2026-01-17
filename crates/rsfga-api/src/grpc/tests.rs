@@ -90,6 +90,9 @@ async fn test_check_rpc_works_correctly() {
         .await
         .unwrap();
 
+    // Create authorization model
+    setup_simple_model(&storage, "test-store").await;
+
     // Write a tuple
     storage
         .write_tuple(

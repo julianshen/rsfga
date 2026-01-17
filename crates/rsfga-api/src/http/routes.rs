@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::error;
 
+use rsfga_domain::error::DomainError;
+use rsfga_domain::resolver::{CheckRequest as DomainCheckRequest, ContextualTuple};
 use rsfga_storage::{DataStore, PaginationOptions, StorageError, StoredAuthorizationModel};
 
 use super::state::AppState;
@@ -185,6 +187,25 @@ impl From<StorageError> for ApiError {
             _ => {
                 error!("Storage error: {}", err);
                 ApiError::internal_error(err.to_string())
+            }
+        }
+    }
+}
+
+impl From<DomainError> for ApiError {
+    fn from(err: DomainError) -> Self {
+        use crate::errors::{classify_domain_error, DomainErrorKind};
+
+        match classify_domain_error(&err) {
+            DomainErrorKind::InvalidInput(msg) => ApiError::invalid_input(msg),
+            DomainErrorKind::NotFound(msg) => ApiError::not_found(msg),
+            DomainErrorKind::Timeout(msg) => {
+                error!("{}", msg);
+                ApiError::internal_error("authorization check timeout")
+            }
+            DomainErrorKind::Internal(msg) => {
+                error!("Domain error: {}", msg);
+                ApiError::internal_error("internal error during authorization check")
             }
         }
     }
@@ -613,31 +634,43 @@ async fn check<S: DataStore>(
     Path(store_id): Path<String>,
     Json(body): Json<CheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store exists
-    let _ = state.storage.get_store(&store_id).await?;
+    // Convert contextual tuples from HTTP format to domain format
+    let contextual_tuples: Vec<ContextualTuple> = body
+        .contextual_tuples
+        .map(|ct| {
+            ct.tuple_keys
+                .into_iter()
+                .map(|tk| {
+                    if let Some(condition) = tk.condition {
+                        ContextualTuple::with_condition(
+                            &tk.user,
+                            &tk.relation,
+                            &tk.object,
+                            &condition.name,
+                            condition.context,
+                        )
+                    } else {
+                        ContextualTuple::new(&tk.user, &tk.relation, &tk.object)
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
-    // Validate object format (required: "type:id")
-    let (object_type, object_id) = parse_object(&body.tuple_key.object).ok_or_else(|| {
-        ApiError::invalid_input(format!(
-            "invalid object format '{}': expected 'type:id'",
-            body.tuple_key.object
-        ))
-    })?;
+    // Create domain check request
+    let check_request = DomainCheckRequest::new(
+        store_id,
+        body.tuple_key.user,
+        body.tuple_key.relation,
+        body.tuple_key.object,
+        contextual_tuples,
+    );
 
-    // For now, we perform a simple tuple lookup.
-    // Full resolver integration will be added later.
-    let filter = rsfga_storage::TupleFilter {
-        object_type: Some(object_type.to_string()),
-        object_id: Some(object_id.to_string()),
-        relation: Some(body.tuple_key.relation.clone()),
-        user: Some(body.tuple_key.user.clone()),
-        condition_name: None,
-    };
-
-    let tuples = state.storage.read_tuples(&store_id, &filter).await?;
+    // Delegate to GraphResolver for full graph traversal
+    let result = state.resolver.check(&check_request).await?;
 
     Ok(Json(CheckResponseBody {
-        allowed: !tuples.is_empty(),
+        allowed: result.allowed,
         resolution: None,
     }))
 }

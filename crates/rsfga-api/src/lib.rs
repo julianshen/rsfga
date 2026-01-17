@@ -19,6 +19,7 @@
 //! ```
 
 pub mod adapters;
+pub mod errors;
 pub mod grpc;
 pub mod http;
 pub mod middleware;

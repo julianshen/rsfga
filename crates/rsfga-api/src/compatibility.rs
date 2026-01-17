@@ -12,7 +12,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::http::{create_router, AppState};
-    use rsfga_storage::{DataStore, MemoryDataStore};
+    use rsfga_storage::{DataStore, MemoryDataStore, StoredAuthorizationModel};
     use std::sync::Arc;
 
     /// Helper to create a test app.
@@ -244,7 +244,22 @@ mod tests {
             .await
             .unwrap();
 
-        let state = AppState::new(storage);
+        // Create an authorization model for the check request to work
+        let model = StoredAuthorizationModel::new(
+            "test-model".to_string(),
+            "test-store",
+            "1.1",
+            r#"{
+                "type_definitions": [
+                    {"type": "user"},
+                    {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
+                ]
+            }"#
+            .to_string(),
+        );
+        storage.write_authorization_model(model).await.unwrap();
+
+        let state = AppState::new(Arc::clone(&storage));
         let app = create_router(state);
 
         // Test Check request/response schema

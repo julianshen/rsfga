@@ -24,6 +24,31 @@ fn test_app() -> axum::Router {
     create_router(state)
 }
 
+/// Helper function to create a simple authorization model JSON.
+/// This model defines user and document types with basic relations.
+fn simple_model_json() -> &'static str {
+    r#"{
+        "type_definitions": [
+            {"type": "user"},
+            {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
+        ]
+    }"#
+}
+
+/// Helper function to set up a store with a basic authorization model.
+/// Returns the store_id for convenience.
+async fn setup_store_with_model(storage: &MemoryDataStore, store_id: &str, store_name: &str) {
+    storage.create_store(store_id, store_name).await.unwrap();
+
+    let model = StoredAuthorizationModel::new(
+        format!("{}-model", store_id),
+        store_id,
+        "1.1",
+        simple_model_json().to_string(),
+    );
+    storage.write_authorization_model(model).await.unwrap();
+}
+
 /// Test: Server starts on configured port
 ///
 /// This test verifies the router can be created and responds to health checks.
@@ -59,11 +84,8 @@ async fn test_check_endpoint_returns_200() {
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
 
-    // Create a store
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    // Create a store with authorization model
+    setup_store_with_model(&storage, "test-store", "Test Store").await;
 
     // Write a tuple
     storage
@@ -143,15 +165,14 @@ async fn test_check_endpoint_validates_request_body() {
 #[tokio::test]
 async fn test_check_endpoint_returns_correct_response_format() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
 
-    let state = AppState::new(storage);
+    // Create a store with authorization model
+    setup_store_with_model(&storage, "test-store", "Test Store").await;
+
+    let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
 
-    // Check for a non-existent tuple
+    // Check for a non-existent tuple (no tuple written, so should return false)
     let response = app
         .oneshot(
             Request::builder()
@@ -512,12 +533,11 @@ async fn test_readiness_check_validates_dependencies() {
 #[tokio::test]
 async fn test_requests_within_body_limit_succeed() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
 
-    let state = AppState::new(storage);
+    // Create a store with authorization model
+    setup_store_with_model(&storage, "test-store", "Test Store").await;
+
+    let state = AppState::new(Arc::clone(&storage));
     // Use a small limit for testing (1KB)
     let app = create_router_with_body_limit(state, 1024);
 
@@ -740,10 +760,9 @@ async fn test_created_store_id_is_ulid_format() {
 #[tokio::test]
 async fn test_check_handles_null_contextual_tuple_keys() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+
+    // Create a store with authorization model
+    setup_store_with_model(&storage, "test-store", "Test Store").await;
 
     // Write a tuple to check against
     storage
@@ -754,7 +773,7 @@ async fn test_check_handles_null_contextual_tuple_keys() {
         .await
         .unwrap();
 
-    let state = AppState::new(storage);
+    let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
 
     // Request with contextual_tuples.tuple_keys: null (as sent by fga CLI)
@@ -796,10 +815,9 @@ async fn test_check_handles_null_contextual_tuple_keys() {
 #[tokio::test]
 async fn test_check_handles_missing_contextual_tuples() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+
+    // Create a store with authorization model
+    setup_store_with_model(&storage, "test-store", "Test Store").await;
 
     storage
         .write_tuple(
@@ -809,7 +827,7 @@ async fn test_check_handles_missing_contextual_tuples() {
         .await
         .unwrap();
 
-    let state = AppState::new(storage);
+    let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
 
     // Request without contextual_tuples field at all

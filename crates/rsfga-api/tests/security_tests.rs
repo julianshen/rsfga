@@ -22,7 +22,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use rsfga_storage::MemoryDataStore;
 
-use common::{create_test_app, post_json, post_raw};
+use common::{create_test_app, post_json, post_raw, setup_simple_model};
 
 // =============================================================================
 // Section 5: Security Tests
@@ -46,6 +46,9 @@ async fn test_sql_injection_in_user_field_rejected() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let store_id = response["id"].as_str().unwrap();
+
+    // Create authorization model (required for check operations)
+    setup_simple_model(&storage, store_id).await;
 
     // Attempt SQL injection in user field
     let injection_payloads = vec![
@@ -92,6 +95,9 @@ async fn test_sql_injection_in_object_field_rejected() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let store_id = response["id"].as_str().unwrap();
+
+    // Create authorization model (required for check operations)
+    setup_simple_model(&storage, store_id).await;
 
     let injection_payloads = vec![
         "document:doc1'; DROP TABLE stores;--",
@@ -235,6 +241,9 @@ async fn test_special_characters_handled_safely() {
     assert_eq!(status, StatusCode::CREATED);
     let store_id = response["id"].as_str().unwrap();
 
+    // Create authorization model (required for check operations)
+    setup_simple_model(&storage, store_id).await;
+
     let special_chars = vec![
         "user:alice<script>alert(1)</script>",
         "user:alice\0null",
@@ -281,6 +290,9 @@ async fn test_null_bytes_rejected() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let store_id = response["id"].as_str().unwrap();
+
+    // Create authorization model (required for check operations)
+    setup_simple_model(&storage, store_id).await;
 
     // Null byte in user field
     let (status, _) = post_json(
@@ -340,6 +352,9 @@ async fn test_authorization_model_cannot_be_bypassed() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let store_id = response["id"].as_str().unwrap();
+
+    // Create authorization model (required for check operations)
+    setup_simple_model(&storage, store_id).await;
 
     // Write a legitimate tuple
     let (status, _) = post_json(
@@ -412,6 +427,9 @@ async fn test_cross_store_access_prevented() {
     assert_eq!(status, StatusCode::CREATED);
     let store_a_id = response["id"].as_str().unwrap().to_string();
 
+    // Create authorization model for store A
+    setup_simple_model(&storage, &store_a_id).await;
+
     let (status, response) = post_json(
         create_test_app(&storage),
         "/stores",
@@ -420,6 +438,9 @@ async fn test_cross_store_access_prevented() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let store_b_id = response["id"].as_str().unwrap().to_string();
+
+    // Create authorization model for store B
+    setup_simple_model(&storage, &store_b_id).await;
 
     // Write tuple to store A
     let (status, _) = post_json(
