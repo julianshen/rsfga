@@ -791,8 +791,14 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
     ) -> Result<Response<ListObjectsResponse>, Status> {
         use crate::validation::MAX_LIST_OBJECTS_CANDIDATES;
         use rsfga_domain::resolver::ListObjectsRequest as DomainListObjectsRequest;
+        use rsfga_storage::traits::validate_object_type;
 
         let req = request.into_inner();
+
+        // Validate object type format
+        if let Err(e) = validate_object_type(&req.r#type) {
+             return Err(Status::invalid_argument(e.to_string()));
+        }
 
         // Convert contextual tuples if provided
         let contextual_tuples = req

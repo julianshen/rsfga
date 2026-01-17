@@ -1347,8 +1347,34 @@ async fn list_objects<S: DataStore>(
     Path(store_id): Path<String>,
     Json(body): Json<ListObjectsRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
-    use crate::validation::MAX_LIST_OBJECTS_CANDIDATES;
+    use crate::validation::{
+        estimate_context_size, json_exceeds_max_depth, MAX_CONDITION_CONTEXT_SIZE,
+        MAX_JSON_DEPTH, MAX_LIST_OBJECTS_CANDIDATES,
+    };
     use rsfga_domain::resolver::ListObjectsRequest;
+    use rsfga_storage::traits::validate_object_type;
+    use tracing::warn;
+
+    // Validate input format (API layer validation)
+    validate_object_type(&body.r#type)?;
+
+    // Validate context if provided (DoS protection)
+    if let Some(ctx) = &body.context {
+        if estimate_context_size(ctx) > MAX_CONDITION_CONTEXT_SIZE {
+            return Err(ApiError::invalid_input(format!(
+                "context size exceeds maximum of {MAX_CONDITION_CONTEXT_SIZE} bytes"
+            )));
+        }
+
+        // Check nesting depth (treat context map as depth 1)
+        for value in ctx.values() {
+             if json_exceeds_max_depth(value, 2) {
+                 return Err(ApiError::invalid_input(format!(
+                    "context nested too deeply (max depth {MAX_JSON_DEPTH})"
+                )));
+             }
+        }
+    }
 
     // Convert contextual tuples if provided
     let contextual_tuples = body
@@ -1357,8 +1383,20 @@ async fn list_objects<S: DataStore>(
             ct.tuple_keys
                 .into_iter()
                 .filter_map(|tk| {
-                    let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
-                    let (object_type, object_id) = parse_object(&tk.object)?;
+                    let user = parse_user(&tk.user);
+                    if user.is_none() {
+                        warn!("Invalid user format in contextual tuple: {}", tk.user);
+                        return None;
+                    }
+                    let (user_type, user_id, user_relation) = user.unwrap();
+
+                    let object = parse_object(&tk.object);
+                    if object.is_none() {
+                        warn!("Invalid object format in contextual tuple: {}", tk.object);
+                        return None;
+                    }
+                    let (object_type, object_id) = object.unwrap();
+
                     Some(rsfga_domain::resolver::ContextualTuple::new(
                         format_user(user_type, user_id, user_relation),
                         tk.relation,

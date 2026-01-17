@@ -149,6 +149,31 @@ pub fn validate_store_name(name: &str) -> StorageResult<()> {
     Ok(())
 }
 
+/// Validate object type format.
+///
+/// # Errors
+/// Returns `StorageError::InvalidInput` if the type is empty or too long.
+pub fn validate_object_type(object_type: &str) -> StorageResult<()> {
+    if object_type.is_empty() {
+        return Err(StorageError::InvalidInput {
+            message: "object_type cannot be empty".to_string(),
+        });
+    }
+    if object_type.len() > MAX_FIELD_LENGTH {
+        return Err(StorageError::InvalidInput {
+            message: format!("object_type exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
+        });
+    }
+    // SQL Injection prevention: ensure no colons or special characters
+    // Only allow alphanumeric, underscore, and dash
+    if object_type.contains(':') || !object_type.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(StorageError::InvalidInput {
+            message: format!("object_type contains invalid characters: {}", object_type),
+        });
+    }
+    Ok(())
+}
+
 /// Validate a stored tuple at the storage layer.
 ///
 /// This performs **structural validation** only:
@@ -177,16 +202,8 @@ pub fn validate_store_name(name: &str) -> StorageResult<()> {
 ///
 /// Returns `StorageError::InvalidInput` if any field is empty or too long.
 pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
-    if tuple.object_type.is_empty() {
-        return Err(StorageError::InvalidInput {
-            message: "object_type cannot be empty".to_string(),
-        });
-    }
-    if tuple.object_type.len() > MAX_FIELD_LENGTH {
-        return Err(StorageError::InvalidInput {
-            message: format!("object_type exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
-        });
-    }
+    validate_object_type(&tuple.object_type)?;
+
     if tuple.object_id.is_empty() {
         return Err(StorageError::InvalidInput {
             message: "object_id cannot be empty".to_string(),
@@ -533,6 +550,10 @@ pub struct PaginatedResult<T> {
 ///
 /// Implementations must be thread-safe (Send + Sync) and support
 /// async operations.
+///
+/// - **Validation**: Implementations should enforce data integrity (e.g., max lengths, allowed characters).
+///   Note: This validation is a safety net for persistence. User-facing validation (400 Bad Request)
+///   should primarily happen at the API layer to provide helpful error messages.
 #[async_trait]
 pub trait DataStore: Send + Sync + 'static {
     // Store operations
@@ -621,27 +642,16 @@ pub trait DataStore: Send + Sync + 'static {
     /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
     async fn list_objects_by_type(
         &self,
-        store_id: &str,
-        object_type: &str,
-        limit: usize,
+        _store_id: &str,
+        _object_type: &str,
+        _limit: usize,
     ) -> StorageResult<Vec<String>> {
-        // Default implementation (inefficient fallback)
-        let filter = TupleFilter {
-            object_type: Some(object_type.to_string()),
-            ..Default::default()
-        };
-        let tuples = self.read_tuples(store_id, &filter).await?;
-        let mut seen = std::collections::HashSet::new();
-        Ok(tuples
-            .into_iter()
-            .filter_map(|t| {
-                if seen.len() < limit && seen.insert(t.object_id.clone()) {
-                    Some(t.object_id)
-                } else {
-                    None
-                }
-            })
-            .collect())
+        // Default implementation (Safe fail):
+        // Return error to force stores to implement efficient logic.
+        // Prevents OOM crashes from fetching all tuples.
+        Err(StorageError::InternalError {
+            message: "list_objects_by_type not implemented for this store".to_string(),
+        })
     }
 
     // Transaction support

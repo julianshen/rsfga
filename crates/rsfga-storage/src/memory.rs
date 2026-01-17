@@ -15,8 +15,11 @@ use crate::error::{HealthStatus, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_tuple_cursor, parse_user_filter, validate_store_id,
     validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store,
-    StoredAuthorizationModel, StoredTuple, TupleCursor, TupleFilter,
+    StoredAuthorizationModel, StoredTuple, TupleCursor, TupleFilter, validate_object_type,
 };
+
+/// In-memory implementation of DataStore.
+
 
 /// In-memory implementation of DataStore.
 ///
@@ -498,7 +501,8 @@ impl DataStore for MemoryDataStore {
         Ok(PaginatedResult {
             items,
             continuation_token,
-        })
+
+})
     }
 
     async fn get_latest_authorization_model(
@@ -542,6 +546,47 @@ impl DataStore for MemoryDataStore {
             pool_stats: None, // No connection pool for in-memory storage
             message: Some("in-memory storage".to_string()),
         })
+    }
+    async fn list_objects_by_type(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        limit: usize,
+    ) -> StorageResult<Vec<String>> {
+        // Validate inputs
+        validate_store_id(store_id)?;
+        validate_object_type(object_type)?;
+
+        // Verify store exists
+        if !self.stores.contains_key(store_id) {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        let mut unique_ids: Vec<String> = self
+            .tuples
+            .get(store_id)
+            .map(|tuples| {
+                tuples
+                    .iter()
+                    .filter(|t| t.object_type == object_type)
+                    .map(|t| t.object_id.clone())
+                    .collect::<HashSet<_>>() // Dedup using HashSet
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Sort for deterministic results (matches Postgres ORDER BY)
+        unique_ids.sort();
+
+        // Apply limit
+        if unique_ids.len() > limit {
+            unique_ids.truncate(limit);
+        }
+
+        Ok(unique_ids)
     }
 }
 
@@ -1787,5 +1832,52 @@ mod tests {
             std::time::Duration::ZERO,
             "In-memory latency should be zero"
         );
+    }
+
+
+    // Test: list_objects_by_type operations
+    // Verifies deduplication, sorting, and pagination behavior
+    #[tokio::test]
+    async fn test_list_objects_by_type() {
+        let store = MemoryDataStore::new();
+        let store_id = "list-objects-store";
+        store.create_store(store_id, "List Objects Store").await.unwrap();
+
+        // 1. Create duplicate tuples for the same object
+        // 2. Create tuples for different objects
+        let tuples = vec![
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+            StoredTuple::new("document", "doc1", "editor", "user", "bob", None), // duplicate object
+            StoredTuple::new("document", "doc2", "viewer", "user", "charlie", None),
+            StoredTuple::new("document", "doc3", "viewer", "user", "dave", None),
+            StoredTuple::new("folder", "folder1", "viewer", "user", "alice", None), // different type
+        ];
+
+        store.write_tuples(store_id, tuples, vec![]).await.unwrap();
+
+        // Case 1: Simple list of all objects of a type
+        let objects = store.list_objects_by_type(store_id, "document", 100).await.unwrap();
+        
+        // Should be sorted: doc1, doc2, doc3
+        // Should be unique: doc1 appears only once despite 2 tuples
+        assert_eq!(objects.len(), 3);
+        assert_eq!(objects[0], "doc1");
+        assert_eq!(objects[1], "doc2");
+        assert_eq!(objects[2], "doc3");
+
+        // Case 2: Ensure other types are ignored
+        let folders = store.list_objects_by_type(store_id, "folder", 100).await.unwrap();
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0], "folder1");
+
+        // Case 3: Test limit
+        let limited = store.list_objects_by_type(store_id, "document", 2).await.unwrap();
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0], "doc1");
+        assert_eq!(limited[1], "doc2");
+
+        // Case 4: Invalid inputs
+        assert!(store.list_objects_by_type(store_id, "", 100).await.is_err()); // empty type
+        assert!(store.list_objects_by_type("non-existent", "document", 100).await.is_err()); // bad store
     }
 }

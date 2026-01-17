@@ -11,7 +11,7 @@ use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_user_filter, validate_store_id, validate_store_name,
     validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel,
-    StoredTuple, TupleFilter,
+    StoredTuple, TupleFilter, validate_object_type,
 };
 
 /// Maximum size of condition_context JSON in bytes (64 KB).
@@ -582,16 +582,16 @@ impl PostgresDataStore {
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = current_schema()
-                          AND table_name = 'tuples'
-                          AND column_name = 'condition_name'
+                        AND table_name = 'tuples'
+                        AND column_name = 'condition_name'
                     ) THEN
                         ALTER TABLE tuples ADD COLUMN condition_name VARCHAR(255);
                     END IF;
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = current_schema()
-                          AND table_name = 'tuples'
-                          AND column_name = 'condition_context'
+                        AND table_name = 'tuples'
+                        AND column_name = 'condition_context'
                     ) THEN
                         ALTER TABLE tuples ADD COLUMN condition_context JSONB;
                     END IF;
@@ -716,6 +716,72 @@ impl PostgresDataStore {
 
 #[async_trait]
 impl DataStore for PostgresDataStore {
+    #[instrument(skip(self))]
+    async fn list_objects_by_type(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        limit: usize,
+    ) -> StorageResult<Vec<String>> {
+        // Validate input bounds
+        validate_store_id(store_id)?;
+        validate_object_type(object_type)?;
+
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("list_objects_by_type_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        let object_type_owned = object_type.to_string();
+        let limit = limit as i64; // Postgres uses i64 for LIMIT
+
+        let rows = self
+            .execute_with_timeout("list_objects_by_type", async {
+                sqlx::query(
+                    r#"
+                    SELECT DISTINCT object_id
+                    FROM tuples
+                    WHERE store_id = $1 AND object_type = $2
+                    ORDER BY object_id
+                    LIMIT $3
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .bind(&object_type_owned)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to list objects by type: {e}"),
+                })
+            })
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| row.get("object_id"))
+            .collect())
+    }
+
     #[instrument(skip(self))]
     async fn create_store(&self, id: &str, name: &str) -> StorageResult<Store> {
         // Validate inputs
@@ -946,68 +1012,6 @@ impl DataStore for PostgresDataStore {
         })
     }
 
-    #[instrument(skip(self))]
-    async fn list_objects_by_type(
-        &self,
-        store_id: &str,
-        object_type: &str,
-        limit: usize,
-    ) -> StorageResult<Vec<String>> {
-        // Validate input bounds
-        validate_store_id(store_id)?;
-
-        // Verify store exists (with timeout protection)
-        let store_id_owned = store_id.to_string();
-        let store_exists: bool = self
-            .execute_with_timeout("list_objects_by_type_store_check", async {
-                sqlx::query_scalar(
-                    r#"
-                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
-                    "#,
-                )
-                .bind(&store_id_owned)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to check store existence: {e}"),
-                })
-            })
-            .await?;
-
-        if !store_exists {
-            return Err(StorageError::StoreNotFound {
-                store_id: store_id.to_string(),
-            });
-        }
-
-        // Efficient query using DISTINCT to avoid fetching all tuples
-        let object_type_owned = object_type.to_string();
-        let limit = limit as i64;
-
-        let rows = self
-            .execute_with_timeout("list_objects_by_type", async {
-                sqlx::query(
-                    r#"
-                    SELECT DISTINCT object_id
-                    FROM tuples
-                    WHERE store_id = $1 AND object_type = $2
-                    ORDER BY object_id
-                    LIMIT $3
-                    "#,
-                )
-                .bind(&store_id_owned)
-                .bind(&object_type_owned)
-                .bind(limit)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to list objects by type: {e}"),
-                })
-            })
-            .await?;
-
-        Ok(rows.into_iter().map(|row| row.get("object_id")).collect())
-    }
 
     #[instrument(skip(self, writes, deletes))]
     async fn write_tuples(

@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::timeout;
+use tracing::warn;
 
 /// Timeout for cache operations (get/insert).
 /// Cache should never block authorization checks; treat timeout as "cache unavailable".
@@ -1389,7 +1390,17 @@ where
                     Ok(CheckResult { allowed: true }) => {
                         Some(format!("{}:{}", request.object_type, object_id))
                     }
-                    _ => None, // Skip errors and false results
+                    Ok(CheckResult { allowed: false }) => None,
+                    Err(e) => {
+                        warn!(
+                            store_id = %request.store_id,
+                            object_type = %request.object_type,
+                            object_id = %object_id,
+                            error = %e,
+                            "Permission check failed during list_objects"
+                        );
+                        None
+                    }
                 }
             })
             .collect::<Vec<_>>()
