@@ -22,21 +22,40 @@ const MAX_SINGLEFLIGHT_RETRIES: u32 = 3;
 pub const DEFAULT_BATCH_CONCURRENCY: usize = 10;
 
 /// Key for identifying unique checks (used for deduplication).
+///
+/// CRITICAL: This includes context because different contexts can produce
+/// different authorization results even for the same user/relation/object tuple.
+/// For example, a time-based condition like `current_time < expiry` would return
+/// different results depending on the context's current_time value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CheckKey {
     store_id: String,
     user: String,
     relation: String,
     object: String,
+    /// Serialized context for hash equality.
+    /// Using a deterministic JSON string representation of the context HashMap.
+    context_hash: String,
 }
 
 impl CheckKey {
     pub fn new(store_id: &str, item: &BatchCheckItem) -> Self {
+        // Serialize context to a deterministic string for hashing.
+        // BTreeMap ensures consistent key ordering for deterministic comparison.
+        let context_hash = if item.context.is_empty() {
+            String::new()
+        } else {
+            // Sort keys for deterministic serialization
+            let sorted: std::collections::BTreeMap<_, _> = item.context.iter().collect();
+            serde_json::to_string(&sorted).unwrap_or_default()
+        };
+
         Self {
             store_id: store_id.to_string(),
             user: item.user.clone(),
             relation: item.relation.clone(),
             object: item.object.clone(),
+            context_hash,
         }
     }
 }

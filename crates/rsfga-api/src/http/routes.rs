@@ -693,25 +693,15 @@ async fn check<S: DataStore>(
         })
         .unwrap_or_default();
 
-    // Create domain check request with context if provided
-    let check_request = if let Some(context) = body.context {
-        DomainCheckRequest::with_context(
-            store_id,
-            body.tuple_key.user,
-            body.tuple_key.relation,
-            body.tuple_key.object,
-            contextual_tuples,
-            context,
-        )
-    } else {
-        DomainCheckRequest::new(
-            store_id,
-            body.tuple_key.user,
-            body.tuple_key.relation,
-            body.tuple_key.object,
-            contextual_tuples,
-        )
-    };
+    // Create domain check request with context (defaults to empty HashMap if not provided)
+    let check_request = DomainCheckRequest::with_context(
+        store_id,
+        body.tuple_key.user,
+        body.tuple_key.relation,
+        body.tuple_key.object,
+        contextual_tuples,
+        body.context.unwrap_or_default(),
+    );
 
     // Delegate to GraphResolver for full graph traversal
     let result = state.resolver.check(&check_request).await?;
@@ -867,6 +857,9 @@ pub struct ExpandTreeNode {
 }
 
 /// Root node which can be a leaf or computed userset.
+// Note: Variants other than Leaf are not yet used but will be needed
+// when the full Expand API is implemented.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum ExpandNodeRoot {

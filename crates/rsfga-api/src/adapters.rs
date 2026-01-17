@@ -274,6 +274,28 @@ fn parse_type_constraints(
     Ok(constraints)
 }
 
+/// Valid OpenFGA type names for condition parameters.
+/// These match the TypeName enum from the OpenFGA protobuf spec.
+const VALID_TYPE_NAMES: &[&str] = &[
+    "TYPE_NAME_UNSPECIFIED",
+    "TYPE_NAME_ANY",
+    "TYPE_NAME_BOOL",
+    "TYPE_NAME_STRING",
+    "TYPE_NAME_INT",
+    "TYPE_NAME_UINT",
+    "TYPE_NAME_DOUBLE",
+    "TYPE_NAME_DURATION",
+    "TYPE_NAME_TIMESTAMP",
+    "TYPE_NAME_MAP",
+    "TYPE_NAME_LIST",
+    "TYPE_NAME_IPADDRESS",
+];
+
+/// Validates that a type_name is a valid OpenFGA type name.
+fn is_valid_type_name(type_name: &str) -> bool {
+    VALID_TYPE_NAMES.contains(&type_name)
+}
+
 /// Parse conditions from the model JSON.
 ///
 /// Conditions in OpenFGA are defined at the model level and referenced by name
@@ -291,6 +313,13 @@ fn parse_type_constraints(
 ///   }
 /// }
 /// ```
+///
+/// # Type Name Validation (Security I4)
+///
+/// The `type_name` field is validated against the OpenFGA TypeName enum.
+/// Invalid type names are rejected with an error rather than defaulting to
+/// `TYPE_NAME_ANY`, which could mask configuration errors and lead to
+/// unexpected authorization behavior.
 fn parse_conditions(model_json: &serde_json::Value) -> DomainResult<Vec<Condition>> {
     let Some(conditions_obj) = model_json.get("conditions").and_then(|c| c.as_object()) else {
         // No conditions defined is valid
@@ -316,6 +345,17 @@ fn parse_conditions(model_json: &serde_json::Value) -> DomainResult<Vec<Conditio
                     .get("type_name")
                     .and_then(|t| t.as_str())
                     .unwrap_or("TYPE_NAME_ANY");
+
+                // Validate type_name is a known OpenFGA type (Security I4)
+                if !is_valid_type_name(type_name) {
+                    return Err(DomainError::ModelParseError {
+                        message: format!(
+                            "condition '{name}' parameter '{param_name}' has invalid type_name '{type_name}'. \
+                             Must be one of: {}",
+                            VALID_TYPE_NAMES.join(", ")
+                        ),
+                    });
+                }
 
                 parameters.push(ConditionParameter::new(param_name, type_name));
             }
