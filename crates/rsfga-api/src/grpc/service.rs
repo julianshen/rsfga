@@ -862,12 +862,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             })
             .unwrap_or_default();
 
-        // Create domain request
-        // Create domain request
-        // Optimization: if we already parsed the context for validation, we should reuse it.
-        // However, the original code parsed it here. Let's make it robust.
-        // Create domain request
-        // Use validated context if available, otherwise default to empty
+        // Create domain request using validated context if available
         let context = validated_context_map.unwrap_or_default();
 
         let list_request = DomainListObjectsRequest::with_context(

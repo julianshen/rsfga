@@ -1689,7 +1689,9 @@ async fn list_objects<S: DataStore>(
             )));
         }
 
-        // Check nesting depth (treat context map as depth 1)
+        // Check nesting depth for each value in context map.
+        // We pass depth=2 because context is already at depth 1 (the map itself),
+        // so values start at depth 2. MAX_JSON_DEPTH (5) limits total nesting from the root.
         for value in ctx.values() {
             if json_exceeds_max_depth(value, 2) {
                 return Err(ApiError::invalid_input(format!(
