@@ -144,12 +144,12 @@ fn create_test_handler() -> BatchCheckHandler<MockTupleReader, MockModelReader> 
 fn test_can_parse_batch_check_request() {
     // Arrange
     let checks = vec![
-        BatchCheckItem {
+        BatchCheckItem { context: std::collections::HashMap::new(),
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
         },
-        BatchCheckItem {
+        BatchCheckItem { context: std::collections::HashMap::new(),
             user: "user:bob".to_string(),
             relation: "editor".to_string(),
             object: "document:doc2".to_string(),
@@ -173,12 +173,12 @@ fn test_validates_each_check_in_batch() {
     let request = BatchCheckRequest::new(
         "store1",
         vec![
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "".to_string(), // Invalid: empty user
                 relation: "viewer".to_string(),
                 object: "document:doc2".to_string(),
@@ -220,7 +220,7 @@ fn test_accepts_batch_with_single_check() {
     let handler = create_test_handler();
     let request = BatchCheckRequest::new(
         "store1",
-        vec![BatchCheckItem {
+        vec![BatchCheckItem { context: std::collections::HashMap::new(),
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
@@ -239,7 +239,7 @@ fn test_accepts_batch_near_max_size() {
     // Arrange - test with batch size just under the limit
     let handler = create_test_handler();
     let checks: Vec<BatchCheckItem> = (0..45) // Below MAX_BATCH_SIZE (50)
-        .map(|i| BatchCheckItem {
+        .map(|i| BatchCheckItem { context: std::collections::HashMap::new(),
             user: format!("user:user{i}"),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),
@@ -260,7 +260,7 @@ fn test_rejects_batch_exceeding_max_size() {
     // Arrange - OpenFGA enforces max 50 items per batch
     let handler = create_test_handler();
     let checks: Vec<BatchCheckItem> = (0..51) // MAX_BATCH_SIZE + 1
-        .map(|i| BatchCheckItem {
+        .map(|i| BatchCheckItem { context: std::collections::HashMap::new(),
             user: format!("user:user{i}"),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),
@@ -287,7 +287,7 @@ fn test_accepts_batch_at_max_size() {
     // Arrange
     let handler = create_test_handler();
     let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
-        .map(|i| BatchCheckItem {
+        .map(|i| BatchCheckItem { context: std::collections::HashMap::new(),
             user: format!("user:user{i}"),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),
@@ -314,17 +314,17 @@ fn test_identifies_duplicate_checks_in_batch() {
     let request = BatchCheckRequest::new(
         "store1",
         vec![
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(), // Duplicate
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:bob".to_string(), // Different user
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
@@ -400,7 +400,7 @@ async fn test_executes_unique_checks_only_once() {
     let request = BatchCheckRequest::new(
         "store1",
         vec![
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
@@ -473,17 +473,17 @@ async fn test_maps_results_back_to_original_positions() {
     let request = BatchCheckRequest::new(
         "store1",
         vec![
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc2".to_string(),
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(), // Duplicate of first
@@ -510,17 +510,17 @@ async fn test_preserves_request_order_in_response() {
     let request = BatchCheckRequest::new(
         "store1",
         vec![
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:bob".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc2".to_string(),
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:charlie".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc3".to_string(),
@@ -602,7 +602,7 @@ async fn test_concurrent_requests_for_same_check_share_result() {
     let make_request = || {
         BatchCheckRequest::new(
             "store1",
-            vec![BatchCheckItem {
+            vec![BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
@@ -699,7 +699,7 @@ async fn test_singleflight_groups_expire_after_completion() {
     let make_request = || {
         BatchCheckRequest::new(
             "store1",
-            vec![BatchCheckItem {
+            vec![BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
@@ -785,7 +785,7 @@ async fn test_errors_dont_poison_singleflight_group() {
     let make_request = || {
         BatchCheckRequest::new(
             "store1",
-            vec![BatchCheckItem {
+            vec![BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
@@ -850,7 +850,7 @@ async fn test_singleflight_handles_timeouts_correctly() {
 
     let request = BatchCheckRequest::new(
         "store1",
-        vec![BatchCheckItem {
+        vec![BatchCheckItem { context: std::collections::HashMap::new(),
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
@@ -939,27 +939,27 @@ async fn test_unique_checks_execute_in_parallel() {
     let request = BatchCheckRequest::new(
         "store1",
         vec![
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(),
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:bob".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc2".to_string(),
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:charlie".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc3".to_string(),
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:dave".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc4".to_string(),
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:eve".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc5".to_string(),
@@ -1042,7 +1042,7 @@ async fn test_batch_processes_faster_than_sequential() {
 
     // Create batch with 10 unique checks
     let checks: Vec<BatchCheckItem> = (0..10)
-        .map(|i| BatchCheckItem {
+        .map(|i| BatchCheckItem { context: std::collections::HashMap::new(),
             user: format!("user:user{i}"),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),
@@ -1130,7 +1130,7 @@ async fn test_parallel_execution_uses_all_available_concurrency() {
 
     // Create batch with MAX_BATCH_SIZE unique checks
     let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
-        .map(|i| BatchCheckItem {
+        .map(|i| BatchCheckItem { context: std::collections::HashMap::new(),
             user: format!("user:user{i}"),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),
@@ -1209,22 +1209,22 @@ async fn test_handles_partial_failures_gracefully() {
     let request = BatchCheckRequest::new(
         "store1",
         vec![
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc0".to_string(), // Success
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc1".to_string(), // Fail
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc2".to_string(), // Success
             },
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:alice".to_string(),
                 relation: "viewer".to_string(),
                 object: "document:doc3".to_string(), // Fail
@@ -1318,7 +1318,7 @@ async fn test_batch_of_max_identical_checks_executes_only_once() {
 
     // Create batch with MAX_BATCH_SIZE identical checks
     let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
-        .map(|_| BatchCheckItem {
+        .map(|_| BatchCheckItem { context: std::collections::HashMap::new(),
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc1".to_string(),
@@ -1394,7 +1394,7 @@ async fn test_batch_throughput_target() {
     // Create batch with MAX_BATCH_SIZE checks (mix of duplicates)
     // OpenFGA limits batches to 50 items, so we test at that limit
     let checks: Vec<BatchCheckItem> = (0..MAX_BATCH_SIZE)
-        .map(|i| BatchCheckItem {
+        .map(|i| BatchCheckItem { context: std::collections::HashMap::new(),
             user: format!("user:user{}", i % 10), // 10 unique users
             relation: "viewer".to_string(),
             object: format!("document:doc{}", i % 25), // 25 unique docs
@@ -1437,7 +1437,7 @@ fn test_memory_usage_scales_with_unique_checks() {
     // Create request with many duplicates
     // Use different modulos to get cross-product of (user, object) pairs
     let checks_with_duplicates: Vec<BatchCheckItem> = (0..1000)
-        .map(|i| BatchCheckItem {
+        .map(|i| BatchCheckItem { context: std::collections::HashMap::new(),
             user: format!("user:user{}", i % 10), // 10 unique users
             relation: "viewer".to_string(),
             object: format!("document:doc{}", (i / 10) % 10), // 10 unique docs
@@ -1580,7 +1580,7 @@ async fn test_batch_handler_respects_runtime_concurrency() {
 
     // Create batch with 20 unique checks (much more than concurrency limit)
     let checks: Vec<BatchCheckItem> = (0..20)
-        .map(|i| BatchCheckItem {
+        .map(|i| BatchCheckItem { context: std::collections::HashMap::new(),
             user: format!("user:user{i}"),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),

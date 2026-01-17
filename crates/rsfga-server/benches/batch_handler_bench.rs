@@ -186,7 +186,7 @@ fn generate_batch_with_duplicates(batch_size: usize, duplicate_ratio: f64) -> Ve
     (0..batch_size)
         .map(|i| {
             let doc_idx = i % unique_count;
-            BatchCheckItem {
+            BatchCheckItem { context: std::collections::HashMap::new(),
                 user: "user:user0".to_string(),
                 relation: "viewer".to_string(),
                 object: format!("document:doc{doc_idx}"),
@@ -313,7 +313,7 @@ fn bench_deduplication_benefit(c: &mut Criterion) {
 
     // All unique checks (worst case for deduplication)
     let unique_checks: Vec<_> = (0..batch_size)
-        .map(|i| BatchCheckItem {
+        .map(|i| BatchCheckItem { context: std::collections::HashMap::new(),
             user: format!("user:user{}", i % 10),
             relation: "viewer".to_string(),
             object: format!("document:doc{i}"),
@@ -330,7 +330,7 @@ fn bench_deduplication_benefit(c: &mut Criterion) {
 
     // All duplicate checks (best case for deduplication)
     let duplicate_checks: Vec<_> = (0..batch_size)
-        .map(|_| BatchCheckItem {
+        .map(|_| BatchCheckItem { context: std::collections::HashMap::new(),
             user: "user:user0".to_string(),
             relation: "viewer".to_string(),
             object: "document:doc0".to_string(),

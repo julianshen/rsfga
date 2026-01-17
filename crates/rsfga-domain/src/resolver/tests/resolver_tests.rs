@@ -3319,8 +3319,8 @@ async fn test_check_evaluates_tuple_condition_with_context() {
     // Set up store
     tuple_reader.add_store("store1").await;
 
-    // Add a condition definition: is_enabled requires context.enabled == true
-    let condition = Condition::new("is_enabled", "context.enabled == true").unwrap();
+    // Add a condition definition: is_enabled requires request.enabled == true
+    let condition = Condition::new("is_enabled", "request.enabled == true").unwrap();
     model_reader.add_condition("store1", condition).await;
 
     // Add type definition with viewer relation
@@ -3386,8 +3386,8 @@ async fn test_check_returns_false_when_condition_evaluates_false() {
 
     tuple_reader.add_store("store1").await;
 
-    // Add condition: is_enabled requires context.enabled == true
-    let condition = Condition::new("is_enabled", "context.enabled == true").unwrap();
+    // Add condition: is_enabled requires request.enabled == true
+    let condition = Condition::new("is_enabled", "request.enabled == true").unwrap();
     model_reader.add_condition("store1", condition).await;
 
     model_reader
@@ -3453,7 +3453,7 @@ async fn test_check_without_required_context_returns_error() {
     tuple_reader.add_store("store1").await;
 
     // Condition that requires "enabled" variable
-    let condition = Condition::new("is_enabled", "context.enabled == true").unwrap();
+    let condition = Condition::new("is_enabled", "request.enabled == true").unwrap();
     model_reader.add_condition("store1", condition).await;
 
     model_reader
@@ -3520,7 +3520,7 @@ async fn test_check_returns_true_when_condition_evaluates_true() {
     tuple_reader.add_store("store1").await;
 
     // Condition checking if level >= required_level
-    let condition = Condition::new("level_check", "context.level >= 5").unwrap();
+    let condition = Condition::new("level_check", "request.level >= 5").unwrap();
     model_reader.add_condition("store1", condition).await;
 
     model_reader
@@ -3587,7 +3587,7 @@ async fn test_condition_evaluation_respects_tuple_condition_params() {
 
     // Condition that checks department match
     let condition =
-        Condition::new("dept_match", "context.user_dept == context.required_dept").unwrap();
+        Condition::new("dept_match", "request.user_dept == request.required_dept").unwrap();
     model_reader.add_condition("store1", condition).await;
 
     model_reader
@@ -3677,7 +3677,7 @@ async fn test_contextual_tuples_with_conditions_work() {
     tuple_reader.add_store("store1").await;
 
     // Condition for time-based access
-    let condition = Condition::new("is_active", "context.active == true").unwrap();
+    let condition = Condition::new("is_active", "request.active == true").unwrap();
     model_reader.add_condition("store1", condition).await;
 
     model_reader
@@ -3758,8 +3758,8 @@ async fn test_check_with_multiple_tuples_evaluates_all() {
     tuple_reader.add_store("store1").await;
 
     // Two conditions
-    let condition1 = Condition::new("is_admin", "context.role == \"admin\"").unwrap();
-    let condition2 = Condition::new("is_owner", "context.is_owner == true").unwrap();
+    let condition1 = Condition::new("is_admin", "request.role == \"admin\"").unwrap();
+    let condition2 = Condition::new("is_owner", "request.is_owner == true").unwrap();
     model_reader.add_condition("store1", condition1).await;
     model_reader.add_condition("store1", condition2).await;
 
@@ -3846,7 +3846,7 @@ async fn test_tuple_context_takes_precedence_over_request() {
     tuple_reader.add_store("store1").await;
 
     // Condition that checks if department is "engineering"
-    let condition = Condition::new("dept_check", "context.department == \"engineering\"").unwrap();
+    let condition = Condition::new("dept_check", "request.department == \"engineering\"").unwrap();
     model_reader.add_condition("store1", condition).await;
 
     model_reader
@@ -3917,7 +3917,7 @@ async fn test_condition_on_parent_tuple_in_tuple_to_userset() {
     tuple_reader.add_store("store1").await;
 
     // Condition that checks if access is published
-    let condition = Condition::new("is_published", "context.published == true").unwrap();
+    let condition = Condition::new("is_published", "request.published == true").unwrap();
     model_reader.add_condition("store1", condition).await;
 
     // folder type with viewer relation
@@ -4095,7 +4095,7 @@ async fn test_check_returns_error_for_invalid_cel_expression() {
     tuple_reader.add_store("store1").await;
 
     // Condition with invalid CEL syntax (unclosed parenthesis)
-    let condition = Condition::new("broken_expr", "context.value == (1 + 2");
+    let condition = Condition::new("broken_expr", "request.value == (1 + 2");
     // Note: Condition::new might catch this - if so, this test verifies
     // the validation happens at definition time rather than evaluation time
 
@@ -4509,8 +4509,8 @@ async fn test_cache_skipped_for_request_context() {
     // This test verifies the CRITICAL security invariant (I4):
     // Cache must be bypassed when request.context is non-empty because
     // CEL conditions depend on context values. Without this, a cached
-    // decision for context.enabled=true could be incorrectly returned
-    // for a request with context.enabled=false.
+    // decision for request.enabled=true could be incorrectly returned
+    // for a request with request.enabled=false.
     //
     // This test PROVES the invariant by:
     // 1. Creating a tuple with a condition that evaluates based on context
@@ -4525,8 +4525,8 @@ async fn test_cache_skipped_for_request_context() {
 
     tuple_reader.add_store("store1").await;
 
-    // Add condition that depends on context.enabled
-    let condition = Condition::new("is_enabled", "context.enabled == true").unwrap();
+    // Add condition that depends on request.enabled
+    let condition = Condition::new("is_enabled", "request.enabled == true").unwrap();
     model_reader.add_condition("store1", condition).await;
 
     model_reader
@@ -4543,7 +4543,7 @@ async fn test_cache_skipped_for_request_context() {
         )
         .await;
 
-    // Add tuple WITH condition - permission depends on context.enabled
+    // Add tuple WITH condition - permission depends on request.enabled
     tuple_reader
         .add_tuple_with_condition(
             "store1",
@@ -4562,7 +4562,7 @@ async fn test_cache_skipped_for_request_context() {
     let config = ResolverConfig::default().with_cache(cache);
     let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
 
-    // Request with context.enabled=true - should be ALLOWED
+    // Request with request.enabled=true - should be ALLOWED
     let mut context_true = HashMap::new();
     context_true.insert("enabled".to_string(), serde_json::json!(true));
 
@@ -4578,7 +4578,7 @@ async fn test_cache_skipped_for_request_context() {
     let result_enabled = resolver.check(&request_enabled).await.unwrap();
     assert!(
         result_enabled.allowed,
-        "With context.enabled=true, access should be ALLOWED"
+        "With request.enabled=true, access should be ALLOWED"
     );
 
     // Verify: Cache was SKIPPED (context present)
@@ -4590,7 +4590,7 @@ async fn test_cache_skipped_for_request_context() {
     assert_eq!(metrics.hits, 0, "Should have no cache hits");
     assert_eq!(metrics.misses, 0, "Should have no cache misses");
 
-    // Request with context.enabled=false - should be DENIED
+    // Request with request.enabled=false - should be DENIED
     let mut context_false = HashMap::new();
     context_false.insert("enabled".to_string(), serde_json::json!(false));
 
@@ -4606,7 +4606,7 @@ async fn test_cache_skipped_for_request_context() {
     let result_disabled = resolver.check(&request_disabled).await.unwrap();
     assert!(
         !result_disabled.allowed,
-        "With context.enabled=false, access should be DENIED"
+        "With request.enabled=false, access should be DENIED"
     );
 
     // Verify: Cache was SKIPPED again
@@ -4638,8 +4638,8 @@ async fn test_context_dependent_condition_not_cached() {
     //
     // Test structure (from Issue #132):
     // 1. Create a conditional tuple where condition depends on context
-    // 2. Check with context.enabled=true -> should be allowed, cache skipped
-    // 3. Check with context.enabled=false -> should be denied, cache skipped
+    // 2. Check with request.enabled=true -> should be allowed, cache skipped
+    // 3. Check with request.enabled=false -> should be denied, cache skipped
     // 4. Assert different results prove caching would be incorrect
 
     use std::collections::HashMap;
@@ -4649,8 +4649,8 @@ async fn test_context_dependent_condition_not_cached() {
 
     tuple_reader.add_store("store1").await;
 
-    // Define condition: access granted only when context.active == true
-    let condition = Condition::new("requires_active", "context.active == true").unwrap();
+    // Define condition: access granted only when request.active == true
+    let condition = Condition::new("requires_active", "request.active == true").unwrap();
     model_reader.add_condition("store1", condition).await;
 
     model_reader
@@ -4667,7 +4667,7 @@ async fn test_context_dependent_condition_not_cached() {
         )
         .await;
 
-    // Create tuple WITH condition - access depends on context.active
+    // Create tuple WITH condition - access depends on request.active
     tuple_reader
         .add_tuple_with_condition(
             "store1",
@@ -4687,7 +4687,7 @@ async fn test_context_dependent_condition_not_cached() {
     let config = ResolverConfig::default().with_cache(cache);
     let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
 
-    // === TEST CASE 1: context.active=true -> ALLOWED ===
+    // === TEST CASE 1: request.active=true -> ALLOWED ===
     let mut active_context = HashMap::new();
     active_context.insert("active".to_string(), serde_json::json!(true));
 
@@ -4702,10 +4702,10 @@ async fn test_context_dependent_condition_not_cached() {
 
     let result_active = resolver.check(&request_active).await.unwrap();
 
-    // Verify: Access ALLOWED when context.active=true
+    // Verify: Access ALLOWED when request.active=true
     assert!(
         result_active.allowed,
-        "Access should be ALLOWED when context.active=true"
+        "Access should be ALLOWED when request.active=true"
     );
 
     // Verify: Cache was SKIPPED (not hit, not miss)
@@ -4714,7 +4714,7 @@ async fn test_context_dependent_condition_not_cached() {
     assert_eq!(metrics.hits, 0, "Must not have cache hits");
     assert_eq!(metrics.misses, 0, "Must not have cache misses");
 
-    // === TEST CASE 2: context.active=false -> DENIED ===
+    // === TEST CASE 2: request.active=false -> DENIED ===
     let mut inactive_context = HashMap::new();
     inactive_context.insert("active".to_string(), serde_json::json!(false));
 
@@ -4729,10 +4729,10 @@ async fn test_context_dependent_condition_not_cached() {
 
     let result_inactive = resolver.check(&request_inactive).await.unwrap();
 
-    // Verify: Access DENIED when context.active=false
+    // Verify: Access DENIED when request.active=false
     assert!(
         !result_inactive.allowed,
-        "Access should be DENIED when context.active=false"
+        "Access should be DENIED when request.active=false"
     );
 
     // Verify: Cache was SKIPPED again

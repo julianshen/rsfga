@@ -1,11 +1,13 @@
 //! Data types for batch check operations.
 
+use std::collections::HashMap;
+
 /// Maximum batch size per OpenFGA specification.
 /// OpenFGA enforces a limit of 50 items per batch-check request.
 pub const MAX_BATCH_SIZE: usize = 50;
 
 /// A single check within a batch request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BatchCheckItem {
     /// The user performing the access (e.g., "user:alice").
     pub user: String,
@@ -13,6 +15,8 @@ pub struct BatchCheckItem {
     pub relation: String,
     /// The object identifier (e.g., "document:readme").
     pub object: String,
+    /// CEL evaluation context for condition evaluation.
+    pub context: HashMap<String, serde_json::Value>,
 }
 
 /// Request for batch permission checks.

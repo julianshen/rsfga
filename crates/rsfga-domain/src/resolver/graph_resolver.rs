@@ -997,7 +997,8 @@ where
         // SECURITY-CRITICAL: Context Merging with Tuple Precedence
         // ==========================================================================
         //
-        // Build the "context" map from request context + tuple condition context.
+        // Build the "request" map from request context + tuple condition context.
+        // OpenFGA CEL expressions access values via "request." prefix (e.g., request.current_time).
         // Per OpenFGA spec: tuple condition context takes precedence over request context.
         //
         // WHY THIS MATTERS FOR SECURITY:
@@ -1038,7 +1039,8 @@ where
             );
         }
 
-        cel_ctx.set_map("context", context_map);
+        // Note: OpenFGA expressions use "request" prefix (e.g., request.current_time)
+        cel_ctx.set_map("request", context_map);
 
         // Evaluate the expression with timeout to prevent DoS from expensive expressions
         let result = expr

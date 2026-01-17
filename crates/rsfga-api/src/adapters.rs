@@ -17,7 +17,8 @@ use moka::future::Cache;
 
 use rsfga_domain::error::{DomainError, DomainResult};
 use rsfga_domain::model::{
-    AuthorizationModel, RelationDefinition, TypeConstraint, TypeDefinition, Userset,
+    AuthorizationModel, Condition, ConditionParameter, RelationDefinition, TypeConstraint,
+    TypeDefinition, Userset,
 };
 use rsfga_domain::resolver::{ModelReader, StoredTupleRef, TupleReader};
 use rsfga_storage::DataStore;
@@ -273,6 +274,66 @@ fn parse_type_constraints(
     Ok(constraints)
 }
 
+/// Parse conditions from the model JSON.
+///
+/// Conditions in OpenFGA are defined at the model level and referenced by name
+/// in type constraints. Format:
+/// ```json
+/// {
+///   "conditions": {
+///     "condition_name": {
+///       "name": "condition_name",
+///       "expression": "cel_expression",
+///       "parameters": {
+///         "param_name": { "type_name": "TYPE_NAME_STRING" }
+///       }
+///     }
+///   }
+/// }
+/// ```
+fn parse_conditions(model_json: &serde_json::Value) -> DomainResult<Vec<Condition>> {
+    let Some(conditions_obj) = model_json.get("conditions").and_then(|c| c.as_object()) else {
+        // No conditions defined is valid
+        return Ok(vec![]);
+    };
+
+    let mut conditions = Vec::with_capacity(conditions_obj.len());
+
+    for (name, cond_def) in conditions_obj {
+        // Get the expression (required)
+        let expression = cond_def
+            .get("expression")
+            .and_then(|e| e.as_str())
+            .ok_or_else(|| DomainError::ModelParseError {
+                message: format!("condition '{name}' missing 'expression' field"),
+            })?;
+
+        // Parse parameters
+        let mut parameters = Vec::new();
+        if let Some(params_obj) = cond_def.get("parameters").and_then(|p| p.as_object()) {
+            for (param_name, param_def) in params_obj {
+                let type_name = param_def
+                    .get("type_name")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("TYPE_NAME_ANY");
+
+                parameters.push(ConditionParameter::new(param_name, type_name));
+            }
+        }
+
+        // Create the condition with parameters
+        let condition = Condition::with_parameters(name, parameters, expression).map_err(|e| {
+            DomainError::ModelParseError {
+                message: format!("invalid condition '{name}': {e}"),
+            }
+        })?;
+
+        conditions.push(condition);
+    }
+
+    Ok(conditions)
+}
+
 /// Adapter that implements `TupleReader` using a `DataStore`.
 ///
 /// This adapter bridges the storage layer to the domain layer for tuple operations.
@@ -468,9 +529,13 @@ impl<S: DataStore> DataStoreModelReader<S> {
             }
         }
 
-        Ok(AuthorizationModel::with_types(
+        // Parse conditions from the JSON
+        let conditions = parse_conditions(&model_json)?;
+
+        Ok(AuthorizationModel::with_types_and_conditions(
             &stored_model.schema_version,
             type_definitions,
+            conditions,
         ))
     }
 }

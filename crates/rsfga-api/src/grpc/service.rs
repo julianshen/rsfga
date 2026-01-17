@@ -519,6 +519,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 user: tuple_key.user,
                 relation: tuple_key.relation,
                 object: tuple_key.object,
+                context: std::collections::HashMap::new(), // TODO: Parse context from gRPC request
             });
         }
 

@@ -3306,6 +3306,7 @@ dependencies = [
  "rsfga-domain",
  "rsfga-storage",
  "serde",
+ "serde_json",
  "serial_test",
  "tempfile",
  "thiserror 1.0.69",

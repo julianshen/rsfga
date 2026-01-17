@@ -615,6 +615,10 @@ pub struct CheckRequestBody {
     pub authorization_model_id: Option<String>,
     #[serde(default)]
     pub contextual_tuples: Option<ContextualTuplesBody>,
+    /// CEL evaluation context for condition evaluation.
+    /// Contains values that will be accessible as `request.<key>` in CEL expressions.
+    #[serde(default)]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Relationship condition for conditional tuples.
@@ -689,14 +693,25 @@ async fn check<S: DataStore>(
         })
         .unwrap_or_default();
 
-    // Create domain check request
-    let check_request = DomainCheckRequest::new(
-        store_id,
-        body.tuple_key.user,
-        body.tuple_key.relation,
-        body.tuple_key.object,
-        contextual_tuples,
-    );
+    // Create domain check request with context if provided
+    let check_request = if let Some(context) = body.context {
+        DomainCheckRequest::with_context(
+            store_id,
+            body.tuple_key.user,
+            body.tuple_key.relation,
+            body.tuple_key.object,
+            contextual_tuples,
+            context,
+        )
+    } else {
+        DomainCheckRequest::new(
+            store_id,
+            body.tuple_key.user,
+            body.tuple_key.relation,
+            body.tuple_key.object,
+            contextual_tuples,
+        )
+    };
 
     // Delegate to GraphResolver for full graph traversal
     let result = state.resolver.check(&check_request).await?;
@@ -732,6 +747,9 @@ pub struct BatchCheckItemBody {
     pub correlation_id: String,
     #[serde(default)]
     pub contextual_tuples: Option<ContextualTuplesBody>,
+    /// CEL evaluation context for condition evaluation.
+    #[serde(default)]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Response for batch check operation.
@@ -781,6 +799,7 @@ async fn batch_check<S: DataStore>(
             user: item.tuple_key.user,
             relation: item.tuple_key.relation,
             object: item.tuple_key.object,
+            context: item.context.unwrap_or_default(),
         })
         .collect();
 

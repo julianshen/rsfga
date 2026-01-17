@@ -270,13 +270,14 @@ where
                 // We're the leader - create guard for cleanup on panic
                 let guard = SingleflightGuard::new(&self.singleflight, key);
 
-                // Execute the actual check
-                let check_request = CheckRequest::new(
+                // Execute the actual check with context
+                let check_request = CheckRequest::with_context(
                     store_id.to_string(),
                     check.user.clone(),
                     check.relation.clone(),
                     check.object.clone(),
                     vec![], // No contextual tuples in batch checks
+                    check.context.clone(),
                 );
 
                 let result = match self.resolver.check(&check_request).await {
