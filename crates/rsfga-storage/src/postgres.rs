@@ -9,9 +9,9 @@ use tracing::{debug, instrument};
 
 use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
-    parse_continuation_token, parse_user_filter, validate_store_id, validate_store_name,
-    validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel,
-    StoredTuple, TupleFilter, validate_object_type,
+    parse_continuation_token, parse_user_filter, validate_object_type, validate_store_id,
+    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store,
+    StoredAuthorizationModel, StoredTuple, TupleFilter,
 };
 
 /// Maximum size of condition_context JSON in bytes (64 KB).
@@ -776,10 +776,7 @@ impl DataStore for PostgresDataStore {
             })
             .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| row.get("object_id"))
-            .collect())
+        Ok(rows.into_iter().map(|row| row.get("object_id")).collect())
     }
 
     #[instrument(skip(self))]
@@ -1011,7 +1008,6 @@ impl DataStore for PostgresDataStore {
             continuation_token,
         })
     }
-
 
     #[instrument(skip(self, writes, deletes))]
     async fn write_tuples(

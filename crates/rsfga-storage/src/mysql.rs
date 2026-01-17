@@ -23,9 +23,9 @@ use tracing::{debug, instrument};
 
 use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
-    parse_continuation_token, parse_user_filter, validate_store_id, validate_store_name,
-    validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store, StoredAuthorizationModel,
-    StoredTuple, TupleFilter, validate_object_type,
+    parse_continuation_token, parse_user_filter, validate_object_type, validate_store_id,
+    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store,
+    StoredAuthorizationModel, StoredTuple, TupleFilter,
 };
 
 /// Parse a database row into a StoredTuple.
@@ -1765,10 +1765,7 @@ impl DataStore for MySQLDataStore {
             })
             .await?;
 
-        let objects = rows
-            .into_iter()
-            .map(|row| row.get("object_id"))
-            .collect();
+        let objects = rows.into_iter().map(|row| row.get("object_id")).collect();
 
         Ok(objects)
     }

@@ -1348,8 +1348,8 @@ async fn list_objects<S: DataStore>(
     Json(body): Json<ListObjectsRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     use crate::validation::{
-        estimate_context_size, json_exceeds_max_depth, MAX_CONDITION_CONTEXT_SIZE,
-        MAX_JSON_DEPTH, MAX_LIST_OBJECTS_CANDIDATES,
+        estimate_context_size, json_exceeds_max_depth, MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
+        MAX_LIST_OBJECTS_CANDIDATES,
     };
     use rsfga_domain::resolver::ListObjectsRequest;
     use rsfga_storage::traits::validate_object_type;
@@ -1368,11 +1368,11 @@ async fn list_objects<S: DataStore>(
 
         // Check nesting depth (treat context map as depth 1)
         for value in ctx.values() {
-             if json_exceeds_max_depth(value, 2) {
-                 return Err(ApiError::invalid_input(format!(
+            if json_exceeds_max_depth(value, 2) {
+                return Err(ApiError::invalid_input(format!(
                     "context nested too deeply (max depth {MAX_JSON_DEPTH})"
                 )));
-             }
+            }
         }
     }
 

@@ -13,13 +13,10 @@ use tracing::instrument;
 
 use crate::error::{HealthStatus, StorageError, StorageResult};
 use crate::traits::{
-    parse_continuation_token, parse_tuple_cursor, parse_user_filter, validate_store_id,
-    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store,
-    StoredAuthorizationModel, StoredTuple, TupleCursor, TupleFilter, validate_object_type,
+    parse_continuation_token, parse_tuple_cursor, parse_user_filter, validate_object_type,
+    validate_store_id, validate_store_name, validate_tuple, DataStore, PaginatedResult,
+    PaginationOptions, Store, StoredAuthorizationModel, StoredTuple, TupleCursor, TupleFilter,
 };
-
-/// In-memory implementation of DataStore.
-
 
 /// In-memory implementation of DataStore.
 ///
@@ -501,8 +498,7 @@ impl DataStore for MemoryDataStore {
         Ok(PaginatedResult {
             items,
             continuation_token,
-
-})
+        })
     }
 
     async fn get_latest_authorization_model(
@@ -1834,14 +1830,16 @@ mod tests {
         );
     }
 
-
     // Test: list_objects_by_type operations
     // Verifies deduplication, sorting, and pagination behavior
     #[tokio::test]
     async fn test_list_objects_by_type() {
         let store = MemoryDataStore::new();
         let store_id = "list-objects-store";
-        store.create_store(store_id, "List Objects Store").await.unwrap();
+        store
+            .create_store(store_id, "List Objects Store")
+            .await
+            .unwrap();
 
         // 1. Create duplicate tuples for the same object
         // 2. Create tuples for different objects
@@ -1856,8 +1854,11 @@ mod tests {
         store.write_tuples(store_id, tuples, vec![]).await.unwrap();
 
         // Case 1: Simple list of all objects of a type
-        let objects = store.list_objects_by_type(store_id, "document", 100).await.unwrap();
-        
+        let objects = store
+            .list_objects_by_type(store_id, "document", 100)
+            .await
+            .unwrap();
+
         // Should be sorted: doc1, doc2, doc3
         // Should be unique: doc1 appears only once despite 2 tuples
         assert_eq!(objects.len(), 3);
@@ -1866,18 +1867,27 @@ mod tests {
         assert_eq!(objects[2], "doc3");
 
         // Case 2: Ensure other types are ignored
-        let folders = store.list_objects_by_type(store_id, "folder", 100).await.unwrap();
+        let folders = store
+            .list_objects_by_type(store_id, "folder", 100)
+            .await
+            .unwrap();
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0], "folder1");
 
         // Case 3: Test limit
-        let limited = store.list_objects_by_type(store_id, "document", 2).await.unwrap();
+        let limited = store
+            .list_objects_by_type(store_id, "document", 2)
+            .await
+            .unwrap();
         assert_eq!(limited.len(), 2);
         assert_eq!(limited[0], "doc1");
         assert_eq!(limited[1], "doc2");
 
         // Case 4: Invalid inputs
         assert!(store.list_objects_by_type(store_id, "", 100).await.is_err()); // empty type
-        assert!(store.list_objects_by_type("non-existent", "document", 100).await.is_err()); // bad store
+        assert!(store
+            .list_objects_by_type("non-existent", "document", 100)
+            .await
+            .is_err()); // bad store
     }
 }

@@ -166,7 +166,11 @@ pub fn validate_object_type(object_type: &str) -> StorageResult<()> {
     }
     // SQL Injection prevention: ensure no colons or special characters
     // Only allow alphanumeric, underscore, and dash
-    if object_type.contains(':') || !object_type.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if object_type.contains(':')
+        || !object_type
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(StorageError::InvalidInput {
             message: format!("object_type contains invalid characters: {}", object_type),
         });

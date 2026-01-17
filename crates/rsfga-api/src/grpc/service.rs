@@ -797,7 +797,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         // Validate object type format
         if let Err(e) = validate_object_type(&req.r#type) {
-             return Err(Status::invalid_argument(e.to_string()));
+            return Err(Status::invalid_argument(e.to_string()));
         }
 
         // Convert contextual tuples if provided
