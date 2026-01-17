@@ -24,6 +24,8 @@ use crate::utils::{format_user, parse_object, parse_user};
 
 /// Custom JSON extractor that returns 400 Bad Request instead of 422 Unprocessable Entity
 /// for deserialization errors (OpenFGA compatibility).
+///
+/// Preserves 413 Payload Too Large for body limit errors.
 pub struct JsonBadRequest<T>(pub T);
 
 #[async_trait]
@@ -38,11 +40,30 @@ where
         match Json::<T>::from_request(req, state).await {
             Ok(Json(value)) => Ok(JsonBadRequest(value)),
             Err(rejection) => {
+                use axum::extract::rejection::JsonRejection;
+
+                // Preserve 413 Payload Too Large for body limit errors
+                let status = match &rejection {
+                    JsonRejection::BytesRejection(_) => {
+                        // BytesRejection wraps body limit errors - check if it's a 413
+                        let inner_status = rejection.status();
+                        if inner_status == StatusCode::PAYLOAD_TOO_LARGE {
+                            StatusCode::PAYLOAD_TOO_LARGE
+                        } else {
+                            StatusCode::BAD_REQUEST
+                        }
+                    }
+                    _ => StatusCode::BAD_REQUEST,
+                };
+
                 let message = rejection.body_text();
-                Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(ApiError::invalid_input(message)),
-                ))
+                let error = if status == StatusCode::PAYLOAD_TOO_LARGE {
+                    ApiError::new("payload_too_large", message)
+                } else {
+                    ApiError::invalid_input(message)
+                };
+
+                Err((status, Json(error)))
             }
         }
     }
