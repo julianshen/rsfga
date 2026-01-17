@@ -97,6 +97,15 @@ pub enum StorageError {
     /// Health check failed.
     #[error("health check failed: {message}")]
     HealthCheckFailed { message: String },
+
+    /// Migration blocked due to data that doesn't fit new column size limits.
+    ///
+    /// This error is returned when upgrading a database with column size changes
+    /// (e.g., for MariaDB/TiDB compatibility) and existing data exceeds the new limits.
+    /// The message includes details about which fields have oversized data and
+    /// instructions for viewing and fixing the affected rows.
+    #[error("{message}")]
+    MigrationBlocked { message: String },
 }
 
 /// Result type for storage operations.
@@ -184,5 +193,24 @@ mod tests {
         assert_eq!(pool.active_connections, 3);
         assert_eq!(pool.idle_connections, 7);
         assert_eq!(pool.max_connections, 10);
+    }
+
+    #[test]
+    fn test_migration_blocked_error_message() {
+        let error = StorageError::MigrationBlocked {
+            message:
+                "Migration blocked: Found data exceeding limits.\n  - user_id > 128 chars: 3 rows"
+                    .to_string(),
+        };
+
+        let message = error.to_string();
+        assert!(
+            message.contains("user_id > 128 chars: 3 rows"),
+            "Error message should contain field details"
+        );
+        assert!(
+            message.contains("Migration blocked"),
+            "Error message should indicate migration was blocked"
+        );
     }
 }
