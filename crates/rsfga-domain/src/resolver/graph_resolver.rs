@@ -1378,8 +1378,8 @@ where
         // Constraint C11: Fail Fast with Bounds - we limit concurrency to avoid
         // exhausting resources even effectively "bounded" tasks.
         const MAX_CONCURRENT_CHECKS: usize = 50;
-        /// Per-operation timeout for individual permission checks.
-        /// Prevents a single slow check from blocking the entire operation.
+        // Per-operation timeout for individual permission checks.
+        // Prevents a single slow check from blocking the entire operation.
         const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
         // Track if any errors occurred during permission checks

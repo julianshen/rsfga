@@ -646,6 +646,17 @@ pub trait DataStore: Send + Sync + 'static {
     /// Used by ListObjects API to get candidate objects.
     /// Should implement DISTINCT logic to return unique object IDs.
     ///
+    /// # Design Rationale (ADR: ListObjects Storage Query)
+    ///
+    /// Each storage backend must implement this efficiently using DISTINCT queries
+    /// rather than fetching all tuples and deduplicating in Rust. This prevents:
+    /// - O(n) memory usage for stores with many tuples per object type
+    /// - CPU overhead of in-memory deduplication
+    /// - Network bandwidth waste transferring duplicate data
+    ///
+    /// PostgreSQL and MySQL implementations use `SELECT DISTINCT object_id ... LIMIT ?`
+    /// which pushes deduplication to the database engine where it's most efficient.
+    ///
     /// # Errors
     /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
     async fn list_objects_by_type(
