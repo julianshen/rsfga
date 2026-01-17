@@ -226,6 +226,259 @@ where
         result
     }
 
+    /// Expands a relation to show the tree structure of how users relate to an object.
+    ///
+    /// This method builds a tree representation of the relation definition,
+    /// populating leaf nodes with the actual users who have the relation.
+    ///
+    /// # Example
+    ///
+    /// For a relation defined as `viewer: [user] | editor`, expanding `viewer` on
+    /// `document:readme` would return a tree showing:
+    /// - A union node with two branches
+    /// - A leaf with direct users (from `[user]`)
+    /// - A computed userset reference to `editor`
+    pub async fn expand(
+        &self,
+        request: &super::types::ExpandRequest,
+    ) -> DomainResult<super::types::ExpandResult> {
+        use super::types::{ExpandResult, UsersetTree};
+
+        // Check if store exists
+        if !self.tuple_reader.store_exists(&request.store_id).await? {
+            return Err(DomainError::ResolverError {
+                message: format!("store not found: {}", request.store_id),
+            });
+        }
+
+        // Parse object to get type
+        let (object_type, object_id) = self.parse_object(&request.object)?;
+        let object_type = object_type.to_string();
+        let object_id = object_id.to_string();
+
+        // Get the relation definition
+        let relation_def = self
+            .model_reader
+            .get_relation_definition(&request.store_id, &object_type, &request.relation)
+            .await?;
+
+        // Build the expansion tree based on the userset rewrite
+        let root = self
+            .expand_userset(
+                &request.store_id,
+                &object_type,
+                &object_id,
+                &request.relation,
+                &relation_def.rewrite,
+            )
+            .await?;
+
+        Ok(ExpandResult {
+            tree: UsersetTree { root },
+        })
+    }
+
+    /// Recursively expands a userset rewrite into an ExpandNode tree.
+    fn expand_userset<'a>(
+        &'a self,
+        store_id: &'a str,
+        object_type: &'a str,
+        object_id: &'a str,
+        relation: &'a str,
+        userset: &'a crate::model::Userset,
+    ) -> BoxFuture<'a, DomainResult<super::types::ExpandNode>> {
+        use super::types::{ExpandLeaf, ExpandLeafValue, ExpandNode};
+
+        Box::pin(async move {
+            match userset {
+                crate::model::Userset::This => {
+                    // Direct assignment - fetch users from tuples
+                    let tuples = self
+                        .tuple_reader
+                        .read_tuples(store_id, object_type, object_id, relation)
+                        .await?;
+
+                    let users: Vec<String> = tuples
+                        .into_iter()
+                        .map(|t| {
+                            if let Some(ref rel) = t.user_relation {
+                                format!("{}:{}#{}", t.user_type, t.user_id, rel)
+                            } else {
+                                format!("{}:{}", t.user_type, t.user_id)
+                            }
+                        })
+                        .collect();
+
+                    Ok(ExpandNode::Leaf(ExpandLeaf {
+                        name: format!("{}:{}#{}", object_type, object_id, relation),
+                        value: ExpandLeafValue::Users(users),
+                    }))
+                }
+
+                crate::model::Userset::ComputedUserset {
+                    relation: computed_relation,
+                } => {
+                    // Computed userset reference
+                    Ok(ExpandNode::Leaf(ExpandLeaf {
+                        name: format!("{}:{}#{}", object_type, object_id, relation),
+                        value: ExpandLeafValue::Computed {
+                            userset: format!("{}:{}#{}", object_type, object_id, computed_relation),
+                        },
+                    }))
+                }
+
+                crate::model::Userset::TupleToUserset {
+                    tupleset,
+                    computed_userset,
+                } => {
+                    // Tuple-to-userset reference
+                    Ok(ExpandNode::Leaf(ExpandLeaf {
+                        name: format!("{}:{}#{}", object_type, object_id, relation),
+                        value: ExpandLeafValue::TupleToUserset {
+                            tupleset: tupleset.clone(),
+                            computed_userset: computed_userset.clone(),
+                        },
+                    }))
+                }
+
+                crate::model::Userset::Union { children } => {
+                    // Expand all children
+                    let mut nodes = Vec::with_capacity(children.len());
+                    for child in children {
+                        let node = self
+                            .expand_userset(store_id, object_type, object_id, relation, child)
+                            .await?;
+                        nodes.push(node);
+                    }
+
+                    Ok(ExpandNode::Union {
+                        name: format!("{}:{}#{}", object_type, object_id, relation),
+                        nodes,
+                    })
+                }
+
+                crate::model::Userset::Intersection { children } => {
+                    // Expand all children
+                    let mut nodes = Vec::with_capacity(children.len());
+                    for child in children {
+                        let node = self
+                            .expand_userset(store_id, object_type, object_id, relation, child)
+                            .await?;
+                        nodes.push(node);
+                    }
+
+                    Ok(ExpandNode::Intersection {
+                        name: format!("{}:{}#{}", object_type, object_id, relation),
+                        nodes,
+                    })
+                }
+
+                crate::model::Userset::Exclusion { base, subtract } => {
+                    // Expand base and subtract
+                    let base_node = self
+                        .expand_userset(store_id, object_type, object_id, relation, base)
+                        .await?;
+                    let subtract_node = self
+                        .expand_userset(store_id, object_type, object_id, relation, subtract)
+                        .await?;
+
+                    Ok(ExpandNode::Difference {
+                        name: format!("{}:{}#{}", object_type, object_id, relation),
+                        base: Box::new(base_node),
+                        subtract: Box::new(subtract_node),
+                    })
+                }
+            }
+        })
+    }
+
+    /// Lists all objects of a given type that a user has a specific relation to.
+    ///
+    /// This method finds all objects where the user has the specified relation,
+    /// checking both direct tuples and computed relations.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Get all unique objects of the given type from storage
+    /// 2. For each object, perform a check to see if the user has the relation
+    /// 3. Return the list of objects where the check succeeds
+    ///
+    /// Note: This is a simple implementation that may not scale well for large
+    /// numbers of objects. Future optimizations could include:
+    /// - Index-based reverse lookups
+    /// - Parallel checking with bounded concurrency
+    /// - Result streaming
+    pub async fn list_objects(
+        &self,
+        request: &super::types::ListObjectsRequest,
+    ) -> DomainResult<super::types::ListObjectsResult> {
+        use std::collections::HashSet;
+
+        // Check if store exists
+        if !self.tuple_reader.store_exists(&request.store_id).await? {
+            return Err(DomainError::ResolverError {
+                message: format!("store not found: {}", request.store_id),
+            });
+        }
+
+        // Collect all candidate objects from:
+        // 1. Storage (objects that have tuples)
+        // 2. Contextual tuples (temporary objects)
+        let mut candidate_objects: HashSet<String> = HashSet::new();
+
+        // Get objects from storage
+        let stored_object_ids = self
+            .tuple_reader
+            .list_objects_by_type(&request.store_id, &request.object_type)
+            .await?;
+
+        for object_id in stored_object_ids {
+            candidate_objects.insert(format!("{}:{}", request.object_type, object_id));
+        }
+
+        // Add objects from contextual tuples
+        for ct in request.contextual_tuples.iter() {
+            if ct.object.starts_with(&format!("{}:", request.object_type)) {
+                candidate_objects.insert(ct.object.clone());
+            }
+        }
+
+        // Check each candidate object
+        let mut accessible_objects = Vec::new();
+
+        for object in candidate_objects {
+            let check_request = CheckRequest {
+                store_id: request.store_id.clone(),
+                user: request.user.clone(),
+                relation: request.relation.clone(),
+                object: object.clone(),
+                contextual_tuples: request.contextual_tuples.clone(),
+                context: request.context.clone(),
+            };
+
+            // Perform the check - if allowed, add to results
+            match self.check(&check_request).await {
+                Ok(result) if result.allowed => {
+                    accessible_objects.push(object);
+                }
+                Ok(_) => {
+                    // Not allowed, skip
+                }
+                Err(_) => {
+                    // Error during check, skip this object
+                    // (could be due to cycles, depth limits, etc.)
+                }
+            }
+        }
+
+        // Sort for deterministic output
+        accessible_objects.sort();
+
+        Ok(super::types::ListObjectsResult {
+            objects: accessible_objects,
+        })
+    }
+
     /// Validates the check request.
     fn validate_request(&self, request: &CheckRequest) -> DomainResult<()> {
         // Validate user format: must be in type:id format (or wildcard "*")
