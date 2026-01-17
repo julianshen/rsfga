@@ -784,12 +784,14 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             }),
         }))
     }
-
     async fn list_objects(
         &self,
         request: Request<ListObjectsRequest>,
     ) -> Result<Response<ListObjectsResponse>, Status> {
-        use crate::validation::MAX_LIST_OBJECTS_CANDIDATES;
+        use crate::validation::{
+            estimate_context_size, json_exceeds_max_depth, MAX_CONDITION_CONTEXT_SIZE,
+            MAX_JSON_DEPTH, MAX_LIST_OBJECTS_CANDIDATES,
+        };
         use rsfga_domain::resolver::ListObjectsRequest as DomainListObjectsRequest;
         use rsfga_storage::traits::validate_object_type;
 
@@ -797,7 +799,35 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         // Validate object type format
         if let Err(e) = validate_object_type(&req.r#type) {
-            return Err(Status::invalid_argument(e.to_string()));
+             return Err(Status::invalid_argument(e.to_string()));
+        }
+
+        // Validate context if provided (DoS protection)
+        let mut validated_context_map = None;
+        if let Some(context_struct) = &req.context {
+            // Check size (approximate from Struct)
+            // Note: This is an estimation. For strict limits, we might want to check the byte size of the request.
+            // But checking the converted JSON size is consistent with HTTP.
+            // We convert to JSON map early to check.
+            let context_map = prost_struct_to_hashmap(context_struct.clone())
+                .map_err(|e| Status::invalid_argument(format!("invalid context: {}", e)))?;
+            
+             if estimate_context_size(&context_map) > MAX_CONDITION_CONTEXT_SIZE {
+                return Err(Status::invalid_argument(format!(
+                    "context size exceeds maximum of {MAX_CONDITION_CONTEXT_SIZE} bytes"
+                )));
+            }
+
+            // Check nesting depth
+            for value in context_map.values() {
+                if json_exceeds_max_depth(value, 2) {
+                    return Err(Status::invalid_argument(format!(
+                        "context nested too deeply (max depth {MAX_JSON_DEPTH})"
+                    )));
+                }
+            }
+
+            validated_context_map = Some(context_map);
         }
 
         // Convert contextual tuples if provided
@@ -820,12 +850,12 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .unwrap_or_default();
 
         // Create domain request
-        let context = req
-            .context
-            .map(prost_struct_to_hashmap)
-            .transpose()
-            .map_err(|e| Status::invalid_argument(format!("invalid context: {}", e)))?
-            .unwrap_or_default();
+        // Create domain request
+        // Optimization: if we already parsed the context for validation, we should reuse it.
+        // However, the original code parsed it here. Let's make it robust.
+        // Create domain request
+        // Use validated context if available, otherwise default to empty
+        let context = validated_context_map.unwrap_or_default();
 
         let list_request = DomainListObjectsRequest::with_context(
             req.store_id,
