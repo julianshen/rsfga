@@ -102,8 +102,80 @@ pub fn prost_value_exceeds_max_depth(value: &prost_types::Value, current_depth: 
 /// Estimates the serialized size of a HashMap<String, serde_json::Value>.
 ///
 /// Used to enforce MAX_CONDITION_CONTEXT_SIZE limit for DoS protection.
+/// This is a best-effort estimate: we serialize each value to a string
+/// and sum the key/value lengths. For large payloads, this gives a
+/// reasonable upper bound without incurring full serialization cost.
 pub fn estimate_context_size(ctx: &std::collections::HashMap<String, serde_json::Value>) -> usize {
     ctx.iter().map(|(k, v)| k.len() + v.to_string().len()).sum()
+}
+
+/// Maximum allowed relation name length per OpenFGA spec.
+pub const MAX_RELATION_LENGTH: usize = 50;
+
+/// Validates a user identifier format.
+///
+/// Valid formats:
+/// - `type:id` (e.g., "user:alice")
+/// - `type:id#relation` (e.g., "group:admins#member")
+/// - `type:*` (wildcard)
+///
+/// Returns an error message if invalid, None if valid.
+pub fn validate_user_format(user: &str) -> Option<&'static str> {
+    if user.is_empty() {
+        return Some("user cannot be empty");
+    }
+
+    // Must contain at least one colon
+    if !user.contains(':') {
+        return Some("user must be in 'type:id' format");
+    }
+
+    let parts: Vec<&str> = user.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        return Some("user must be in 'type:id' format");
+    }
+
+    let (user_type, rest) = (parts[0], parts[1]);
+
+    if user_type.is_empty() {
+        return Some("user type cannot be empty");
+    }
+
+    // rest can be "id" or "id#relation" or "*"
+    if rest.is_empty() {
+        return Some("user id cannot be empty");
+    }
+
+    None // Valid
+}
+
+/// Validates a relation name format per OpenFGA spec.
+///
+/// Relations must:
+/// - Be non-empty
+/// - Be at most 50 characters
+/// - Contain only alphanumeric, underscore characters
+/// - Not contain special characters like ':', '#', '@'
+///
+/// Returns an error message if invalid, None if valid.
+pub fn validate_relation_format(relation: &str) -> Option<&'static str> {
+    if relation.is_empty() {
+        return Some("relation cannot be empty");
+    }
+
+    if relation.len() > MAX_RELATION_LENGTH {
+        return Some("relation exceeds maximum length of 50 characters");
+    }
+
+    // OpenFGA spec: ^[^:#@\s]{1,50}$
+    if relation
+        .chars()
+        .any(|c| c == ':' || c == '#' || c == '@' || c.is_whitespace())
+    {
+        return Some("relation contains invalid characters");
+    }
+
+    None // Valid
 }
 
 #[cfg(test)]

@@ -1671,7 +1671,8 @@ async fn list_objects<S: DataStore>(
     JsonBadRequest(body): JsonBadRequest<ListObjectsRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     use crate::validation::{
-        estimate_context_size, json_exceeds_max_depth, MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
+        estimate_context_size, json_exceeds_max_depth, validate_relation_format,
+        validate_user_format, MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
         MAX_LIST_OBJECTS_CANDIDATES,
     };
     use rsfga_domain::resolver::ListObjectsRequest;
@@ -1680,6 +1681,16 @@ async fn list_objects<S: DataStore>(
 
     // Validate input format (API layer validation)
     validate_object_type(&body.r#type)?;
+
+    // Validate user format
+    if let Some(err) = validate_user_format(&body.user) {
+        return Err(ApiError::invalid_input(err));
+    }
+
+    // Validate relation format
+    if let Some(err) = validate_relation_format(&body.relation) {
+        return Err(ApiError::invalid_input(err));
+    }
 
     // Validate context if provided (DoS protection)
     if let Some(ctx) = &body.context {

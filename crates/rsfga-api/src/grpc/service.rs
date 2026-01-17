@@ -802,8 +802,9 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         request: Request<ListObjectsRequest>,
     ) -> Result<Response<ListObjectsResponse>, Status> {
         use crate::validation::{
-            estimate_context_size, json_exceeds_max_depth, MAX_CONDITION_CONTEXT_SIZE,
-            MAX_JSON_DEPTH, MAX_LIST_OBJECTS_CANDIDATES,
+            estimate_context_size, json_exceeds_max_depth, validate_relation_format,
+            validate_user_format, MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
+            MAX_LIST_OBJECTS_CANDIDATES,
         };
         use rsfga_domain::resolver::ListObjectsRequest as DomainListObjectsRequest;
         use rsfga_storage::traits::validate_object_type;
@@ -815,7 +816,15 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             return Err(Status::invalid_argument(e.to_string()));
         }
 
-        // Validate context if provided (DoS protection)
+        // Validate user format
+        if let Some(err) = validate_user_format(&req.user) {
+            return Err(Status::invalid_argument(err));
+        }
+
+        // Validate relation format
+        if let Some(err) = validate_relation_format(&req.relation) {
+            return Err(Status::invalid_argument(err));
+        }
         let mut validated_context_map = None;
         if let Some(context_struct) = &req.context {
             // Check size (approximate from Struct)

@@ -1366,6 +1366,14 @@ where
             false
         };
 
+        // Early exit: skip expensive permission checks if no candidates found
+        if candidates.is_empty() {
+            return Ok(super::ListObjectsResult {
+                objects: Vec::new(),
+                truncated: false,
+            });
+        }
+
         // Run parallel permission checks on candidates with concurrency limit
         // Constraint C11: Fail Fast with Bounds - we limit concurrency to avoid
         // exhausting resources even effectively "bounded" tasks.
