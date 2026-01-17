@@ -2323,3 +2323,369 @@ async fn test_pagination_empty_results() {
     // Cleanup
     store.delete_store("test-empty-pagination").await.unwrap();
 }
+
+// ==========================================================================
+// Section 7.16: Column Size Migration Tests (Issues #175, #176)
+// ==========================================================================
+//
+// These tests verify the column size migration for MariaDB/TiDB compatibility.
+// The migration reduces column sizes to fit within the 3072-byte index key limit.
+
+/// Test: New tables are created with correct column sizes for MariaDB/TiDB compatibility
+///
+/// Verifies that after running migrations, the tuples table has the correct
+/// reduced column sizes matching OpenFGA's schema.
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_new_tables_have_correct_column_sizes() {
+    let store = create_store().await;
+    let pool = store.pool();
+
+    // Query information_schema to check column sizes
+    let columns: Vec<(String, String, i64)> = sqlx::query_as(
+        r#"
+        SELECT column_name, data_type, character_maximum_length
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'tuples'
+          AND column_name IN ('store_id', 'object_type', 'object_id', 'relation',
+                              'user_type', 'user_id', 'user_relation')
+        ORDER BY column_name
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .expect("Failed to query column information");
+
+    // Build a map for easier assertions
+    let column_map: std::collections::HashMap<String, (String, i64)> = columns
+        .into_iter()
+        .map(|(name, dtype, len)| (name, (dtype, len)))
+        .collect();
+
+    // Verify each column has correct size
+    // store_id: CHAR(26)
+    let (dtype, len) = column_map.get("store_id").expect("store_id column missing");
+    assert_eq!(dtype, "char", "store_id should be CHAR type");
+    assert_eq!(*len, 26, "store_id should be 26 chars for ULID");
+
+    // object_type: VARCHAR(128)
+    let (dtype, len) = column_map
+        .get("object_type")
+        .expect("object_type column missing");
+    assert_eq!(dtype, "varchar", "object_type should be VARCHAR");
+    assert_eq!(*len, 128, "object_type should be 128 chars");
+
+    // object_id: VARCHAR(255) - unchanged
+    let (dtype, len) = column_map
+        .get("object_id")
+        .expect("object_id column missing");
+    assert_eq!(dtype, "varchar", "object_id should be VARCHAR");
+    assert_eq!(*len, 255, "object_id should remain 255 chars");
+
+    // relation: VARCHAR(50)
+    let (dtype, len) = column_map.get("relation").expect("relation column missing");
+    assert_eq!(dtype, "varchar", "relation should be VARCHAR");
+    assert_eq!(*len, 50, "relation should be 50 chars");
+
+    // user_type: VARCHAR(128)
+    let (dtype, len) = column_map
+        .get("user_type")
+        .expect("user_type column missing");
+    assert_eq!(dtype, "varchar", "user_type should be VARCHAR");
+    assert_eq!(*len, 128, "user_type should be 128 chars");
+
+    // user_id: VARCHAR(128)
+    let (dtype, len) = column_map.get("user_id").expect("user_id column missing");
+    assert_eq!(dtype, "varchar", "user_id should be VARCHAR");
+    assert_eq!(*len, 128, "user_id should be 128 chars");
+
+    // user_relation: VARCHAR(50)
+    let (dtype, len) = column_map
+        .get("user_relation")
+        .expect("user_relation column missing");
+    assert_eq!(dtype, "varchar", "user_relation should be VARCHAR");
+    assert_eq!(*len, 50, "user_relation should be 50 chars");
+}
+
+/// Test: Stores table has correct column size for id
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_stores_table_has_correct_id_size() {
+    let store = create_store().await;
+    let pool = store.pool();
+
+    let (dtype, len): (String, i64) = sqlx::query_as(
+        r#"
+        SELECT data_type, character_maximum_length
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'stores'
+          AND column_name = 'id'
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+    .expect("Failed to query stores.id column");
+
+    assert_eq!(dtype, "char", "stores.id should be CHAR type");
+    assert_eq!(len, 26, "stores.id should be 26 chars for ULID");
+}
+
+/// Test: Authorization models table has correct column sizes
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_authorization_models_table_has_correct_sizes() {
+    let store = create_store().await;
+    let pool = store.pool();
+
+    let columns: Vec<(String, String, i64)> = sqlx::query_as(
+        r#"
+        SELECT column_name, data_type, character_maximum_length
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'authorization_models'
+          AND column_name IN ('id', 'store_id')
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .expect("Failed to query authorization_models columns");
+
+    for (name, dtype, len) in columns {
+        assert_eq!(dtype, "char", "{name} should be CHAR type");
+        assert_eq!(len, 26, "{name} should be 26 chars for ULID");
+    }
+}
+
+/// Test: Unique index key length is under 3072 bytes
+///
+/// This test verifies that the unique index on the tuples table fits within
+/// the MariaDB/TiDB limit of 3072 bytes.
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_unique_index_key_length_under_limit() {
+    let store = create_store().await;
+    let pool = store.pool();
+
+    // Calculate total index key size based on column definitions
+    // With utf8mb4 (4 bytes per char):
+    // store_id(26) + object_type(128) + object_id(255) + relation(50) +
+    // user_type(128) + user_id(128) + user_relation_key(50) = 765 chars * 4 = 3060 bytes
+    let columns: Vec<(String, i64)> = sqlx::query_as(
+        r#"
+        SELECT column_name, character_maximum_length
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'tuples'
+          AND column_name IN ('store_id', 'object_type', 'object_id', 'relation',
+                              'user_type', 'user_id', 'user_relation_key')
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .expect("Failed to query index columns");
+
+    // Calculate total index size (assuming utf8mb4 = 4 bytes per char)
+    let total_chars: i64 = columns.iter().map(|(_, len)| len).sum();
+    let total_bytes = total_chars * 4;
+
+    assert!(
+        total_bytes <= 3072,
+        "Unique index key length ({total_bytes} bytes) exceeds 3072-byte limit. \
+         Column sizes: {columns:?}"
+    );
+
+    // Log the actual size for visibility
+    eprintln!("Unique index key length: {total_bytes} bytes ({total_chars} chars × 4 bytes/char)");
+}
+
+/// Test: Column size limits are enforced - data within limits succeeds
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_column_size_limits_valid_data_succeeds() {
+    let store = create_store().await;
+
+    // Create store with valid 26-char ULID
+    let store_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"; // Valid ULID format
+    store.create_store(store_id, "Test Store").await.unwrap();
+
+    // Write tuple with data at column size limits
+    let tuple = StoredTuple::new(
+        "a".repeat(128),      // object_type: exactly 128 chars
+        "b".repeat(255),      // object_id: exactly 255 chars
+        "c".repeat(50),       // relation: exactly 50 chars
+        "d".repeat(128),      // user_type: exactly 128 chars
+        "e".repeat(128),      // user_id: exactly 128 chars
+        Some("f".repeat(50)), // user_relation: exactly 50 chars
+    );
+
+    store
+        .write_tuple(store_id, tuple)
+        .await
+        .expect("Tuple at column size limits should succeed");
+
+    // Verify tuple was written
+    let tuples = store
+        .read_tuples(store_id, &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1);
+    assert_eq!(tuples[0].object_type.len(), 128);
+    assert_eq!(tuples[0].object_id.len(), 255);
+    assert_eq!(tuples[0].relation.len(), 50);
+
+    // Cleanup
+    store.delete_store(store_id).await.unwrap();
+}
+
+/// Test: Migrations are idempotent for column size changes
+///
+/// Running migrations multiple times should not fail or change column sizes.
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_column_size_migration_idempotent() {
+    let store = create_store().await;
+    let pool = store.pool();
+
+    // Get initial column sizes
+    let initial_sizes: Vec<(String, i64)> = sqlx::query_as(
+        r#"
+        SELECT column_name, character_maximum_length
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'tuples'
+          AND column_name IN ('store_id', 'object_type', 'relation', 'user_type', 'user_id')
+        ORDER BY column_name
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+
+    // Run migrations again
+    store
+        .run_migrations()
+        .await
+        .expect("Second migration run should succeed");
+
+    // Verify column sizes are unchanged
+    let final_sizes: Vec<(String, i64)> = sqlx::query_as(
+        r#"
+        SELECT column_name, character_maximum_length
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'tuples'
+          AND column_name IN ('store_id', 'object_type', 'relation', 'user_type', 'user_id')
+        ORDER BY column_name
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        initial_sizes, final_sizes,
+        "Column sizes should remain unchanged after re-running migrations"
+    );
+}
+
+/// Test: CRUD operations work correctly with new column sizes
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_crud_operations_with_new_column_sizes() {
+    let store = create_store().await;
+
+    let store_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    store.create_store(store_id, "CRUD Test").await.unwrap();
+
+    // Test Create
+    let tuple = StoredTuple::new(
+        "document_type",
+        "doc-12345",
+        "viewer",
+        "user_type",
+        "alice-user-id",
+        Some("member".to_string()),
+    );
+    store
+        .write_tuple(store_id, tuple.clone())
+        .await
+        .expect("Create should work with new column sizes");
+
+    // Test Read
+    let tuples = store
+        .read_tuples(store_id, &TupleFilter::default())
+        .await
+        .expect("Read should work with new column sizes");
+    assert_eq!(tuples.len(), 1);
+    assert_eq!(tuples[0].object_type, "document_type");
+    assert_eq!(tuples[0].user_relation, Some("member".to_string()));
+
+    // Test Read with filter
+    let filter = TupleFilter {
+        object_type: Some("document_type".to_string()),
+        relation: Some("viewer".to_string()),
+        ..Default::default()
+    };
+    let filtered = store
+        .read_tuples(store_id, &filter)
+        .await
+        .expect("Filtered read should work");
+    assert_eq!(filtered.len(), 1);
+
+    // Test Delete
+    store
+        .delete_tuple(store_id, tuple)
+        .await
+        .expect("Delete should work with new column sizes");
+
+    let remaining = store
+        .read_tuples(store_id, &TupleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(remaining.len(), 0);
+
+    // Cleanup
+    store.delete_store(store_id).await.unwrap();
+}
+
+/// Test: Authorization model operations work with new column sizes
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_authorization_model_operations_with_new_column_sizes() {
+    use rsfga_storage::StoredAuthorizationModel;
+
+    let store = create_store().await;
+
+    let store_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    store.create_store(store_id, "Model Test").await.unwrap();
+
+    // Create model with ULID format IDs
+    let model_id = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    let model =
+        StoredAuthorizationModel::new(model_id, store_id, "1.1", r#"{"type_definitions":[]}"#);
+
+    store
+        .write_authorization_model(model)
+        .await
+        .expect("Write model should work with new column sizes");
+
+    // Read model back
+    let retrieved = store
+        .get_authorization_model(store_id, model_id)
+        .await
+        .expect("Get model should work");
+    assert_eq!(retrieved.id, model_id);
+    assert_eq!(retrieved.store_id, store_id);
+
+    // List models
+    let models = store
+        .list_authorization_models(store_id)
+        .await
+        .expect("List models should work");
+    assert!(!models.is_empty());
+
+    // Cleanup
+    store.delete_store(store_id).await.unwrap();
+}
