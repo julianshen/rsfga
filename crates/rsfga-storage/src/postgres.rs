@@ -214,26 +214,58 @@ fn is_cockroachdb_version(version_string: &str) -> bool {
     version_string.to_lowercase().contains("cockroachdb")
 }
 
+/// Helper to build UNNEST clauses for batch operations.
+/// Handles the syntax difference between CockroachDB (ROWS FROM) and PostgreSQL (multi-arg UNNEST).
+fn build_unnest_clause(
+    use_rows_from: bool,
+    alias: &str,
+    columns: &[(&str, &str)], // (sql_type_suffix, column_name)
+) -> String {
+    let col_names = columns
+        .iter()
+        .map(|(_, name)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    if use_rows_from {
+        // CockroachDB syntax: ROWS FROM (UNNEST($2...), UNNEST($3...)...) AS alias(cols)
+        let unnest_calls = columns
+            .iter()
+            .enumerate()
+            .map(|(i, (ty, _))| format!("UNNEST(${}{})", i + 2, ty))
+            .collect::<Vec<_>>()
+            .join(",\n            ");
+            
+        format!("ROWS FROM (\n            {}\n        ) AS {}({})", unnest_calls, alias, col_names)
+    } else {
+        // PostgreSQL syntax: UNNEST($2..., $3...) AS alias(cols)
+        let args = columns
+            .iter()
+            .enumerate()
+            .map(|(i, (ty, _))| format!("${}{}", i + 2, ty))
+            .collect::<Vec<_>>()
+            .join(", ");
+            
+        format!("UNNEST({}) AS {}({})", args, alias, col_names)
+    }
+}
+
 /// Builds the UNNEST clause for batch delete operations.
 ///
 /// CockroachDB requires `ROWS FROM (UNNEST(...), UNNEST(...))` syntax while
 /// PostgreSQL uses `UNNEST(..., ...) AS t(...)`.
 ///
 /// The 6-column format (without condition columns) is used for delete operations.
-fn build_delete_unnest(use_rows_from: bool) -> &'static str {
-    if use_rows_from {
-        r#"ROWS FROM (
-            unnest($2::text[]),
-            unnest($3::text[]),
-            unnest($4::text[]),
-            unnest($5::text[]),
-            unnest($6::text[]),
-            unnest($7::text[])
-        ) AS d(object_type, object_id, relation, user_type, user_id, user_relation)"#
-    } else {
-        r#"UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
-        AS d(object_type, object_id, relation, user_type, user_id, user_relation)"#
-    }
+fn build_delete_unnest(use_rows_from: bool) -> String {
+    let columns = [
+        ("::text[]", "object_type"),
+        ("::text[]", "object_id"),
+        ("::text[]", "relation"),
+        ("::text[]", "user_type"),
+        ("::text[]", "user_id"),
+        ("::text[]", "user_relation"),
+    ];
+    build_unnest_clause(use_rows_from, "d", &columns)
 }
 
 /// Builds the UNNEST clause for batch insert/conflict-check operations.
@@ -241,25 +273,17 @@ fn build_delete_unnest(use_rows_from: bool) -> &'static str {
 /// CockroachDB requires `ROWS FROM` syntax while PostgreSQL uses multi-array UNNEST.
 /// The 8-column format (with condition columns) is used for insert and conflict check operations.
 fn build_insert_unnest(use_rows_from: bool, alias: &str) -> String {
-    if use_rows_from {
-        format!(
-            r#"ROWS FROM (
-            unnest($2::text[]),
-            unnest($3::text[]),
-            unnest($4::text[]),
-            unnest($5::text[]),
-            unnest($6::text[]),
-            unnest($7::text[]),
-            unnest($8::text[]),
-            unnest($9::jsonb[])
-        ) AS {alias}(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)"#
-        )
-    } else {
-        format!(
-            r#"UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
-        AS {alias}(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)"#
-        )
-    }
+    let columns = [
+        ("::text[]", "object_type"),
+        ("::text[]", "object_id"),
+        ("::text[]", "relation"),
+        ("::text[]", "user_type"),
+        ("::text[]", "user_id"),
+        ("::text[]", "user_relation"),
+        ("::text[]", "condition_name"),
+        ("::jsonb[]", "condition_context"),
+    ];
+    build_unnest_clause(use_rows_from, alias, &columns)
 }
 
 impl PostgresDataStore {
@@ -2014,8 +2038,8 @@ mod tests {
         let result = build_delete_unnest(true);
         // CockroachDB uses ROWS FROM with individual UNNESTs
         assert!(result.contains("ROWS FROM"));
-        assert!(result.contains("unnest($2::text[])"));
-        assert!(result.contains("unnest($3::text[])"));
+        assert!(result.contains("UNNEST($2::text[])"));
+        assert!(result.contains("UNNEST($3::text[])"));
         assert!(result.contains("AS d(object_type, object_id"));
     }
 
@@ -2035,8 +2059,8 @@ mod tests {
         let result = build_insert_unnest(true, "t");
         // CockroachDB uses ROWS FROM with individual UNNESTs
         assert!(result.contains("ROWS FROM"));
-        assert!(result.contains("unnest($2::text[])"));
-        assert!(result.contains("unnest($9::jsonb[])"));
+        assert!(result.contains("UNNEST($2::text[])"));
+        assert!(result.contains("UNNEST($9::jsonb[])"));
         assert!(result.contains("AS t(object_type, object_id"));
         assert!(result.contains("condition_name, condition_context)"));
     }
