@@ -846,6 +846,7 @@ mod tests {
                     user_relation: None,
                     condition_name: None,
                     condition_context: None,
+                    created_at: None,
                 };
                 store.write_tuple("test-store", tuple).await.unwrap();
             }));
@@ -883,6 +884,7 @@ mod tests {
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
+                created_at: None,
             };
             store.write_tuple("test-store", tuple).await.unwrap();
         }
@@ -903,6 +905,7 @@ mod tests {
                     user_relation: None,
                     condition_name: None,
                     condition_context: None,
+                    created_at: None,
                 };
                 store.write_tuple("test-store", tuple).await.unwrap();
             }));
@@ -1087,6 +1090,7 @@ mod tests {
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
+                created_at: None,
             };
             store.write_tuple("test-store", tuple).await.unwrap();
         }
@@ -1188,6 +1192,7 @@ mod tests {
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
+                created_at: None,
             };
             store.write_tuple("test-store", tuple).await.unwrap();
         }

@@ -3237,6 +3237,7 @@ dependencies = [
  "axum 0.7.9",
  "clap",
  "criterion",
+ "dashmap",
  "futures",
  "metrics",
  "metrics-exporter-prometheus",

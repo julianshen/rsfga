@@ -2,12 +2,36 @@
 
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use rsfga_domain::cache::{CheckCache, CheckCacheConfig};
 use rsfga_domain::resolver::{GraphResolver, ResolverConfig};
 use rsfga_server::handlers::batch::BatchCheckHandler;
 use rsfga_storage::DataStore;
 
 use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
+
+/// Stored assertion for testing authorization models.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct StoredAssertion {
+    pub tuple_key: AssertionTupleKey,
+    pub expectation: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contextual_tuples: Option<ContextualTuplesWrapper>,
+}
+
+/// Tuple key for an assertion.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct AssertionTupleKey {
+    pub user: String,
+    pub relation: String,
+    pub object: String,
+}
+
+/// Wrapper for contextual tuples in assertions.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ContextualTuplesWrapper {
+    pub tuple_keys: Vec<AssertionTupleKey>,
+}
 
 /// Application state shared across all HTTP handlers.
 ///
@@ -37,6 +61,9 @@ use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
 /// let cache_config = CheckCacheConfig::default().with_enabled(true);
 /// let state = AppState::with_cache_config(storage, cache_config);
 /// ```
+/// Key for assertions storage: (store_id, authorization_model_id).
+pub type AssertionKey = (String, String);
+
 #[derive(Clone)]
 pub struct AppState<S: DataStore> {
     /// The storage backend.
@@ -47,6 +74,8 @@ pub struct AppState<S: DataStore> {
     pub resolver: Arc<GraphResolver<DataStoreTupleReader<S>, DataStoreModelReader<S>>>,
     /// The check result cache (always created, but only attached to resolver if enabled).
     pub cache: Arc<CheckCache>,
+    /// In-memory assertions storage (store_id, model_id) -> assertions.
+    pub assertions: Arc<DashMap<AssertionKey, Vec<StoredAssertion>>>,
 }
 
 impl<S: DataStore> AppState<S> {
@@ -100,6 +129,7 @@ impl<S: DataStore> AppState<S> {
             batch_handler,
             resolver,
             cache,
+            assertions: Arc::new(DashMap::new()),
         }
     }
 }

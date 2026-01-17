@@ -397,6 +397,7 @@ fn tuple_key_to_stored(tk: TupleKey) -> Result<StoredTuple, TupleKeyParseError> 
         user_relation: user_relation.map(|s| s.to_string()),
         condition_name,
         condition_context,
+        created_at: None,
     })
 }
 
