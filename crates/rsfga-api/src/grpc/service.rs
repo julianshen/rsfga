@@ -6,7 +6,10 @@ use tonic::{Request, Response, Status};
 
 use rsfga_domain::cache::{CheckCache, CheckCacheConfig};
 use rsfga_domain::cel::global_cache;
-use rsfga_domain::resolver::{GraphResolver, ResolverConfig};
+use rsfga_domain::error::DomainError;
+use rsfga_domain::resolver::{
+    CheckRequest as DomainCheckRequest, ContextualTuple, GraphResolver, ResolverConfig,
+};
 use rsfga_server::handlers::batch::BatchCheckHandler;
 use rsfga_storage::{DataStore, DateTime, StorageError, StoredTuple, TupleFilter, Utc};
 
@@ -48,6 +51,8 @@ const MAX_CORRELATION_ID_LENGTH: usize = 256;
 /// ```
 pub struct OpenFgaGrpcService<S: DataStore> {
     storage: Arc<S>,
+    /// The graph resolver for single checks.
+    resolver: Arc<GraphResolver<DataStoreTupleReader<S>, DataStoreModelReader<S>>>,
     /// The batch check handler with parallel execution and deduplication.
     batch_handler: Arc<BatchCheckHandler<DataStoreTupleReader<S>, DataStoreModelReader<S>>>,
     /// The check result cache, stored for future invalidation in write handlers.
@@ -102,6 +107,7 @@ impl<S: DataStore> OpenFgaGrpcService<S> {
 
         Self {
             storage,
+            resolver,
             batch_handler,
             cache,
         }
@@ -123,6 +129,54 @@ fn storage_error_to_status(err: StorageError) -> Status {
         StorageError::InvalidInput { message } => Status::invalid_argument(message),
         StorageError::DuplicateTuple { .. } => Status::already_exists(err.to_string()),
         _ => Status::internal(err.to_string()),
+    }
+}
+
+/// Converts a DomainError to a tonic Status.
+fn domain_error_to_status(err: DomainError) -> Status {
+    match &err {
+        DomainError::DepthLimitExceeded { max_depth } => {
+            Status::invalid_argument(format!("depth limit exceeded (max: {})", max_depth))
+        }
+        DomainError::CycleDetected { path } => {
+            Status::invalid_argument(format!("cycle detected in authorization model: {}", path))
+        }
+        DomainError::Timeout { duration_ms } => {
+            tracing::error!("Authorization check timeout after {}ms", duration_ms);
+            Status::deadline_exceeded("authorization check timeout")
+        }
+        DomainError::TypeNotFound { type_name } => {
+            Status::invalid_argument(format!("type not found: {}", type_name))
+        }
+        DomainError::RelationNotFound {
+            type_name,
+            relation,
+        } => Status::invalid_argument(format!(
+            "relation '{}' not found on type '{}'",
+            relation, type_name
+        )),
+        DomainError::InvalidUserFormat { value } => {
+            Status::invalid_argument(format!("invalid user format: {}", value))
+        }
+        DomainError::InvalidObjectFormat { value } => {
+            Status::invalid_argument(format!("invalid object format: {}", value))
+        }
+        DomainError::InvalidRelationFormat { value } => {
+            Status::invalid_argument(format!("invalid relation format: {}", value))
+        }
+        DomainError::ResolverError { message } => {
+            // Check if this is a "store not found" error from the resolver
+            if message.starts_with("store not found:") {
+                Status::not_found(message.clone())
+            } else {
+                tracing::error!("Resolver error: {}", message);
+                Status::internal("internal error during authorization check")
+            }
+        }
+        _ => {
+            tracing::error!("Domain error: {}", err);
+            Status::internal("internal error during authorization check")
+        }
     }
 }
 
@@ -392,42 +446,53 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
     ) -> Result<Response<CheckResponse>, Status> {
         let req = request.into_inner();
 
-        // Validate store exists
-        let _ = self
-            .storage
-            .get_store(&req.store_id)
-            .await
-            .map_err(storage_error_to_status)?;
-
         let tuple_key = req
             .tuple_key
             .ok_or_else(|| Status::invalid_argument("tuple_key is required"))?;
 
-        // Validate object format (required: "type:id")
-        let (object_type, object_id) = parse_object(&tuple_key.object).ok_or_else(|| {
-            Status::invalid_argument(format!(
-                "invalid object format '{}': expected 'type:id'",
-                tuple_key.object
-            ))
-        })?;
+        // Convert contextual tuples from gRPC format to domain format
+        let contextual_tuples: Vec<ContextualTuple> = req
+            .contextual_tuples
+            .map(|ct| {
+                ct.tuple_keys
+                    .into_iter()
+                    .map(|tk| {
+                        if let Some(condition) = tk.condition {
+                            ContextualTuple::with_condition(
+                                &tk.user,
+                                &tk.relation,
+                                &tk.object,
+                                &condition.name,
+                                condition
+                                    .context
+                                    .and_then(|s| prost_struct_to_hashmap(s).ok()),
+                            )
+                        } else {
+                            ContextualTuple::new(&tk.user, &tk.relation, &tk.object)
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        // Build filter for tuple lookup
-        let filter = TupleFilter {
-            object_type: Some(object_type.to_string()),
-            object_id: Some(object_id.to_string()),
-            relation: Some(tuple_key.relation),
-            user: Some(tuple_key.user),
-            condition_name: None,
-        };
+        // Create domain check request
+        let check_request = DomainCheckRequest::new(
+            req.store_id,
+            tuple_key.user,
+            tuple_key.relation,
+            tuple_key.object,
+            contextual_tuples,
+        );
 
-        let tuples = self
-            .storage
-            .read_tuples(&req.store_id, &filter)
+        // Delegate to GraphResolver for full graph traversal
+        let result = self
+            .resolver
+            .check(&check_request)
             .await
-            .map_err(storage_error_to_status)?;
+            .map_err(domain_error_to_status)?;
 
         Ok(Response::new(CheckResponse {
-            allowed: !tuples.is_empty(),
+            allowed: result.allowed,
             resolution: String::new(),
         }))
     }

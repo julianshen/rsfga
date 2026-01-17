@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::error;
 
+use rsfga_domain::error::DomainError;
+use rsfga_domain::resolver::{CheckRequest as DomainCheckRequest, ContextualTuple};
 use rsfga_storage::{DataStore, PaginationOptions, StorageError, StoredAuthorizationModel};
 
 use super::state::AppState;
@@ -185,6 +187,55 @@ impl From<StorageError> for ApiError {
             _ => {
                 error!("Storage error: {}", err);
                 ApiError::internal_error(err.to_string())
+            }
+        }
+    }
+}
+
+impl From<DomainError> for ApiError {
+    fn from(err: DomainError) -> Self {
+        match &err {
+            DomainError::DepthLimitExceeded { max_depth } => {
+                ApiError::invalid_input(format!("depth limit exceeded (max: {})", max_depth))
+            }
+            DomainError::CycleDetected { path } => {
+                ApiError::invalid_input(format!("cycle detected in authorization model: {}", path))
+            }
+            DomainError::Timeout { duration_ms } => {
+                error!("Authorization check timeout after {}ms", duration_ms);
+                ApiError::internal_error("authorization check timeout")
+            }
+            DomainError::TypeNotFound { type_name } => {
+                ApiError::invalid_input(format!("type not found: {}", type_name))
+            }
+            DomainError::RelationNotFound {
+                type_name,
+                relation,
+            } => ApiError::invalid_input(format!(
+                "relation '{}' not found on type '{}'",
+                relation, type_name
+            )),
+            DomainError::InvalidUserFormat { value } => {
+                ApiError::invalid_input(format!("invalid user format: {}", value))
+            }
+            DomainError::InvalidObjectFormat { value } => {
+                ApiError::invalid_input(format!("invalid object format: {}", value))
+            }
+            DomainError::InvalidRelationFormat { value } => {
+                ApiError::invalid_input(format!("invalid relation format: {}", value))
+            }
+            DomainError::ResolverError { message } => {
+                // Check if this is a "store not found" error from the resolver
+                if message.starts_with("store not found:") {
+                    ApiError::not_found(message.clone())
+                } else {
+                    error!("Resolver error: {}", message);
+                    ApiError::internal_error("internal error during authorization check")
+                }
+            }
+            _ => {
+                error!("Domain error: {}", err);
+                ApiError::internal_error("internal error during authorization check")
             }
         }
     }
@@ -613,31 +664,43 @@ async fn check<S: DataStore>(
     Path(store_id): Path<String>,
     Json(body): Json<CheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store exists
-    let _ = state.storage.get_store(&store_id).await?;
+    // Convert contextual tuples from HTTP format to domain format
+    let contextual_tuples: Vec<ContextualTuple> = body
+        .contextual_tuples
+        .map(|ct| {
+            ct.tuple_keys
+                .into_iter()
+                .map(|tk| {
+                    if let Some(condition) = tk.condition {
+                        ContextualTuple::with_condition(
+                            &tk.user,
+                            &tk.relation,
+                            &tk.object,
+                            &condition.name,
+                            condition.context,
+                        )
+                    } else {
+                        ContextualTuple::new(&tk.user, &tk.relation, &tk.object)
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
-    // Validate object format (required: "type:id")
-    let (object_type, object_id) = parse_object(&body.tuple_key.object).ok_or_else(|| {
-        ApiError::invalid_input(format!(
-            "invalid object format '{}': expected 'type:id'",
-            body.tuple_key.object
-        ))
-    })?;
+    // Create domain check request
+    let check_request = DomainCheckRequest::new(
+        store_id,
+        body.tuple_key.user,
+        body.tuple_key.relation,
+        body.tuple_key.object,
+        contextual_tuples,
+    );
 
-    // For now, we perform a simple tuple lookup.
-    // Full resolver integration will be added later.
-    let filter = rsfga_storage::TupleFilter {
-        object_type: Some(object_type.to_string()),
-        object_id: Some(object_id.to_string()),
-        relation: Some(body.tuple_key.relation.clone()),
-        user: Some(body.tuple_key.user.clone()),
-        condition_name: None,
-    };
-
-    let tuples = state.storage.read_tuples(&store_id, &filter).await?;
+    // Delegate to GraphResolver for full graph traversal
+    let result = state.resolver.check(&check_request).await?;
 
     Ok(Json(CheckResponseBody {
-        allowed: !tuples.is_empty(),
+        allowed: result.allowed,
         resolution: None,
     }))
 }

@@ -7,7 +7,7 @@ mod common;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use rsfga_storage::MemoryDataStore;
+use rsfga_storage::{DataStore, MemoryDataStore};
 
 use common::{
     create_test_app, post_json, setup_simple_model, CONCURRENT_CLIENT_COUNT, HIERARCHY_TEST_DEPTH,
@@ -41,6 +41,9 @@ async fn test_end_to_end_authorization_flow_works() {
     assert_eq!(status, StatusCode::CREATED);
     let store_id = response["id"].as_str().unwrap();
     assert!(!store_id.is_empty());
+
+    // Step 1b: Create authorization model (required for check operations)
+    setup_simple_model(&storage, store_id).await;
 
     // Step 2: Write authorization tuples
     // Alice is an owner of document:readme
@@ -155,6 +158,9 @@ async fn test_multiple_concurrent_clients_work_correctly() {
         response["id"].as_str().unwrap().to_string()
     };
 
+    // Create authorization model (required for check operations)
+    setup_simple_model(&storage, &store_id).await;
+
     // Write some tuples
     {
         let (status, _) = post_json(
@@ -235,6 +241,9 @@ async fn test_large_authorization_models_work() {
         assert_eq!(status, StatusCode::CREATED);
         response["id"].as_str().unwrap().to_string()
     };
+
+    // Create authorization model (required for check operations)
+    setup_simple_model(&storage, &store_id).await;
 
     // Write tuples in batches
     for batch in 0..num_batches {
@@ -326,6 +335,21 @@ async fn test_deep_hierarchies_work() {
         assert_eq!(status, StatusCode::CREATED);
         response["id"].as_str().unwrap().to_string()
     };
+
+    // Create authorization model with folder type that has owner and parent relations
+    let model_json = r#"{
+        "type_definitions": [
+            {"type": "user"},
+            {"type": "folder", "relations": {"owner": {}, "parent": {}}}
+        ]
+    }"#;
+    let model = rsfga_storage::StoredAuthorizationModel::new(
+        ulid::Ulid::new().to_string(),
+        &store_id,
+        "1.1",
+        model_json,
+    );
+    storage.write_authorization_model(model).await.unwrap();
 
     // Create a chain of folder relationships: folder0 -> folder1 -> ... -> folder{DEPTH-1}
     // Each folder has a "parent" relation to the next
