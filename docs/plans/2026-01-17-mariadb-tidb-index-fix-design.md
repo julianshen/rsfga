@@ -161,12 +161,12 @@ async fn test_migration_succeeds_with_valid_data()
 
 ### Manual Verification
 
-- [ ] Fresh MariaDB install starts successfully
-- [ ] Fresh TiDB install starts successfully
-- [ ] Existing MySQL database migrates cleanly
-- [ ] Oversized data blocks migration with clear error
-- [ ] All CRUD operations work after migration
-- [ ] Check/Expand/ListObjects APIs function correctly
+- [ ] Fresh MariaDB install starts successfully *(requires manual test with MariaDB container)*
+- [ ] Fresh TiDB install starts successfully *(requires manual test with TiDB container)*
+- [x] Existing MySQL database migrates cleanly *(covered by `test_column_size_migration_idempotent`)*
+- [x] Oversized data blocks migration with clear error *(code review - `validate_column_sizes_for_migration()`)*
+- [x] All CRUD operations work after migration *(covered by `test_crud_operations_with_new_column_sizes`)*
+- [x] Check/Expand/ListObjects APIs function correctly *(existing API integration tests)*
 
 ## Trade-offs
 
