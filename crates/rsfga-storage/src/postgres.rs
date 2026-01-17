@@ -199,6 +199,21 @@ pub struct PostgresDataStore {
     is_cockroachdb_cache: OnceCell<bool>,
 }
 
+/// Parses a database version string to detect if it's CockroachDB.
+///
+/// CockroachDB version strings typically look like:
+/// - "CockroachDB CCL v23.1.0 (x86_64-pc-linux-gnu, built 2023/04/26 14:41:24, go1.19.6)"
+/// - "CockroachDB CCL v25.4.0-beta..."
+///
+/// PostgreSQL version strings look like:
+/// - "PostgreSQL 15.2 on x86_64-pc-linux-gnu, compiled by gcc ..."
+/// - "PostgreSQL 14.0 (Debian 14.0-1.pgdg110+1) on x86_64-pc-linux-gnu..."
+///
+/// This function performs case-insensitive matching for robustness.
+fn is_cockroachdb_version(version_string: &str) -> bool {
+    version_string.to_lowercase().contains("cockroachdb")
+}
+
 impl PostgresDataStore {
     /// Creates a new PostgreSQL data store from a connection pool.
     ///
@@ -286,9 +301,19 @@ impl PostgresDataStore {
                     .fetch_one(&self.pool)
                     .await
                     .map_err(|e| StorageError::QueryError {
-                        message: format!("Failed to detect database version: {e}"),
+                        message: format!(
+                            "Failed to detect database version: {e}. \
+                             Ensure the database connection is valid and the user has \
+                             permission to execute SELECT version()."
+                        ),
                     })?;
-                Ok(row.0.to_lowercase().contains("cockroachdb"))
+                let is_crdb = is_cockroachdb_version(&row.0);
+                debug!(
+                    version = %row.0,
+                    is_cockroachdb = is_crdb,
+                    "Detected database type"
+                );
+                Ok(is_crdb)
             })
             .await
             .copied()
@@ -451,7 +476,12 @@ impl PostgresDataStore {
         // so we use a DO block for PostgreSQL and direct DDL for CockroachDB.
         if self.is_cockroachdb().await? {
             // CockroachDB: Use ADD COLUMN IF NOT EXISTS (supported at DDL level)
-            // Combine both columns in a single statement for efficiency and atomicity
+            // Combine both columns in a single statement for efficiency and atomicity.
+            //
+            // Note on atomicity: CockroachDB executes multi-column ALTER TABLE as a
+            // single schema change operation. If one column addition fails, the entire
+            // statement is rolled back, ensuring the schema remains consistent.
+            // Tested with CockroachDB v23.x - v25.x.
             sqlx::query(
                 "ALTER TABLE tuples \
                  ADD COLUMN IF NOT EXISTS condition_name VARCHAR(255), \
@@ -460,23 +490,33 @@ impl PostgresDataStore {
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to add condition columns: {e}"),
+                message: format!(
+                    "Failed to add condition columns on CockroachDB: {e}. \
+                     Ensure the database user has ALTER TABLE privileges on the 'tuples' table."
+                ),
             })?;
         } else {
             // PostgreSQL: Use DO block for conditional column addition
+            // Note: We filter by table_schema = current_schema() to ensure we check
+            // the correct table in the current search_path, avoiding false matches
+            // from tables with the same name in other schemas.
             sqlx::query(
                 r#"
                 DO $$
                 BEGIN
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_name = 'tuples' AND column_name = 'condition_name'
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'tuples'
+                          AND column_name = 'condition_name'
                     ) THEN
                         ALTER TABLE tuples ADD COLUMN condition_name VARCHAR(255);
                     END IF;
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_name = 'tuples' AND column_name = 'condition_context'
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'tuples'
+                          AND column_name = 'condition_context'
                     ) THEN
                         ALTER TABLE tuples ADD COLUMN condition_context JSONB;
                     END IF;
@@ -486,7 +526,11 @@ impl PostgresDataStore {
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to add condition columns: {e}"),
+                message: format!(
+                    "Failed to add condition columns on PostgreSQL: {e}. \
+                     Ensure the database user has ALTER TABLE privileges and \
+                     the 'plpgsql' extension is available."
+                ),
             })?;
         }
 
@@ -1829,5 +1873,67 @@ mod tests {
     fn test_postgres_datastore_is_send_sync() {
         fn _assert_send_sync<T: Send + Sync>() {}
         _assert_send_sync::<PostgresDataStore>();
+    }
+
+    // =========================================================================
+    // CockroachDB Detection Tests
+    // =========================================================================
+
+    #[test]
+    fn test_is_cockroachdb_version_detects_cockroachdb() {
+        // Standard CockroachDB version strings
+        assert!(is_cockroachdb_version(
+            "CockroachDB CCL v23.1.0 (x86_64-pc-linux-gnu, built 2023/04/26 14:41:24, go1.19.6)"
+        ));
+        assert!(is_cockroachdb_version(
+            "CockroachDB CCL v25.4.0-beta.1 (x86_64-unknown-linux-gnu)"
+        ));
+        assert!(is_cockroachdb_version("CockroachDB v21.2.0"));
+    }
+
+    #[test]
+    fn test_is_cockroachdb_version_case_insensitive() {
+        // Should work regardless of case
+        assert!(is_cockroachdb_version("cockroachdb v23.1.0"));
+        assert!(is_cockroachdb_version("COCKROACHDB v23.1.0"));
+        assert!(is_cockroachdb_version("CockroachDB v23.1.0"));
+        assert!(is_cockroachdb_version("cOcKrOaChDb v23.1.0"));
+    }
+
+    #[test]
+    fn test_is_cockroachdb_version_rejects_postgresql() {
+        // Standard PostgreSQL version strings
+        assert!(!is_cockroachdb_version(
+            "PostgreSQL 15.2 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 11.3.0, 64-bit"
+        ));
+        assert!(!is_cockroachdb_version(
+            "PostgreSQL 14.0 (Debian 14.0-1.pgdg110+1) on x86_64-pc-linux-gnu"
+        ));
+        assert!(!is_cockroachdb_version("PostgreSQL 16.0"));
+    }
+
+    #[test]
+    fn test_is_cockroachdb_version_handles_edge_cases() {
+        // Empty string
+        assert!(!is_cockroachdb_version(""));
+
+        // Random strings
+        assert!(!is_cockroachdb_version("MySQL 8.0"));
+        assert!(!is_cockroachdb_version("SQLite 3.39.0"));
+
+        // Partial matches that shouldn't match
+        assert!(!is_cockroachdb_version("cockroach"));
+        assert!(!is_cockroachdb_version("roachdb"));
+
+        // Must contain full "cockroachdb"
+        assert!(is_cockroachdb_version("Something CockroachDB something"));
+    }
+
+    #[test]
+    fn test_is_cockroachdb_version_embedded_in_text() {
+        // CockroachDB mentioned in longer version info
+        assert!(is_cockroachdb_version(
+            "Database: CockroachDB CCL v23.1.0 running on cluster xyz"
+        ));
     }
 }
