@@ -1346,17 +1346,29 @@ where
             });
         }
 
-        // Get all objects of the requested type (limited to max_candidates)
+        // Get all objects of the requested type (limited to max_candidates + 1 for truncation detection)
         // This is the DoS protection: we bound the number of candidates BEFORE
         // running expensive permission checks.
-        let candidates = self
+        let limit = max_candidates + 1;
+        let mut candidates = self
             .tuple_reader
-            .get_objects_of_type(&request.store_id, &request.object_type, max_candidates)
+            .get_objects_of_type(&request.store_id, &request.object_type, limit)
             .await?;
 
-        // Run parallel permission checks on all candidates
-        let checks: Vec<_> = candidates
-            .into_iter()
+        // Check if we hit the limit (truncation detection)
+        let truncated = if candidates.len() > max_candidates {
+            candidates.pop(); // Remove the extra candidate
+            true
+        } else {
+            false
+        };
+
+        // Run parallel permission checks on candidates with concurrency limit
+        // Constraint C11: Fail Fast with Bounds - we limit concurrency to avoid
+        // exhausting resources even effectively "bounded" tasks.
+        const MAX_CONCURRENT_CHECKS: usize = 50;
+
+        let objects = futures::stream::iter(candidates)
             .map(|object_id| {
                 let check_request = CheckRequest::with_context(
                     request.store_id.clone(),
@@ -1371,15 +1383,8 @@ where
                     (object_id, result)
                 }
             })
-            .collect();
-
-        // Await all checks in parallel using FuturesUnordered for efficiency
-        let results: Vec<_> = futures::future::join_all(checks).await;
-
-        // Collect objects where check returned true
-        let objects: Vec<String> = results
-            .into_iter()
-            .filter_map(|(object_id, result)| {
+            .buffer_unordered(MAX_CONCURRENT_CHECKS)
+            .filter_map(|(object_id, result)| async move {
                 match result {
                     Ok(CheckResult { allowed: true }) => {
                         Some(format!("{}:{}", request.object_type, object_id))
@@ -1387,9 +1392,10 @@ where
                     _ => None, // Skip errors and false results
                 }
             })
-            .collect();
+            .collect::<Vec<_>>()
+            .await;
 
-        Ok(super::types::ListObjectsResult { objects })
+        Ok(super::types::ListObjectsResult { objects, truncated })
     }
 }
 

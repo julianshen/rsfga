@@ -1337,6 +1337,7 @@ pub struct ListObjectsRequestBody {
 #[derive(Debug, Serialize)]
 pub struct ListObjectsResponseBody {
     pub objects: Vec<String>,
+    pub truncated: bool,
 }
 
 async fn list_objects<S: DataStore>(
@@ -1384,5 +1385,6 @@ async fn list_objects<S: DataStore>(
 
     Ok(Json(ListObjectsResponseBody {
         objects: result.objects,
+        truncated: result.truncated,
     }))
 }

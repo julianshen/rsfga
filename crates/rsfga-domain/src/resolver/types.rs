@@ -335,4 +335,6 @@ pub struct ListObjectsResult {
     /// Object IDs that the user has the specified relation to.
     /// Format: "type:id" (e.g., "document:readme")
     pub objects: Vec<String>,
+    /// Whether the results were truncated due to limits.
+    pub truncated: bool,
 }
