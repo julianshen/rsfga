@@ -48,6 +48,10 @@ pub enum DomainError {
     /// Relation not found on type.
     #[error("relation '{relation}' not found on type '{type_name}'")]
     RelationNotFound { type_name: String, relation: String },
+
+    /// Store not found.
+    #[error("store not found: {store_id}")]
+    StoreNotFound { store_id: String },
 }
 
 /// Result type for domain operations.

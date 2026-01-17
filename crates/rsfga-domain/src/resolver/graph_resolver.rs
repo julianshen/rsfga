@@ -226,6 +226,214 @@ where
         result
     }
 
+    /// Expands a relation to show the tree structure of how users relate to an object.
+    ///
+    /// This method builds a tree representation of the relation definition,
+    /// populating leaf nodes with the actual users who have the relation.
+    ///
+    /// # Example
+    ///
+    /// For a relation defined as `viewer: [user] | editor`, expanding `viewer` on
+    /// `document:readme` would return a tree showing:
+    /// - A union node with two branches
+    /// - A leaf with direct users (from `[user]`)
+    /// - A computed userset reference to `editor`
+    pub async fn expand(
+        &self,
+        request: &super::types::ExpandRequest,
+    ) -> DomainResult<super::types::ExpandResult> {
+        use super::types::{ExpandResult, UsersetTree};
+
+        // Validate request inputs
+        self.validate_expand_request(request)?;
+
+        // Check if store exists
+        if !self.tuple_reader.store_exists(&request.store_id).await? {
+            return Err(DomainError::StoreNotFound {
+                store_id: request.store_id.clone(),
+            });
+        }
+
+        // Parse object to get type
+        let (object_type, object_id) = self.parse_object(&request.object)?;
+        let object_type = object_type.to_string();
+        let object_id = object_id.to_string();
+
+        // Get the relation definition
+        let relation_def = self
+            .model_reader
+            .get_relation_definition(&request.store_id, &object_type, &request.relation)
+            .await?;
+
+        // Build the expansion tree based on the userset rewrite
+        let root = self
+            .expand_userset(
+                &request.store_id,
+                &object_type,
+                &object_id,
+                &request.relation,
+                &relation_def.rewrite,
+                0, // Start at depth 0
+            )
+            .await?;
+
+        Ok(ExpandResult {
+            tree: UsersetTree { root },
+        })
+    }
+
+    /// Recursively expands a userset rewrite into an ExpandNode tree.
+    ///
+    /// # Arguments
+    /// * `depth` - Current recursion depth for enforcing max_depth limit (constraint C11)
+    fn expand_userset<'a>(
+        &'a self,
+        store_id: &'a str,
+        object_type: &'a str,
+        object_id: &'a str,
+        relation: &'a str,
+        userset: &'a crate::model::Userset,
+        depth: u32,
+    ) -> BoxFuture<'a, DomainResult<super::types::ExpandNode>> {
+        use super::types::{ExpandLeaf, ExpandLeafValue, ExpandNode};
+
+        Box::pin(async move {
+            // Check depth limit to prevent unbounded recursion (constraint C11: Fail Fast with Bounds)
+            if depth >= self.config.max_depth {
+                return Err(DomainError::DepthLimitExceeded {
+                    max_depth: self.config.max_depth,
+                });
+            }
+
+            match userset {
+                crate::model::Userset::This => {
+                    // Direct assignment - fetch users from tuples
+                    let tuples = self
+                        .tuple_reader
+                        .read_tuples(store_id, object_type, object_id, relation)
+                        .await?;
+
+                    let users: Vec<String> = tuples
+                        .into_iter()
+                        .map(|t| {
+                            if let Some(ref rel) = t.user_relation {
+                                format!("{}:{}#{}", t.user_type, t.user_id, rel)
+                            } else {
+                                format!("{}:{}", t.user_type, t.user_id)
+                            }
+                        })
+                        .collect();
+
+                    Ok(ExpandNode::Leaf(ExpandLeaf {
+                        name: format!("{}:{}#{}", object_type, object_id, relation),
+                        value: ExpandLeafValue::Users(users),
+                    }))
+                }
+
+                crate::model::Userset::ComputedUserset {
+                    relation: computed_relation,
+                } => {
+                    // Computed userset reference
+                    Ok(ExpandNode::Leaf(ExpandLeaf {
+                        name: format!("{}:{}#{}", object_type, object_id, relation),
+                        value: ExpandLeafValue::Computed {
+                            userset: format!("{}:{}#{}", object_type, object_id, computed_relation),
+                        },
+                    }))
+                }
+
+                crate::model::Userset::TupleToUserset {
+                    tupleset,
+                    computed_userset,
+                } => {
+                    // Tuple-to-userset reference
+                    Ok(ExpandNode::Leaf(ExpandLeaf {
+                        name: format!("{}:{}#{}", object_type, object_id, relation),
+                        value: ExpandLeafValue::TupleToUserset {
+                            tupleset: tupleset.clone(),
+                            computed_userset: computed_userset.clone(),
+                        },
+                    }))
+                }
+
+                crate::model::Userset::Union { children } => {
+                    // Expand all children in parallel for better performance
+                    let futures: Vec<_> = children
+                        .iter()
+                        .map(|child| {
+                            self.expand_userset(
+                                store_id,
+                                object_type,
+                                object_id,
+                                relation,
+                                child,
+                                depth + 1,
+                            )
+                        })
+                        .collect();
+                    let nodes = futures::future::try_join_all(futures).await?;
+
+                    Ok(ExpandNode::Union {
+                        name: format!("{}:{}#{}", object_type, object_id, relation),
+                        nodes,
+                    })
+                }
+
+                crate::model::Userset::Intersection { children } => {
+                    // Expand all children in parallel for better performance
+                    let futures: Vec<_> = children
+                        .iter()
+                        .map(|child| {
+                            self.expand_userset(
+                                store_id,
+                                object_type,
+                                object_id,
+                                relation,
+                                child,
+                                depth + 1,
+                            )
+                        })
+                        .collect();
+                    let nodes = futures::future::try_join_all(futures).await?;
+
+                    Ok(ExpandNode::Intersection {
+                        name: format!("{}:{}#{}", object_type, object_id, relation),
+                        nodes,
+                    })
+                }
+
+                crate::model::Userset::Exclusion { base, subtract } => {
+                    // Expand base and subtract in parallel for better performance
+                    let (base_node, subtract_node) = futures::future::try_join(
+                        self.expand_userset(
+                            store_id,
+                            object_type,
+                            object_id,
+                            relation,
+                            base,
+                            depth + 1,
+                        ),
+                        self.expand_userset(
+                            store_id,
+                            object_type,
+                            object_id,
+                            relation,
+                            subtract,
+                            depth + 1,
+                        ),
+                    )
+                    .await?;
+
+                    Ok(ExpandNode::Difference {
+                        name: format!("{}:{}#{}", object_type, object_id, relation),
+                        base: Box::new(base_node),
+                        subtract: Box::new(subtract_node),
+                    })
+                }
+            }
+        })
+    }
+
     /// Validates the check request.
     fn validate_request(&self, request: &CheckRequest) -> DomainResult<()> {
         // Validate user format: must be in type:id format (or wildcard "*")
@@ -240,6 +448,25 @@ where
             });
         }
 
+        // Validate object format: must be in type:id format
+        if request.object.is_empty() || !Self::is_valid_type_id(&request.object) {
+            return Err(DomainError::InvalidObjectFormat {
+                value: request.object.clone(),
+            });
+        }
+
+        // Validate relation: must be non-empty
+        if request.relation.is_empty() {
+            return Err(DomainError::InvalidRelationFormat {
+                value: request.relation.clone(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Validates the expand request.
+    fn validate_expand_request(&self, request: &super::types::ExpandRequest) -> DomainResult<()> {
         // Validate object format: must be in type:id format
         if request.object.is_empty() || !Self::is_valid_type_id(&request.object) {
             return Err(DomainError::InvalidObjectFormat {

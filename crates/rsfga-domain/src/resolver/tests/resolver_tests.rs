@@ -19,8 +19,8 @@ use super::mocks::{MockModelReader, MockTupleReader};
 use crate::error::{DomainError, DomainResult};
 use crate::model::{Condition, RelationDefinition, TypeDefinition, Userset};
 use crate::resolver::{
-    CheckRequest, CheckResult, ContextualTuple, GraphResolver, ResolverConfig, StoredTupleRef,
-    TupleReader,
+    CheckRequest, CheckResult, ContextualTuple, ExpandLeafValue, ExpandNode, ExpandRequest,
+    GraphResolver, ResolverConfig, StoredTupleRef, TupleReader,
 };
 
 // ========== Section 1: Direct Tuple Resolution ==========
@@ -4813,4 +4813,557 @@ async fn test_cache_timeout_wrapper_does_not_break_normal_operation() {
     assert_eq!(metrics.misses, 1, "Should have exactly 1 miss");
     assert_eq!(metrics.hits, 99, "Should have exactly 99 hits");
     assert_eq!(metrics.skips, 0, "Should have 0 skips (no timeouts)");
+}
+
+// ========== Section: Expand API Tests ==========
+
+/// Test: Expand returns a leaf with direct users for This userset.
+#[tokio::test]
+async fn test_expand_direct_users_returns_leaf_with_users() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Add multiple users
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "readme", "viewer", "user", "bob", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ExpandRequest::new("store1", "viewer", "document:readme");
+    let result = resolver.expand(&request).await.unwrap();
+
+    // Should return a Leaf node with users
+    match &result.tree.root {
+        ExpandNode::Leaf(leaf) => {
+            assert_eq!(leaf.name, "document:readme#viewer");
+            match &leaf.value {
+                ExpandLeafValue::Users(users) => {
+                    assert_eq!(users.len(), 2);
+                    assert!(users.contains(&"user:alice".to_string()));
+                    assert!(users.contains(&"user:bob".to_string()));
+                }
+                _ => panic!("Expected Users leaf value"),
+            }
+        }
+        _ => panic!("Expected Leaf node for direct users"),
+    }
+}
+
+/// Test: Expand returns a union node for union relations.
+#[tokio::test]
+async fn test_expand_union_returns_multiple_branches() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // viewer = [user] | editor (union of direct and computed)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::This,
+                                Userset::ComputedUserset {
+                                    relation: "editor".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ExpandRequest::new("store1", "viewer", "document:readme");
+    let result = resolver.expand(&request).await.unwrap();
+
+    // Should return a Union node with two children
+    match &result.tree.root {
+        ExpandNode::Union { name, nodes } => {
+            assert_eq!(name, "document:readme#viewer");
+            assert_eq!(nodes.len(), 2);
+        }
+        _ => panic!("Expected Union node"),
+    }
+}
+
+/// Test: Expand returns an intersection node for intersection relations.
+#[tokio::test]
+async fn test_expand_intersection_returns_all_children() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Can only view if both reader AND has_access
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "reader".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "has_access".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Intersection {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "reader".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "has_access".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ExpandRequest::new("store1", "viewer", "document:readme");
+    let result = resolver.expand(&request).await.unwrap();
+
+    // Should return an Intersection node
+    match &result.tree.root {
+        ExpandNode::Intersection { name, nodes } => {
+            assert_eq!(name, "document:readme#viewer");
+            assert_eq!(nodes.len(), 2);
+        }
+        _ => panic!("Expected Intersection node"),
+    }
+}
+
+/// Test: Expand returns a difference node for exclusion relations.
+#[tokio::test]
+async fn test_expand_exclusion_returns_difference_node() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // viewer = members but not blocked
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "member".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "blocked".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Exclusion {
+                            base: Box::new(Userset::ComputedUserset {
+                                relation: "member".to_string(),
+                            }),
+                            subtract: Box::new(Userset::ComputedUserset {
+                                relation: "blocked".to_string(),
+                            }),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ExpandRequest::new("store1", "viewer", "document:readme");
+    let result = resolver.expand(&request).await.unwrap();
+
+    // Should return a Difference node
+    match &result.tree.root {
+        ExpandNode::Difference {
+            name,
+            base,
+            subtract,
+        } => {
+            assert_eq!(name, "document:readme#viewer");
+            // Base and subtract should be computed userset references
+            assert!(matches!(**base, ExpandNode::Leaf(_)));
+            assert!(matches!(**subtract, ExpandNode::Leaf(_)));
+        }
+        _ => panic!("Expected Difference node"),
+    }
+}
+
+/// Test: Expand returns computed userset reference.
+#[tokio::test]
+async fn test_expand_computed_userset_returns_reference() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // viewer = editor (computed userset)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::ComputedUserset {
+                            relation: "editor".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ExpandRequest::new("store1", "viewer", "document:readme");
+    let result = resolver.expand(&request).await.unwrap();
+
+    // Should return a Leaf with Computed value
+    match &result.tree.root {
+        ExpandNode::Leaf(leaf) => {
+            assert_eq!(leaf.name, "document:readme#viewer");
+            match &leaf.value {
+                ExpandLeafValue::Computed { userset } => {
+                    assert_eq!(userset, "document:readme#editor");
+                }
+                _ => panic!("Expected Computed leaf value"),
+            }
+        }
+        _ => panic!("Expected Leaf node for computed userset"),
+    }
+}
+
+/// Test: Expand returns tuple-to-userset reference.
+#[tokio::test]
+async fn test_expand_tuple_to_userset_returns_reference() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // document viewer = folder viewer (tuple-to-userset)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ExpandRequest::new("store1", "viewer", "document:readme");
+    let result = resolver.expand(&request).await.unwrap();
+
+    // Should return a Leaf with TupleToUserset value
+    match &result.tree.root {
+        ExpandNode::Leaf(leaf) => {
+            assert_eq!(leaf.name, "document:readme#viewer");
+            match &leaf.value {
+                ExpandLeafValue::TupleToUserset {
+                    tupleset,
+                    computed_userset,
+                } => {
+                    assert_eq!(tupleset, "parent");
+                    assert_eq!(computed_userset, "viewer");
+                }
+                _ => panic!("Expected TupleToUserset leaf value"),
+            }
+        }
+        _ => panic!("Expected Leaf node for tuple-to-userset"),
+    }
+}
+
+/// Test: Expand returns error when depth limit exceeded.
+#[tokio::test]
+async fn test_expand_depth_limit_returns_error() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Create deeply nested union relations that exceed depth limit
+    // Build a chain of nested unions
+    let mut current = Userset::This;
+    for _ in 0..30 {
+        current = Userset::Union {
+            children: vec![current, Userset::This],
+        };
+    }
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: current,
+                }],
+            },
+        )
+        .await;
+
+    // Use a resolver with low depth limit
+    let config = ResolverConfig::default().with_max_depth(5);
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    let request = ExpandRequest::new("store1", "viewer", "document:readme");
+    let result = resolver.expand(&request).await;
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        DomainError::DepthLimitExceeded { max_depth } => {
+            assert_eq!(max_depth, 5);
+        }
+        e => panic!("Expected DepthLimitExceeded error, got: {:?}", e),
+    }
+}
+
+/// Test: Expand returns error for nonexistent store.
+#[tokio::test]
+async fn test_expand_nonexistent_store_returns_error() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    // Don't add any store
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ExpandRequest::new("nonexistent", "viewer", "document:readme");
+    let result = resolver.expand(&request).await;
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        DomainError::StoreNotFound { store_id } => {
+            assert_eq!(store_id, "nonexistent");
+        }
+        e => panic!("Expected StoreNotFound error, got: {:?}", e),
+    }
+}
+
+/// Test: Expand returns error for invalid object format.
+#[tokio::test]
+async fn test_expand_invalid_object_returns_error() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Invalid object format (no colon separator)
+    let request = ExpandRequest::new("store1", "viewer", "invalid_object");
+    let result = resolver.expand(&request).await;
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        DomainError::InvalidObjectFormat { value } => {
+            assert_eq!(value, "invalid_object");
+        }
+        e => panic!("Expected InvalidObjectFormat error, got: {:?}", e),
+    }
+}
+
+/// Test: Expand returns error for nonexistent relation.
+#[tokio::test]
+async fn test_expand_nonexistent_relation_returns_error() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Add type but not the relation we're looking for
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "editor".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ExpandRequest::new("store1", "viewer", "document:readme");
+    let result = resolver.expand(&request).await;
+
+    assert!(result.is_err());
+    // Should return an error about relation not found
+    match result.unwrap_err() {
+        DomainError::RelationNotFound { relation, .. } => {
+            assert_eq!(relation, "viewer");
+        }
+        e => panic!("Expected RelationNotFound error, got: {:?}", e),
+    }
+}
+
+/// Test: Expand returns error for empty relation.
+#[tokio::test]
+async fn test_expand_empty_relation_returns_error() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Empty relation
+    let request = ExpandRequest::new("store1", "", "document:readme");
+    let result = resolver.expand(&request).await;
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        DomainError::InvalidRelationFormat { value } => {
+            assert_eq!(value, "");
+        }
+        e => panic!("Expected InvalidRelationFormat error, got: {:?}", e),
+    }
+}
+
+/// Test: Expand handles userset with user relation.
+#[tokio::test]
+async fn test_expand_userset_with_user_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into(), "group#member".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Add a userset tuple (group#member)
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "document",
+            "readme",
+            "viewer",
+            "group",
+            "engineering",
+            Some("member"),
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ExpandRequest::new("store1", "viewer", "document:readme");
+    let result = resolver.expand(&request).await.unwrap();
+
+    // Should include the userset in the users list
+    match &result.tree.root {
+        ExpandNode::Leaf(leaf) => match &leaf.value {
+            ExpandLeafValue::Users(users) => {
+                assert_eq!(users.len(), 1);
+                assert!(users.contains(&"group:engineering#member".to_string()));
+            }
+            _ => panic!("Expected Users leaf value"),
+        },
+        _ => panic!("Expected Leaf node"),
+    }
 }
