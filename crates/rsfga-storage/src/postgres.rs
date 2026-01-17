@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
 use std::collections::HashMap;
+use tokio::sync::OnceCell;
 use tracing::{debug, instrument};
 
 use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
@@ -193,6 +194,9 @@ pub struct PostgresDataStore {
     write_timeout: std::time::Duration,
     /// Health check timeout duration.
     health_check_timeout: std::time::Duration,
+    /// Cached result of CockroachDB detection.
+    /// Uses OnceCell to detect once and cache for the lifetime of the store.
+    is_cockroachdb_cache: OnceCell<bool>,
 }
 
 impl PostgresDataStore {
@@ -207,6 +211,7 @@ impl PostgresDataStore {
             read_timeout: default_timeout,
             write_timeout: default_timeout,
             health_check_timeout: std::time::Duration::from_secs(DEFAULT_HEALTH_CHECK_TIMEOUT_SECS),
+            is_cockroachdb_cache: OnceCell::new(),
         }
     }
 
@@ -220,6 +225,7 @@ impl PostgresDataStore {
             read_timeout: query_timeout,
             write_timeout: query_timeout,
             health_check_timeout: std::time::Duration::from_secs(DEFAULT_HEALTH_CHECK_TIMEOUT_SECS),
+            is_cockroachdb_cache: OnceCell::new(),
         }
     }
 
@@ -250,6 +256,7 @@ impl PostgresDataStore {
                 .map(std::time::Duration::from_secs)
                 .unwrap_or(default_timeout),
             health_check_timeout: std::time::Duration::from_secs(config.health_check_timeout_secs),
+            is_cockroachdb_cache: OnceCell::new(),
         })
     }
 
@@ -268,14 +275,23 @@ impl PostgresDataStore {
     /// capabilities. This detection is used to select compatible migration
     /// strategies (e.g., CockroachDB doesn't support ALTER TABLE in functions
     /// but does support ADD COLUMN IF NOT EXISTS at the DDL level).
+    ///
+    /// The result is cached using `OnceCell` to avoid repeated database queries
+    /// since the database type won't change during the lifetime of the store.
     async fn is_cockroachdb(&self) -> StorageResult<bool> {
-        let row: (String,) = sqlx::query_as("SELECT version()")
-            .fetch_one(&self.pool)
+        // Use get_or_try_init to cache the result and avoid repeated queries
+        self.is_cockroachdb_cache
+            .get_or_try_init(|| async {
+                let row: (String,) = sqlx::query_as("SELECT version()")
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to detect database version: {e}"),
+                    })?;
+                Ok(row.0.to_lowercase().contains("cockroachdb"))
+            })
             .await
-            .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to detect database version: {e}"),
-            })?;
-        Ok(row.0.to_lowercase().contains("cockroachdb"))
+            .copied()
     }
 
     /// Wraps an async operation with a timeout and records metrics.
@@ -435,18 +451,17 @@ impl PostgresDataStore {
         // so we use a DO block for PostgreSQL and direct DDL for CockroachDB.
         if self.is_cockroachdb().await? {
             // CockroachDB: Use ADD COLUMN IF NOT EXISTS (supported at DDL level)
-            sqlx::query("ALTER TABLE tuples ADD COLUMN IF NOT EXISTS condition_name VARCHAR(255)")
-                .execute(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to add condition_name column: {e}"),
-                })?;
-            sqlx::query("ALTER TABLE tuples ADD COLUMN IF NOT EXISTS condition_context JSONB")
-                .execute(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to add condition_context column: {e}"),
-                })?;
+            // Combine both columns in a single statement for efficiency and atomicity
+            sqlx::query(
+                "ALTER TABLE tuples \
+                 ADD COLUMN IF NOT EXISTS condition_name VARCHAR(255), \
+                 ADD COLUMN IF NOT EXISTS condition_context JSONB",
+            )
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryError {
+                message: format!("Failed to add condition columns: {e}"),
+            })?;
         } else {
             // PostgreSQL: Use DO block for conditional column addition
             sqlx::query(
