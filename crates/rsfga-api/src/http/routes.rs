@@ -1246,7 +1246,9 @@ fn parse_tuple_key(tk: TupleKeyBody) -> Result<rsfga_storage::StoredTuple, Tuple
         user_relation: user_relation.map(|s| s.to_string()),
         condition_name,
         condition_context,
-        created_at: None,
+        // Set created_at at write time to ensure consistent timestamps
+        // This prevents inconsistent timestamps when reading from memory backend
+        created_at: Some(Utc::now()),
     })
 }
 
@@ -1274,7 +1276,8 @@ fn parse_tuple_fields(
         user_relation: user_relation.map(|s| s.to_string()),
         condition_name: None,
         condition_context: None,
-        created_at: None,
+        // Set created_at at write time (note: deletes don't use this timestamp)
+        created_at: Some(Utc::now()),
     })
 }
 
@@ -1493,6 +1496,8 @@ async fn read_changes<S: DataStore>(
                     }),
             },
             operation: "TUPLE_OPERATION_WRITE".to_string(),
+            // Timestamps are set at write time in the API layer.
+            // Fallback to current time only for legacy data without timestamps.
             timestamp: t
                 .created_at
                 .map(|dt| dt.to_rfc3339())
