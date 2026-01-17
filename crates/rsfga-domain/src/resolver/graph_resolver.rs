@@ -1378,6 +1378,16 @@ where
         // Constraint C11: Fail Fast with Bounds - we limit concurrency to avoid
         // exhausting resources even effectively "bounded" tasks.
         const MAX_CONCURRENT_CHECKS: usize = 50;
+        /// Per-operation timeout for individual permission checks.
+        /// Prevents a single slow check from blocking the entire operation.
+        const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+        // Track if any errors occurred during permission checks
+        let had_errors = std::sync::atomic::AtomicBool::new(false);
+
+        // Clone shared data once outside the loop to avoid per-candidate cloning
+        let shared_contextual_tuples = request.contextual_tuples.clone();
+        let shared_context = request.context.clone();
 
         let objects = futures::stream::iter(candidates)
             .map(|object_id| {
@@ -1386,37 +1396,58 @@ where
                     request.user.clone(),
                     request.relation.clone(),
                     format!("{}:{}", request.object_type, object_id),
-                    request.contextual_tuples.as_ref().clone(),
-                    request.context.as_ref().clone(),
+                    shared_contextual_tuples.as_ref().clone(),
+                    shared_context.as_ref().clone(),
                 );
                 async move {
-                    let result = self.check(&check_request).await;
+                    // Apply per-operation timeout to prevent indefinite blocking
+                    let result = timeout(CHECK_TIMEOUT, self.check(&check_request)).await;
                     (object_id, result)
                 }
             })
             .buffer_unordered(MAX_CONCURRENT_CHECKS)
-            .filter_map(|(object_id, result)| async move {
-                match result {
-                    Ok(CheckResult { allowed: true }) => {
-                        Some(format!("{}:{}", request.object_type, object_id))
-                    }
-                    Ok(CheckResult { allowed: false }) => None,
-                    Err(e) => {
-                        warn!(
-                            store_id = %request.store_id,
-                            object_type = %request.object_type,
-                            object_id = %object_id,
-                            error = %e,
-                            "Permission check failed during list_objects"
-                        );
-                        None
+            .filter_map(|(object_id, result)| {
+                let had_errors = &had_errors;
+                async move {
+                    match result {
+                        Ok(Ok(CheckResult { allowed: true })) => {
+                            Some(format!("{}:{}", request.object_type, object_id))
+                        }
+                        Ok(Ok(CheckResult { allowed: false })) => None,
+                        Ok(Err(e)) => {
+                            warn!(
+                                store_id = %request.store_id,
+                                object_type = %request.object_type,
+                                object_id = %object_id,
+                                error = %e,
+                                "Permission check failed during list_objects"
+                            );
+                            had_errors.store(true, std::sync::atomic::Ordering::Relaxed);
+                            None
+                        }
+                        Err(_timeout) => {
+                            warn!(
+                                store_id = %request.store_id,
+                                object_type = %request.object_type,
+                                object_id = %object_id,
+                                "Permission check timed out during list_objects"
+                            );
+                            had_errors.store(true, std::sync::atomic::Ordering::Relaxed);
+                            None
+                        }
                     }
                 }
             })
             .collect::<Vec<_>>()
             .await;
 
-        Ok(super::types::ListObjectsResult { objects, truncated })
+        // Truncated if we hit the limit OR if any errors occurred (incomplete results)
+        let result_truncated = truncated || had_errors.load(std::sync::atomic::Ordering::Relaxed);
+
+        Ok(super::types::ListObjectsResult {
+            objects,
+            truncated: result_truncated,
+        })
     }
 }
 
