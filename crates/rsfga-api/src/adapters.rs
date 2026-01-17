@@ -329,6 +329,17 @@ fn parse_conditions(model_json: &serde_json::Value) -> DomainResult<Vec<Conditio
     let mut conditions = Vec::with_capacity(conditions_obj.len());
 
     for (name, cond_def) in conditions_obj {
+        // Validate that if "name" field is present, it matches the map key
+        if let Some(declared_name) = cond_def.get("name").and_then(|n| n.as_str()) {
+            if declared_name != name {
+                return Err(DomainError::ModelParseError {
+                    message: format!(
+                        "condition '{name}' has mismatched name field '{declared_name}'"
+                    ),
+                });
+            }
+        }
+
         // Get the expression (required)
         let expression = cond_def
             .get("expression")

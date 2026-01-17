@@ -813,7 +813,13 @@ async fn batch_check<S: DataStore>(
             BatchCheckSingleResultBody {
                 allowed: item_result.allowed,
                 error: item_result.error.map(|msg| BatchCheckErrorBody {
-                    code: 500, // Internal error code for resolver errors
+                    // Map error kind to appropriate HTTP status code
+                    // Validation errors (type/relation not found, invalid input) → 400
+                    // Internal errors (resolver errors, timeout) → 500
+                    code: item_result
+                        .error_kind
+                        .map(|k| k.http_status_code())
+                        .unwrap_or(500),
                     message: msg,
                 }),
             },
@@ -1311,8 +1317,14 @@ async fn read_tuples<S: DataStore>(
     };
 
     // Build pagination options from request
+    // Validate page_size is positive before casting to u32 (negative i32 wraps to huge u32)
+    let page_size = match body.page_size {
+        Some(s) if s > 0 => Some(s as u32),
+        Some(_) => return Err(ApiError::invalid_input("page_size must be positive")),
+        None => None,
+    };
     let pagination = rsfga_storage::PaginationOptions {
-        page_size: body.page_size.map(|s| s as u32),
+        page_size,
         continuation_token: body.continuation_token,
     };
 
@@ -1395,8 +1407,14 @@ async fn read_changes<S: DataStore>(
         ..Default::default()
     };
 
+    // Validate page_size is positive before casting to u32 (negative i32 wraps to huge u32)
+    let page_size = match query.page_size {
+        Some(s) if s > 0 => Some(s as u32),
+        Some(_) => return Err(ApiError::invalid_input("page_size must be positive")),
+        None => None,
+    };
     let pagination = rsfga_storage::PaginationOptions {
-        page_size: query.page_size.map(|s| s as u32),
+        page_size,
         continuation_token: query.continuation_token,
     };
 

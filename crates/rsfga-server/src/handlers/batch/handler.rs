@@ -9,8 +9,8 @@ use rsfga_domain::resolver::{CheckRequest, GraphResolver, ModelReader, TupleRead
 
 use super::singleflight::{Singleflight, SingleflightGuard, SingleflightResult, SingleflightSlot};
 use super::types::{
-    BatchCheckError, BatchCheckItem, BatchCheckItemResult, BatchCheckRequest, BatchCheckResponse,
-    BatchCheckResult, MAX_BATCH_SIZE,
+    BatchCheckError, BatchCheckItem, BatchCheckItemErrorKind, BatchCheckItemResult,
+    BatchCheckRequest, BatchCheckResponse, BatchCheckResult, MAX_BATCH_SIZE,
 };
 
 /// Maximum number of singleflight retries when a leader is dropped.
@@ -261,7 +261,8 @@ where
                 match receiver.recv().await {
                     Ok(result) => BatchCheckItemResult {
                         allowed: result.allowed,
-                        error: result.error,
+                        error: result.error.clone(),
+                        error_kind: result.error_kind,
                     },
                     Err(_) => {
                         // Leader was dropped (likely panicked), retry as new leader
@@ -272,6 +273,7 @@ where
                                 error: Some(format!(
                                     "singleflight retry limit exceeded ({MAX_SINGLEFLIGHT_RETRIES} retries)"
                                 )),
+                                error_kind: Some(BatchCheckItemErrorKind::Internal),
                             };
                         }
                         // This is safe because SingleflightGuard cleaned up
@@ -303,11 +305,17 @@ where
                     Ok(result) => SingleflightResult {
                         allowed: result.allowed,
                         error: None,
+                        error_kind: None,
                     },
-                    Err(e) => SingleflightResult {
-                        allowed: false,
-                        error: Some(e.to_string()),
-                    },
+                    Err(e) => {
+                        // Map domain errors to appropriate error kinds
+                        let error_kind = classify_domain_error_kind(&e);
+                        SingleflightResult {
+                            allowed: false,
+                            error: Some(e.to_string()),
+                            error_kind: Some(error_kind),
+                        }
+                    }
                 };
 
                 // Broadcast the result to any waiters (ignore send errors - no receivers)
@@ -319,6 +327,7 @@ where
                 BatchCheckItemResult {
                     allowed: result.allowed,
                     error: result.error,
+                    error_kind: result.error_kind,
                 }
             }
         }
@@ -333,5 +342,31 @@ where
             seen.insert(key);
         }
         (request.checks.len(), seen.len())
+    }
+}
+
+/// Classifies a domain error into an error kind for HTTP status code mapping.
+///
+/// - Validation errors (type not found, relation not found, invalid input) → 400 Bad Request
+/// - Internal errors (resolver errors, timeout) → 500 Internal Server Error
+fn classify_domain_error_kind(err: &rsfga_domain::error::DomainError) -> BatchCheckItemErrorKind {
+    use rsfga_domain::error::DomainError;
+
+    match err {
+        // Client errors (400) - user input or model configuration issues
+        DomainError::TypeNotFound { .. }
+        | DomainError::RelationNotFound { .. }
+        | DomainError::ModelParseError { .. }
+        | DomainError::ModelValidationError { .. }
+        | DomainError::InvalidUserFormat { .. }
+        | DomainError::InvalidObjectFormat { .. }
+        | DomainError::InvalidRelationFormat { .. }
+        | DomainError::DepthLimitExceeded { .. }
+        | DomainError::CycleDetected { .. } => BatchCheckItemErrorKind::Validation,
+
+        // Server errors (500) - internal issues
+        DomainError::Timeout { .. } | DomainError::ResolverError { .. } => {
+            BatchCheckItemErrorKind::Internal
+        }
     }
 }
