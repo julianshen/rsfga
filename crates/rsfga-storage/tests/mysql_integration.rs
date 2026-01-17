@@ -1813,39 +1813,43 @@ async fn test_special_characters_in_user_id() {
 #[ignore = "requires running MySQL"]
 async fn test_maximum_length_strings() {
     let store = create_store().await;
-    store
-        .create_store("test-max-length", "Test Store")
-        .await
-        .unwrap();
+    let store_id = "01TESTMAXLENGTHSTRINGS00";
 
-    // Create a 255-character string (typical VARCHAR limit)
-    let max_length_id: String = "x".repeat(255);
+    // Cleanup from any previous failed run
+    let _ = store.delete_store(store_id).await;
+
+    store.create_store(store_id, "Test Store").await.unwrap();
+
+    // Create strings at column limits (updated for MariaDB/TiDB index compatibility)
+    // object_id: VARCHAR(255), user_id: VARCHAR(128)
+    let max_object_id: String = "x".repeat(255);
+    let max_user_id: String = "y".repeat(128);
 
     let tuple = StoredTuple::new(
         "document",
-        max_length_id.clone(),
+        max_object_id.clone(),
         "viewer",
         "user",
-        max_length_id.clone(),
+        max_user_id.clone(),
         None,
     );
 
     store
-        .write_tuple("test-max-length", tuple)
+        .write_tuple(store_id, tuple)
         .await
         .expect("Should write tuple with max length strings");
 
     // Read back and verify
     let result = store
-        .read_tuples("test-max-length", &TupleFilter::default())
+        .read_tuples(store_id, &TupleFilter::default())
         .await
         .unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].object_id.len(), 255);
-    assert_eq!(result[0].user_id.len(), 255);
+    assert_eq!(result[0].user_id.len(), 128);
 
     // Cleanup
-    store.delete_store("test-max-length").await.unwrap();
+    store.delete_store(store_id).await.unwrap();
 }
 
 // ==========================================================================
@@ -2342,9 +2346,10 @@ async fn test_new_tables_have_correct_column_sizes() {
     let pool = store.pool();
 
     // Query information_schema to check column sizes
+    // Cast to SIGNED for MariaDB compatibility (returns BIGINT UNSIGNED)
     let columns: Vec<(String, String, i64)> = sqlx::query_as(
         r#"
-        SELECT column_name, data_type, character_maximum_length
+        SELECT column_name, data_type, CAST(character_maximum_length AS SIGNED) as max_length
         FROM information_schema.columns
         WHERE table_schema = DATABASE()
           AND table_name = 'tuples'
@@ -2417,7 +2422,7 @@ async fn test_stores_table_has_correct_id_size() {
 
     let (dtype, len): (String, i64) = sqlx::query_as(
         r#"
-        SELECT data_type, character_maximum_length
+        SELECT data_type, CAST(character_maximum_length AS SIGNED) as max_length
         FROM information_schema.columns
         WHERE table_schema = DATABASE()
           AND table_name = 'stores'
@@ -2441,7 +2446,7 @@ async fn test_authorization_models_table_has_correct_sizes() {
 
     let columns: Vec<(String, String, i64)> = sqlx::query_as(
         r#"
-        SELECT column_name, data_type, character_maximum_length
+        SELECT column_name, data_type, CAST(character_maximum_length AS SIGNED) as max_length
         FROM information_schema.columns
         WHERE table_schema = DATABASE()
           AND table_name = 'authorization_models'
@@ -2474,7 +2479,7 @@ async fn test_unique_index_key_length_under_limit() {
     // user_type(128) + user_id(128) + user_relation_key(50) = 765 chars * 4 = 3060 bytes
     let columns: Vec<(String, i64)> = sqlx::query_as(
         r#"
-        SELECT column_name, character_maximum_length
+        SELECT column_name, CAST(character_maximum_length AS SIGNED) as max_length
         FROM information_schema.columns
         WHERE table_schema = DATABASE()
           AND table_name = 'tuples'
@@ -2549,9 +2554,10 @@ async fn test_column_size_migration_idempotent() {
     let pool = store.pool();
 
     // Get initial column sizes
+    // Cast to SIGNED for MariaDB compatibility (returns BIGINT UNSIGNED)
     let initial_sizes: Vec<(String, i64)> = sqlx::query_as(
         r#"
-        SELECT column_name, character_maximum_length
+        SELECT column_name, CAST(character_maximum_length AS SIGNED) as max_length
         FROM information_schema.columns
         WHERE table_schema = DATABASE()
           AND table_name = 'tuples'
@@ -2572,7 +2578,7 @@ async fn test_column_size_migration_idempotent() {
     // Verify column sizes are unchanged
     let final_sizes: Vec<(String, i64)> = sqlx::query_as(
         r#"
-        SELECT column_name, character_maximum_length
+        SELECT column_name, CAST(character_maximum_length AS SIGNED) as max_length
         FROM information_schema.columns
         WHERE table_schema = DATABASE()
           AND table_name = 'tuples'
