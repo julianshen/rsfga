@@ -2145,7 +2145,7 @@ mod tests {
     fn test_list_objects_by_type_signature() {
         // Verify the method exists in the implementation
         async fn _verify_impl(store: &PostgresDataStore) {
-            let _: StorageResult<Vec<String>> = 
+            let _: StorageResult<Vec<String>> =
                 store.list_objects_by_type("store", "type", 10).await;
         }
     }
