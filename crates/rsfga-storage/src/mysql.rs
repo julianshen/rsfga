@@ -390,10 +390,11 @@ impl MySQLDataStore {
         debug!("Running MySQL database migrations");
 
         // Create stores table
+        // Note: id is CHAR(26) for ULID format (matches OpenFGA schema)
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS stores (
-                id VARCHAR(255) PRIMARY KEY,
+                id CHAR(26) PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -409,18 +410,28 @@ impl MySQLDataStore {
         // Create tuples table
         // Note: MySQL requires a generated column to use COALESCE in a unique index.
         // The `user_relation_key` column is generated as COALESCE(user_relation, '').
+        //
+        // Column sizes match OpenFGA's MySQL schema to ensure index key length fits
+        // within MariaDB/TiDB's 3072-byte limit (see issues #175, #176):
+        //   - store_id: CHAR(26) for ULID format
+        //   - object_type/user_type: VARCHAR(128) for type names
+        //   - object_id: VARCHAR(255) for maximum flexibility
+        //   - relation/user_relation: VARCHAR(50) for relation names
+        //   - user_id: VARCHAR(128) for user identifiers
+        //
+        // Unique index size: 26×4 + 128×4 + 255×4 + 50×4 + 128×4 + 128×4 + 50×4 = 3060 bytes
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS tuples (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                store_id VARCHAR(255) NOT NULL,
-                object_type VARCHAR(255) NOT NULL,
+                store_id CHAR(26) NOT NULL,
+                object_type VARCHAR(128) NOT NULL,
                 object_id VARCHAR(255) NOT NULL,
-                relation VARCHAR(255) NOT NULL,
-                user_type VARCHAR(255) NOT NULL,
-                user_id VARCHAR(255) NOT NULL,
-                user_relation VARCHAR(255) DEFAULT NULL,
-                user_relation_key VARCHAR(255) AS (COALESCE(user_relation, '')) STORED,
+                relation VARCHAR(50) NOT NULL,
+                user_type VARCHAR(128) NOT NULL,
+                user_id VARCHAR(128) NOT NULL,
+                user_relation VARCHAR(50) DEFAULT NULL,
+                user_relation_key VARCHAR(50) AS (COALESCE(user_relation, '')) STORED,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -503,11 +514,12 @@ impl MySQLDataStore {
         .await?;
 
         // Create authorization_models table
+        // Note: id and store_id use CHAR(26) for ULID format (matches OpenFGA schema)
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS authorization_models (
-                id VARCHAR(255) PRIMARY KEY,
-                store_id VARCHAR(255) NOT NULL,
+                id CHAR(26) PRIMARY KEY,
+                store_id CHAR(26) NOT NULL,
                 schema_version VARCHAR(50) NOT NULL,
                 model_json MEDIUMTEXT NOT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -542,7 +554,237 @@ impl MySQLDataStore {
         )
         .await?;
 
+        // Check if we need to migrate column sizes for MariaDB/TiDB compatibility
+        // This handles existing databases created with older VARCHAR(255) columns
+        self.migrate_column_sizes_if_needed().await?;
+
         debug!("MySQL database migrations completed successfully");
+        Ok(())
+    }
+
+    /// Migrates column sizes for MariaDB/TiDB compatibility (issues #175, #176).
+    ///
+    /// This migration reduces column sizes to match OpenFGA's schema, ensuring index
+    /// key lengths fit within MariaDB/TiDB's 3072-byte limit.
+    ///
+    /// # Migration Process
+    ///
+    /// 1. Check if migration is needed by inspecting current column sizes
+    /// 2. Validate no existing data exceeds new column limits
+    /// 3. Apply ALTER TABLE statements to reduce column sizes
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::MigrationBlocked` if existing data exceeds new limits.
+    /// The error message includes instructions for identifying and fixing oversized data.
+    #[instrument(skip(self))]
+    async fn migrate_column_sizes_if_needed(&self) -> StorageResult<()> {
+        // Check if the tuples table uses old VARCHAR(255) column sizes
+        // We check the store_id column - if it's VARCHAR(255), migration is needed
+        let needs_migration: bool = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) > 0
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = 'tuples'
+              AND column_name = 'store_id'
+              AND data_type = 'varchar'
+              AND character_maximum_length = 255
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(false);
+
+        if !needs_migration {
+            return Ok(());
+        }
+
+        debug!("Migrating column sizes for MariaDB/TiDB compatibility...");
+
+        // Validate that no existing data exceeds new column limits
+        self.validate_column_sizes_for_migration().await?;
+
+        // Apply column size migration
+        self.apply_column_size_migration().await?;
+
+        debug!("Column size migration completed successfully");
+        Ok(())
+    }
+
+    /// Validates that existing data will fit within new column size limits.
+    ///
+    /// Checks the following columns:
+    /// - store_id: max 26 chars (ULID format)
+    /// - object_type: max 128 chars
+    /// - relation: max 50 chars
+    /// - user_type: max 128 chars
+    /// - user_id: max 128 chars
+    /// - user_relation: max 50 chars
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::MigrationBlocked` with details about which fields
+    /// have oversized data.
+    async fn validate_column_sizes_for_migration(&self) -> StorageResult<()> {
+        // Check tuples table for oversized data
+        let oversized_fields: Vec<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT 'store_id' AS field, COUNT(*) AS count
+                FROM tuples WHERE CHAR_LENGTH(store_id) > 26
+            UNION ALL
+            SELECT 'object_type', COUNT(*) FROM tuples WHERE CHAR_LENGTH(object_type) > 128
+            UNION ALL
+            SELECT 'relation', COUNT(*) FROM tuples WHERE CHAR_LENGTH(relation) > 50
+            UNION ALL
+            SELECT 'user_type', COUNT(*) FROM tuples WHERE CHAR_LENGTH(user_type) > 128
+            UNION ALL
+            SELECT 'user_id', COUNT(*) FROM tuples WHERE CHAR_LENGTH(user_id) > 128
+            UNION ALL
+            SELECT 'user_relation', COUNT(*) FROM tuples WHERE user_relation IS NOT NULL AND CHAR_LENGTH(user_relation) > 50
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to validate column sizes: {e}"),
+        })?;
+
+        // Filter to fields with actual oversized data
+        let problems: Vec<(String, i64)> = oversized_fields
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .collect();
+
+        if !problems.is_empty() {
+            let mut error_msg = String::from(
+                "Migration blocked: Found data exceeding new column limits.\n\nAffected rows:\n",
+            );
+            for (field, count) in &problems {
+                let limit = match field.as_str() {
+                    "store_id" => 26,
+                    "object_type" | "user_type" | "user_id" => 128,
+                    "relation" | "user_relation" => 50,
+                    _ => 255,
+                };
+                error_msg.push_str(&format!("  - {field} > {limit} chars: {count} rows\n"));
+            }
+            error_msg.push_str("\nTo view affected data, run:\n");
+            for (field, _) in &problems {
+                let limit = match field.as_str() {
+                    "store_id" => 26,
+                    "object_type" | "user_type" | "user_id" => 128,
+                    "relation" | "user_relation" => 50,
+                    _ => 255,
+                };
+                error_msg.push_str(&format!(
+                    "  SELECT * FROM tuples WHERE CHAR_LENGTH({field}) > {limit};\n"
+                ));
+            }
+            error_msg
+                .push_str("\nPlease manually update or remove oversized data before retrying.\n");
+
+            return Err(StorageError::MigrationBlocked { message: error_msg });
+        }
+
+        // Also check stores table
+        let stores_oversized: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM stores WHERE CHAR_LENGTH(id) > 26")
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or(0);
+
+        if stores_oversized > 0 {
+            return Err(StorageError::MigrationBlocked {
+                message: format!(
+                    "Migration blocked: {stores_oversized} store(s) have id > 26 chars.\n\
+                     To view: SELECT * FROM stores WHERE CHAR_LENGTH(id) > 26;\n\
+                     Please update store IDs to ULID format (26 chars) before retrying."
+                ),
+            });
+        }
+
+        // Check authorization_models table
+        let models_oversized: Vec<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT 'id' AS field, COUNT(*) AS count FROM authorization_models WHERE CHAR_LENGTH(id) > 26
+            UNION ALL
+            SELECT 'store_id', COUNT(*) FROM authorization_models WHERE CHAR_LENGTH(store_id) > 26
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+
+        let model_problems: Vec<(String, i64)> = models_oversized
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .collect();
+
+        if !model_problems.is_empty() {
+            let mut error_msg = String::from(
+                "Migration blocked: authorization_models table has oversized data.\n\n",
+            );
+            for (field, count) in &model_problems {
+                error_msg.push_str(&format!("  - {field} > 26 chars: {count} rows\n"));
+            }
+            error_msg.push_str(
+                "\nPlease update model/store IDs to ULID format (26 chars) before retrying.\n",
+            );
+            return Err(StorageError::MigrationBlocked { message: error_msg });
+        }
+
+        Ok(())
+    }
+
+    /// Applies ALTER TABLE statements to reduce column sizes.
+    ///
+    /// This should only be called after `validate_column_sizes_for_migration`
+    /// confirms all data fits within new limits.
+    async fn apply_column_size_migration(&self) -> StorageResult<()> {
+        // Migrate tuples table columns
+        let tuples_alterations = [
+            "ALTER TABLE tuples MODIFY store_id CHAR(26) NOT NULL",
+            "ALTER TABLE tuples MODIFY object_type VARCHAR(128) NOT NULL",
+            "ALTER TABLE tuples MODIFY relation VARCHAR(50) NOT NULL",
+            "ALTER TABLE tuples MODIFY user_type VARCHAR(128) NOT NULL",
+            "ALTER TABLE tuples MODIFY user_id VARCHAR(128) NOT NULL",
+            "ALTER TABLE tuples MODIFY user_relation VARCHAR(50) DEFAULT NULL",
+            "ALTER TABLE tuples MODIFY user_relation_key VARCHAR(50) AS (COALESCE(user_relation, '')) STORED",
+        ];
+
+        for sql in tuples_alterations {
+            sqlx::query(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to alter tuples table: {e}"),
+                })?;
+        }
+
+        // Migrate stores table
+        sqlx::query("ALTER TABLE stores MODIFY id CHAR(26) NOT NULL")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryError {
+                message: format!("Failed to alter stores table: {e}"),
+            })?;
+
+        // Migrate authorization_models table
+        let model_alterations = [
+            "ALTER TABLE authorization_models MODIFY id CHAR(26) NOT NULL",
+            "ALTER TABLE authorization_models MODIFY store_id CHAR(26) NOT NULL",
+        ];
+
+        for sql in model_alterations {
+            sqlx::query(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to alter authorization_models table: {e}"),
+                })?;
+        }
+
         Ok(())
     }
 
