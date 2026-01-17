@@ -262,6 +262,22 @@ impl PostgresDataStore {
         Self::from_config(&config).await
     }
 
+    /// Detects if the connected database is CockroachDB.
+    ///
+    /// CockroachDB uses the PostgreSQL wire protocol but has different SQL
+    /// capabilities. This detection is used to select compatible migration
+    /// strategies (e.g., CockroachDB doesn't support ALTER TABLE in functions
+    /// but does support ADD COLUMN IF NOT EXISTS at the DDL level).
+    async fn is_cockroachdb(&self) -> StorageResult<bool> {
+        let row: (String,) = sqlx::query_as("SELECT version()")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryError {
+                message: format!("Failed to detect database version: {e}"),
+            })?;
+        Ok(row.0.to_lowercase().contains("cockroachdb"))
+    }
+
     /// Wraps an async operation with a timeout and records metrics.
     ///
     /// If the operation exceeds the specified timeout, returns
@@ -412,30 +428,52 @@ impl PostgresDataStore {
 
         // Add condition columns if they don't exist (for existing databases)
         // These are idempotent migrations that add columns only if missing.
-        sqlx::query(
-            r#"
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'tuples' AND column_name = 'condition_name'
-                ) THEN
-                    ALTER TABLE tuples ADD COLUMN condition_name VARCHAR(255);
-                END IF;
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'tuples' AND column_name = 'condition_context'
-                ) THEN
-                    ALTER TABLE tuples ADD COLUMN condition_context JSONB;
-                END IF;
-            END $$;
-            "#,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryError {
-            message: format!("Failed to add condition columns: {e}"),
-        })?;
+        //
+        // CockroachDB doesn't support ALTER TABLE inside PL/pgSQL functions,
+        // but it does support ADD COLUMN IF NOT EXISTS at the DDL level.
+        // PostgreSQL doesn't support IF NOT EXISTS for ADD COLUMN in older versions,
+        // so we use a DO block for PostgreSQL and direct DDL for CockroachDB.
+        if self.is_cockroachdb().await? {
+            // CockroachDB: Use ADD COLUMN IF NOT EXISTS (supported at DDL level)
+            sqlx::query("ALTER TABLE tuples ADD COLUMN IF NOT EXISTS condition_name VARCHAR(255)")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to add condition_name column: {e}"),
+                })?;
+            sqlx::query("ALTER TABLE tuples ADD COLUMN IF NOT EXISTS condition_context JSONB")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to add condition_context column: {e}"),
+                })?;
+        } else {
+            // PostgreSQL: Use DO block for conditional column addition
+            sqlx::query(
+                r#"
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'tuples' AND column_name = 'condition_name'
+                    ) THEN
+                        ALTER TABLE tuples ADD COLUMN condition_name VARCHAR(255);
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'tuples' AND column_name = 'condition_context'
+                    ) THEN
+                        ALTER TABLE tuples ADD COLUMN condition_context JSONB;
+                    END IF;
+                END $$;
+                "#,
+            )
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryError {
+                message: format!("Failed to add condition columns: {e}"),
+            })?;
+        }
 
         // Create unique index to enforce tuple uniqueness (handles NULL user_relation correctly)
         sqlx::query(
