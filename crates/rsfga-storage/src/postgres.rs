@@ -26,6 +26,52 @@ const DEFAULT_HEALTH_CHECK_TIMEOUT_SECS: u64 = 5;
 /// Default query timeout in seconds.
 const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 30;
 
+/// Builds the UNNEST clause for batch delete operations.
+///
+/// CockroachDB requires ROWS FROM syntax while PostgreSQL uses multi-array UNNEST.
+/// The 6-column format (without condition columns) is used for delete operations.
+fn build_delete_unnest(use_rows_from: bool) -> &'static str {
+    if use_rows_from {
+        r#"ROWS FROM (
+            unnest($2::text[]),
+            unnest($3::text[]),
+            unnest($4::text[]),
+            unnest($5::text[]),
+            unnest($6::text[]),
+            unnest($7::text[])
+        ) AS d(object_type, object_id, relation, user_type, user_id, user_relation)"#
+    } else {
+        r#"UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+        AS d(object_type, object_id, relation, user_type, user_id, user_relation)"#
+    }
+}
+
+/// Builds the UNNEST clause for batch insert/conflict-check operations.
+///
+/// CockroachDB requires ROWS FROM syntax while PostgreSQL uses multi-array UNNEST.
+/// The 8-column format (with condition columns) is used for insert and conflict check operations.
+fn build_insert_unnest(use_rows_from: bool, alias: &str) -> String {
+    if use_rows_from {
+        format!(
+            r#"ROWS FROM (
+            unnest($2::text[]),
+            unnest($3::text[]),
+            unnest($4::text[]),
+            unnest($5::text[]),
+            unnest($6::text[]),
+            unnest($7::text[]),
+            unnest($8::text[]),
+            unnest($9::jsonb[])
+        ) AS {alias}(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)"#
+        )
+    } else {
+        format!(
+            r#"UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
+        AS {alias}(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)"#
+        )
+    }
+}
+
 /// Validate condition_context size to prevent DoS via large JSON payloads.
 fn validate_condition_context_size(tuple: &StoredTuple) -> StorageResult<()> {
     if let Some(ctx) = &tuple.condition_context {
@@ -943,18 +989,12 @@ impl DataStore for PostgresDataStore {
                     deletes.iter().map(|t| t.user_relation.as_deref()).collect();
 
                 // CockroachDB requires ROWS FROM syntax; PostgreSQL uses multi-array UNNEST
-                let delete_query = if use_rows_from_syntax {
+                let unnest_clause = build_delete_unnest(use_rows_from_syntax);
+                let delete_query = format!(
                     r#"
                     DELETE FROM tuples t
                     USING (
-                        SELECT * FROM ROWS FROM (
-                            unnest($2::text[]),
-                            unnest($3::text[]),
-                            unnest($4::text[]),
-                            unnest($5::text[]),
-                            unnest($6::text[]),
-                            unnest($7::text[])
-                        ) AS d(object_type, object_id, relation, user_type, user_id, user_relation)
+                        SELECT * FROM {unnest_clause}
                     ) AS del
                     WHERE t.store_id = $1
                       AND t.object_type = del.object_type
@@ -964,23 +1004,8 @@ impl DataStore for PostgresDataStore {
                       AND t.user_id = del.user_id
                       AND COALESCE(t.user_relation, '') = COALESCE(del.user_relation, '')
                     "#
-                } else {
-                    r#"
-                    DELETE FROM tuples t
-                    USING (
-                        SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
-                        AS d(object_type, object_id, relation, user_type, user_id, user_relation)
-                    ) AS del
-                    WHERE t.store_id = $1
-                      AND t.object_type = del.object_type
-                      AND t.object_id = del.object_id
-                      AND t.relation = del.relation
-                      AND t.user_type = del.user_type
-                      AND t.user_id = del.user_id
-                      AND COALESCE(t.user_relation, '') = COALESCE(del.user_relation, '')
-                    "#
-                };
-                sqlx::query(delete_query)
+                );
+                sqlx::query(&delete_query)
                 .bind(store_id)
                 .bind(&object_types)
                 .bind(&object_ids)
@@ -1029,7 +1054,8 @@ impl DataStore for PostgresDataStore {
                 // - Post-insert verification only runs when rows_affected < input count
                 // - The LIMIT 1 ensures we fail fast on first conflict
                 // Trade-off: Correctness over raw throughput (Invariant I1)
-                let conflict_check_query = if use_rows_from_syntax {
+                let unnest_clause = build_insert_unnest(use_rows_from_syntax, "x");
+                let conflict_check_query = format!(
                     r#"
                     SELECT
                         t.object_type, t.object_id, t.relation,
@@ -1038,16 +1064,7 @@ impl DataStore for PostgresDataStore {
                         new.condition_name AS new_condition
                     FROM tuples t
                     INNER JOIN (
-                        SELECT * FROM ROWS FROM (
-                            unnest($2::text[]),
-                            unnest($3::text[]),
-                            unnest($4::text[]),
-                            unnest($5::text[]),
-                            unnest($6::text[]),
-                            unnest($7::text[]),
-                            unnest($8::text[]),
-                            unnest($9::jsonb[])
-                        ) AS x(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
+                        SELECT * FROM {unnest_clause}
                     ) AS new
                     ON t.store_id = $1
                        AND t.object_type = new.object_type
@@ -1061,32 +1078,8 @@ impl DataStore for PostgresDataStore {
                     FOR UPDATE OF t
                     LIMIT 1
                     "#
-                } else {
-                    r#"
-                    SELECT
-                        t.object_type, t.object_id, t.relation,
-                        t.user_type, t.user_id, t.user_relation,
-                        t.condition_name AS existing_condition,
-                        new.condition_name AS new_condition
-                    FROM tuples t
-                    INNER JOIN (
-                        SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
-                        AS x(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
-                    ) AS new
-                    ON t.store_id = $1
-                       AND t.object_type = new.object_type
-                       AND t.object_id = new.object_id
-                       AND t.relation = new.relation
-                       AND t.user_type = new.user_type
-                       AND t.user_id = new.user_id
-                       AND COALESCE(t.user_relation, '') = COALESCE(new.user_relation, '')
-                    WHERE (t.condition_name IS DISTINCT FROM new.condition_name)
-                       OR (t.condition_context IS DISTINCT FROM new.condition_context)
-                    FOR UPDATE OF t
-                    LIMIT 1
-                    "#
-                };
-                let conflict_check = sqlx::query(conflict_check_query)
+                );
+                let conflict_check = sqlx::query(&conflict_check_query)
                 .bind(store_id)
                 .bind(&object_types)
                 .bind(&object_ids)
@@ -1127,34 +1120,17 @@ impl DataStore for PostgresDataStore {
                 // Insert with ON CONFLICT DO NOTHING for truly identical tuples (idempotent).
                 // We've already verified no condition conflicts exist above, and FOR UPDATE
                 // locks prevent concurrent inserts with different conditions.
-                let insert_query = if use_rows_from_syntax {
+                let unnest_clause = build_insert_unnest(use_rows_from_syntax, "t");
+                let insert_query = format!(
                     r#"
                     INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
                     SELECT $1, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context
-                    FROM ROWS FROM (
-                        unnest($2::text[]),
-                        unnest($3::text[]),
-                        unnest($4::text[]),
-                        unnest($5::text[]),
-                        unnest($6::text[]),
-                        unnest($7::text[]),
-                        unnest($8::text[]),
-                        unnest($9::jsonb[])
-                    ) AS t(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
+                    FROM {unnest_clause}
                     ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, (COALESCE(user_relation, '')))
                     DO NOTHING
                     "#
-                } else {
-                    r#"
-                    INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
-                    SELECT $1, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context
-                    FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
-                    AS t(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
-                    ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, (COALESCE(user_relation, '')))
-                    DO NOTHING
-                    "#
-                };
-                let insert_result = sqlx::query(insert_query)
+                );
+                let insert_result = sqlx::query(&insert_query)
                 .bind(store_id)
                 .bind(&object_types)
                 .bind(&object_ids)
@@ -1177,7 +1153,8 @@ impl DataStore for PostgresDataStore {
                 if inserted_count < writes.len() {
                     // Some rows weren't inserted - could be duplicates or race condition.
                     // Re-run conflict check to detect any condition conflicts that occurred.
-                    let post_conflict_query = if use_rows_from_syntax {
+                    let unnest_clause = build_insert_unnest(use_rows_from_syntax, "x");
+                    let post_conflict_query = format!(
                         r#"
                         SELECT
                             t.object_type, t.object_id, t.relation,
@@ -1186,16 +1163,7 @@ impl DataStore for PostgresDataStore {
                             new.condition_name AS new_condition
                         FROM tuples t
                         INNER JOIN (
-                            SELECT * FROM ROWS FROM (
-                                unnest($2::text[]),
-                                unnest($3::text[]),
-                                unnest($4::text[]),
-                                unnest($5::text[]),
-                                unnest($6::text[]),
-                                unnest($7::text[]),
-                                unnest($8::text[]),
-                                unnest($9::jsonb[])
-                            ) AS x(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
+                            SELECT * FROM {unnest_clause}
                         ) AS new
                         ON t.store_id = $1
                            AND t.object_type = new.object_type
@@ -1208,31 +1176,8 @@ impl DataStore for PostgresDataStore {
                            OR (t.condition_context IS DISTINCT FROM new.condition_context)
                         LIMIT 1
                         "#
-                    } else {
-                        r#"
-                        SELECT
-                            t.object_type, t.object_id, t.relation,
-                            t.user_type, t.user_id, t.user_relation,
-                            t.condition_name AS existing_condition,
-                            new.condition_name AS new_condition
-                        FROM tuples t
-                        INNER JOIN (
-                            SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
-                            AS x(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
-                        ) AS new
-                        ON t.store_id = $1
-                           AND t.object_type = new.object_type
-                           AND t.object_id = new.object_id
-                           AND t.relation = new.relation
-                           AND t.user_type = new.user_type
-                           AND t.user_id = new.user_id
-                           AND COALESCE(t.user_relation, '') = COALESCE(new.user_relation, '')
-                        WHERE (t.condition_name IS DISTINCT FROM new.condition_name)
-                           OR (t.condition_context IS DISTINCT FROM new.condition_context)
-                        LIMIT 1
-                        "#
-                    };
-                    let post_conflict = sqlx::query(post_conflict_query)
+                    );
+                    let post_conflict = sqlx::query(&post_conflict_query)
                     .bind(store_id)
                     .bind(&object_types)
                     .bind(&object_ids)

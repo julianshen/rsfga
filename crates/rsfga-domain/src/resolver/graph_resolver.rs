@@ -156,8 +156,8 @@ where
 
         // Check if store exists
         if !self.tuple_reader.store_exists(&request.store_id).await? {
-            return Err(DomainError::ResolverError {
-                message: format!("store not found: {}", request.store_id),
+            return Err(DomainError::StoreNotFound {
+                store_id: request.store_id.clone(),
             });
         }
 
@@ -246,8 +246,8 @@ where
 
         // Check if store exists
         if !self.tuple_reader.store_exists(&request.store_id).await? {
-            return Err(DomainError::ResolverError {
-                message: format!("store not found: {}", request.store_id),
+            return Err(DomainError::StoreNotFound {
+                store_id: request.store_id.clone(),
             });
         }
 
@@ -270,6 +270,7 @@ where
                 &object_id,
                 &request.relation,
                 &relation_def.rewrite,
+                0, // Start at depth 0
             )
             .await?;
 
@@ -279,6 +280,9 @@ where
     }
 
     /// Recursively expands a userset rewrite into an ExpandNode tree.
+    ///
+    /// # Arguments
+    /// * `depth` - Current recursion depth for enforcing max_depth limit (constraint C11)
     fn expand_userset<'a>(
         &'a self,
         store_id: &'a str,
@@ -286,10 +290,18 @@ where
         object_id: &'a str,
         relation: &'a str,
         userset: &'a crate::model::Userset,
+        depth: u32,
     ) -> BoxFuture<'a, DomainResult<super::types::ExpandNode>> {
         use super::types::{ExpandLeaf, ExpandLeafValue, ExpandNode};
 
         Box::pin(async move {
+            // Check depth limit to prevent unbounded recursion (constraint C11: Fail Fast with Bounds)
+            if depth >= self.config.max_depth {
+                return Err(DomainError::DepthLimitExceeded {
+                    max_depth: self.config.max_depth,
+                });
+            }
+
             match userset {
                 crate::model::Userset::This => {
                     // Direct assignment - fetch users from tuples
@@ -346,7 +358,14 @@ where
                     let mut nodes = Vec::with_capacity(children.len());
                     for child in children {
                         let node = self
-                            .expand_userset(store_id, object_type, object_id, relation, child)
+                            .expand_userset(
+                                store_id,
+                                object_type,
+                                object_id,
+                                relation,
+                                child,
+                                depth + 1,
+                            )
                             .await?;
                         nodes.push(node);
                     }
@@ -362,7 +381,14 @@ where
                     let mut nodes = Vec::with_capacity(children.len());
                     for child in children {
                         let node = self
-                            .expand_userset(store_id, object_type, object_id, relation, child)
+                            .expand_userset(
+                                store_id,
+                                object_type,
+                                object_id,
+                                relation,
+                                child,
+                                depth + 1,
+                            )
                             .await?;
                         nodes.push(node);
                     }
@@ -376,10 +402,17 @@ where
                 crate::model::Userset::Exclusion { base, subtract } => {
                     // Expand base and subtract
                     let base_node = self
-                        .expand_userset(store_id, object_type, object_id, relation, base)
+                        .expand_userset(store_id, object_type, object_id, relation, base, depth + 1)
                         .await?;
                     let subtract_node = self
-                        .expand_userset(store_id, object_type, object_id, relation, subtract)
+                        .expand_userset(
+                            store_id,
+                            object_type,
+                            object_id,
+                            relation,
+                            subtract,
+                            depth + 1,
+                        )
                         .await?;
 
                     Ok(ExpandNode::Difference {
@@ -416,8 +449,8 @@ where
 
         // Check if store exists
         if !self.tuple_reader.store_exists(&request.store_id).await? {
-            return Err(DomainError::ResolverError {
-                message: format!("store not found: {}", request.store_id),
+            return Err(DomainError::StoreNotFound {
+                store_id: request.store_id.clone(),
             });
         }
 

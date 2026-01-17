@@ -56,14 +56,10 @@ pub fn classify_domain_error(err: &DomainError) -> DomainErrorKind {
         DomainError::InvalidRelationFormat { value } => {
             DomainErrorKind::InvalidInput(format!("invalid relation format: {value}"))
         }
-        DomainError::ResolverError { message } => {
-            // Check if this is a "store not found" error from the resolver
-            if message.starts_with("store not found:") {
-                DomainErrorKind::NotFound(message.clone())
-            } else {
-                DomainErrorKind::Internal(message.clone())
-            }
+        DomainError::StoreNotFound { store_id } => {
+            DomainErrorKind::NotFound(format!("store not found: {store_id}"))
         }
+        DomainError::ResolverError { message } => DomainErrorKind::Internal(message.clone()),
         // All other errors are treated as internal errors
         _ => DomainErrorKind::Internal(err.to_string()),
     }
@@ -112,12 +108,13 @@ mod tests {
 
     #[test]
     fn test_classify_store_not_found() {
-        let err = DomainError::ResolverError {
-            message: "store not found: xyz".to_string(),
+        let err = DomainError::StoreNotFound {
+            store_id: "xyz".to_string(),
         };
         match classify_domain_error(&err) {
             DomainErrorKind::NotFound(msg) => {
                 assert!(msg.contains("store not found"));
+                assert!(msg.contains("xyz"));
             }
             _ => panic!("Expected NotFound"),
         }

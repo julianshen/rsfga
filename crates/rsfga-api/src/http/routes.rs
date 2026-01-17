@@ -1364,6 +1364,7 @@ async fn list_objects<S: DataStore>(
     use rsfga_domain::resolver::ListObjectsRequest;
 
     // Convert contextual tuples from HTTP format to domain format
+    // Validate bounds on condition contexts (constraint C11: Fail Fast with Bounds)
     let contextual_tuples: Vec<ContextualTuple> = body
         .contextual_tuples
         .map(|ct| {
@@ -1371,19 +1372,37 @@ async fn list_objects<S: DataStore>(
                 .into_iter()
                 .map(|tk| {
                     if let Some(condition) = tk.condition {
-                        ContextualTuple::with_condition(
+                        // Validate context bounds before using
+                        if let Some(ref ctx) = condition.context {
+                            // Check depth limit
+                            if ctx.values().any(|v| json_exceeds_max_depth(v, 1)) {
+                                return Err(ApiError::invalid_input(
+                                    "condition context exceeds maximum nesting depth (10 levels)",
+                                ));
+                            }
+                            // Check size limit
+                            let estimated_size: usize =
+                                ctx.iter().map(|(k, v)| k.len() + v.to_string().len()).sum();
+                            if estimated_size > MAX_CONDITION_CONTEXT_SIZE {
+                                return Err(ApiError::invalid_input(format!(
+                                    "condition context exceeds maximum size ({MAX_CONDITION_CONTEXT_SIZE} bytes)"
+                                )));
+                            }
+                        }
+                        Ok(ContextualTuple::with_condition(
                             &tk.user,
                             &tk.relation,
                             &tk.object,
                             &condition.name,
                             condition.context,
-                        )
+                        ))
                     } else {
-                        ContextualTuple::new(&tk.user, &tk.relation, &tk.object)
+                        Ok(ContextualTuple::new(&tk.user, &tk.relation, &tk.object))
                     }
                 })
-                .collect()
+                .collect::<Result<Vec<_>, ApiError>>()
         })
+        .transpose()?
         .unwrap_or_default();
 
     // Create domain list objects request
