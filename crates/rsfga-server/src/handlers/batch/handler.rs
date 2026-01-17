@@ -362,7 +362,8 @@ fn classify_domain_error_kind(err: &rsfga_domain::error::DomainError) -> BatchCh
         | DomainError::InvalidObjectFormat { .. }
         | DomainError::InvalidRelationFormat { .. }
         | DomainError::DepthLimitExceeded { .. }
-        | DomainError::CycleDetected { .. } => BatchCheckItemErrorKind::Validation,
+        | DomainError::CycleDetected { .. }
+        | DomainError::StoreNotFound { .. } => BatchCheckItemErrorKind::Validation,
 
         // Server errors (500) - internal issues
         DomainError::Timeout { .. } | DomainError::ResolverError { .. } => {

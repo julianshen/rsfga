@@ -215,6 +215,81 @@ fn is_cockroachdb_version(version_string: &str) -> bool {
     version_string.to_lowercase().contains("cockroachdb")
 }
 
+/// Helper to build UNNEST clauses for batch operations.
+/// Handles the syntax difference between CockroachDB (ROWS FROM) and PostgreSQL (multi-arg UNNEST).
+fn build_unnest_clause(
+    use_rows_from: bool,
+    alias: &str,
+    columns: &[(&str, &str)], // (sql_type_suffix, column_name)
+) -> String {
+    let col_names = columns
+        .iter()
+        .map(|(_, name)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    if use_rows_from {
+        // CockroachDB syntax: ROWS FROM (UNNEST($2...), UNNEST($3...)...) AS alias(cols)
+        let unnest_calls = columns
+            .iter()
+            .enumerate()
+            .map(|(i, (ty, _))| format!("UNNEST(${}{})", i + 2, ty))
+            .collect::<Vec<_>>()
+            .join(",\n            ");
+
+        format!(
+            "ROWS FROM (\n            {}\n        ) AS {}({})",
+            unnest_calls, alias, col_names
+        )
+    } else {
+        // PostgreSQL syntax: UNNEST($2..., $3...) AS alias(cols)
+        let args = columns
+            .iter()
+            .enumerate()
+            .map(|(i, (ty, _))| format!("${}{}", i + 2, ty))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        format!("UNNEST({}) AS {}({})", args, alias, col_names)
+    }
+}
+
+/// Builds the UNNEST clause for batch delete operations.
+///
+/// CockroachDB requires `ROWS FROM (UNNEST(...), UNNEST(...))` syntax while
+/// PostgreSQL uses `UNNEST(..., ...) AS t(...)`.
+///
+/// The 6-column format (without condition columns) is used for delete operations.
+fn build_delete_unnest(use_rows_from: bool) -> String {
+    let columns = [
+        ("::text[]", "object_type"),
+        ("::text[]", "object_id"),
+        ("::text[]", "relation"),
+        ("::text[]", "user_type"),
+        ("::text[]", "user_id"),
+        ("::text[]", "user_relation"),
+    ];
+    build_unnest_clause(use_rows_from, "d", &columns)
+}
+
+/// Builds the UNNEST clause for batch insert/conflict-check operations.
+///
+/// CockroachDB requires `ROWS FROM` syntax while PostgreSQL uses multi-array UNNEST.
+/// The 8-column format (with condition columns) is used for insert and conflict check operations.
+fn build_insert_unnest(use_rows_from: bool, alias: &str) -> String {
+    let columns = [
+        ("::text[]", "object_type"),
+        ("::text[]", "object_id"),
+        ("::text[]", "relation"),
+        ("::text[]", "user_type"),
+        ("::text[]", "user_id"),
+        ("::text[]", "user_relation"),
+        ("::text[]", "condition_name"),
+        ("::jsonb[]", "condition_context"),
+    ];
+    build_unnest_clause(use_rows_from, alias, &columns)
+}
+
 impl PostgresDataStore {
     /// Creates a new PostgreSQL data store from a connection pool.
     ///
@@ -913,6 +988,11 @@ impl DataStore for PostgresDataStore {
             });
         }
 
+        // Detect database type for SQL syntax compatibility.
+        // CockroachDB uses ROWS FROM (UNNEST(...), UNNEST(...)) while
+        // PostgreSQL uses UNNEST(..., ...) AS t(...).
+        let use_rows_from_syntax = self.is_cockroachdb().await?;
+
         // Execute transaction with timeout protection.
         // The entire transaction block is wrapped in a timeout to prevent DoS attacks
         // from slow queries. On timeout, the transaction is automatically rolled back
@@ -936,12 +1016,13 @@ impl DataStore for PostgresDataStore {
                 let user_relations: Vec<Option<&str>> =
                     deletes.iter().map(|t| t.user_relation.as_deref()).collect();
 
-                sqlx::query(
+                // CockroachDB requires ROWS FROM syntax; PostgreSQL uses multi-array UNNEST
+                let unnest_clause = build_delete_unnest(use_rows_from_syntax);
+                let delete_query = format!(
                     r#"
                     DELETE FROM tuples t
                     USING (
-                        SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
-                        AS d(object_type, object_id, relation, user_type, user_id, user_relation)
+                        SELECT * FROM {unnest_clause}
                     ) AS del
                     WHERE t.store_id = $1
                       AND t.object_type = del.object_type
@@ -950,8 +1031,9 @@ impl DataStore for PostgresDataStore {
                       AND t.user_type = del.user_type
                       AND t.user_id = del.user_id
                       AND COALESCE(t.user_relation, '') = COALESCE(del.user_relation, '')
-                    "#,
-                )
+                    "#
+                );
+                sqlx::query(&delete_query)
                 .bind(store_id)
                 .bind(&object_types)
                 .bind(&object_ids)
@@ -1000,7 +1082,8 @@ impl DataStore for PostgresDataStore {
                 // - Post-insert verification only runs when rows_affected < input count
                 // - The LIMIT 1 ensures we fail fast on first conflict
                 // Trade-off: Correctness over raw throughput (Invariant I1)
-                let conflict_check = sqlx::query(
+                let unnest_clause = build_insert_unnest(use_rows_from_syntax, "x");
+                let conflict_check_query = format!(
                     r#"
                     SELECT
                         t.object_type, t.object_id, t.relation,
@@ -1009,8 +1092,7 @@ impl DataStore for PostgresDataStore {
                         new.condition_name AS new_condition
                     FROM tuples t
                     INNER JOIN (
-                        SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
-                        AS x(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
+                        SELECT * FROM {unnest_clause}
                     ) AS new
                     ON t.store_id = $1
                        AND t.object_type = new.object_type
@@ -1023,8 +1105,9 @@ impl DataStore for PostgresDataStore {
                        OR (t.condition_context IS DISTINCT FROM new.condition_context)
                     FOR UPDATE OF t
                     LIMIT 1
-                    "#,
-                )
+                    "#
+                );
+                let conflict_check = sqlx::query(&conflict_check_query)
                 .bind(store_id)
                 .bind(&object_types)
                 .bind(&object_ids)
@@ -1065,16 +1148,17 @@ impl DataStore for PostgresDataStore {
                 // Insert with ON CONFLICT DO NOTHING for truly identical tuples (idempotent).
                 // We've already verified no condition conflicts exist above, and FOR UPDATE
                 // locks prevent concurrent inserts with different conditions.
-                let insert_result = sqlx::query(
+                let unnest_clause = build_insert_unnest(use_rows_from_syntax, "t");
+                let insert_query = format!(
                     r#"
                     INSERT INTO tuples (store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
                     SELECT $1, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context
-                    FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
-                    AS t(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
+                    FROM {unnest_clause}
                     ON CONFLICT (store_id, object_type, object_id, relation, user_type, user_id, (COALESCE(user_relation, '')))
                     DO NOTHING
-                    "#,
-                )
+                    "#
+                );
+                let insert_result = sqlx::query(&insert_query)
                 .bind(store_id)
                 .bind(&object_types)
                 .bind(&object_ids)
@@ -1097,7 +1181,8 @@ impl DataStore for PostgresDataStore {
                 if inserted_count < writes.len() {
                     // Some rows weren't inserted - could be duplicates or race condition.
                     // Re-run conflict check to detect any condition conflicts that occurred.
-                    let post_conflict = sqlx::query(
+                    let unnest_clause = build_insert_unnest(use_rows_from_syntax, "x");
+                    let post_conflict_query = format!(
                         r#"
                         SELECT
                             t.object_type, t.object_id, t.relation,
@@ -1106,8 +1191,7 @@ impl DataStore for PostgresDataStore {
                             new.condition_name AS new_condition
                         FROM tuples t
                         INNER JOIN (
-                            SELECT * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
-                            AS x(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)
+                            SELECT * FROM {unnest_clause}
                         ) AS new
                         ON t.store_id = $1
                            AND t.object_type = new.object_type
@@ -1119,8 +1203,9 @@ impl DataStore for PostgresDataStore {
                         WHERE (t.condition_name IS DISTINCT FROM new.condition_name)
                            OR (t.condition_context IS DISTINCT FROM new.condition_context)
                         LIMIT 1
-                        "#,
-                    )
+                        "#
+                    );
+                    let post_conflict = sqlx::query(&post_conflict_query)
                     .bind(store_id)
                     .bind(&object_types)
                     .bind(&object_ids)
@@ -1936,5 +2021,61 @@ mod tests {
         assert!(is_cockroachdb_version(
             "Database: CockroachDB CCL v23.1.0 running on cluster xyz"
         ));
+    }
+
+    // =========================================================================
+    // UNNEST Helper Function Tests
+    // =========================================================================
+
+    #[test]
+    fn test_build_delete_unnest_postgres_syntax() {
+        let result = build_delete_unnest(false);
+        // PostgreSQL uses multi-array UNNEST
+        assert!(result.contains("UNNEST($2::text[], $3::text[]"));
+        assert!(result.contains("AS d(object_type, object_id"));
+        // Should NOT use ROWS FROM
+        assert!(!result.contains("ROWS FROM"));
+    }
+
+    #[test]
+    fn test_build_delete_unnest_cockroachdb_syntax() {
+        let result = build_delete_unnest(true);
+        // CockroachDB uses ROWS FROM with individual UNNESTs
+        assert!(result.contains("ROWS FROM"));
+        assert!(result.contains("UNNEST($2::text[])"));
+        assert!(result.contains("UNNEST($3::text[])"));
+        assert!(result.contains("AS d(object_type, object_id"));
+    }
+
+    #[test]
+    fn test_build_insert_unnest_postgres_syntax() {
+        let result = build_insert_unnest(false, "t");
+        // PostgreSQL uses multi-array UNNEST
+        assert!(result.contains("UNNEST($2::text[], $3::text[]"));
+        assert!(result.contains("AS t(object_type, object_id"));
+        assert!(result.contains("condition_name, condition_context)"));
+        // Should NOT use ROWS FROM
+        assert!(!result.contains("ROWS FROM"));
+    }
+
+    #[test]
+    fn test_build_insert_unnest_cockroachdb_syntax() {
+        let result = build_insert_unnest(true, "t");
+        // CockroachDB uses ROWS FROM with individual UNNESTs
+        assert!(result.contains("ROWS FROM"));
+        assert!(result.contains("UNNEST($2::text[])"));
+        assert!(result.contains("UNNEST($9::jsonb[])"));
+        assert!(result.contains("AS t(object_type, object_id"));
+        assert!(result.contains("condition_name, condition_context)"));
+    }
+
+    #[test]
+    fn test_build_insert_unnest_custom_alias() {
+        // Test that the alias parameter is used correctly
+        let result_x = build_insert_unnest(false, "x");
+        assert!(result_x.contains("AS x("));
+
+        let result_new = build_insert_unnest(true, "new_alias");
+        assert!(result_new.contains("AS new_alias("));
     }
 }

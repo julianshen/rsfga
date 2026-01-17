@@ -852,89 +852,165 @@ pub struct ExpandRequestBody {
 /// Response for expand operation.
 #[derive(Debug, Serialize)]
 pub struct ExpandResponseBody {
-    pub tree: Option<ExpandTreeNode>,
-}
-
-/// Node in the expand tree (OpenFGA compatible).
-#[derive(Debug, Clone, Serialize)]
-pub struct ExpandTreeNode {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub root: Option<ExpandNodeRoot>,
+    pub tree: Option<ExpandNodeBody>,
 }
 
-/// Root node which can be a leaf or computed userset.
-// Note: Variants other than Leaf are not yet used but will be needed
-// when the full Expand API is implemented.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize)]
-#[serde(untagged)]
-pub enum ExpandNodeRoot {
-    Leaf(ExpandLeafNode),
-    Computed(ExpandComputedNode),
-    Union(ExpandUnionNode),
-    Intersection(ExpandIntersectionNode),
-    Difference(ExpandDifferenceNode),
+/// A node in the expansion tree.
+#[derive(Debug, Serialize, Default)]
+pub struct ExpandNodeBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leaf: Option<ExpandLeafBody>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub union: Option<ExpandNodesBody>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intersection: Option<ExpandNodesBody>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub difference: Option<ExpandDifferenceBody>,
 }
 
-/// Leaf node containing direct users.
-#[derive(Debug, Clone, Serialize)]
-pub struct ExpandLeafNode {
-    pub leaf: ExpandLeafUsers,
+impl ExpandNodeBody {
+    fn new_leaf(name: String, leaf: ExpandLeafBody) -> Self {
+        Self {
+            name: Some(name),
+            leaf: Some(leaf),
+            ..Default::default()
+        }
+    }
+
+    fn new_union(name: String, nodes: Vec<ExpandNodeBody>) -> Self {
+        Self {
+            name: Some(name),
+            union: Some(ExpandNodesBody { nodes }),
+            ..Default::default()
+        }
+    }
+
+    fn new_intersection(name: String, nodes: Vec<ExpandNodeBody>) -> Self {
+        Self {
+            name: Some(name),
+            intersection: Some(ExpandNodesBody { nodes }),
+            ..Default::default()
+        }
+    }
+
+    fn new_difference(name: String, base: ExpandNodeBody, subtract: ExpandNodeBody) -> Self {
+        Self {
+            name: Some(name),
+            difference: Some(ExpandDifferenceBody {
+                base: Box::new(base),
+                subtract: Box::new(subtract),
+            }),
+            ..Default::default()
+        }
+    }
 }
 
-/// Users in a leaf node.
-#[derive(Debug, Clone, Serialize)]
-pub struct ExpandLeafUsers {
-    pub users: ExpandUsers,
+/// Container for child nodes in union/intersection.
+#[derive(Debug, Serialize)]
+pub struct ExpandNodesBody {
+    pub nodes: Vec<ExpandNodeBody>,
 }
 
-/// List of users.
-#[derive(Debug, Clone, Serialize)]
-pub struct ExpandUsers {
+/// Difference (exclusion) node structure.
+#[derive(Debug, Serialize)]
+pub struct ExpandDifferenceBody {
+    pub base: Box<ExpandNodeBody>,
+    pub subtract: Box<ExpandNodeBody>,
+}
+
+/// A leaf node containing users or references.
+#[derive(Debug, Serialize, Default)]
+pub struct ExpandLeafBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub users: Option<ExpandUsersBody>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub computed: Option<ExpandComputedBody>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tuple_to_userset: Option<ExpandTupleToUsersetBody>,
+}
+
+impl ExpandLeafBody {
+    fn new_users(users: Vec<String>) -> Self {
+        Self {
+            users: Some(ExpandUsersBody { users }),
+            ..Default::default()
+        }
+    }
+
+    fn new_computed(userset: String) -> Self {
+        Self {
+            computed: Some(ExpandComputedBody { userset }),
+            ..Default::default()
+        }
+    }
+
+    fn new_tuple_to_userset(tupleset: String, computed_userset: String) -> Self {
+        Self {
+            tuple_to_userset: Some(ExpandTupleToUsersetBody {
+                tupleset,
+                computed_userset,
+            }),
+            ..Default::default()
+        }
+    }
+}
+
+/// Direct users in a leaf node.
+#[derive(Debug, Serialize)]
+pub struct ExpandUsersBody {
     pub users: Vec<String>,
 }
 
-/// Computed userset node.
-#[derive(Debug, Clone, Serialize)]
-pub struct ExpandComputedNode {
-    pub computed: ExpandComputed,
-}
-
 /// Computed userset reference.
-#[derive(Debug, Clone, Serialize)]
-pub struct ExpandComputed {
+#[derive(Debug, Serialize)]
+pub struct ExpandComputedBody {
     pub userset: String,
 }
 
-/// Union node containing child nodes.
-#[derive(Debug, Clone, Serialize)]
-pub struct ExpandUnionNode {
-    pub union: ExpandChildren,
+/// Tuple-to-userset reference.
+#[derive(Debug, Serialize)]
+pub struct ExpandTupleToUsersetBody {
+    pub tupleset: String,
+    pub computed_userset: String,
 }
 
-/// Intersection node containing child nodes.
-#[derive(Debug, Clone, Serialize)]
-pub struct ExpandIntersectionNode {
-    pub intersection: ExpandChildren,
-}
+/// Converts a domain ExpandNode to an HTTP response body.
+fn expand_node_to_body(node: rsfga_domain::resolver::ExpandNode) -> ExpandNodeBody {
+    use rsfga_domain::resolver::{ExpandLeafValue, ExpandNode};
 
-/// Difference node containing base and subtract nodes.
-#[derive(Debug, Clone, Serialize)]
-pub struct ExpandDifferenceNode {
-    pub difference: ExpandDifferenceChildren,
-}
-
-/// Children nodes for union/intersection.
-#[derive(Debug, Clone, Serialize)]
-pub struct ExpandChildren {
-    pub nodes: Vec<ExpandTreeNode>,
-}
-
-/// Children for difference operation.
-#[derive(Debug, Clone, Serialize)]
-pub struct ExpandDifferenceChildren {
-    pub base: Box<ExpandTreeNode>,
-    pub subtract: Box<ExpandTreeNode>,
+    match node {
+        ExpandNode::Leaf(leaf) => {
+            let leaf_body = match leaf.value {
+                ExpandLeafValue::Users(users) => ExpandLeafBody::new_users(users),
+                ExpandLeafValue::Computed { userset } => ExpandLeafBody::new_computed(userset),
+                ExpandLeafValue::TupleToUserset {
+                    tupleset,
+                    computed_userset,
+                } => ExpandLeafBody::new_tuple_to_userset(tupleset, computed_userset),
+            };
+            ExpandNodeBody::new_leaf(leaf.name, leaf_body)
+        }
+        ExpandNode::Union { name, nodes } => {
+            let child_nodes = nodes.into_iter().map(expand_node_to_body).collect();
+            ExpandNodeBody::new_union(name, child_nodes)
+        }
+        ExpandNode::Intersection { name, nodes } => {
+            let child_nodes = nodes.into_iter().map(expand_node_to_body).collect();
+            ExpandNodeBody::new_intersection(name, child_nodes)
+        }
+        ExpandNode::Difference {
+            name,
+            base,
+            subtract,
+        } => ExpandNodeBody::new_difference(
+            name,
+            expand_node_to_body(*base),
+            expand_node_to_body(*subtract),
+        ),
+    }
 }
 
 async fn expand<S: DataStore>(
@@ -942,42 +1018,19 @@ async fn expand<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<ExpandRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
-    use rsfga_storage::TupleFilter;
+    use rsfga_domain::resolver::ExpandRequest;
 
-    // Validate store exists
-    let _ = state.storage.get_store(&store_id).await?;
+    // Create domain expand request
+    let expand_request =
+        ExpandRequest::new(&store_id, &body.tuple_key.relation, &body.tuple_key.object);
 
-    // Parse the object to get type and id
-    let (object_type, object_id) = parse_object(&body.tuple_key.object).ok_or_else(|| {
-        ApiError::invalid_input(format!("invalid object format: {}", body.tuple_key.object))
-    })?;
+    // Delegate to GraphResolver for expansion
+    let result = state.resolver.expand(&expand_request).await?;
 
-    // Read tuples matching the relation and object
-    let filter = TupleFilter {
-        object_type: Some(object_type.to_string()),
-        object_id: Some(object_id.to_string()),
-        relation: Some(body.tuple_key.relation.clone()),
-        user: None,
-        condition_name: None,
-    };
-
-    let tuples = state.storage.read_tuples(&store_id, &filter).await?;
-
-    // Build the expand tree - for direct relations, return a leaf with all users
-    let users: Vec<String> = tuples
-        .into_iter()
-        .map(|t| format_user(&t.user_type, &t.user_id, t.user_relation.as_deref()))
-        .collect();
-
-    let tree = ExpandTreeNode {
-        root: Some(ExpandNodeRoot::Leaf(ExpandLeafNode {
-            leaf: ExpandLeafUsers {
-                users: ExpandUsers { users },
-            },
-        })),
-    };
-
-    Ok(Json(ExpandResponseBody { tree: Some(tree) }))
+    // Convert domain result to HTTP response
+    Ok(Json(ExpandResponseBody {
+        tree: Some(expand_node_to_body(result.tree.root)),
+    }))
 }
 
 // ============================================================

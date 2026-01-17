@@ -8,7 +8,8 @@ use rsfga_domain::cache::{CheckCache, CheckCacheConfig};
 use rsfga_domain::cel::global_cache;
 use rsfga_domain::error::DomainError;
 use rsfga_domain::resolver::{
-    CheckRequest as DomainCheckRequest, ContextualTuple, GraphResolver, ResolverConfig,
+    CheckRequest as DomainCheckRequest, ContextualTuple, ExpandRequest as DomainExpandRequest,
+    GraphResolver, ResolverConfig,
 };
 use rsfga_server::handlers::batch::BatchCheckHandler;
 use rsfga_storage::{DataStore, DateTime, StorageError, StoredTuple, TupleFilter, Utc};
@@ -18,16 +19,17 @@ use crate::utils::{format_user, parse_object, parse_user};
 
 use crate::proto::openfga::v1::{
     open_fga_service_server::OpenFgaService, BatchCheckRequest, BatchCheckResponse,
-    BatchCheckSingleResult, CheckError, CheckRequest, CheckResponse, CreateStoreRequest,
+    BatchCheckSingleResult, CheckError, CheckRequest, CheckResponse, Computed, CreateStoreRequest,
     CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse, ErrorCode, ExpandRequest,
-    ExpandResponse, GetStoreRequest, GetStoreResponse, ListObjectsRequest, ListObjectsResponse,
-    ListStoresRequest, ListStoresResponse, ListUsersRequest, ListUsersResponse,
-    ReadAssertionsRequest, ReadAssertionsResponse, ReadAuthorizationModelRequest,
-    ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
+    ExpandResponse, GetStoreRequest, GetStoreResponse, Leaf, ListObjectsRequest,
+    ListObjectsResponse, ListStoresRequest, ListStoresResponse, ListUsersRequest,
+    ListUsersResponse, Node, Nodes, ObjectRelation, ReadAssertionsRequest, ReadAssertionsResponse,
+    ReadAuthorizationModelRequest, ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
     ReadAuthorizationModelsResponse, ReadChangesRequest, ReadChangesResponse, ReadRequest,
-    ReadResponse, RelationshipCondition, Store, Tuple, TupleKey, UpdateStoreRequest,
-    UpdateStoreResponse, WriteAssertionsRequest, WriteAssertionsResponse,
-    WriteAuthorizationModelRequest, WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
+    ReadResponse, RelationshipCondition, Store, Tuple, TupleKey, TupleToUserset,
+    UpdateStoreRequest, UpdateStoreResponse, Users, UsersetTree, WriteAssertionsRequest,
+    WriteAssertionsResponse, WriteAuthorizationModelRequest, WriteAuthorizationModelResponse,
+    WriteRequest, WriteResponse,
 };
 
 /// Maximum allowed length for correlation IDs to prevent DoS attacks.
@@ -409,6 +411,83 @@ fn datetime_to_timestamp(dt: DateTime<Utc>) -> prost_types::Timestamp {
     }
 }
 
+/// Converts a domain ExpandNode to a proto Node.
+fn expand_node_to_proto(node: rsfga_domain::resolver::ExpandNode) -> Node {
+    use rsfga_domain::resolver::{ExpandLeafValue, ExpandNode as DomainExpandNode};
+
+    match node {
+        DomainExpandNode::Leaf(leaf) => {
+            // Extract object from leaf.name (format: "type:id#relation") before moving name
+            // The tupleset relation is on the same object being expanded
+            let object_for_tupleset = leaf.name.split('#').next().unwrap_or("").to_string();
+            Node {
+                name: leaf.name,
+                value: Some(crate::proto::openfga::v1::node::Value::Leaf(
+                    match leaf.value {
+                        ExpandLeafValue::Users(users) => Leaf {
+                            value: Some(crate::proto::openfga::v1::leaf::Value::Users(Users {
+                                users,
+                            })),
+                        },
+                        ExpandLeafValue::Computed { userset } => Leaf {
+                            value: Some(crate::proto::openfga::v1::leaf::Value::Computed(
+                                Computed { userset },
+                            )),
+                        },
+                        ExpandLeafValue::TupleToUserset {
+                            tupleset,
+                            computed_userset,
+                        } => Leaf {
+                            value: Some(crate::proto::openfga::v1::leaf::Value::TupleToUserset(
+                                TupleToUserset {
+                                    tupleset: Some(ObjectRelation {
+                                        object: object_for_tupleset,
+                                        relation: tupleset,
+                                    }),
+                                    // computed_userset object is unknown without further resolution
+                                    computed_userset: Some(ObjectRelation {
+                                        object: String::new(),
+                                        relation: computed_userset,
+                                    }),
+                                },
+                            )),
+                        },
+                    },
+                )),
+            }
+        }
+        DomainExpandNode::Union { name, nodes } => Node {
+            name,
+            value: Some(crate::proto::openfga::v1::node::Value::Union(Nodes {
+                nodes: nodes.into_iter().map(expand_node_to_proto).collect(),
+            })),
+        },
+        DomainExpandNode::Intersection { name, nodes } => Node {
+            name,
+            value: Some(crate::proto::openfga::v1::node::Value::Intersection(
+                Nodes {
+                    nodes: nodes.into_iter().map(expand_node_to_proto).collect(),
+                },
+            )),
+        },
+        DomainExpandNode::Difference {
+            name,
+            base,
+            subtract,
+        } => {
+            // Note: OpenFGA proto uses Nodes for difference (with 2 nodes: base, subtract)
+            // This matches OpenFGA's representation where difference.nodes[0] is base
+            // and difference.nodes[1] is subtract
+            Node {
+                name,
+                value: Some(crate::proto::openfga::v1::node::Value::Difference(Nodes {
+                    nodes: vec![expand_node_to_proto(*base), expand_node_to_proto(*subtract)],
+                })),
+            }
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
     async fn check(
@@ -726,15 +805,27 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
     ) -> Result<Response<ExpandResponse>, Status> {
         let req = request.into_inner();
 
-        // Validate store exists
-        let _ = self
-            .storage
-            .get_store(&req.store_id)
-            .await
-            .map_err(storage_error_to_status)?;
+        let tuple_key = req
+            .tuple_key
+            .ok_or_else(|| Status::invalid_argument("tuple_key is required"))?;
 
-        // Expand not yet implemented
-        Ok(Response::new(ExpandResponse { tree: None }))
+        // Create domain expand request
+        let expand_request =
+            DomainExpandRequest::new(&req.store_id, &tuple_key.relation, &tuple_key.object);
+
+        // Delegate to GraphResolver for expansion
+        let result = self
+            .resolver
+            .expand(&expand_request)
+            .await
+            .map_err(domain_error_to_status)?;
+
+        // Convert domain result to proto response
+        Ok(Response::new(ExpandResponse {
+            tree: Some(UsersetTree {
+                root: Some(expand_node_to_proto(result.tree.root)),
+            }),
+        }))
     }
 
     async fn list_objects(
