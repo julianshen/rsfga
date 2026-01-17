@@ -2140,4 +2140,13 @@ mod tests {
         let result_new = build_insert_unnest(true, "new_alias");
         assert!(result_new.contains("AS new_alias("));
     }
+
+    #[test]
+    fn test_list_objects_by_type_signature() {
+        // Verify the method exists in the implementation
+        async fn _verify_impl(store: &PostgresDataStore) {
+            let _: StorageResult<Vec<String>> = 
+                store.list_objects_by_type("store", "type", 10).await;
+        }
+    }
 }
