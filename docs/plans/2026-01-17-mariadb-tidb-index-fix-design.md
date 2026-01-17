@@ -1,7 +1,7 @@
 # MariaDB/TiDB Index Key Length Fix
 
 **Date**: 2026-01-17
-**Status**: Approved
+**Status**: Verified ✅
 **Issues**: #175 (MariaDB), #176 (TiDB)
 
 ## Problem Statement
@@ -161,8 +161,8 @@ async fn test_migration_succeeds_with_valid_data()
 
 ### Manual Verification
 
-- [ ] Fresh MariaDB install starts successfully *(requires manual test with MariaDB container)*
-- [ ] Fresh TiDB install starts successfully *(requires manual test with TiDB container)*
+- [x] Fresh MariaDB install starts successfully *(verified: 56/56 tests pass on MariaDB 10.6)*
+- [x] Fresh TiDB install starts successfully *(verified: 56/56 tests pass on TiDB latest)*
 - [x] Existing MySQL database migrates cleanly *(covered by `test_column_size_migration_idempotent`)*
 - [x] Oversized data blocks migration with clear error *(code review - `validate_column_sizes_for_migration()`)*
 - [x] All CRUD operations work after migration *(covered by `test_crud_operations_with_new_column_sizes`)*
