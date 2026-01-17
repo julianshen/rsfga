@@ -26,52 +26,6 @@ const DEFAULT_HEALTH_CHECK_TIMEOUT_SECS: u64 = 5;
 /// Default query timeout in seconds.
 const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 30;
 
-/// Builds the UNNEST clause for batch delete operations.
-///
-/// CockroachDB requires ROWS FROM syntax while PostgreSQL uses multi-array UNNEST.
-/// The 6-column format (without condition columns) is used for delete operations.
-fn build_delete_unnest(use_rows_from: bool) -> &'static str {
-    if use_rows_from {
-        r#"ROWS FROM (
-            unnest($2::text[]),
-            unnest($3::text[]),
-            unnest($4::text[]),
-            unnest($5::text[]),
-            unnest($6::text[]),
-            unnest($7::text[])
-        ) AS d(object_type, object_id, relation, user_type, user_id, user_relation)"#
-    } else {
-        r#"UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
-        AS d(object_type, object_id, relation, user_type, user_id, user_relation)"#
-    }
-}
-
-/// Builds the UNNEST clause for batch insert/conflict-check operations.
-///
-/// CockroachDB requires ROWS FROM syntax while PostgreSQL uses multi-array UNNEST.
-/// The 8-column format (with condition columns) is used for insert and conflict check operations.
-fn build_insert_unnest(use_rows_from: bool, alias: &str) -> String {
-    if use_rows_from {
-        format!(
-            r#"ROWS FROM (
-            unnest($2::text[]),
-            unnest($3::text[]),
-            unnest($4::text[]),
-            unnest($5::text[]),
-            unnest($6::text[]),
-            unnest($7::text[]),
-            unnest($8::text[]),
-            unnest($9::jsonb[])
-        ) AS {alias}(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)"#
-        )
-    } else {
-        format!(
-            r#"UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
-        AS {alias}(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)"#
-        )
-    }
-}
-
 /// Validate condition_context size to prevent DoS via large JSON payloads.
 fn validate_condition_context_size(tuple: &StoredTuple) -> StorageResult<()> {
     if let Some(ctx) = &tuple.condition_context {
@@ -258,6 +212,54 @@ pub struct PostgresDataStore {
 /// This function performs case-insensitive matching for robustness.
 fn is_cockroachdb_version(version_string: &str) -> bool {
     version_string.to_lowercase().contains("cockroachdb")
+}
+
+/// Builds the UNNEST clause for batch delete operations.
+///
+/// CockroachDB requires `ROWS FROM (UNNEST(...), UNNEST(...))` syntax while
+/// PostgreSQL uses `UNNEST(..., ...) AS t(...)`.
+///
+/// The 6-column format (without condition columns) is used for delete operations.
+fn build_delete_unnest(use_rows_from: bool) -> &'static str {
+    if use_rows_from {
+        r#"ROWS FROM (
+            unnest($2::text[]),
+            unnest($3::text[]),
+            unnest($4::text[]),
+            unnest($5::text[]),
+            unnest($6::text[]),
+            unnest($7::text[])
+        ) AS d(object_type, object_id, relation, user_type, user_id, user_relation)"#
+    } else {
+        r#"UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+        AS d(object_type, object_id, relation, user_type, user_id, user_relation)"#
+    }
+}
+
+/// Builds the UNNEST clause for batch insert/conflict-check operations.
+///
+/// CockroachDB requires `ROWS FROM` syntax while PostgreSQL uses multi-array UNNEST.
+/// The 8-column format (with condition columns) is used for insert and conflict check operations.
+fn build_insert_unnest(use_rows_from: bool, alias: &str) -> String {
+    if use_rows_from {
+        format!(
+            r#"ROWS FROM (
+            unnest($2::text[]),
+            unnest($3::text[]),
+            unnest($4::text[]),
+            unnest($5::text[]),
+            unnest($6::text[]),
+            unnest($7::text[]),
+            unnest($8::text[]),
+            unnest($9::jsonb[])
+        ) AS {alias}(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)"#
+        )
+    } else {
+        format!(
+            r#"UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::jsonb[])
+        AS {alias}(object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context)"#
+        )
+    }
 }
 
 impl PostgresDataStore {
@@ -958,11 +960,9 @@ impl DataStore for PostgresDataStore {
             });
         }
 
-        // Detect CockroachDB for query syntax selection.
-        // CockroachDB doesn't support PostgreSQL's multi-array UNNEST syntax:
-        //   UNNEST($1::text[], $2::text[], ...) AS t(col1, col2, ...)
-        // Instead, it requires ROWS FROM syntax:
-        //   ROWS FROM (unnest($1::text[]), unnest($2::text[]), ...) AS t(col1, col2, ...)
+        // Detect database type for SQL syntax compatibility.
+        // CockroachDB uses ROWS FROM (UNNEST(...), UNNEST(...)) while
+        // PostgreSQL uses UNNEST(..., ...) AS t(...).
         let use_rows_from_syntax = self.is_cockroachdb().await?;
 
         // Execute transaction with timeout protection.
@@ -1378,62 +1378,6 @@ impl DataStore for PostgresDataStore {
             items,
             continuation_token,
         })
-    }
-
-    #[instrument(skip(self))]
-    async fn list_object_ids_by_type(
-        &self,
-        store_id: &str,
-        object_type: &str,
-    ) -> StorageResult<Vec<String>> {
-        // Validate inputs
-        validate_store_id(store_id)?;
-
-        // Verify store exists
-        let store_exists: bool = self
-            .execute_with_timeout("list_object_ids_store_check", async {
-                sqlx::query_scalar(
-                    r#"
-                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
-                    "#,
-                )
-                .bind(store_id)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to check store existence: {e}"),
-                })
-            })
-            .await?;
-
-        if !store_exists {
-            return Err(StorageError::StoreNotFound {
-                store_id: store_id.to_string(),
-            });
-        }
-
-        // Use SELECT DISTINCT for efficient deduplication at the database level
-        let object_ids: Vec<String> = self
-            .execute_with_timeout("list_object_ids_by_type", async {
-                sqlx::query_scalar(
-                    r#"
-                    SELECT DISTINCT object_id
-                    FROM tuples
-                    WHERE store_id = $1 AND object_type = $2
-                    ORDER BY object_id
-                    "#,
-                )
-                .bind(store_id)
-                .bind(object_type)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to list object IDs: {e}"),
-                })
-            })
-            .await?;
-
-        Ok(object_ids)
     }
 
     async fn begin_transaction(&self) -> StorageResult<()> {
@@ -2049,5 +1993,61 @@ mod tests {
         assert!(is_cockroachdb_version(
             "Database: CockroachDB CCL v23.1.0 running on cluster xyz"
         ));
+    }
+
+    // =========================================================================
+    // UNNEST Helper Function Tests
+    // =========================================================================
+
+    #[test]
+    fn test_build_delete_unnest_postgres_syntax() {
+        let result = build_delete_unnest(false);
+        // PostgreSQL uses multi-array UNNEST
+        assert!(result.contains("UNNEST($2::text[], $3::text[]"));
+        assert!(result.contains("AS d(object_type, object_id"));
+        // Should NOT use ROWS FROM
+        assert!(!result.contains("ROWS FROM"));
+    }
+
+    #[test]
+    fn test_build_delete_unnest_cockroachdb_syntax() {
+        let result = build_delete_unnest(true);
+        // CockroachDB uses ROWS FROM with individual UNNESTs
+        assert!(result.contains("ROWS FROM"));
+        assert!(result.contains("unnest($2::text[])"));
+        assert!(result.contains("unnest($3::text[])"));
+        assert!(result.contains("AS d(object_type, object_id"));
+    }
+
+    #[test]
+    fn test_build_insert_unnest_postgres_syntax() {
+        let result = build_insert_unnest(false, "t");
+        // PostgreSQL uses multi-array UNNEST
+        assert!(result.contains("UNNEST($2::text[], $3::text[]"));
+        assert!(result.contains("AS t(object_type, object_id"));
+        assert!(result.contains("condition_name, condition_context)"));
+        // Should NOT use ROWS FROM
+        assert!(!result.contains("ROWS FROM"));
+    }
+
+    #[test]
+    fn test_build_insert_unnest_cockroachdb_syntax() {
+        let result = build_insert_unnest(true, "t");
+        // CockroachDB uses ROWS FROM with individual UNNESTs
+        assert!(result.contains("ROWS FROM"));
+        assert!(result.contains("unnest($2::text[])"));
+        assert!(result.contains("unnest($9::jsonb[])"));
+        assert!(result.contains("AS t(object_type, object_id"));
+        assert!(result.contains("condition_name, condition_context)"));
+    }
+
+    #[test]
+    fn test_build_insert_unnest_custom_alias() {
+        // Test that the alias parameter is used correctly
+        let result_x = build_insert_unnest(false, "x");
+        assert!(result_x.contains("AS x("));
+
+        let result_new = build_insert_unnest(true, "new_alias");
+        assert!(result_new.contains("AS new_alias("));
     }
 }

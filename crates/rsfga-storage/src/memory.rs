@@ -374,39 +374,6 @@ impl DataStore for MemoryDataStore {
         })
     }
 
-    async fn list_object_ids_by_type(
-        &self,
-        store_id: &str,
-        object_type: &str,
-    ) -> StorageResult<Vec<String>> {
-        use std::collections::HashSet;
-
-        // Verify store exists
-        if !self.stores.contains_key(store_id) {
-            return Err(StorageError::StoreNotFound {
-                store_id: store_id.to_string(),
-            });
-        }
-
-        // Collect unique object IDs for the given type
-        let object_ids: HashSet<String> = self
-            .tuples
-            .get(store_id)
-            .map(|tuples| {
-                tuples
-                    .iter()
-                    .filter(|t| t.object_type == object_type)
-                    .map(|t| t.object_id.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Convert to sorted vector for consistent results
-        let mut result: Vec<String> = object_ids.into_iter().collect();
-        result.sort();
-        Ok(result)
-    }
-
     // Authorization model operations
 
     async fn write_authorization_model(

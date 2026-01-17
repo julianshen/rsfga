@@ -336,20 +336,6 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
             }),
         }
     }
-
-    async fn list_objects_by_type(
-        &self,
-        store_id: &str,
-        object_type: &str,
-    ) -> DomainResult<Vec<String>> {
-        // Use the optimized storage method that performs SELECT DISTINCT at the database level
-        self.storage
-            .list_object_ids_by_type(store_id, object_type)
-            .await
-            .map_err(|e| DomainError::ResolverError {
-                message: format!("storage error: {e}"),
-            })
-    }
 }
 
 /// Adapter that implements `ModelReader` using a `DataStore`.

@@ -1237,62 +1237,6 @@ impl DataStore for MySQLDataStore {
         })
     }
 
-    #[instrument(skip(self))]
-    async fn list_object_ids_by_type(
-        &self,
-        store_id: &str,
-        object_type: &str,
-    ) -> StorageResult<Vec<String>> {
-        // Validate inputs
-        validate_store_id(store_id)?;
-
-        // Verify store exists
-        let store_exists: bool = self
-            .execute_with_timeout("list_object_ids_store_check", async {
-                sqlx::query_scalar(
-                    r#"
-                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
-                    "#,
-                )
-                .bind(store_id)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to check store existence: {e}"),
-                })
-            })
-            .await?;
-
-        if !store_exists {
-            return Err(StorageError::StoreNotFound {
-                store_id: store_id.to_string(),
-            });
-        }
-
-        // Use SELECT DISTINCT for efficient deduplication at the database level
-        let object_ids: Vec<String> = self
-            .execute_with_timeout("list_object_ids_by_type", async {
-                sqlx::query_scalar(
-                    r#"
-                    SELECT DISTINCT object_id
-                    FROM tuples
-                    WHERE store_id = ? AND object_type = ?
-                    ORDER BY object_id
-                    "#,
-                )
-                .bind(store_id)
-                .bind(object_type)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to list object IDs: {e}"),
-                })
-            })
-            .await?;
-
-        Ok(object_ids)
-    }
-
     async fn begin_transaction(&self) -> StorageResult<()> {
         // No-op: Individual transaction control is not supported.
         // Callers MUST check supports_transactions() before calling this method.

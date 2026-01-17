@@ -39,8 +39,4 @@ mod tests;
 pub use config::ResolverConfig;
 pub use graph_resolver::{CacheMetrics, CacheMetricsSnapshot, GraphResolver};
 pub use traits::{ModelReader, TupleReader};
-pub use types::{
-    CheckRequest, CheckResult, ContextualTuple, ExpandLeaf, ExpandLeafValue, ExpandNode,
-    ExpandRequest, ExpandResult, ListObjectsRequest, ListObjectsResult, StoredTupleRef,
-    UsersetTree,
-};
+pub use types::{CheckRequest, CheckResult, ContextualTuple, StoredTupleRef};

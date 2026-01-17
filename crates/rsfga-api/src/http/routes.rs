@@ -635,7 +635,6 @@ async fn check<S: DataStore>(
     Json(body): Json<CheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     // Convert contextual tuples from HTTP format to domain format
-    // with bounds validation (constraint C11: Fail Fast with Bounds)
     let contextual_tuples: Vec<ContextualTuple> = body
         .contextual_tuples
         .map(|ct| {
@@ -643,37 +642,19 @@ async fn check<S: DataStore>(
                 .into_iter()
                 .map(|tk| {
                     if let Some(condition) = tk.condition {
-                        // Validate context bounds before using
-                        if let Some(ref ctx) = condition.context {
-                            // Check depth limit
-                            if ctx.values().any(|v| json_exceeds_max_depth(v, 1)) {
-                                return Err(ApiError::invalid_input(
-                                    "condition context exceeds maximum nesting depth (10 levels)",
-                                ));
-                            }
-                            // Check size limit
-                            let estimated_size: usize =
-                                ctx.iter().map(|(k, v)| k.len() + v.to_string().len()).sum();
-                            if estimated_size > MAX_CONDITION_CONTEXT_SIZE {
-                                return Err(ApiError::invalid_input(format!(
-                                    "condition context exceeds maximum size ({MAX_CONDITION_CONTEXT_SIZE} bytes)"
-                                )));
-                            }
-                        }
-                        Ok(ContextualTuple::with_condition(
+                        ContextualTuple::with_condition(
                             &tk.user,
                             &tk.relation,
                             &tk.object,
                             &condition.name,
                             condition.context,
-                        ))
+                        )
                     } else {
-                        Ok(ContextualTuple::new(&tk.user, &tk.relation, &tk.object))
+                        ContextualTuple::new(&tk.user, &tk.relation, &tk.object)
                     }
                 })
-                .collect::<Result<Vec<_>, ApiError>>()
+                .collect()
         })
-        .transpose()?
         .unwrap_or_default();
 
     // Create domain check request
@@ -814,162 +795,22 @@ pub struct ExpandRequestBody {
     pub authorization_model_id: Option<String>,
 }
 
-/// Response for expand operation.
+/// Response for expand operation (stub).
 #[derive(Debug, Serialize)]
 pub struct ExpandResponseBody {
-    pub tree: Option<UsersetTreeBody>,
-}
-
-/// Userset tree structure in the expand response.
-#[derive(Debug, Serialize)]
-pub struct UsersetTreeBody {
-    pub root: ExpandNodeBody,
-}
-
-/// A node in the expand tree.
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-pub enum ExpandNodeBody {
-    /// A leaf node with users, computed userset, or tuple-to-userset.
-    Leaf {
-        name: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        leaf: Option<ExpandLeafBody>,
-    },
-    /// A union of child nodes.
-    Union { name: String, union: NodesBody },
-    /// An intersection of child nodes.
-    Intersection {
-        name: String,
-        intersection: NodesBody,
-    },
-    /// A difference (base - subtract) of nodes.
-    Difference {
-        name: String,
-        difference: DifferenceBody,
-    },
-}
-
-/// A container for child nodes.
-#[derive(Debug, Serialize)]
-pub struct NodesBody {
-    pub nodes: Vec<ExpandNodeBody>,
-}
-
-/// A difference node with base and subtract.
-#[derive(Debug, Serialize)]
-pub struct DifferenceBody {
-    pub base: Box<ExpandNodeBody>,
-    pub subtract: Box<ExpandNodeBody>,
-}
-
-/// A leaf node value.
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-pub enum ExpandLeafBody {
-    /// Direct users.
-    Users { users: UsersBody },
-    /// Computed userset reference.
-    Computed { computed: ComputedBody },
-    /// Tuple-to-userset reference.
-    TupleToUserset {
-        tuple_to_userset: TupleToUsersetBody,
-    },
-}
-
-/// A container for user strings.
-#[derive(Debug, Serialize)]
-pub struct UsersBody {
-    pub users: Vec<String>,
-}
-
-/// A computed userset reference.
-#[derive(Debug, Serialize)]
-pub struct ComputedBody {
-    pub userset: String,
-}
-
-/// A tuple-to-userset reference.
-#[derive(Debug, Serialize)]
-pub struct TupleToUsersetBody {
-    pub tupleset: String,
-    pub computed_userset: String,
-}
-
-/// Converts a domain ExpandNode to the HTTP response format.
-fn expand_node_to_body(node: rsfga_domain::resolver::ExpandNode) -> ExpandNodeBody {
-    use rsfga_domain::resolver::{ExpandLeafValue, ExpandNode};
-
-    match node {
-        ExpandNode::Leaf(leaf) => {
-            let leaf_body = match leaf.value {
-                ExpandLeafValue::Users(users) => Some(ExpandLeafBody::Users {
-                    users: UsersBody { users },
-                }),
-                ExpandLeafValue::Computed { userset } => Some(ExpandLeafBody::Computed {
-                    computed: ComputedBody { userset },
-                }),
-                ExpandLeafValue::TupleToUserset {
-                    tupleset,
-                    computed_userset,
-                } => Some(ExpandLeafBody::TupleToUserset {
-                    tuple_to_userset: TupleToUsersetBody {
-                        tupleset,
-                        computed_userset,
-                    },
-                }),
-            };
-            ExpandNodeBody::Leaf {
-                name: leaf.name,
-                leaf: leaf_body,
-            }
-        }
-        ExpandNode::Union { name, nodes } => ExpandNodeBody::Union {
-            name,
-            union: NodesBody {
-                nodes: nodes.into_iter().map(expand_node_to_body).collect(),
-            },
-        },
-        ExpandNode::Intersection { name, nodes } => ExpandNodeBody::Intersection {
-            name,
-            intersection: NodesBody {
-                nodes: nodes.into_iter().map(expand_node_to_body).collect(),
-            },
-        },
-        ExpandNode::Difference {
-            name,
-            base,
-            subtract,
-        } => ExpandNodeBody::Difference {
-            name,
-            difference: DifferenceBody {
-                base: Box::new(expand_node_to_body(*base)),
-                subtract: Box::new(expand_node_to_body(*subtract)),
-            },
-        },
-    }
+    pub tree: Option<serde_json::Value>,
 }
 
 async fn expand<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
-    Json(body): Json<ExpandRequestBody>,
+    Json(_body): Json<ExpandRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
-    use rsfga_domain::resolver::ExpandRequest;
+    // Validate store exists
+    let _ = state.storage.get_store(&store_id).await?;
 
-    // Create domain expand request
-    let expand_request =
-        ExpandRequest::new(store_id, body.tuple_key.relation, body.tuple_key.object);
-
-    // Delegate to GraphResolver
-    let result = state.resolver.expand(&expand_request).await?;
-
-    // Convert domain result to HTTP response format
-    let root = expand_node_to_body(result.tree.root);
-
-    Ok(Json(ExpandResponseBody {
-        tree: Some(UsersetTreeBody { root }),
-    }))
+    // Expand is not yet implemented - return empty tree
+    Ok(Json(ExpandResponseBody { tree: None }))
 }
 
 // ============================================================
@@ -1350,7 +1191,7 @@ pub struct ListObjectsRequestBody {
     pub contextual_tuples: Option<ContextualTuplesBody>,
 }
 
-/// Response for list objects operation.
+/// Response for list objects operation (stub).
 #[derive(Debug, Serialize)]
 pub struct ListObjectsResponseBody {
     pub objects: Vec<String>,
@@ -1359,65 +1200,11 @@ pub struct ListObjectsResponseBody {
 async fn list_objects<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
-    Json(body): Json<ListObjectsRequestBody>,
+    Json(_body): Json<ListObjectsRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
-    use rsfga_domain::resolver::ListObjectsRequest;
+    // Validate store exists
+    let _ = state.storage.get_store(&store_id).await?;
 
-    // Convert contextual tuples from HTTP format to domain format
-    // Validate bounds on condition contexts (constraint C11: Fail Fast with Bounds)
-    let contextual_tuples: Vec<ContextualTuple> = body
-        .contextual_tuples
-        .map(|ct| {
-            ct.tuple_keys
-                .into_iter()
-                .map(|tk| {
-                    if let Some(condition) = tk.condition {
-                        // Validate context bounds before using
-                        if let Some(ref ctx) = condition.context {
-                            // Check depth limit
-                            if ctx.values().any(|v| json_exceeds_max_depth(v, 1)) {
-                                return Err(ApiError::invalid_input(
-                                    "condition context exceeds maximum nesting depth (10 levels)",
-                                ));
-                            }
-                            // Check size limit
-                            let estimated_size: usize =
-                                ctx.iter().map(|(k, v)| k.len() + v.to_string().len()).sum();
-                            if estimated_size > MAX_CONDITION_CONTEXT_SIZE {
-                                return Err(ApiError::invalid_input(format!(
-                                    "condition context exceeds maximum size ({MAX_CONDITION_CONTEXT_SIZE} bytes)"
-                                )));
-                            }
-                        }
-                        Ok(ContextualTuple::with_condition(
-                            &tk.user,
-                            &tk.relation,
-                            &tk.object,
-                            &condition.name,
-                            condition.context,
-                        ))
-                    } else {
-                        Ok(ContextualTuple::new(&tk.user, &tk.relation, &tk.object))
-                    }
-                })
-                .collect::<Result<Vec<_>, ApiError>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
-
-    // Create domain list objects request
-    let list_request = ListObjectsRequest::with_contextual_tuples(
-        store_id,
-        body.user,
-        body.relation,
-        body.r#type,
-        contextual_tuples,
-    );
-
-    // Delegate to GraphResolver
-    let result = state.resolver.list_objects(&list_request).await?;
-
-    Ok(Json(ListObjectsResponseBody {
-        objects: result.objects,
-    }))
+    // ListObjects is not yet implemented - return empty list
+    Ok(Json(ListObjectsResponseBody { objects: vec![] }))
 }

@@ -18,17 +18,16 @@ use crate::utils::{format_user, parse_object, parse_user};
 
 use crate::proto::openfga::v1::{
     open_fga_service_server::OpenFgaService, BatchCheckRequest, BatchCheckResponse,
-    BatchCheckSingleResult, CheckError, CheckRequest, CheckResponse, Computed, CreateStoreRequest,
+    BatchCheckSingleResult, CheckError, CheckRequest, CheckResponse, CreateStoreRequest,
     CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse, ErrorCode, ExpandRequest,
-    ExpandResponse, GetStoreRequest, GetStoreResponse, Leaf, ListObjectsRequest,
-    ListObjectsResponse, ListStoresRequest, ListStoresResponse, ListUsersRequest,
-    ListUsersResponse, Node, Nodes, ReadAssertionsRequest, ReadAssertionsResponse,
-    ReadAuthorizationModelRequest, ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
+    ExpandResponse, GetStoreRequest, GetStoreResponse, ListObjectsRequest, ListObjectsResponse,
+    ListStoresRequest, ListStoresResponse, ListUsersRequest, ListUsersResponse,
+    ReadAssertionsRequest, ReadAssertionsResponse, ReadAuthorizationModelRequest,
+    ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
     ReadAuthorizationModelsResponse, ReadChangesRequest, ReadChangesResponse, ReadRequest,
-    ReadResponse, RelationshipCondition, Store, Tuple, TupleKey, TupleToUserset,
-    UpdateStoreRequest, UpdateStoreResponse, Users, UsersetTree, WriteAssertionsRequest,
-    WriteAssertionsResponse, WriteAuthorizationModelRequest, WriteAuthorizationModelResponse,
-    WriteRequest, WriteResponse,
+    ReadResponse, RelationshipCondition, Store, Tuple, TupleKey, UpdateStoreRequest,
+    UpdateStoreResponse, WriteAssertionsRequest, WriteAssertionsResponse,
+    WriteAuthorizationModelRequest, WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
 
 /// Maximum allowed length for correlation IDs to prevent DoS attacks.
@@ -267,76 +266,6 @@ fn hashmap_to_prost_struct(
     }
 }
 
-/// Converts a domain ExpandNode to proto Node for the Expand API response.
-fn expand_node_to_proto(node: rsfga_domain::resolver::ExpandNode) -> Node {
-    use rsfga_domain::resolver::{ExpandLeafValue, ExpandNode};
-
-    match node {
-        ExpandNode::Leaf(leaf) => {
-            let leaf_value = match leaf.value {
-                ExpandLeafValue::Users(users) => {
-                    Some(crate::proto::openfga::v1::leaf::Value::Users(Users {
-                        users,
-                    }))
-                }
-                ExpandLeafValue::Computed { userset } => {
-                    Some(crate::proto::openfga::v1::leaf::Value::Computed(Computed {
-                        userset,
-                    }))
-                }
-                ExpandLeafValue::TupleToUserset {
-                    tupleset,
-                    computed_userset,
-                } => Some(crate::proto::openfga::v1::leaf::Value::TupleToUserset(
-                    TupleToUserset {
-                        tupleset: Some(crate::proto::openfga::v1::ObjectRelation {
-                            object: String::new(),
-                            relation: tupleset,
-                        }),
-                        computed_userset: Some(crate::proto::openfga::v1::ObjectRelation {
-                            object: String::new(),
-                            relation: computed_userset,
-                        }),
-                    },
-                )),
-            };
-            Node {
-                name: leaf.name,
-                value: Some(crate::proto::openfga::v1::node::Value::Leaf(Leaf {
-                    value: leaf_value,
-                })),
-            }
-        }
-        ExpandNode::Union { name, nodes } => Node {
-            name,
-            value: Some(crate::proto::openfga::v1::node::Value::Union(Nodes {
-                nodes: nodes.into_iter().map(expand_node_to_proto).collect(),
-            })),
-        },
-        ExpandNode::Intersection { name, nodes } => Node {
-            name,
-            value: Some(crate::proto::openfga::v1::node::Value::Intersection(
-                Nodes {
-                    nodes: nodes.into_iter().map(expand_node_to_proto).collect(),
-                },
-            )),
-        },
-        ExpandNode::Difference {
-            name,
-            base,
-            subtract,
-        } => {
-            // Proto difference uses Nodes with exactly 2 nodes
-            Node {
-                name,
-                value: Some(crate::proto::openfga::v1::node::Value::Difference(Nodes {
-                    nodes: vec![expand_node_to_proto(*base), expand_node_to_proto(*subtract)],
-                })),
-            }
-        }
-    }
-}
-
 /// Maximum allowed condition name length (security constraint I4).
 const MAX_CONDITION_NAME_LENGTH: usize = 256;
 
@@ -492,7 +421,6 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .ok_or_else(|| Status::invalid_argument("tuple_key is required"))?;
 
         // Convert contextual tuples from gRPC format to domain format
-        // with bounds validation (constraint C11: Fail Fast with Bounds)
         let contextual_tuples: Vec<ContextualTuple> = req
             .contextual_tuples
             .map(|ct| {
@@ -500,35 +428,16 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                     .into_iter()
                     .map(|tk| {
                         if let Some(condition) = tk.condition {
-                            // Validate context bounds before conversion
-                            let context = if let Some(ctx) = condition.context {
-                                // Check depth limit
-                                if ctx.fields.values().any(|v| exceeds_max_depth(v, 1)) {
-                                    return Err(Status::invalid_argument(
-                                        "condition context exceeds maximum nesting depth (10 levels)",
-                                    ));
-                                }
-                                // Convert to hashmap
-                                let hashmap = prost_struct_to_hashmap(ctx).map_err(|e| {
+                            let context = condition
+                                .context
+                                .map(prost_struct_to_hashmap)
+                                .transpose()
+                                .map_err(|e| {
                                     Status::invalid_argument(format!(
                                         "invalid condition context for tuple '{}#{}@{}': {}",
                                         tk.object, tk.relation, tk.user, e
                                     ))
                                 })?;
-                                // Check size limit
-                                let estimated_size: usize = hashmap
-                                    .iter()
-                                    .map(|(k, v)| k.len() + v.to_string().len())
-                                    .sum();
-                                if estimated_size > MAX_CONDITION_CONTEXT_SIZE {
-                                    return Err(Status::invalid_argument(format!(
-                                        "condition context exceeds maximum size ({MAX_CONDITION_CONTEXT_SIZE} bytes)"
-                                    )));
-                                }
-                                Some(hashmap)
-                            } else {
-                                None
-                            };
 
                             Ok(ContextualTuple::with_condition(
                                 &tk.user,
@@ -802,115 +711,34 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         &self,
         request: Request<ExpandRequest>,
     ) -> Result<Response<ExpandResponse>, Status> {
-        use rsfga_domain::resolver::ExpandRequest as DomainExpandRequest;
-
         let req = request.into_inner();
 
-        // Parse tuple_key
-        let tuple_key = req
-            .tuple_key
-            .ok_or_else(|| Status::invalid_argument("tuple_key is required for expand"))?;
-
-        // Create domain expand request
-        let expand_request =
-            DomainExpandRequest::new(req.store_id, tuple_key.relation, tuple_key.object);
-
-        // Delegate to GraphResolver
-        let result = self
-            .resolver
-            .expand(&expand_request)
+        // Validate store exists
+        let _ = self
+            .storage
+            .get_store(&req.store_id)
             .await
-            .map_err(domain_error_to_status)?;
+            .map_err(storage_error_to_status)?;
 
-        // Convert domain ExpandNode to proto Node (uses module-level helper function)
-        let root = expand_node_to_proto(result.tree.root);
-
-        Ok(Response::new(ExpandResponse {
-            tree: Some(UsersetTree { root: Some(root) }),
-        }))
+        // Expand not yet implemented
+        Ok(Response::new(ExpandResponse { tree: None }))
     }
 
     async fn list_objects(
         &self,
         request: Request<ListObjectsRequest>,
     ) -> Result<Response<ListObjectsResponse>, Status> {
-        use rsfga_domain::resolver::ListObjectsRequest as DomainListObjectsRequest;
-
         let req = request.into_inner();
 
-        // Convert contextual tuples from proto format to domain format
-        // with bounds validation (constraint C11: Fail Fast with Bounds)
-        let contextual_tuples: Vec<ContextualTuple> = req
-            .contextual_tuples
-            .map(|ct| {
-                ct.tuple_keys
-                    .into_iter()
-                    .map(|tk| {
-                        if let Some(condition) = tk.condition {
-                            // Validate context bounds before conversion
-                            let context = if let Some(ctx) = condition.context {
-                                // Check depth limit
-                                if ctx.fields.values().any(|v| exceeds_max_depth(v, 1)) {
-                                    return Err(Status::invalid_argument(
-                                        "condition context exceeds maximum nesting depth (10 levels)",
-                                    ));
-                                }
-                                // Convert to hashmap
-                                let hashmap = prost_struct_to_hashmap(ctx).map_err(|e| {
-                                    Status::invalid_argument(format!(
-                                        "invalid condition context for tuple '{}#{}@{}': {}",
-                                        tk.object, tk.relation, tk.user, e
-                                    ))
-                                })?;
-                                // Check size limit
-                                let estimated_size: usize = hashmap
-                                    .iter()
-                                    .map(|(k, v)| k.len() + v.to_string().len())
-                                    .sum();
-                                if estimated_size > MAX_CONDITION_CONTEXT_SIZE {
-                                    return Err(Status::invalid_argument(format!(
-                                        "condition context exceeds maximum size ({MAX_CONDITION_CONTEXT_SIZE} bytes)"
-                                    )));
-                                }
-                                Some(hashmap)
-                            } else {
-                                None
-                            };
-                            Ok(ContextualTuple::with_condition(
-                                &tk.user,
-                                &tk.relation,
-                                &tk.object,
-                                &condition.name,
-                                context,
-                            ))
-                        } else {
-                            Ok(ContextualTuple::new(&tk.user, &tk.relation, &tk.object))
-                        }
-                    })
-                    .collect::<Result<Vec<_>, Status>>()
-            })
-            .transpose()?
-            .unwrap_or_default();
-
-        // Create domain list objects request
-        let list_request = DomainListObjectsRequest::with_contextual_tuples(
-            req.store_id,
-            req.user,
-            req.relation,
-            req.r#type,
-            contextual_tuples,
-        );
-
-        // Delegate to GraphResolver
-        let result = self
-            .resolver
-            .list_objects(&list_request)
+        // Validate store exists
+        let _ = self
+            .storage
+            .get_store(&req.store_id)
             .await
-            .map_err(domain_error_to_status)?;
+            .map_err(storage_error_to_status)?;
 
-        Ok(Response::new(ListObjectsResponse {
-            objects: result.objects,
-        }))
+        // ListObjects not yet implemented
+        Ok(Response::new(ListObjectsResponse { objects: vec![] }))
     }
 
     async fn list_users(

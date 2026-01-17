@@ -209,11 +209,12 @@ async fn test_check_endpoint_returns_correct_response_format() {
 #[tokio::test]
 async fn test_expand_endpoint_returns_200() {
     let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
 
-    // Create a store with authorization model (required for expand)
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
-
-    let state = AppState::new(Arc::clone(&storage));
+    let state = AppState::new(storage);
     let app = create_router(state);
 
     let response = app
