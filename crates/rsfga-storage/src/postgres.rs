@@ -235,8 +235,11 @@ fn build_unnest_clause(
             .map(|(i, (ty, _))| format!("UNNEST(${}{})", i + 2, ty))
             .collect::<Vec<_>>()
             .join(",\n            ");
-            
-        format!("ROWS FROM (\n            {}\n        ) AS {}({})", unnest_calls, alias, col_names)
+
+        format!(
+            "ROWS FROM (\n            {}\n        ) AS {}({})",
+            unnest_calls, alias, col_names
+        )
     } else {
         // PostgreSQL syntax: UNNEST($2..., $3...) AS alias(cols)
         let args = columns
@@ -245,7 +248,7 @@ fn build_unnest_clause(
             .map(|(i, (ty, _))| format!("${}{}", i + 2, ty))
             .collect::<Vec<_>>()
             .join(", ");
-            
+
         format!("UNNEST({}) AS {}({})", args, alias, col_names)
     }
 }
