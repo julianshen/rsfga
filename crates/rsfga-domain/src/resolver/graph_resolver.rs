@@ -1277,6 +1277,120 @@ where
 
         Ok(result)
     }
+
+    /// Lists objects of a given type that a user has a specific relation to.
+    ///
+    /// # DoS Protection (Constraint C11)
+    ///
+    /// This method applies a hard limit of `max_candidates` on the number of
+    /// candidate objects to check. This prevents memory exhaustion attacks
+    /// where an attacker could enumerate a large number of objects.
+    ///
+    /// The default limit is 1,000 objects, matching OpenFGA's default behavior.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Query all objects of the requested type (up to max_candidates limit)
+    /// 2. For each candidate object, run a parallel permission check
+    /// 3. Return objects where the check returns true
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let request = ListObjectsRequest::new(
+    ///     "store-id",
+    ///     "user:alice",
+    ///     "viewer",
+    ///     "document",
+    /// );
+    /// let result = resolver.list_objects(&request, 1000).await?;
+    /// // result.objects = ["document:readme", "document:design"]
+    /// ```
+    pub async fn list_objects(
+        &self,
+        request: &super::types::ListObjectsRequest,
+        max_candidates: usize,
+    ) -> DomainResult<super::types::ListObjectsResult> {
+        // Check if store exists
+        if !self.tuple_reader.store_exists(&request.store_id).await? {
+            return Err(DomainError::StoreNotFound {
+                store_id: request.store_id.clone(),
+            });
+        }
+
+        // Validate that the user is not a wildcard (not allowed for ListObjects)
+        if request.user.contains('*') {
+            return Err(DomainError::InvalidUserFormat {
+                value: request.user.clone(),
+            });
+        }
+
+        // Validate user format
+        if !Self::is_valid_type_id(&request.user) {
+            return Err(DomainError::InvalidUserFormat {
+                value: request.user.clone(),
+            });
+        }
+
+        // Validate relation format
+        if request.relation.is_empty() {
+            return Err(DomainError::InvalidRelationFormat {
+                value: request.relation.clone(),
+            });
+        }
+
+        // Validate object type format (must not be empty, must not contain colon)
+        if request.object_type.is_empty() || request.object_type.contains(':') {
+            return Err(DomainError::InvalidObjectFormat {
+                value: request.object_type.clone(),
+            });
+        }
+
+        // Get all objects of the requested type (limited to max_candidates)
+        // This is the DoS protection: we bound the number of candidates BEFORE
+        // running expensive permission checks.
+        let candidates = self
+            .tuple_reader
+            .get_objects_of_type(&request.store_id, &request.object_type, max_candidates)
+            .await?;
+
+        // Run parallel permission checks on all candidates
+        let checks: Vec<_> = candidates
+            .into_iter()
+            .map(|object_id| {
+                let check_request = CheckRequest::with_context(
+                    request.store_id.clone(),
+                    request.user.clone(),
+                    request.relation.clone(),
+                    format!("{}:{}", request.object_type, object_id),
+                    request.contextual_tuples.as_ref().clone(),
+                    request.context.as_ref().clone(),
+                );
+                async move {
+                    let result = self.check(&check_request).await;
+                    (object_id, result)
+                }
+            })
+            .collect();
+
+        // Await all checks in parallel using FuturesUnordered for efficiency
+        let results: Vec<_> = futures::future::join_all(checks).await;
+
+        // Collect objects where check returned true
+        let objects: Vec<String> = results
+            .into_iter()
+            .filter_map(|(object_id, result)| {
+                match result {
+                    Ok(CheckResult { allowed: true }) => {
+                        Some(format!("{}:{}", request.object_type, object_id))
+                    }
+                    _ => None, // Skip errors and false results
+                }
+            })
+            .collect();
+
+        Ok(super::types::ListObjectsResult { objects })
+    }
 }
 
 /// Converts a serde_json::Value to a CelValue for CEL expression evaluation.

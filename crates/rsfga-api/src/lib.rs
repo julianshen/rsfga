@@ -25,6 +25,7 @@ pub mod http;
 pub mod middleware;
 pub mod observability;
 pub mod utils;
+pub mod validation;
 
 #[cfg(test)]
 mod compatibility;
