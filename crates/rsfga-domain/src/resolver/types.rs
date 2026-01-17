@@ -160,3 +160,112 @@ impl StoredTupleRef {
         }
     }
 }
+
+// ============================================================
+// Expand API Types
+// ============================================================
+
+/// Request for expanding a relation tree.
+#[derive(Debug, Clone)]
+pub struct ExpandRequest {
+    /// The store ID to expand against.
+    pub store_id: String,
+    /// The relation to expand (e.g., "viewer").
+    pub relation: String,
+    /// The object to expand (e.g., "document:readme").
+    pub object: String,
+}
+
+impl ExpandRequest {
+    /// Creates a new ExpandRequest.
+    pub fn new(
+        store_id: impl Into<String>,
+        relation: impl Into<String>,
+        object: impl Into<String>,
+    ) -> Self {
+        Self {
+            store_id: store_id.into(),
+            relation: relation.into(),
+            object: object.into(),
+        }
+    }
+}
+
+/// Result of expanding a relation tree.
+#[derive(Debug, Clone)]
+pub struct ExpandResult {
+    /// The expansion tree showing how users relate to the object.
+    pub tree: UsersetTree,
+}
+
+/// A tree structure representing the expansion of a relation.
+#[derive(Debug, Clone)]
+pub struct UsersetTree {
+    /// The root node of the expansion tree.
+    pub root: ExpandNode,
+}
+
+/// A node in the expansion tree.
+#[derive(Debug, Clone)]
+pub enum ExpandNode {
+    /// A leaf node containing direct users.
+    Leaf(ExpandLeaf),
+    /// A union of child nodes (any child grants access).
+    Union {
+        /// Name of this union node.
+        name: String,
+        /// Child nodes in the union.
+        nodes: Vec<ExpandNode>,
+    },
+    /// An intersection of child nodes (all children must grant access).
+    Intersection {
+        /// Name of this intersection node.
+        name: String,
+        /// Child nodes in the intersection.
+        nodes: Vec<ExpandNode>,
+    },
+    /// A difference (exclusion) of nodes (base minus subtract).
+    Difference {
+        /// Name of this difference node.
+        name: String,
+        /// The base node.
+        base: Box<ExpandNode>,
+        /// The node to subtract from base.
+        subtract: Box<ExpandNode>,
+    },
+}
+
+impl ExpandNode {
+    /// Returns the name of this node.
+    pub fn name(&self) -> &str {
+        match self {
+            ExpandNode::Leaf(leaf) => &leaf.name,
+            ExpandNode::Union { name, .. } => name,
+            ExpandNode::Intersection { name, .. } => name,
+            ExpandNode::Difference { name, .. } => name,
+        }
+    }
+}
+
+/// A leaf node in the expansion tree.
+#[derive(Debug, Clone)]
+pub struct ExpandLeaf {
+    /// Name of this leaf node.
+    pub name: String,
+    /// The type of leaf content.
+    pub value: ExpandLeafValue,
+}
+
+/// The value of a leaf node.
+#[derive(Debug, Clone)]
+pub enum ExpandLeafValue {
+    /// Direct users who have the relation.
+    Users(Vec<String>),
+    /// A computed userset reference.
+    Computed { userset: String },
+    /// A tuple-to-userset reference.
+    TupleToUserset {
+        tupleset: String,
+        computed_userset: String,
+    },
+}
