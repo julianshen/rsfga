@@ -307,6 +307,7 @@ async fn test_connection_pool_limits() {
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
+                created_at: None,
             };
             store.write_tuple("test-pool-limits", tuple).await
         }));
@@ -381,6 +382,7 @@ async fn test_concurrent_writes_isolation() {
                 user_relation: None,
                 condition_name: None,
                 condition_context: None,
+                created_at: None,
             };
             store.write_tuple("test-isolation", tuple).await.unwrap();
         }));
@@ -467,6 +469,7 @@ async fn test_large_result_set_ordering() {
             user_relation: None,
             condition_name: None,
             condition_context: None,
+            created_at: None,
         });
     }
 
@@ -904,6 +907,7 @@ async fn test_postgres_store_pagination_with_conditions() {
             user_relation: None,
             condition_name: condition,
             condition_context: context,
+            created_at: None,
         });
     }
 

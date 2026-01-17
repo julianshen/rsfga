@@ -64,6 +64,9 @@ async-trait = { workspace = true }
 # Caching
 moka = { workspace = true }
 
+# Concurrent collections
+dashmap = { workspace = true }
+
 # CLI
 clap = { workspace = true }
 

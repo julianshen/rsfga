@@ -44,6 +44,7 @@ fn row_to_stored_tuple(row: sqlx::mysql::MySqlRow) -> StorageResult<StoredTuple>
         // MySQL storage doesn't support conditions yet
         condition_name: None,
         condition_context: None,
+        created_at: row.get("created_at"),
     })
 }
 
@@ -1115,7 +1116,7 @@ impl DataStore for MySQLDataStore {
 
         // Use sqlx::QueryBuilder for safe dynamic query construction
         let mut builder: sqlx::QueryBuilder<sqlx::MySql> = sqlx::QueryBuilder::new(
-            "SELECT object_type, object_id, relation, user_type, user_id, user_relation FROM tuples WHERE store_id = ",
+            "SELECT object_type, object_id, relation, user_type, user_id, user_relation, created_at FROM tuples WHERE store_id = ",
         );
         builder.push_bind(store_id);
 
@@ -1194,7 +1195,7 @@ impl DataStore for MySQLDataStore {
 
         // Use sqlx::QueryBuilder for safe dynamic query construction
         let mut builder: sqlx::QueryBuilder<sqlx::MySql> = sqlx::QueryBuilder::new(
-            "SELECT object_type, object_id, relation, user_type, user_id, user_relation FROM tuples WHERE store_id = ",
+            "SELECT object_type, object_id, relation, user_type, user_id, user_relation, created_at FROM tuples WHERE store_id = ",
         );
         builder.push_bind(store_id);
 

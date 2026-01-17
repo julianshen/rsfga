@@ -1,11 +1,13 @@
 //! Data types for batch check operations.
 
+use std::collections::HashMap;
+
 /// Maximum batch size per OpenFGA specification.
 /// OpenFGA enforces a limit of 50 items per batch-check request.
 pub const MAX_BATCH_SIZE: usize = 50;
 
 /// A single check within a batch request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BatchCheckItem {
     /// The user performing the access (e.g., "user:alice").
     pub user: String,
@@ -13,6 +15,8 @@ pub struct BatchCheckItem {
     pub relation: String,
     /// The object identifier (e.g., "document:readme").
     pub object: String,
+    /// CEL evaluation context for condition evaluation.
+    pub context: HashMap<String, serde_json::Value>,
 }
 
 /// Request for batch permission checks.
@@ -34,6 +38,26 @@ impl BatchCheckRequest {
     }
 }
 
+/// Error kind for batch check item results.
+/// Used to map errors to appropriate HTTP status codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchCheckItemErrorKind {
+    /// Validation error (400 Bad Request)
+    Validation,
+    /// Internal server error (500 Internal Server Error)
+    Internal,
+}
+
+impl BatchCheckItemErrorKind {
+    /// Returns the HTTP status code for this error kind.
+    pub fn http_status_code(&self) -> i32 {
+        match self {
+            BatchCheckItemErrorKind::Validation => 400,
+            BatchCheckItemErrorKind::Internal => 500,
+        }
+    }
+}
+
 /// Result of a single check within a batch.
 #[derive(Debug, Clone)]
 pub struct BatchCheckItemResult {
@@ -41,6 +65,8 @@ pub struct BatchCheckItemResult {
     pub allowed: bool,
     /// Error message if the check failed (optional).
     pub error: Option<String>,
+    /// Error kind for mapping to HTTP status codes.
+    pub error_kind: Option<BatchCheckItemErrorKind>,
 }
 
 /// Response from a batch check operation.

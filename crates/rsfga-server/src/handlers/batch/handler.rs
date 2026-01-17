@@ -9,8 +9,8 @@ use rsfga_domain::resolver::{CheckRequest, GraphResolver, ModelReader, TupleRead
 
 use super::singleflight::{Singleflight, SingleflightGuard, SingleflightResult, SingleflightSlot};
 use super::types::{
-    BatchCheckError, BatchCheckItem, BatchCheckItemResult, BatchCheckRequest, BatchCheckResponse,
-    BatchCheckResult, MAX_BATCH_SIZE,
+    BatchCheckError, BatchCheckItem, BatchCheckItemErrorKind, BatchCheckItemResult,
+    BatchCheckRequest, BatchCheckResponse, BatchCheckResult, MAX_BATCH_SIZE,
 };
 
 /// Maximum number of singleflight retries when a leader is dropped.
@@ -22,21 +22,40 @@ const MAX_SINGLEFLIGHT_RETRIES: u32 = 3;
 pub const DEFAULT_BATCH_CONCURRENCY: usize = 10;
 
 /// Key for identifying unique checks (used for deduplication).
+///
+/// CRITICAL: This includes context because different contexts can produce
+/// different authorization results even for the same user/relation/object tuple.
+/// For example, a time-based condition like `current_time < expiry` would return
+/// different results depending on the context's current_time value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CheckKey {
     store_id: String,
     user: String,
     relation: String,
     object: String,
+    /// Serialized context for hash equality.
+    /// Using a deterministic JSON string representation of the context HashMap.
+    context_hash: String,
 }
 
 impl CheckKey {
     pub fn new(store_id: &str, item: &BatchCheckItem) -> Self {
+        // Serialize context to a deterministic string for hashing.
+        // BTreeMap ensures consistent key ordering for deterministic comparison.
+        let context_hash = if item.context.is_empty() {
+            String::new()
+        } else {
+            // Sort keys for deterministic serialization
+            let sorted: std::collections::BTreeMap<_, _> = item.context.iter().collect();
+            serde_json::to_string(&sorted).unwrap_or_default()
+        };
+
         Self {
             store_id: store_id.to_string(),
             user: item.user.clone(),
             relation: item.relation.clone(),
             object: item.object.clone(),
+            context_hash,
         }
     }
 }
@@ -242,7 +261,8 @@ where
                 match receiver.recv().await {
                     Ok(result) => BatchCheckItemResult {
                         allowed: result.allowed,
-                        error: result.error,
+                        error: result.error.clone(),
+                        error_kind: result.error_kind,
                     },
                     Err(_) => {
                         // Leader was dropped (likely panicked), retry as new leader
@@ -253,6 +273,7 @@ where
                                 error: Some(format!(
                                     "singleflight retry limit exceeded ({MAX_SINGLEFLIGHT_RETRIES} retries)"
                                 )),
+                                error_kind: Some(BatchCheckItemErrorKind::Internal),
                             };
                         }
                         // This is safe because SingleflightGuard cleaned up
@@ -270,24 +291,31 @@ where
                 // We're the leader - create guard for cleanup on panic
                 let guard = SingleflightGuard::new(&self.singleflight, key);
 
-                // Execute the actual check
-                let check_request = CheckRequest::new(
+                // Execute the actual check with context
+                let check_request = CheckRequest::with_context(
                     store_id.to_string(),
                     check.user.clone(),
                     check.relation.clone(),
                     check.object.clone(),
                     vec![], // No contextual tuples in batch checks
+                    check.context.clone(),
                 );
 
                 let result = match self.resolver.check(&check_request).await {
                     Ok(result) => SingleflightResult {
                         allowed: result.allowed,
                         error: None,
+                        error_kind: None,
                     },
-                    Err(e) => SingleflightResult {
-                        allowed: false,
-                        error: Some(e.to_string()),
-                    },
+                    Err(e) => {
+                        // Map domain errors to appropriate error kinds
+                        let error_kind = classify_domain_error_kind(&e);
+                        SingleflightResult {
+                            allowed: false,
+                            error: Some(e.to_string()),
+                            error_kind: Some(error_kind),
+                        }
+                    }
                 };
 
                 // Broadcast the result to any waiters (ignore send errors - no receivers)
@@ -299,6 +327,7 @@ where
                 BatchCheckItemResult {
                     allowed: result.allowed,
                     error: result.error,
+                    error_kind: result.error_kind,
                 }
             }
         }
@@ -313,5 +342,32 @@ where
             seen.insert(key);
         }
         (request.checks.len(), seen.len())
+    }
+}
+
+/// Classifies a domain error into an error kind for HTTP status code mapping.
+///
+/// - Validation errors (type not found, relation not found, invalid input) → 400 Bad Request
+/// - Internal errors (resolver errors, timeout) → 500 Internal Server Error
+fn classify_domain_error_kind(err: &rsfga_domain::error::DomainError) -> BatchCheckItemErrorKind {
+    use rsfga_domain::error::DomainError;
+
+    match err {
+        // Client errors (400) - user input or model configuration issues
+        DomainError::TypeNotFound { .. }
+        | DomainError::RelationNotFound { .. }
+        | DomainError::ModelParseError { .. }
+        | DomainError::ModelValidationError { .. }
+        | DomainError::InvalidUserFormat { .. }
+        | DomainError::InvalidObjectFormat { .. }
+        | DomainError::InvalidRelationFormat { .. }
+        | DomainError::DepthLimitExceeded { .. }
+        | DomainError::CycleDetected { .. }
+        | DomainError::StoreNotFound { .. } => BatchCheckItemErrorKind::Validation,
+
+        // Server errors (500) - internal issues
+        DomainError::Timeout { .. } | DomainError::ResolverError { .. } => {
+            BatchCheckItemErrorKind::Internal
+        }
     }
 }

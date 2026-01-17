@@ -17,7 +17,8 @@ use moka::future::Cache;
 
 use rsfga_domain::error::{DomainError, DomainResult};
 use rsfga_domain::model::{
-    AuthorizationModel, RelationDefinition, TypeConstraint, TypeDefinition, Userset,
+    AuthorizationModel, Condition, ConditionParameter, RelationDefinition, TypeConstraint,
+    TypeDefinition, Userset,
 };
 use rsfga_domain::resolver::{ModelReader, StoredTupleRef, TupleReader};
 use rsfga_storage::DataStore;
@@ -273,6 +274,117 @@ fn parse_type_constraints(
     Ok(constraints)
 }
 
+/// Valid OpenFGA type names for condition parameters.
+/// These match the TypeName enum from the OpenFGA protobuf spec.
+const VALID_TYPE_NAMES: &[&str] = &[
+    "TYPE_NAME_UNSPECIFIED",
+    "TYPE_NAME_ANY",
+    "TYPE_NAME_BOOL",
+    "TYPE_NAME_STRING",
+    "TYPE_NAME_INT",
+    "TYPE_NAME_UINT",
+    "TYPE_NAME_DOUBLE",
+    "TYPE_NAME_DURATION",
+    "TYPE_NAME_TIMESTAMP",
+    "TYPE_NAME_MAP",
+    "TYPE_NAME_LIST",
+    "TYPE_NAME_IPADDRESS",
+];
+
+/// Validates that a type_name is a valid OpenFGA type name.
+fn is_valid_type_name(type_name: &str) -> bool {
+    VALID_TYPE_NAMES.contains(&type_name)
+}
+
+/// Parse conditions from the model JSON.
+///
+/// Conditions in OpenFGA are defined at the model level and referenced by name
+/// in type constraints. Format:
+/// ```json
+/// {
+///   "conditions": {
+///     "condition_name": {
+///       "name": "condition_name",
+///       "expression": "cel_expression",
+///       "parameters": {
+///         "param_name": { "type_name": "TYPE_NAME_STRING" }
+///       }
+///     }
+///   }
+/// }
+/// ```
+///
+/// # Type Name Validation (Security I4)
+///
+/// The `type_name` field is validated against the OpenFGA TypeName enum.
+/// Invalid type names are rejected with an error rather than defaulting to
+/// `TYPE_NAME_ANY`, which could mask configuration errors and lead to
+/// unexpected authorization behavior.
+fn parse_conditions(model_json: &serde_json::Value) -> DomainResult<Vec<Condition>> {
+    let Some(conditions_obj) = model_json.get("conditions").and_then(|c| c.as_object()) else {
+        // No conditions defined is valid
+        return Ok(vec![]);
+    };
+
+    let mut conditions = Vec::with_capacity(conditions_obj.len());
+
+    for (name, cond_def) in conditions_obj {
+        // Validate that if "name" field is present, it matches the map key
+        if let Some(declared_name) = cond_def.get("name").and_then(|n| n.as_str()) {
+            if declared_name != name {
+                return Err(DomainError::ModelParseError {
+                    message: format!(
+                        "condition '{name}' has mismatched name field '{declared_name}'"
+                    ),
+                });
+            }
+        }
+
+        // Get the expression (required)
+        let expression = cond_def
+            .get("expression")
+            .and_then(|e| e.as_str())
+            .ok_or_else(|| DomainError::ModelParseError {
+                message: format!("condition '{name}' missing 'expression' field"),
+            })?;
+
+        // Parse parameters
+        let mut parameters = Vec::new();
+        if let Some(params_obj) = cond_def.get("parameters").and_then(|p| p.as_object()) {
+            for (param_name, param_def) in params_obj {
+                let type_name = param_def
+                    .get("type_name")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("TYPE_NAME_ANY");
+
+                // Validate type_name is a known OpenFGA type (Security I4)
+                if !is_valid_type_name(type_name) {
+                    return Err(DomainError::ModelParseError {
+                        message: format!(
+                            "condition '{name}' parameter '{param_name}' has invalid type_name '{type_name}'. \
+                             Must be one of: {}",
+                            VALID_TYPE_NAMES.join(", ")
+                        ),
+                    });
+                }
+
+                parameters.push(ConditionParameter::new(param_name, type_name));
+            }
+        }
+
+        // Create the condition with parameters
+        let condition = Condition::with_parameters(name, parameters, expression).map_err(|e| {
+            DomainError::ModelParseError {
+                message: format!("invalid condition '{name}': {e}"),
+            }
+        })?;
+
+        conditions.push(condition);
+    }
+
+    Ok(conditions)
+}
+
 /// Adapter that implements `TupleReader` using a `DataStore`.
 ///
 /// This adapter bridges the storage layer to the domain layer for tuple operations.
@@ -468,9 +580,13 @@ impl<S: DataStore> DataStoreModelReader<S> {
             }
         }
 
-        Ok(AuthorizationModel::with_types(
+        // Parse conditions from the JSON
+        let conditions = parse_conditions(&model_json)?;
+
+        Ok(AuthorizationModel::with_types_and_conditions(
             &stored_model.schema_version,
             type_definitions,
+            conditions,
         ))
     }
 }

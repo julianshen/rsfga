@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    async_trait,
+    extract::{FromRequest, Path, Request, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -15,11 +16,58 @@ use tracing::error;
 
 use rsfga_domain::error::DomainError;
 use rsfga_domain::resolver::{CheckRequest as DomainCheckRequest, ContextualTuple};
-use rsfga_storage::{DataStore, PaginationOptions, StorageError, StoredAuthorizationModel};
+use rsfga_storage::{DataStore, PaginationOptions, StorageError, StoredAuthorizationModel, Utc};
 
 use super::state::AppState;
 use crate::observability::{metrics_handler, MetricsState};
 use crate::utils::{format_user, parse_object, parse_user};
+
+/// Custom JSON extractor that returns 400 Bad Request instead of 422 Unprocessable Entity
+/// for deserialization errors (OpenFGA compatibility).
+///
+/// Preserves 413 Payload Too Large for body limit errors.
+pub struct JsonBadRequest<T>(pub T);
+
+#[async_trait]
+impl<S, T> FromRequest<S> for JsonBadRequest<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, Json<ApiError>);
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(JsonBadRequest(value)),
+            Err(rejection) => {
+                use axum::extract::rejection::JsonRejection;
+
+                // Preserve 413 Payload Too Large for body limit errors
+                let status = match &rejection {
+                    JsonRejection::BytesRejection(_) => {
+                        // BytesRejection wraps body limit errors - check if it's a 413
+                        let inner_status = rejection.status();
+                        if inner_status == StatusCode::PAYLOAD_TOO_LARGE {
+                            StatusCode::PAYLOAD_TOO_LARGE
+                        } else {
+                            StatusCode::BAD_REQUEST
+                        }
+                    }
+                    _ => StatusCode::BAD_REQUEST,
+                };
+
+                let message = rejection.body_text();
+                let error = if status == StatusCode::PAYLOAD_TOO_LARGE {
+                    ApiError::new("payload_too_large", message)
+                } else {
+                    ApiError::invalid_input(message)
+                };
+
+                Err((status, Json(error)))
+            }
+        }
+    }
+}
 
 /// Default request body size limit (1MB).
 /// This prevents memory exhaustion from oversized payloads.
@@ -54,6 +102,11 @@ fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
         .route("/stores/:store_id/write", post(write_tuples::<S>))
         .route("/stores/:store_id/read", post(read_tuples::<S>))
         .route("/stores/:store_id/list-objects", post(list_objects::<S>))
+        .route("/stores/:store_id/changes", get(read_changes::<S>))
+        .route(
+            "/stores/:store_id/assertions/:authorization_model_id",
+            axum::routing::put(write_assertions::<S>).get(read_assertions::<S>),
+        )
 }
 
 /// Creates the HTTP router with all OpenFGA-compatible endpoints.
@@ -317,7 +370,7 @@ impl From<rsfga_storage::Store> for StoreResponse {
 
 async fn create_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
-    Json(body): Json<CreateStoreRequest>,
+    JsonBadRequest(body): JsonBadRequest<CreateStoreRequest>,
 ) -> ApiResult<impl IntoResponse> {
     let id = ulid::Ulid::new().to_string();
     let store = state.storage.create_store(&id, &body.name).await?;
@@ -350,7 +403,7 @@ pub struct UpdateStoreRequest {
 async fn update_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
-    Json(body): Json<UpdateStoreRequest>,
+    JsonBadRequest(body): JsonBadRequest<UpdateStoreRequest>,
 ) -> ApiResult<impl IntoResponse> {
     let store = state.storage.update_store(&store_id, &body.name).await?;
     Ok(Json(StoreResponse::from(store)))
@@ -457,7 +510,7 @@ const MAX_AUTHORIZATION_MODEL_SIZE: usize = 1024 * 1024; // 1MB
 async fn write_authorization_model<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
-    Json(body): Json<WriteAuthorizationModelRequest>,
+    JsonBadRequest(body): JsonBadRequest<WriteAuthorizationModelRequest>,
 ) -> ApiResult<impl IntoResponse> {
     // Validation strategy: Validate at HTTP layer for immediate feedback.
     // Domain-level validation (schema version, type definition semantics) is deferred
@@ -583,6 +636,10 @@ pub struct CheckRequestBody {
     pub authorization_model_id: Option<String>,
     #[serde(default)]
     pub contextual_tuples: Option<ContextualTuplesBody>,
+    /// CEL evaluation context for condition evaluation.
+    /// Contains values that will be accessible as `request.<key>` in CEL expressions.
+    #[serde(default)]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Relationship condition for conditional tuples.
@@ -632,7 +689,7 @@ pub struct CheckResponseBody {
 async fn check<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
-    Json(body): Json<CheckRequestBody>,
+    JsonBadRequest(body): JsonBadRequest<CheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     // Convert contextual tuples from HTTP format to domain format
     let contextual_tuples: Vec<ContextualTuple> = body
@@ -657,13 +714,14 @@ async fn check<S: DataStore>(
         })
         .unwrap_or_default();
 
-    // Create domain check request
-    let check_request = DomainCheckRequest::new(
+    // Create domain check request with context (defaults to empty HashMap if not provided)
+    let check_request = DomainCheckRequest::with_context(
         store_id,
         body.tuple_key.user,
         body.tuple_key.relation,
         body.tuple_key.object,
         contextual_tuples,
+        body.context.unwrap_or_default(),
     );
 
     // Delegate to GraphResolver for full graph traversal
@@ -700,6 +758,9 @@ pub struct BatchCheckItemBody {
     pub correlation_id: String,
     #[serde(default)]
     pub contextual_tuples: Option<ContextualTuplesBody>,
+    /// CEL evaluation context for condition evaluation.
+    #[serde(default)]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Response for batch check operation.
@@ -724,7 +785,7 @@ pub struct BatchCheckErrorBody {
 async fn batch_check<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
-    Json(body): Json<BatchCheckRequestBody>,
+    JsonBadRequest(body): JsonBadRequest<BatchCheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     use rsfga_server::handlers::batch::{
         BatchCheckItem as ServerBatchCheckItem, BatchCheckRequest as ServerBatchCheckRequest,
@@ -749,6 +810,7 @@ async fn batch_check<S: DataStore>(
             user: item.tuple_key.user,
             relation: item.tuple_key.relation,
             object: item.tuple_key.object,
+            context: item.context.unwrap_or_default(),
         })
         .collect();
 
@@ -772,7 +834,13 @@ async fn batch_check<S: DataStore>(
             BatchCheckSingleResultBody {
                 allowed: item_result.allowed,
                 error: item_result.error.map(|msg| BatchCheckErrorBody {
-                    code: 500, // Internal error code for resolver errors
+                    // Map error kind to appropriate HTTP status code
+                    // Validation errors (type/relation not found, invalid input) → 400
+                    // Internal errors (resolver errors, timeout) → 500
+                    code: item_result
+                        .error_kind
+                        .map(|k| k.http_status_code())
+                        .unwrap_or(500),
                     message: msg,
                 }),
             },
@@ -786,6 +854,13 @@ async fn batch_check<S: DataStore>(
 // Expand Operation
 // ============================================================
 
+/// Tuple key for expand operation (no user required).
+#[derive(Debug, Deserialize)]
+pub struct ExpandTupleKeyBody {
+    pub relation: String,
+    pub object: String,
+}
+
 /// Request body for expand operation.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -793,13 +868,6 @@ pub struct ExpandRequestBody {
     pub tuple_key: ExpandTupleKeyBody,
     #[serde(default)]
     pub authorization_model_id: Option<String>,
-}
-
-/// Tuple key for expand request (only relation and object are required).
-#[derive(Debug, Deserialize)]
-pub struct ExpandTupleKeyBody {
-    pub relation: String,
-    pub object: String,
 }
 
 /// Response for expand operation.
@@ -969,7 +1037,7 @@ fn expand_node_to_body(node: rsfga_domain::resolver::ExpandNode) -> ExpandNodeBo
 async fn expand<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
-    Json(body): Json<ExpandRequestBody>,
+    JsonBadRequest(body): JsonBadRequest<ExpandRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     use rsfga_domain::resolver::ExpandRequest;
 
@@ -1022,7 +1090,7 @@ pub struct TupleKeyWithoutConditionBody {
 async fn write_tuples<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
-    Json(body): Json<WriteRequestBody>,
+    JsonBadRequest(body): JsonBadRequest<WriteRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     use rsfga_storage::StoredTuple;
 
@@ -1199,6 +1267,9 @@ fn parse_tuple_key(tk: TupleKeyBody) -> Result<rsfga_storage::StoredTuple, Tuple
         user_relation: user_relation.map(|s| s.to_string()),
         condition_name,
         condition_context,
+        // Set created_at at write time to ensure consistent timestamps
+        // This prevents inconsistent timestamps when reading from memory backend
+        created_at: Some(Utc::now()),
     })
 }
 
@@ -1226,6 +1297,8 @@ fn parse_tuple_fields(
         user_relation: user_relation.map(|s| s.to_string()),
         condition_name: None,
         condition_context: None,
+        // Set created_at at write time (note: deletes don't use this timestamp)
+        created_at: Some(Utc::now()),
     })
 }
 
@@ -1283,7 +1356,7 @@ pub struct RelationshipConditionResponseBody {
 async fn read_tuples<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
-    Json(body): Json<ReadRequestBody>,
+    JsonBadRequest(body): JsonBadRequest<ReadRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     use rsfga_storage::TupleFilter;
 
@@ -1320,10 +1393,26 @@ async fn read_tuples<S: DataStore>(
         TupleFilter::default()
     };
 
-    let tuples = state.storage.read_tuples(&store_id, &filter).await?;
+    // Build pagination options from request
+    // Validate page_size is positive before casting to u32 (negative i32 wraps to huge u32)
+    let page_size = match body.page_size {
+        Some(s) if s > 0 => Some(s as u32),
+        Some(_) => return Err(ApiError::invalid_input("page_size must be positive")),
+        None => None,
+    };
+    let pagination = rsfga_storage::PaginationOptions {
+        page_size,
+        continuation_token: body.continuation_token,
+    };
+
+    let result = state
+        .storage
+        .read_tuples_paginated(&store_id, &filter, &pagination)
+        .await?;
 
     // Convert to response format, including conditions (OpenFGA compatibility I2)
-    let response_tuples: Vec<TupleResponseBody> = tuples
+    let response_tuples: Vec<TupleResponseBody> = result
+        .items
         .into_iter()
         .map(|t| TupleResponseBody {
             key: TupleKeyResponseBody {
@@ -1337,14 +1426,248 @@ async fn read_tuples<S: DataStore>(
                         context: t.condition_context,
                     }),
             },
-            timestamp: None,
+            timestamp: t.created_at.map(|dt| dt.to_rfc3339()),
         })
         .collect();
 
     Ok(Json(ReadResponseBody {
         tuples: response_tuples,
-        continuation_token: None,
+        continuation_token: result.continuation_token,
     }))
+}
+
+// ============================================================
+// Read Changes Operation
+// ============================================================
+
+/// Query parameters for read changes operation.
+#[derive(Debug, Deserialize)]
+pub struct ReadChangesQuery {
+    #[serde(default)]
+    pub r#type: Option<String>,
+    #[serde(default)]
+    pub page_size: Option<i32>,
+    #[serde(default)]
+    pub continuation_token: Option<String>,
+}
+
+/// Response for read changes operation.
+#[derive(Debug, Serialize)]
+pub struct ReadChangesResponseBody {
+    pub changes: Vec<TupleChangeBody>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_token: Option<String>,
+}
+
+/// A tuple change (write or delete).
+#[derive(Debug, Serialize)]
+pub struct TupleChangeBody {
+    pub tuple_key: TupleKeyResponseBody,
+    pub operation: String,
+    pub timestamp: String,
+}
+
+async fn read_changes<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(store_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ReadChangesQuery>,
+) -> ApiResult<impl IntoResponse> {
+    // Validate store exists
+    let _ = state.storage.get_store(&store_id).await?;
+
+    // ReadChanges is not yet fully implemented - we return recent tuples as "writes"
+    // This is a simplified implementation that doesn't track actual changes
+    use rsfga_storage::TupleFilter;
+
+    let filter = TupleFilter {
+        object_type: query.r#type.clone(),
+        ..Default::default()
+    };
+
+    // Validate page_size is positive before casting to u32 (negative i32 wraps to huge u32)
+    let page_size = match query.page_size {
+        Some(s) if s > 0 => Some(s as u32),
+        Some(_) => return Err(ApiError::invalid_input("page_size must be positive")),
+        None => None,
+    };
+    let pagination = rsfga_storage::PaginationOptions {
+        page_size,
+        continuation_token: query.continuation_token,
+    };
+
+    let result = state
+        .storage
+        .read_tuples_paginated(&store_id, &filter, &pagination)
+        .await?;
+
+    // Convert tuples to changes (all as writes)
+    let changes: Vec<TupleChangeBody> = result
+        .items
+        .into_iter()
+        .map(|t| TupleChangeBody {
+            tuple_key: TupleKeyResponseBody {
+                user: format_user(&t.user_type, &t.user_id, t.user_relation.as_deref()),
+                relation: t.relation,
+                object: format!("{}:{}", t.object_type, t.object_id),
+                condition: t
+                    .condition_name
+                    .map(|name| RelationshipConditionResponseBody {
+                        name,
+                        context: t.condition_context,
+                    }),
+            },
+            operation: "TUPLE_OPERATION_WRITE".to_string(),
+            // Timestamps are set at write time in the API layer.
+            // Fallback to current time only for legacy data without timestamps.
+            timestamp: t
+                .created_at
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_else(|| Utc::now().to_rfc3339()),
+        })
+        .collect();
+
+    Ok(Json(ReadChangesResponseBody {
+        changes,
+        continuation_token: result.continuation_token,
+    }))
+}
+
+// ============================================================
+// Assertions API
+// ============================================================
+
+/// Request body for write assertions operation.
+#[derive(Debug, Deserialize)]
+pub struct WriteAssertionsRequestBody {
+    pub assertions: Vec<AssertionBody>,
+}
+
+/// A single assertion in the request/response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssertionBody {
+    pub tuple_key: AssertionTupleKeyBody,
+    pub expectation: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contextual_tuples: Option<AssertionContextualTuplesBody>,
+}
+
+/// Tuple key for assertions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssertionTupleKeyBody {
+    pub user: String,
+    pub relation: String,
+    pub object: String,
+}
+
+/// Contextual tuples for assertions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssertionContextualTuplesBody {
+    pub tuple_keys: Vec<AssertionTupleKeyBody>,
+}
+
+/// Response body for read assertions operation.
+#[derive(Debug, Serialize)]
+pub struct ReadAssertionsResponseBody {
+    pub assertions: Vec<AssertionBody>,
+}
+
+/// Write assertions for an authorization model (PUT).
+async fn write_assertions<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path((store_id, authorization_model_id)): Path<(String, String)>,
+    JsonBadRequest(body): JsonBadRequest<WriteAssertionsRequestBody>,
+) -> ApiResult<impl IntoResponse> {
+    // Validate store exists
+    let _ = state.storage.get_store(&store_id).await?;
+
+    // Validate model exists
+    let _ = state
+        .storage
+        .get_authorization_model(&store_id, &authorization_model_id)
+        .await?;
+
+    // Convert assertions to stored format
+    use super::state::{AssertionTupleKey, ContextualTuplesWrapper, StoredAssertion};
+
+    let stored_assertions: Vec<StoredAssertion> = body
+        .assertions
+        .into_iter()
+        .map(|a| StoredAssertion {
+            tuple_key: AssertionTupleKey {
+                user: a.tuple_key.user,
+                relation: a.tuple_key.relation,
+                object: a.tuple_key.object,
+            },
+            expectation: a.expectation,
+            contextual_tuples: a.contextual_tuples.map(|ct| ContextualTuplesWrapper {
+                tuple_keys: ct
+                    .tuple_keys
+                    .into_iter()
+                    .map(|tk| AssertionTupleKey {
+                        user: tk.user,
+                        relation: tk.relation,
+                        object: tk.object,
+                    })
+                    .collect(),
+            }),
+        })
+        .collect();
+
+    // Store assertions (replaces existing)
+    let key = (store_id, authorization_model_id);
+    state.assertions.insert(key, stored_assertions);
+
+    Ok(Json(serde_json::json!({})))
+}
+
+/// Read assertions for an authorization model (GET).
+async fn read_assertions<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path((store_id, authorization_model_id)): Path<(String, String)>,
+) -> ApiResult<impl IntoResponse> {
+    // Validate store exists
+    let _ = state.storage.get_store(&store_id).await?;
+
+    // Validate model exists
+    let _ = state
+        .storage
+        .get_authorization_model(&store_id, &authorization_model_id)
+        .await?;
+
+    // Read assertions
+    let key = (store_id, authorization_model_id);
+    let stored_assertions = state.assertions.get(&key);
+
+    let assertions: Vec<AssertionBody> = stored_assertions
+        .map(|sa| {
+            sa.value()
+                .iter()
+                .map(|a| AssertionBody {
+                    tuple_key: AssertionTupleKeyBody {
+                        user: a.tuple_key.user.clone(),
+                        relation: a.tuple_key.relation.clone(),
+                        object: a.tuple_key.object.clone(),
+                    },
+                    expectation: a.expectation,
+                    contextual_tuples: a.contextual_tuples.as_ref().map(|ct| {
+                        AssertionContextualTuplesBody {
+                            tuple_keys: ct
+                                .tuple_keys
+                                .iter()
+                                .map(|tk| AssertionTupleKeyBody {
+                                    user: tk.user.clone(),
+                                    relation: tk.relation.clone(),
+                                    object: tk.object.clone(),
+                                })
+                                .collect(),
+                        }
+                    }),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(Json(ReadAssertionsResponseBody { assertions }))
 }
 
 // ============================================================
@@ -1373,7 +1696,7 @@ pub struct ListObjectsResponseBody {
 async fn list_objects<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
-    Json(_body): Json<ListObjectsRequestBody>,
+    JsonBadRequest(_body): JsonBadRequest<ListObjectsRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
