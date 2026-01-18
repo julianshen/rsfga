@@ -1700,6 +1700,7 @@ where
                     &relation_def.rewrite,
                     &request.user_filters,
                     &request.contextual_tuples,
+                    &request.context,
                     &mut users,
                     0,
                 )
@@ -1805,8 +1806,8 @@ where
     ///
     /// # Clippy Allows
     ///
-    /// - `too_many_arguments`: 8 arguments are required to track recursive traversal state
-    ///   (store_id, object info, userset, filters, contextual tuples, results set, depth).
+    /// - `too_many_arguments`: 9 arguments are required to track recursive traversal state
+    ///   (store_id, object info, userset, filters, contextual tuples, context, results set, depth).
     ///   Grouping these into a context struct would add allocation overhead per recursion.
     ///
     /// - `only_used_in_recursion`: The `depth` parameter is intentionally only used
@@ -1821,6 +1822,7 @@ where
         userset: &'a Userset,
         user_filters: &'a [super::types::UserFilter],
         contextual_tuples: &'a Arc<Vec<super::types::ContextualTuple>>,
+        request_context: &'a HashMap<String, serde_json::Value>,
         users: &'a mut HashSet<super::types::UserResult>,
         depth: u32,
     ) -> BoxFuture<'a, DomainResult<()>> {
@@ -1849,6 +1851,20 @@ where
                             tuple.user_relation.as_deref(),
                             user_filters,
                         ) {
+                            // Evaluate condition before inserting user
+                            let condition_ok = self
+                                .evaluate_condition(
+                                    store_id,
+                                    tuple.condition_name.as_deref(),
+                                    tuple.condition_context.as_ref(),
+                                    request_context,
+                                )
+                                .await?;
+
+                            if !condition_ok {
+                                continue; // Condition failed, skip this tuple
+                            }
+
                             if tuple.user_id == "*" {
                                 users.insert(super::types::UserResult::wildcard(&tuple.user_type));
                             } else if let Some(ref rel) = tuple.user_relation {
@@ -1882,6 +1898,20 @@ where
                                         user_relation.as_deref(),
                                         user_filters,
                                     ) {
+                                        // Evaluate condition before inserting user
+                                        let condition_ok = self
+                                            .evaluate_condition(
+                                                store_id,
+                                                ctx_tuple.condition_name.as_deref(),
+                                                ctx_tuple.condition_context.as_ref(),
+                                                request_context,
+                                            )
+                                            .await?;
+
+                                        if !condition_ok {
+                                            continue; // Condition failed, skip this tuple
+                                        }
+
                                         if user_id == "*" {
                                             users.insert(super::types::UserResult::wildcard(
                                                 user_type,
@@ -1929,6 +1959,20 @@ where
                                 parent_tuple.user_relation.as_deref(),
                                 user_filters,
                             ) {
+                                // Evaluate condition before inserting user
+                                let condition_ok = self
+                                    .evaluate_condition(
+                                        store_id,
+                                        parent_tuple.condition_name.as_deref(),
+                                        parent_tuple.condition_context.as_ref(),
+                                        request_context,
+                                    )
+                                    .await?;
+
+                                if !condition_ok {
+                                    continue; // Condition failed, skip this tuple
+                                }
+
                                 if parent_tuple.user_id == "*" {
                                     users.insert(super::types::UserResult::wildcard(
                                         &parent_tuple.user_type,
@@ -1959,6 +2003,7 @@ where
                             child,
                             user_filters,
                             contextual_tuples,
+                            request_context,
                             users,
                             depth + 1,
                         )
@@ -1978,6 +2023,7 @@ where
                             first,
                             user_filters,
                             contextual_tuples,
+                            request_context,
                             &mut intersection_users,
                             depth + 1,
                         )
@@ -1992,6 +2038,7 @@ where
                                 child,
                                 user_filters,
                                 contextual_tuples,
+                                request_context,
                                 &mut child_users,
                                 depth + 1,
                             )
@@ -2014,6 +2061,7 @@ where
                         base,
                         user_filters,
                         contextual_tuples,
+                        request_context,
                         &mut base_users,
                         depth + 1,
                     )
@@ -2027,6 +2075,7 @@ where
                         subtract,
                         user_filters,
                         contextual_tuples,
+                        request_context,
                         &mut subtract_users,
                         depth + 1,
                     )
