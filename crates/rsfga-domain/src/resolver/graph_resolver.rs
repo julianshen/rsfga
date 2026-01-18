@@ -1683,9 +1683,11 @@ where
         depth: u32,
     ) -> BoxFuture<'a, DomainResult<()>> {
         Box::pin(async move {
-            // Depth limit to prevent infinite recursion
+            // Depth limit to prevent infinite recursion - return error to indicate incomplete results
             if depth >= self.config.max_depth {
-                return Ok(());
+                return Err(DomainError::DepthLimitExceeded {
+                    max_depth: self.config.max_depth,
+                });
             }
 
             match userset {
