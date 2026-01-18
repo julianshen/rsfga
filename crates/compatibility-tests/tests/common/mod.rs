@@ -142,13 +142,16 @@ pub fn get_openfga_url() -> String {
 /// // With OPENFGA_GRPC_URL=myhost:9090 -> returns "myhost:9090"
 /// ```
 pub fn get_grpc_url() -> String {
+    derive_grpc_url(std::env::var("OPENFGA_GRPC_URL").ok(), get_openfga_url())
+}
+
+/// Pure function to derive gRPC URL from environment/params
+/// Extracted for testing without race conditions
+fn derive_grpc_url(grpc_env: Option<String>, http_url: String) -> String {
     // First check if gRPC URL is explicitly set
-    if let Ok(grpc_url) = std::env::var("OPENFGA_GRPC_URL") {
+    if let Some(grpc_url) = grpc_env {
         return grpc_url;
     }
-
-    // Otherwise derive from HTTP URL
-    let http_url = get_openfga_url();
 
     // Parse the URL properly
     match Url::parse(&http_url) {
@@ -930,89 +933,50 @@ mod tests {
     /// Test that get_grpc_url derives port correctly from default HTTP URL
     #[test]
     fn test_get_grpc_url_derives_port_from_http() {
-        // Clear any existing env vars for predictable test
-        std::env::remove_var("OPENFGA_GRPC_URL");
-        std::env::remove_var("OPENFGA_URL");
-
-        // Default should be localhost:18081 (18080 + 1)
-        let result = get_grpc_url();
+        // Use pure function with default fallback behavior (None for env var)
+        let result = derive_grpc_url(None, "http://localhost:18080".to_string());
         assert_eq!(result, "localhost:18081");
     }
 
     /// Test that OPENFGA_GRPC_URL takes precedence
     #[test]
     fn test_get_grpc_url_respects_grpc_url_env_var() {
-        // Set up
-        std::env::set_var("OPENFGA_GRPC_URL", "custom-host:9999");
-        std::env::remove_var("OPENFGA_URL");
-
-        let result = get_grpc_url();
-
-        // Clean up
-        std::env::remove_var("OPENFGA_GRPC_URL");
-
+        // Simulate env var being set via first argument
+        let result = derive_grpc_url(
+            Some("custom-host:9999".to_string()),
+            "http://localhost:18080".to_string(),
+        );
         assert_eq!(result, "custom-host:9999");
     }
 
     /// Test port derivation with custom OPENFGA_URL
     #[test]
     fn test_get_grpc_url_derives_from_custom_http_url() {
-        // Set up
-        std::env::remove_var("OPENFGA_GRPC_URL");
-        std::env::set_var("OPENFGA_URL", "http://myserver:8080");
-
-        let result = get_grpc_url();
-
-        // Clean up
-        std::env::remove_var("OPENFGA_URL");
-
+        // Simulate custom HTTP URL via second argument
+        let result = derive_grpc_url(None, "http://myserver:8080".to_string());
         assert_eq!(result, "myserver:8081");
     }
 
     /// Test with HTTPS URL
     #[test]
     fn test_get_grpc_url_handles_https() {
-        // Set up
-        std::env::remove_var("OPENFGA_GRPC_URL");
-        std::env::set_var("OPENFGA_URL", "https://secure.example.com:443");
-
-        let result = get_grpc_url();
-
-        // Clean up
-        std::env::remove_var("OPENFGA_URL");
-
+        let result = derive_grpc_url(None, "https://secure.example.com:443".to_string());
         assert_eq!(result, "secure.example.com:444");
     }
 
     /// Test URL without explicit port (uses scheme's default port)
     #[test]
     fn test_get_grpc_url_handles_url_without_port() {
-        // Set up
-        std::env::remove_var("OPENFGA_GRPC_URL");
-        std::env::set_var("OPENFGA_URL", "http://example.com");
-
-        let result = get_grpc_url();
-
-        // Clean up
-        std::env::remove_var("OPENFGA_URL");
-
         // When no port specified, url crate uses scheme's default (80 for http)
         // So gRPC port is 81
+        let result = derive_grpc_url(None, "http://example.com".to_string());
         assert_eq!(result, "example.com:81");
     }
 
     /// Test URL with path component (should be stripped)
     #[test]
     fn test_get_grpc_url_strips_path() {
-        // Set up
-        std::env::remove_var("OPENFGA_GRPC_URL");
-        std::env::set_var("OPENFGA_URL", "http://localhost:8080/v1/api");
-
-        let result = get_grpc_url();
-
-        // Clean up
-        std::env::remove_var("OPENFGA_URL");
-
+        let result = derive_grpc_url(None, "http://localhost:8080/v1/api".to_string());
         assert_eq!(result, "localhost:8081");
     }
 }
