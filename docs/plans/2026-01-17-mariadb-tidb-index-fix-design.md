@@ -161,8 +161,8 @@ async fn test_migration_succeeds_with_valid_data()
 
 ### Manual Verification
 
-- [x] Fresh MariaDB install starts successfully *(verified: 56/56 tests pass on MariaDB 10.6)*
-- [x] Fresh TiDB install starts successfully *(verified: 56/56 tests pass on TiDB latest)*
+- [x] Fresh MariaDB install starts successfully *(verified via local run: 56/56 tests pass on MariaDB 10.6, see [PR #186 test results](https://github.com/julianshen/rsfga/pull/186#issuecomment-3764069777))*
+- [x] Fresh TiDB install starts successfully *(verified via local run: 56/56 tests pass on TiDB latest, see [PR #186 test results](https://github.com/julianshen/rsfga/pull/186#issuecomment-3764069777))*
 - [x] Existing MySQL database migrates cleanly *(covered by `test_column_size_migration_idempotent`)*
 - [x] Oversized data blocks migration with clear error *(code review - `validate_column_sizes_for_migration()`)*
 - [x] All CRUD operations work after migration *(covered by `test_crud_operations_with_new_column_sizes`)*

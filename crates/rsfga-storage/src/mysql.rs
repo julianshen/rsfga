@@ -580,17 +580,35 @@ impl MySQLDataStore {
     /// The error message includes instructions for identifying and fixing oversized data.
     #[instrument(skip(self))]
     async fn migrate_column_sizes_if_needed(&self) -> StorageResult<()> {
-        // Check if the tuples table uses old VARCHAR(255) column sizes
-        // We check the store_id column - if it's VARCHAR(255), migration is needed
+        // Check ALL columns across all tables that need migration.
+        // This handles partial migrations where some columns were updated but not others.
+        // We check for any column still at VARCHAR(255) or any size mismatch from target sizes.
+        //
+        // Target sizes (from design doc):
+        // - store_id: CHAR(26) in tuples, stores, authorization_models
+        // - object_type, user_type: VARCHAR(128)
+        // - object_id: VARCHAR(255) (unchanged)
+        // - relation, user_relation: VARCHAR(50)
+        // - user_id: VARCHAR(128)
         let needs_migration: bool = sqlx::query_scalar(
             r#"
             SELECT COUNT(*) > 0
             FROM information_schema.columns
             WHERE table_schema = DATABASE()
-              AND table_name = 'tuples'
-              AND column_name = 'store_id'
-              AND data_type = 'varchar'
-              AND character_maximum_length = 255
+              AND (
+                -- Check tuples table columns
+                (table_name = 'tuples' AND column_name = 'store_id' AND NOT (data_type = 'char' AND character_maximum_length = 26))
+                OR (table_name = 'tuples' AND column_name = 'object_type' AND character_maximum_length != 128)
+                OR (table_name = 'tuples' AND column_name = 'relation' AND character_maximum_length != 50)
+                OR (table_name = 'tuples' AND column_name = 'user_type' AND character_maximum_length != 128)
+                OR (table_name = 'tuples' AND column_name = 'user_id' AND character_maximum_length != 128)
+                OR (table_name = 'tuples' AND column_name = 'user_relation' AND character_maximum_length != 50)
+                -- Check stores table
+                OR (table_name = 'stores' AND column_name = 'id' AND NOT (data_type = 'char' AND character_maximum_length = 26))
+                -- Check authorization_models table
+                OR (table_name = 'authorization_models' AND column_name = 'id' AND NOT (data_type = 'char' AND character_maximum_length = 26))
+                OR (table_name = 'authorization_models' AND column_name = 'store_id' AND NOT (data_type = 'char' AND character_maximum_length = 26))
+              )
             "#,
         )
         .fetch_one(&self.pool)
