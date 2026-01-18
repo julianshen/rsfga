@@ -237,12 +237,12 @@ async fn test_listobjects_concurrent_requests_are_isolated() {
     let store_id = create_store_with_model(&storage).await;
 
     // Create different users with different access patterns
-    for user_idx in 0..CONCURRENT_LISTOBJECTS_REQUESTS {
-        // Each user can view exactly `user_idx + 1` documents
-        for doc_idx in 0..=user_idx {
+    for request_idx in 0..CONCURRENT_LISTOBJECTS_REQUESTS {
+        // Each user can view exactly `request_idx + 1` documents
+        for doc_idx in 0..=request_idx {
             let tuple = StoredTuple {
                 user_type: "user".to_string(),
-                user_id: format!("user{user_idx}"),
+                user_id: format!("user{request_idx}"),
                 user_relation: None,
                 relation: "viewer".to_string(),
                 object_type: "document".to_string(),
@@ -257,10 +257,10 @@ async fn test_listobjects_concurrent_requests_are_isolated() {
 
     // Run concurrent requests
     let mut handles = Vec::new();
-    for user_idx in 0..CONCURRENT_LISTOBJECTS_REQUESTS {
+    for request_idx in 0..CONCURRENT_LISTOBJECTS_REQUESTS {
         let storage_clone = Arc::clone(&storage);
         let store_id_clone = store_id.clone();
-        let expected_count = user_idx + 1;
+        let expected_count = request_idx + 1;
 
         handles.push(tokio::spawn(async move {
             let (status, response) = post_json(
@@ -269,24 +269,24 @@ async fn test_listobjects_concurrent_requests_are_isolated() {
                 serde_json::json!({
                     "type": "document",
                     "relation": "viewer",
-                    "user": format!("user:user{user_idx}")
+                    "user": format!("user:user{request_idx}")
                 }),
             )
             .await;
 
-            (user_idx, expected_count, status, response)
+            (request_idx, expected_count, status, response)
         }));
     }
 
     // Verify all results
     for handle in handles {
-        let (user_idx, expected_count, status, response) = handle.await.unwrap();
+        let (request_idx, expected_count, status, response) = handle.await.unwrap();
 
         assert_eq!(
             status,
             StatusCode::OK,
             "Request for user{} should succeed",
-            user_idx
+            request_idx
         );
 
         let objects = response["objects"]
@@ -297,7 +297,7 @@ async fn test_listobjects_concurrent_requests_are_isolated() {
             objects.len(),
             expected_count,
             "user{} should have access to exactly {} documents, got {}",
-            user_idx,
+            request_idx,
             expected_count,
             objects.len()
         );
