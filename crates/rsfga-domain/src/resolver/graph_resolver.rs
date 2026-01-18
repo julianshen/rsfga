@@ -1684,7 +1684,7 @@ where
     ) -> BoxFuture<'a, DomainResult<()>> {
         Box::pin(async move {
             // Depth limit to prevent infinite recursion
-            if depth > self.config.max_depth {
+            if depth >= self.config.max_depth {
                 return Ok(());
             }
 

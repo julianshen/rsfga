@@ -14,7 +14,7 @@ use std::sync::Arc;
 use super::mocks::*;
 use crate::error::DomainError;
 use crate::model::{RelationDefinition, TypeDefinition, Userset};
-use crate::resolver::{GraphResolver, ListUsersRequest, ListUsersResult, UserFilter, UserResult};
+use crate::resolver::{GraphResolver, ListUsersRequest, UserFilter, UserResult};
 
 // ========== Section 1: Direct Relations ==========
 

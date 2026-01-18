@@ -900,9 +900,14 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         &self,
         request: Request<ListUsersRequest>,
     ) -> Result<Response<ListUsersResponse>, Status> {
+        use crate::validation::{
+            estimate_context_size, json_exceeds_max_depth, validate_relation_format,
+            MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
+        };
         use rsfga_domain::resolver::{
             ListUsersRequest as DomainListUsersRequest, UserFilter, UserResult,
         };
+        use rsfga_storage::traits::validate_object_type;
 
         let req = request.into_inner();
 
@@ -925,14 +930,45 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             return Err(Status::invalid_argument("object.id cannot be empty"));
         }
 
+        // Validate object type format
+        if let Err(e) = validate_object_type(&object.r#type) {
+            return Err(Status::invalid_argument(e.to_string()));
+        }
+
         // Validate relation
         if req.relation.is_empty() {
             return Err(Status::invalid_argument("relation cannot be empty"));
         }
 
+        // Validate relation format
+        if let Some(err) = validate_relation_format(&req.relation) {
+            return Err(Status::invalid_argument(err));
+        }
+
         // Validate user_filters not empty
         if req.user_filters.is_empty() {
             return Err(Status::invalid_argument("user_filters cannot be empty"));
+        }
+
+        // Validate context if provided (DoS protection)
+        if let Some(ref ctx) = req.context {
+            let context_map = prost_struct_to_hashmap(ctx.clone())
+                .map_err(|e| Status::invalid_argument(format!("invalid context: {e}")))?;
+
+            if estimate_context_size(&context_map) > MAX_CONDITION_CONTEXT_SIZE {
+                return Err(Status::invalid_argument(format!(
+                    "context size exceeds maximum of {MAX_CONDITION_CONTEXT_SIZE} bytes"
+                )));
+            }
+
+            // Check nesting depth
+            for value in context_map.values() {
+                if json_exceeds_max_depth(value, 2) {
+                    return Err(Status::invalid_argument(format!(
+                        "context nested too deeply (max depth {MAX_JSON_DEPTH})"
+                    )));
+                }
+            }
         }
 
         // Convert user_filters
