@@ -268,7 +268,10 @@ mod tests {
             DomainErrorKind::InvalidInput(msg) => {
                 assert!(msg.contains("depth limit exceeded"));
                 // Production mode should NOT include specific depth value
-                assert!(!msg.contains("25"), "Production mode should hide depth: {msg}");
+                assert!(
+                    !msg.contains("25"),
+                    "Production mode should hide depth: {msg}"
+                );
             }
             _ => panic!("Expected InvalidInput"),
         }
@@ -294,7 +297,10 @@ mod tests {
             DomainErrorKind::Timeout(msg) => {
                 assert!(msg.contains("timeout"));
                 // Production mode should NOT include specific duration
-                assert!(!msg.contains("5000"), "Production mode should hide duration: {msg}");
+                assert!(
+                    !msg.contains("5000"),
+                    "Production mode should hide duration: {msg}"
+                );
             }
             _ => panic!("Expected Timeout"),
         }
@@ -309,7 +315,10 @@ mod tests {
             DomainErrorKind::NotFound(msg) => {
                 assert!(msg.contains("store not found"));
                 // Production mode should NOT include specific store ID
-                assert!(!msg.contains("xyz"), "Production mode should hide store ID: {msg}");
+                assert!(
+                    !msg.contains("xyz"),
+                    "Production mode should hide store ID: {msg}"
+                );
             }
             _ => panic!("Expected NotFound"),
         }
@@ -324,7 +333,10 @@ mod tests {
             DomainErrorKind::NotFound(msg) => {
                 assert!(msg.contains("store not found"));
                 // Production mode should NOT include specific store ID
-                assert!(!msg.contains("xyz"), "Production mode should hide store ID: {msg}");
+                assert!(
+                    !msg.contains("xyz"),
+                    "Production mode should hide store ID: {msg}"
+                );
             }
             _ => panic!("Expected NotFound"),
         }
@@ -338,7 +350,10 @@ mod tests {
         match classify_domain_error(&err) {
             DomainErrorKind::Internal(msg) => {
                 // Production mode should NOT include internal error details
-                assert!(!msg.contains("internal issue"), "Production mode should hide details: {msg}");
+                assert!(
+                    !msg.contains("internal issue"),
+                    "Production mode should hide details: {msg}"
+                );
             }
             _ => panic!("Expected Internal"),
         }
@@ -353,7 +368,10 @@ mod tests {
             DomainErrorKind::InvalidInput(msg) => {
                 assert!(msg.contains("type not found"));
                 // Production mode should NOT include specific type name
-                assert!(!msg.contains("document"), "Production mode should hide type name: {msg}");
+                assert!(
+                    !msg.contains("document"),
+                    "Production mode should hide type name: {msg}"
+                );
             }
             _ => panic!("Expected InvalidInput"),
         }
@@ -369,8 +387,14 @@ mod tests {
             DomainErrorKind::InvalidInput(msg) => {
                 assert!(msg.contains("relation"));
                 // Production mode should NOT include specific details
-                assert!(!msg.contains("viewer"), "Production mode should hide relation: {msg}");
-                assert!(!msg.contains("document"), "Production mode should hide type: {msg}");
+                assert!(
+                    !msg.contains("viewer"),
+                    "Production mode should hide relation: {msg}"
+                );
+                assert!(
+                    !msg.contains("document"),
+                    "Production mode should hide type: {msg}"
+                );
             }
             _ => panic!("Expected InvalidInput"),
         }
@@ -389,7 +413,10 @@ mod tests {
         match classify_domain_error_with_config(&err, &config) {
             DomainErrorKind::InvalidInput(msg) => {
                 assert!(msg.contains("depth limit exceeded"));
-                assert!(msg.contains("25"), "Development mode should show depth: {msg}");
+                assert!(
+                    msg.contains("25"),
+                    "Development mode should show depth: {msg}"
+                );
             }
             _ => panic!("Expected InvalidInput"),
         }
@@ -402,7 +429,10 @@ mod tests {
         match classify_domain_error_with_config(&err, &config) {
             DomainErrorKind::Timeout(msg) => {
                 assert!(msg.contains("timeout"));
-                assert!(msg.contains("5000"), "Development mode should show duration: {msg}");
+                assert!(
+                    msg.contains("5000"),
+                    "Development mode should show duration: {msg}"
+                );
             }
             _ => panic!("Expected Timeout"),
         }
@@ -417,7 +447,10 @@ mod tests {
         match classify_domain_error_with_config(&err, &config) {
             DomainErrorKind::NotFound(msg) => {
                 assert!(msg.contains("store not found"));
-                assert!(msg.contains("xyz"), "Development mode should show store ID: {msg}");
+                assert!(
+                    msg.contains("xyz"),
+                    "Development mode should show store ID: {msg}"
+                );
             }
             _ => panic!("Expected NotFound"),
         }
@@ -432,8 +465,14 @@ mod tests {
         let config = ErrorConfig::development();
         match classify_domain_error_with_config(&err, &config) {
             DomainErrorKind::InvalidInput(msg) => {
-                assert!(msg.contains("viewer"), "Development mode should show relation: {msg}");
-                assert!(msg.contains("document"), "Development mode should show type: {msg}");
+                assert!(
+                    msg.contains("viewer"),
+                    "Development mode should show relation: {msg}"
+                );
+                assert!(
+                    msg.contains("document"),
+                    "Development mode should show type: {msg}"
+                );
             }
             _ => panic!("Expected InvalidInput"),
         }

@@ -19,7 +19,7 @@
 //! - **Timeout Handling**: Configurable timeout (default 30s) prevents
 //!   hanging on pathological graphs.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1447,6 +1447,396 @@ where
         Ok(super::types::ListObjectsResult {
             objects,
             truncated: result_truncated,
+        })
+    }
+
+    /// Lists users that have a specific relation to an object.
+    ///
+    /// This is the inverse of `list_objects` - given an object and relation,
+    /// it returns all users that have that relation to the object.
+    ///
+    /// # DoS Protection
+    ///
+    /// This method applies the same protections as `list_objects`:
+    /// - Concurrency limit on parallel checks
+    /// - Per-operation timeout
+    /// - User filter validation
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let request = ListUsersRequest::new(
+    ///     "store-id",
+    ///     "document:readme",
+    ///     "viewer",
+    ///     vec![UserFilter::new("user")],
+    /// );
+    /// let result = resolver.list_users(&request).await?;
+    /// // result.users = [UserResult::Object { user_type: "user", user_id: "alice" }, ...]
+    /// ```
+    pub async fn list_users(
+        &self,
+        request: &super::types::ListUsersRequest,
+    ) -> DomainResult<super::types::ListUsersResult> {
+        use super::types::{ListUsersResult, UserResult};
+        use std::collections::HashSet;
+
+        // Check if store exists
+        if !self.tuple_reader.store_exists(&request.store_id).await? {
+            return Err(DomainError::StoreNotFound {
+                store_id: request.store_id.clone(),
+            });
+        }
+
+        // Parse object into type and id
+        let (object_type, object_id) = self.parse_object(&request.object)?;
+
+        // Validate relation format
+        if request.relation.is_empty() {
+            return Err(DomainError::InvalidRelationFormat {
+                value: request.relation.clone(),
+            });
+        }
+
+        // Validate user_filters is not empty (OpenFGA requirement)
+        if request.user_filters.is_empty() {
+            return Err(DomainError::ResolverError {
+                message: "user_filters cannot be empty".to_string(),
+            });
+        }
+
+        // Collect users from all sources using a HashSet to deduplicate
+        let mut users: HashSet<UserResult> = HashSet::new();
+
+        // 1. Get tuples directly assigned to this object/relation
+        let tuples = self
+            .tuple_reader
+            .read_tuples(&request.store_id, object_type, object_id, &request.relation)
+            .await?;
+
+        for tuple in tuples {
+            // Check if this tuple's user matches any user filter
+            if self.user_matches_filters(
+                &tuple.user_type,
+                tuple.user_relation.as_deref(),
+                &request.user_filters,
+            ) {
+                // Check for wildcard
+                if tuple.user_id == "*" {
+                    users.insert(UserResult::wildcard(&tuple.user_type));
+                } else if let Some(ref rel) = tuple.user_relation {
+                    // Userset reference (e.g., group:eng#member)
+                    users.insert(UserResult::userset(&tuple.user_type, &tuple.user_id, rel));
+                } else {
+                    // Direct user
+                    users.insert(UserResult::object(&tuple.user_type, &tuple.user_id));
+                }
+            }
+        }
+
+        // 2. Also check contextual tuples
+        for tuple in request.contextual_tuples.iter() {
+            // Parse the contextual tuple's object
+            if let Ok((ctx_obj_type, ctx_obj_id)) = self.parse_object(&tuple.object) {
+                // Check if this tuple applies to our target object
+                if ctx_obj_type == object_type
+                    && ctx_obj_id == object_id
+                    && tuple.relation == request.relation
+                {
+                    // Parse the user from the contextual tuple
+                    if let Some((user_type, user_id, user_relation)) =
+                        self.parse_user_string(&tuple.user)
+                    {
+                        if self.user_matches_filters(
+                            &user_type,
+                            user_relation.as_deref(),
+                            &request.user_filters,
+                        ) {
+                            if user_id == "*" {
+                                users.insert(UserResult::wildcard(user_type));
+                            } else if let Some(rel) = user_relation {
+                                users.insert(UserResult::userset(user_type, user_id, rel));
+                            } else {
+                                users.insert(UserResult::object(user_type, user_id));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Handle computed relations (union, intersection, etc.)
+        // Get the authorization model to check for computed relations
+        let model = self.model_reader.get_model(&request.store_id).await?;
+
+        // Find the type definition for the object type
+        if let Some(type_def) = model
+            .type_definitions
+            .iter()
+            .find(|td| td.type_name == object_type)
+        {
+            // Find the relation definition
+            if let Some(relation_def) = type_def
+                .relations
+                .iter()
+                .find(|r| r.name == request.relation)
+            {
+                // Recursively collect users from computed usersets
+                self.collect_users_from_userset(
+                    &request.store_id,
+                    object_type,
+                    object_id,
+                    &relation_def.rewrite,
+                    &request.user_filters,
+                    &request.contextual_tuples,
+                    &mut users,
+                    0,
+                )
+                .await?;
+            }
+        }
+
+        Ok(ListUsersResult {
+            users: users.into_iter().collect(),
+            excluded_users: Vec::new(),
+        })
+    }
+
+    /// Helper to parse a user string like "user:alice" or "group:eng#member" into components.
+    fn parse_user_string(&self, user: &str) -> Option<(String, String, Option<String>)> {
+        if let Some((obj_part, relation)) = user.split_once('#') {
+            // Userset format: "type:id#relation"
+            let (user_type, user_id) = obj_part.split_once(':')?;
+            Some((
+                user_type.to_string(),
+                user_id.to_string(),
+                Some(relation.to_string()),
+            ))
+        } else {
+            // Direct format: "type:id"
+            let (user_type, user_id) = user.split_once(':')?;
+            Some((user_type.to_string(), user_id.to_string(), None))
+        }
+    }
+
+    /// Checks if a user type (and optional relation) matches any of the user filters.
+    fn user_matches_filters(
+        &self,
+        user_type: &str,
+        user_relation: Option<&str>,
+        user_filters: &[super::types::UserFilter],
+    ) -> bool {
+        for filter in user_filters {
+            if filter.type_name == user_type {
+                match (&filter.relation, user_relation) {
+                    // Filter requires a relation and it matches
+                    (Some(filter_rel), Some(user_rel)) if filter_rel == user_rel => return true,
+                    // Filter has no relation requirement and user has no relation
+                    (None, None) => return true,
+                    // Filter has no relation requirement - match any user of this type
+                    // (including wildcards and usersets)
+                    (None, _) => return true,
+                    _ => continue,
+                }
+            }
+        }
+        false
+    }
+
+    /// Recursively collects users from a userset rewrite (handles union, intersection, etc.)
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::only_used_in_recursion)]
+    fn collect_users_from_userset<'a>(
+        &'a self,
+        store_id: &'a str,
+        object_type: &'a str,
+        object_id: &'a str,
+        userset: &'a Userset,
+        user_filters: &'a [super::types::UserFilter],
+        contextual_tuples: &'a Arc<Vec<super::types::ContextualTuple>>,
+        users: &'a mut HashSet<super::types::UserResult>,
+        depth: u32,
+    ) -> BoxFuture<'a, DomainResult<()>> {
+        Box::pin(async move {
+            // Depth limit to prevent infinite recursion
+            if depth > self.config.max_depth {
+                return Ok(());
+            }
+
+            match userset {
+                Userset::This => {
+                    // Already handled in main list_users - direct tuples
+                }
+                Userset::ComputedUserset { relation } => {
+                    // Get users from the computed relation
+                    let tuples = self
+                        .tuple_reader
+                        .read_tuples(store_id, object_type, object_id, relation)
+                        .await?;
+
+                    for tuple in tuples {
+                        if self.user_matches_filters(
+                            &tuple.user_type,
+                            tuple.user_relation.as_deref(),
+                            user_filters,
+                        ) {
+                            if tuple.user_id == "*" {
+                                users.insert(super::types::UserResult::wildcard(&tuple.user_type));
+                            } else if let Some(ref rel) = tuple.user_relation {
+                                users.insert(super::types::UserResult::userset(
+                                    &tuple.user_type,
+                                    &tuple.user_id,
+                                    rel,
+                                ));
+                            } else {
+                                users.insert(super::types::UserResult::object(
+                                    &tuple.user_type,
+                                    &tuple.user_id,
+                                ));
+                            }
+                        }
+                    }
+                }
+                Userset::TupleToUserset {
+                    tupleset,
+                    computed_userset,
+                } => {
+                    // Get tuples from the tupleset relation (e.g., "parent")
+                    let tupleset_tuples = self
+                        .tuple_reader
+                        .read_tuples(store_id, object_type, object_id, tupleset)
+                        .await?;
+
+                    // For each parent, recursively get users with the computed_userset relation
+                    for tuple in tupleset_tuples {
+                        let parent_object = format!("{}:{}", tuple.user_type, tuple.user_id);
+                        if let Ok((parent_type, parent_id)) = self.parse_object(&parent_object) {
+                            // Read users from the parent's computed_userset relation
+                            let parent_tuples = self
+                                .tuple_reader
+                                .read_tuples(store_id, parent_type, parent_id, computed_userset)
+                                .await?;
+
+                            for parent_tuple in parent_tuples {
+                                if self.user_matches_filters(
+                                    &parent_tuple.user_type,
+                                    parent_tuple.user_relation.as_deref(),
+                                    user_filters,
+                                ) {
+                                    if parent_tuple.user_id == "*" {
+                                        users.insert(super::types::UserResult::wildcard(
+                                            &parent_tuple.user_type,
+                                        ));
+                                    } else if let Some(ref rel) = parent_tuple.user_relation {
+                                        users.insert(super::types::UserResult::userset(
+                                            &parent_tuple.user_type,
+                                            &parent_tuple.user_id,
+                                            rel,
+                                        ));
+                                    } else {
+                                        users.insert(super::types::UserResult::object(
+                                            &parent_tuple.user_type,
+                                            &parent_tuple.user_id,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Userset::Union { children } => {
+                    // Collect users from all children
+                    for child in children {
+                        self.collect_users_from_userset(
+                            store_id,
+                            object_type,
+                            object_id,
+                            child,
+                            user_filters,
+                            contextual_tuples,
+                            users,
+                            depth + 1,
+                        )
+                        .await?;
+                    }
+                }
+                Userset::Intersection { children } => {
+                    // For intersection, we need to find users that are in ALL children
+                    // Start with users from the first child, then intersect with others
+                    if let Some((first, rest)) = children.split_first() {
+                        let mut intersection_users: HashSet<super::types::UserResult> =
+                            HashSet::new();
+                        self.collect_users_from_userset(
+                            store_id,
+                            object_type,
+                            object_id,
+                            first,
+                            user_filters,
+                            contextual_tuples,
+                            &mut intersection_users,
+                            depth + 1,
+                        )
+                        .await?;
+
+                        for child in rest {
+                            let mut child_users: HashSet<super::types::UserResult> = HashSet::new();
+                            self.collect_users_from_userset(
+                                store_id,
+                                object_type,
+                                object_id,
+                                child,
+                                user_filters,
+                                contextual_tuples,
+                                &mut child_users,
+                                depth + 1,
+                            )
+                            .await?;
+
+                            // Keep only users that are in both sets
+                            intersection_users.retain(|u| child_users.contains(u));
+                        }
+
+                        users.extend(intersection_users);
+                    }
+                }
+                Userset::Exclusion { base, subtract } => {
+                    // Get users from base, then remove those in subtract
+                    let mut base_users: HashSet<super::types::UserResult> = HashSet::new();
+                    self.collect_users_from_userset(
+                        store_id,
+                        object_type,
+                        object_id,
+                        base,
+                        user_filters,
+                        contextual_tuples,
+                        &mut base_users,
+                        depth + 1,
+                    )
+                    .await?;
+
+                    let mut subtract_users: HashSet<super::types::UserResult> = HashSet::new();
+                    self.collect_users_from_userset(
+                        store_id,
+                        object_type,
+                        object_id,
+                        subtract,
+                        user_filters,
+                        contextual_tuples,
+                        &mut subtract_users,
+                        depth + 1,
+                    )
+                    .await?;
+
+                    // Add base users that are not in subtract
+                    for user in base_users {
+                        if !subtract_users.contains(&user) {
+                            users.insert(user);
+                        }
+                    }
+                }
+            }
+
+            Ok(())
         })
     }
 }

@@ -338,3 +338,156 @@ pub struct ListObjectsResult {
     /// Whether the results were truncated due to limits.
     pub truncated: bool,
 }
+
+// ============================================================
+// ListUsers API Types
+// ============================================================
+
+/// Request for listing users with a specific relation to an object.
+/// This is the inverse of ListObjects.
+#[derive(Debug, Clone)]
+pub struct ListUsersRequest {
+    /// The store ID to query.
+    pub store_id: String,
+    /// The object to check permissions for (type:id format).
+    pub object: String,
+    /// The relation to check (e.g., "viewer").
+    pub relation: String,
+    /// Filter for user types to return.
+    pub user_filters: Vec<UserFilter>,
+    /// Contextual tuples to consider during the check.
+    pub contextual_tuples: Arc<Vec<ContextualTuple>>,
+    /// CEL evaluation context variables.
+    pub context: Arc<HashMap<String, serde_json::Value>>,
+}
+
+impl ListUsersRequest {
+    /// Creates a new ListUsersRequest without contextual tuples or context.
+    pub fn new(
+        store_id: impl Into<String>,
+        object: impl Into<String>,
+        relation: impl Into<String>,
+        user_filters: Vec<UserFilter>,
+    ) -> Self {
+        Self {
+            store_id: store_id.into(),
+            object: object.into(),
+            relation: relation.into(),
+            user_filters,
+            contextual_tuples: Arc::new(Vec::new()),
+            context: Arc::new(HashMap::new()),
+        }
+    }
+
+    /// Creates a new ListUsersRequest with contextual tuples and context.
+    pub fn with_context(
+        store_id: impl Into<String>,
+        object: impl Into<String>,
+        relation: impl Into<String>,
+        user_filters: Vec<UserFilter>,
+        contextual_tuples: Vec<ContextualTuple>,
+        context: HashMap<String, serde_json::Value>,
+    ) -> Self {
+        Self {
+            store_id: store_id.into(),
+            object: object.into(),
+            relation: relation.into(),
+            user_filters,
+            contextual_tuples: Arc::new(contextual_tuples),
+            context: Arc::new(context),
+        }
+    }
+}
+
+/// Filter for user types in ListUsers requests.
+#[derive(Debug, Clone)]
+pub struct UserFilter {
+    /// The type to filter for (e.g., "user", "group").
+    pub type_name: String,
+    /// Optional relation for userset filters (e.g., "member" for "group#member").
+    pub relation: Option<String>,
+}
+
+impl UserFilter {
+    /// Creates a new UserFilter for a direct type.
+    pub fn new(type_name: impl Into<String>) -> Self {
+        Self {
+            type_name: type_name.into(),
+            relation: None,
+        }
+    }
+
+    /// Creates a new UserFilter for a userset type (e.g., group#member).
+    pub fn with_relation(type_name: impl Into<String>, relation: impl Into<String>) -> Self {
+        Self {
+            type_name: type_name.into(),
+            relation: Some(relation.into()),
+        }
+    }
+}
+
+/// A user result in ListUsers response.
+/// Matches OpenFGA's response format with object/userset/wildcard variants.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum UserResult {
+    /// A direct user object (e.g., user:alice).
+    Object {
+        /// The type of the user (e.g., "user").
+        user_type: String,
+        /// The ID of the user (e.g., "alice").
+        user_id: String,
+    },
+    /// A userset reference (e.g., group:engineering#member).
+    Userset {
+        /// The type of the userset (e.g., "group").
+        userset_type: String,
+        /// The ID of the userset (e.g., "engineering").
+        userset_id: String,
+        /// The relation on the userset (e.g., "member").
+        relation: String,
+    },
+    /// A wildcard match (e.g., user:*).
+    Wildcard {
+        /// The type of the wildcard (e.g., "user").
+        wildcard_type: String,
+    },
+}
+
+impl UserResult {
+    /// Creates a new Object variant.
+    pub fn object(user_type: impl Into<String>, user_id: impl Into<String>) -> Self {
+        Self::Object {
+            user_type: user_type.into(),
+            user_id: user_id.into(),
+        }
+    }
+
+    /// Creates a new Userset variant.
+    pub fn userset(
+        userset_type: impl Into<String>,
+        userset_id: impl Into<String>,
+        relation: impl Into<String>,
+    ) -> Self {
+        Self::Userset {
+            userset_type: userset_type.into(),
+            userset_id: userset_id.into(),
+            relation: relation.into(),
+        }
+    }
+
+    /// Creates a new Wildcard variant.
+    pub fn wildcard(wildcard_type: impl Into<String>) -> Self {
+        Self::Wildcard {
+            wildcard_type: wildcard_type.into(),
+        }
+    }
+}
+
+/// Result of listing users with relation to an object.
+#[derive(Debug, Clone)]
+pub struct ListUsersResult {
+    /// Users that have the specified relation to the object.
+    pub users: Vec<UserResult>,
+    /// Users excluded from access (for exclusion relations).
+    pub excluded_users: Vec<UserResult>,
+}

@@ -18,18 +18,18 @@ use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
 use crate::utils::{format_user, parse_object, parse_user};
 
 use crate::proto::openfga::v1::{
-    open_fga_service_server::OpenFgaService, BatchCheckRequest, BatchCheckResponse,
+    open_fga_service_server::OpenFgaService, user, BatchCheckRequest, BatchCheckResponse,
     BatchCheckSingleResult, CheckError, CheckRequest, CheckResponse, Computed, CreateStoreRequest,
     CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse, ErrorCode, ExpandRequest,
-    ExpandResponse, GetStoreRequest, GetStoreResponse, Leaf, ListObjectsRequest,
+    ExpandResponse, FgaObject, GetStoreRequest, GetStoreResponse, Leaf, ListObjectsRequest,
     ListObjectsResponse, ListStoresRequest, ListStoresResponse, ListUsersRequest,
     ListUsersResponse, Node, Nodes, ObjectRelation, ReadAssertionsRequest, ReadAssertionsResponse,
     ReadAuthorizationModelRequest, ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
     ReadAuthorizationModelsResponse, ReadChangesRequest, ReadChangesResponse, ReadRequest,
-    ReadResponse, RelationshipCondition, Store, Tuple, TupleKey, TupleToUserset,
-    UpdateStoreRequest, UpdateStoreResponse, Users, UsersetTree, WriteAssertionsRequest,
-    WriteAssertionsResponse, WriteAuthorizationModelRequest, WriteAuthorizationModelResponse,
-    WriteRequest, WriteResponse,
+    ReadResponse, RelationshipCondition, Store, Tuple, TupleKey, TupleToUserset, TypedWildcard,
+    UpdateStoreRequest, UpdateStoreResponse, User, Users, UsersetTree, UsersetUser,
+    WriteAssertionsRequest, WriteAssertionsResponse, WriteAuthorizationModelRequest,
+    WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
 
 /// Maximum allowed length for correlation IDs to prevent DoS attacks.
@@ -900,6 +900,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         &self,
         request: Request<ListUsersRequest>,
     ) -> Result<Response<ListUsersResponse>, Status> {
+        use rsfga_domain::resolver::{
+            ListUsersRequest as DomainListUsersRequest, UserFilter, UserResult,
+        };
+
         let req = request.into_inner();
 
         // Validate store exists
@@ -909,10 +913,135 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // ListUsers not yet implemented
+        // Extract object from request
+        let object = req
+            .object
+            .ok_or_else(|| Status::invalid_argument("object is required"))?;
+
+        if object.r#type.is_empty() {
+            return Err(Status::invalid_argument("object.type cannot be empty"));
+        }
+        if object.id.is_empty() {
+            return Err(Status::invalid_argument("object.id cannot be empty"));
+        }
+
+        // Validate relation
+        if req.relation.is_empty() {
+            return Err(Status::invalid_argument("relation cannot be empty"));
+        }
+
+        // Validate user_filters not empty
+        if req.user_filters.is_empty() {
+            return Err(Status::invalid_argument("user_filters cannot be empty"));
+        }
+
+        // Convert user_filters
+        let user_filters: Vec<UserFilter> = req
+            .user_filters
+            .into_iter()
+            .map(|f| {
+                if f.relation.is_empty() {
+                    UserFilter::new(f.r#type)
+                } else {
+                    UserFilter::with_relation(f.r#type, f.relation)
+                }
+            })
+            .collect();
+
+        // Convert contextual tuples
+        let contextual_tuples: Vec<rsfga_domain::resolver::ContextualTuple> = req
+            .contextual_tuples
+            .map(|ct| {
+                ct.tuple_keys
+                    .into_iter()
+                    .filter_map(|tk| {
+                        let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
+                        let (object_type, object_id) = parse_object(&tk.object)?;
+                        Some(rsfga_domain::resolver::ContextualTuple::new(
+                            format_user(user_type, user_id, user_relation),
+                            tk.relation,
+                            format!("{object_type}:{object_id}"),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Convert context
+        let context = req
+            .context
+            .map(prost_struct_to_hashmap)
+            .transpose()
+            .map_err(|e| Status::invalid_argument(format!("invalid context: {}", e)))?
+            .unwrap_or_default();
+
+        // Create domain request
+        let object_str = format!("{}:{}", object.r#type, object.id);
+        let list_request = DomainListUsersRequest::with_context(
+            req.store_id,
+            object_str,
+            req.relation,
+            user_filters,
+            contextual_tuples,
+            context,
+        );
+
+        // Call the resolver
+        let result = self
+            .resolver
+            .list_users(&list_request)
+            .await
+            .map_err(domain_error_to_status)?;
+
+        // Convert domain results to proto format
+        let users: Vec<User> = result
+            .users
+            .into_iter()
+            .map(|u| match u {
+                UserResult::Object { user_type, user_id } => User {
+                    user: Some(user::User::Object(FgaObject {
+                        r#type: user_type,
+                        id: user_id,
+                    })),
+                },
+                UserResult::Userset {
+                    userset_type,
+                    userset_id,
+                    relation,
+                } => User {
+                    user: Some(user::User::Userset(UsersetUser {
+                        r#type: userset_type,
+                        id: userset_id,
+                        relation,
+                    })),
+                },
+                UserResult::Wildcard { wildcard_type } => User {
+                    user: Some(user::User::Wildcard(TypedWildcard {
+                        r#type: wildcard_type,
+                    })),
+                },
+            })
+            .collect();
+
+        // Note: excluded_users in OpenFGA proto is Vec<String> not Vec<User>
+        // We format as strings for compatibility
+        let excluded_users: Vec<String> = result
+            .excluded_users
+            .into_iter()
+            .map(|u| match u {
+                UserResult::Object { user_type, user_id } => format!("{user_type}:{user_id}"),
+                UserResult::Userset {
+                    userset_type,
+                    userset_id,
+                    relation,
+                } => format!("{userset_type}:{userset_id}#{relation}"),
+                UserResult::Wildcard { wildcard_type } => format!("{wildcard_type}:*"),
+            })
+            .collect();
+
         Ok(Response::new(ListUsersResponse {
-            users: vec![],
-            excluded_users: vec![],
+            users,
+            excluded_users,
         }))
     }
 
