@@ -99,15 +99,48 @@ impl<S: DataStore> AppState<S> {
     /// This improves performance but cached results may be stale until TTL expires
     /// or invalidation occurs.
     pub fn with_cache_config(storage: Arc<S>, cache_config: CheckCacheConfig) -> Self {
+        let cache = Arc::new(CheckCache::new(cache_config));
+        Self::from_storage_and_cache(storage, cache)
+    }
+
+    /// Creates a new application state with a shared cache.
+    ///
+    /// This constructor allows multiple `AppState` instances to share the same
+    /// cache, which is essential for testing cache invalidation behavior.
+    ///
+    /// # Cache Attachment
+    ///
+    /// The resolver will only use the shared cache if `cache.is_enabled()` returns
+    /// `true`. If the cache is disabled, the resolver will bypass the cache entirely
+    /// and always hit storage for fresh results.
+    ///
+    /// # Arguments
+    ///
+    /// * `storage` - The storage backend
+    /// * `cache` - A shared cache instance
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let cache = Arc::new(CheckCache::new(CheckCacheConfig::default().with_enabled(true)));
+    /// let state1 = AppState::with_shared_cache(storage.clone(), cache.clone());
+    /// let state2 = AppState::with_shared_cache(storage.clone(), cache.clone());
+    /// // Both state1 and state2 share the same cache
+    /// ```
+    pub fn with_shared_cache(storage: Arc<S>, cache: Arc<CheckCache>) -> Self {
+        Self::from_storage_and_cache(storage, cache)
+    }
+
+    /// Internal helper to construct AppState from storage and cache.
+    ///
+    /// This extracts the common logic between `with_cache_config` and `with_shared_cache`.
+    fn from_storage_and_cache(storage: Arc<S>, cache: Arc<CheckCache>) -> Self {
         // Create adapters to bridge storage to domain traits
         let tuple_reader = Arc::new(DataStoreTupleReader::new(Arc::clone(&storage)));
         let model_reader = Arc::new(DataStoreModelReader::new(Arc::clone(&storage)));
 
-        // Create the check cache
-        let cache = Arc::new(CheckCache::new(cache_config.clone()));
-
         // Create the graph resolver - only attach cache if explicitly enabled
-        let resolver_config = if cache_config.enabled {
+        let resolver_config = if cache.is_enabled() {
             ResolverConfig::default().with_cache(Arc::clone(&cache))
         } else {
             ResolverConfig::default()
