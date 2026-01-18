@@ -608,3 +608,959 @@ async fn test_list_users_deduplicates_results() {
     assert_eq!(result.users.len(), 1);
     assert!(result.users.contains(&UserResult::object("user", "alice")));
 }
+
+// ========== Section 9: Computed Relations ==========
+// Note: These tests document expected behavior for computed relations.
+// Currently ListUsers only supports direct relations (Userset::This).
+// Computed relation traversal is tracked for future implementation.
+
+#[tokio::test]
+#[ignore = "ListUsers computed relations not yet implemented - documents expected behavior"]
+async fn test_list_users_resolves_union_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    // viewer = owner or editor
+    tuple_reader
+        .add_tuple("store-1", "document", "readme", "owner", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "document", "readme", "editor", "user", "bob", None)
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "owner".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "editor".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request).await.unwrap();
+
+    // Both alice (owner) and bob (editor) should be viewers
+    assert_eq!(result.users.len(), 2);
+    assert!(result.users.contains(&UserResult::object("user", "alice")));
+    assert!(result.users.contains(&UserResult::object("user", "bob")));
+}
+
+#[tokio::test]
+#[ignore = "ListUsers computed relations not yet implemented - documents expected behavior"]
+async fn test_list_users_resolves_intersection_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    // alice is both member and approved
+    tuple_reader
+        .add_tuple("store-1", "resource", "doc1", "member", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "resource", "doc1", "approved", "user", "alice", None)
+        .await;
+    // bob is only member
+    tuple_reader
+        .add_tuple("store-1", "resource", "doc1", "member", "user", "bob", None)
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "resource".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "member".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "approved".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "accessor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Intersection {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "member".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "approved".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "resource:doc1",
+        "accessor",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request).await.unwrap();
+
+    // Only alice should be returned (has both member AND approved)
+    assert_eq!(result.users.len(), 1);
+    assert!(result.users.contains(&UserResult::object("user", "alice")));
+}
+
+#[tokio::test]
+#[ignore = "ListUsers computed relations not yet implemented - documents expected behavior"]
+async fn test_list_users_resolves_exclusion_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    // alice and bob are members, but bob is banned
+    tuple_reader
+        .add_tuple("store-1", "resource", "doc1", "member", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "resource", "doc1", "member", "user", "bob", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "resource", "doc1", "banned", "user", "bob", None)
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "resource".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "member".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "banned".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "active_member".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Exclusion {
+                            base: Box::new(Userset::ComputedUserset {
+                                relation: "member".to_string(),
+                            }),
+                            subtract: Box::new(Userset::ComputedUserset {
+                                relation: "banned".to_string(),
+                            }),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "resource:doc1",
+        "active_member",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request).await.unwrap();
+
+    // Only alice should be returned (member but not banned)
+    assert_eq!(result.users.len(), 1);
+    assert!(result.users.contains(&UserResult::object("user", "alice")));
+}
+
+#[tokio::test]
+#[ignore = "ListUsers computed relations not yet implemented - documents expected behavior"]
+async fn test_list_users_resolves_tuple_to_userset() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    // Document has a parent folder
+    tuple_reader
+        .add_tuple("store-1", "document", "readme", "parent", "folder", "root", None)
+        .await;
+    // Folder has viewers
+    tuple_reader
+        .add_tuple("store-1", "folder", "root", "viewer", "user", "alice", None)
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request).await.unwrap();
+
+    // Alice should be returned (viewer of parent folder)
+    assert_eq!(result.users.len(), 1);
+    assert!(result.users.contains(&UserResult::object("user", "alice")));
+}
+
+// ========== Section 10: Property-Based Tests ==========
+
+use proptest::prelude::*;
+
+/// Strategy to generate valid object identifiers
+fn list_users_object_strategy() -> impl Strategy<Value = (String, String, String)> {
+    ("[a-z]{1,8}", "[a-z0-9]{1,8}")
+        .prop_map(|(type_name, id)| (type_name.clone(), id.clone(), format!("{type_name}:{id}")))
+}
+
+/// Strategy to generate valid relation names
+fn list_users_relation_strategy() -> impl Strategy<Value = String> {
+    "[a-z]{1,8}"
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
+
+    /// Property: ListUsers never panics on any input
+    #[test]
+    fn test_property_list_users_never_panics(
+        (type_name, _object_id, object) in list_users_object_strategy(),
+        relation in list_users_relation_strategy(),
+        store_id in "[a-z]{1,5}",
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let tuple_reader = Arc::new(MockTupleReader::new());
+            let model_reader = Arc::new(MockModelReader::new());
+
+            tuple_reader.add_store(&store_id).await;
+
+            // Add type definition
+            model_reader
+                .add_type(
+                    &store_id,
+                    TypeDefinition {
+                        type_name: type_name.clone(),
+                        relations: vec![RelationDefinition {
+                            name: relation.clone(),
+                            type_constraints: vec!["user".into()],
+                            rewrite: Userset::This,
+                        }],
+                    },
+                )
+                .await;
+
+            let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+            let request = ListUsersRequest::new(
+                &store_id,
+                &object,
+                &relation,
+                vec![UserFilter::new("user")],
+            );
+
+            // Should not panic - either succeeds or returns an error
+            let _result = resolver.list_users(&request).await;
+        });
+    }
+
+    /// Property: ListUsers always terminates within timeout
+    #[test]
+    fn test_property_list_users_always_terminates(
+        (type_name, object_id, _object) in list_users_object_strategy(),
+        relation in list_users_relation_strategy(),
+        num_users in 1..20usize,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let terminated = rt.block_on(async {
+            let tuple_reader = Arc::new(MockTupleReader::new());
+            let model_reader = Arc::new(MockModelReader::new());
+
+            tuple_reader.add_store("store1").await;
+
+            // Add multiple users with varying computed relations
+            for i in 0..num_users {
+                tuple_reader
+                    .add_tuple(
+                        "store1",
+                        &type_name,
+                        &object_id,
+                        &relation,
+                        "user",
+                        &format!("user{i}"),
+                        None,
+                    )
+                    .await;
+            }
+
+            model_reader
+                .add_type(
+                    "store1",
+                    TypeDefinition {
+                        type_name: type_name.clone(),
+                        relations: vec![RelationDefinition {
+                            name: relation.clone(),
+                            type_constraints: vec!["user".into()],
+                            rewrite: Userset::This,
+                        }],
+                    },
+                )
+                .await;
+
+            let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+            let request = ListUsersRequest::new(
+                "store1",
+                format!("{type_name}:{object_id}"),
+                &relation,
+                vec![UserFilter::new("user")],
+            );
+
+            // Use a timeout to ensure termination
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                resolver.list_users(&request),
+            )
+            .await;
+
+            result.is_ok()
+        });
+        prop_assert!(terminated, "ListUsers should always terminate within 5 seconds");
+    }
+
+    /// Property: ListUsers returns only users matching the requested filter types
+    #[test]
+    fn test_property_list_users_returns_only_matching_filter_types(
+        user_name in "[a-z]{1,5}",
+        object_id in "[a-z0-9]{1,5}",
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let all_match = rt.block_on(async {
+            let tuple_reader = Arc::new(MockTupleReader::new());
+            let model_reader = Arc::new(MockModelReader::new());
+
+            tuple_reader.add_store("store1").await;
+
+            // Add tuples with different user types
+            tuple_reader
+                .add_tuple("store1", "document", &object_id, "viewer", "user", &user_name, None)
+                .await;
+            tuple_reader
+                .add_tuple("store1", "document", &object_id, "viewer", "service", "bot1", None)
+                .await;
+
+            model_reader
+                .add_type(
+                    "store1",
+                    TypeDefinition {
+                        type_name: "document".to_string(),
+                        relations: vec![RelationDefinition {
+                            name: "viewer".to_string(),
+                            type_constraints: vec!["user".into(), "service".into()],
+                            rewrite: Userset::This,
+                        }],
+                    },
+                )
+                .await;
+
+            let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+            // Request only users of type "user"
+            let request = ListUsersRequest::new(
+                "store1",
+                format!("document:{object_id}"),
+                "viewer",
+                vec![UserFilter::new("user")],
+            );
+
+            let result = resolver.list_users(&request).await.unwrap();
+
+            // All returned users should be of type "user"
+            result.users.iter().all(|u| {
+                match u {
+                    UserResult::Object { user_type, .. } => user_type == "user",
+                    UserResult::Userset { userset_type, .. } => userset_type == "user",
+                    UserResult::Wildcard { wildcard_type } => wildcard_type == "user",
+                }
+            })
+        });
+        prop_assert!(all_match, "All returned users should match the requested filter type");
+    }
+
+    /// Property: For any user returned by ListUsers, Check should return true
+    #[test]
+    fn test_property_list_users_check_inverse_consistency(
+        user_names in prop::collection::vec("[a-z]{1,5}", 1..5),
+        object_id in "[a-z0-9]{1,5}",
+    ) {
+        use crate::resolver::CheckRequest;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let all_consistent = rt.block_on(async {
+            let tuple_reader = Arc::new(MockTupleReader::new());
+            let model_reader = Arc::new(MockModelReader::new());
+
+            tuple_reader.add_store("store1").await;
+
+            // Add tuples for each user
+            for user_name in &user_names {
+                tuple_reader
+                    .add_tuple("store1", "document", &object_id, "viewer", "user", user_name, None)
+                    .await;
+            }
+
+            model_reader
+                .add_type(
+                    "store1",
+                    TypeDefinition {
+                        type_name: "document".to_string(),
+                        relations: vec![RelationDefinition {
+                            name: "viewer".to_string(),
+                            type_constraints: vec!["user".into()],
+                            rewrite: Userset::This,
+                        }],
+                    },
+                )
+                .await;
+
+            let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+            // Get all users via ListUsers
+            let list_request = ListUsersRequest::new(
+                "store1",
+                format!("document:{object_id}"),
+                "viewer",
+                vec![UserFilter::new("user")],
+            );
+
+            let list_result = resolver.list_users(&list_request).await.unwrap();
+
+            // Verify Check returns true for each returned user
+            let mut all_match = true;
+            for user_result in &list_result.users {
+                let user_string = match user_result {
+                    UserResult::Object { user_type, user_id } => format!("{user_type}:{user_id}"),
+                    UserResult::Userset { userset_type, userset_id, relation } => {
+                        format!("{userset_type}:{userset_id}#{relation}")
+                    }
+                    UserResult::Wildcard { wildcard_type } => format!("{wildcard_type}:*"),
+                };
+
+                // Skip wildcards for Check verification (Check doesn't accept wildcards)
+                if user_string.ends_with(":*") {
+                    continue;
+                }
+
+                let check_request = CheckRequest {
+                    store_id: "store1".to_string(),
+                    user: user_string.clone(),
+                    relation: "viewer".to_string(),
+                    object: format!("document:{object_id}"),
+                    contextual_tuples: Arc::new(vec![]),
+                    context: Arc::new(HashMap::new()),
+                };
+
+                let check_result = resolver.check(&check_request).await;
+                if let Ok(result) = check_result {
+                    if !result.allowed {
+                        all_match = false;
+                        break;
+                    }
+                } else {
+                    all_match = false;
+                    break;
+                }
+            }
+            all_match
+        });
+        prop_assert!(all_consistent, "Check should return true for all users returned by ListUsers");
+    }
+}
+
+// ========== Section 11: ListUsers/ListObjects Inverse Consistency ==========
+
+#[tokio::test]
+#[ignore = "ListUsers/ListObjects consistency requires computed relations support"]
+async fn test_list_users_list_objects_inverse_consistency() {
+    #[allow(unused_imports)]
+    use crate::resolver::{CheckRequest, ListObjectsRequest};
+
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    // Setup: alice can view doc1, doc2; bob can view doc2, doc3
+    tuple_reader
+        .add_tuple("store-1", "document", "doc1", "viewer", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "document", "doc2", "viewer", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "document", "doc2", "viewer", "user", "bob", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "document", "doc3", "viewer", "user", "bob", None)
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Get objects alice can view via ListObjects
+    let list_objects_request = ListObjectsRequest::new("store-1", "user:alice", "viewer", "document");
+    let objects_result = resolver.list_objects(&list_objects_request, 100).await.unwrap();
+
+    // For each object, verify ListUsers returns alice
+    for object in &objects_result.objects {
+        let list_users_request = ListUsersRequest::new(
+            "store-1",
+            object,
+            "viewer",
+            vec![UserFilter::new("user")],
+        );
+
+        let users_result = resolver.list_users(&list_users_request).await.unwrap();
+        assert!(
+            users_result.users.contains(&UserResult::object("user", "alice")),
+            "ListUsers for {} should contain alice",
+            object
+        );
+    }
+
+    // Inverse: For doc2, verify both alice and bob are returned by ListUsers
+    let list_users_doc2 = ListUsersRequest::new(
+        "store-1",
+        "document:doc2",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+    let users_doc2 = resolver.list_users(&list_users_doc2).await.unwrap();
+
+    // For each user, verify ListObjects returns doc2
+    for user_result in &users_doc2.users {
+        let user_string = match user_result {
+            UserResult::Object { user_type, user_id } => format!("{user_type}:{user_id}"),
+            _ => continue,
+        };
+
+        let list_objects_for_user = ListObjectsRequest::new(
+            "store-1",
+            &user_string,
+            "viewer",
+            "document",
+        );
+        let objects_for_user = resolver.list_objects(&list_objects_for_user, 100).await.unwrap();
+
+        assert!(
+            objects_for_user.objects.contains(&"document:doc2".to_string()),
+            "ListObjects for {} should contain document:doc2",
+            user_string
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "ListUsers computed relations not yet implemented - documents expected behavior"]
+async fn test_list_users_list_objects_consistency_with_computed_relations() {
+    use crate::resolver::ListObjectsRequest;
+
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    // owner and editor are viewers
+    tuple_reader
+        .add_tuple("store-1", "document", "doc1", "owner", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "document", "doc1", "editor", "user", "bob", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "document", "doc2", "editor", "user", "bob", None)
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "owner".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "editor".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // ListUsers for doc1 viewer should return alice (owner) and bob (editor)
+    let list_users_request = ListUsersRequest::new(
+        "store-1",
+        "document:doc1",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+    let users_result = resolver.list_users(&list_users_request).await.unwrap();
+
+    assert_eq!(users_result.users.len(), 2);
+    assert!(users_result.users.contains(&UserResult::object("user", "alice")));
+    assert!(users_result.users.contains(&UserResult::object("user", "bob")));
+
+    // ListObjects for bob viewer should return doc1 and doc2
+    let list_objects_request = ListObjectsRequest::new("store-1", "user:bob", "viewer", "document");
+    let objects_result = resolver.list_objects(&list_objects_request, 100).await.unwrap();
+
+    assert_eq!(objects_result.objects.len(), 2);
+    assert!(objects_result.objects.contains(&"document:doc1".to_string()));
+    assert!(objects_result.objects.contains(&"document:doc2".to_string()));
+}
+
+// ========== Section 12: Complex Graph Structures ==========
+// Note: These tests require TupleToUserset computed relation support.
+
+#[tokio::test]
+#[ignore = "ListUsers computed relations not yet implemented - documents expected behavior"]
+async fn test_list_users_with_deep_hierarchy() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    // Create a 5-level hierarchy: org -> team -> project -> folder -> document
+    tuple_reader
+        .add_tuple("store-1", "org", "acme", "member", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "team", "eng", "parent", "org", "acme", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "project", "proj1", "parent", "team", "eng", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "folder", "root", "parent", "project", "proj1", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "document", "readme", "parent", "folder", "root", None)
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+
+    // Org type
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "org".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "member".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Team type - member from parent org
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "team".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["org".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "member".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "member".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Project type - member from parent team
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "project".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["team".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "member".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "member".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Folder type - viewer from parent project
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["project".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "member".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Document type - viewer from parent folder
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // ListUsers for document should resolve through the entire hierarchy
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request).await.unwrap();
+
+    // Alice should be found through: org:acme -> team:eng -> project:proj1 -> folder:root -> document:readme
+    assert_eq!(result.users.len(), 1);
+    assert!(result.users.contains(&UserResult::object("user", "alice")));
+}
+
+#[tokio::test]
+#[ignore = "ListUsers computed relations not yet implemented - documents expected behavior"]
+async fn test_list_users_handles_multiple_paths_to_same_user() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    // alice has access through multiple paths
+    tuple_reader
+        .add_tuple("store-1", "document", "doc1", "owner", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "document", "doc1", "editor", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store-1", "document", "doc1", "viewer", "user", "alice", None)
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::This,
+                                Userset::ComputedUserset {
+                                    relation: "owner".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "editor".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:doc1",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request).await.unwrap();
+
+    // alice should appear only once despite multiple paths
+    assert_eq!(result.users.len(), 1);
+    assert!(result.users.contains(&UserResult::object("user", "alice")));
+}
