@@ -622,10 +622,14 @@ async fn test_list_users_resolves_union_relation() {
 
     // viewer = owner or editor
     tuple_reader
-        .add_tuple("store-1", "document", "readme", "owner", "user", "alice", None)
+        .add_tuple(
+            "store-1", "document", "readme", "owner", "user", "alice", None,
+        )
         .await;
     tuple_reader
-        .add_tuple("store-1", "document", "readme", "editor", "user", "bob", None)
+        .add_tuple(
+            "store-1", "document", "readme", "editor", "user", "bob", None,
+        )
         .await;
 
     let model_reader = Arc::new(MockModelReader::new());
@@ -689,10 +693,14 @@ async fn test_list_users_resolves_intersection_relation() {
 
     // alice is both member and approved
     tuple_reader
-        .add_tuple("store-1", "resource", "doc1", "member", "user", "alice", None)
+        .add_tuple(
+            "store-1", "resource", "doc1", "member", "user", "alice", None,
+        )
         .await;
     tuple_reader
-        .add_tuple("store-1", "resource", "doc1", "approved", "user", "alice", None)
+        .add_tuple(
+            "store-1", "resource", "doc1", "approved", "user", "alice", None,
+        )
         .await;
     // bob is only member
     tuple_reader
@@ -759,7 +767,9 @@ async fn test_list_users_resolves_exclusion_relation() {
 
     // alice and bob are members, but bob is banned
     tuple_reader
-        .add_tuple("store-1", "resource", "doc1", "member", "user", "alice", None)
+        .add_tuple(
+            "store-1", "resource", "doc1", "member", "user", "alice", None,
+        )
         .await;
     tuple_reader
         .add_tuple("store-1", "resource", "doc1", "member", "user", "bob", None)
@@ -826,7 +836,9 @@ async fn test_list_users_resolves_tuple_to_userset() {
 
     // Document has a parent folder
     tuple_reader
-        .add_tuple("store-1", "document", "readme", "parent", "folder", "root", None)
+        .add_tuple(
+            "store-1", "document", "readme", "parent", "folder", "root", None,
+        )
         .await;
     // Folder has viewers
     tuple_reader
@@ -1174,10 +1186,14 @@ async fn test_list_users_list_objects_inverse_consistency() {
 
     // Setup: alice can view doc1, doc2; bob can view doc2, doc3
     tuple_reader
-        .add_tuple("store-1", "document", "doc1", "viewer", "user", "alice", None)
+        .add_tuple(
+            "store-1", "document", "doc1", "viewer", "user", "alice", None,
+        )
         .await;
     tuple_reader
-        .add_tuple("store-1", "document", "doc2", "viewer", "user", "alice", None)
+        .add_tuple(
+            "store-1", "document", "doc2", "viewer", "user", "alice", None,
+        )
         .await;
     tuple_reader
         .add_tuple("store-1", "document", "doc2", "viewer", "user", "bob", None)
@@ -1204,21 +1220,23 @@ async fn test_list_users_list_objects_inverse_consistency() {
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
     // Get objects alice can view via ListObjects
-    let list_objects_request = ListObjectsRequest::new("store-1", "user:alice", "viewer", "document");
-    let objects_result = resolver.list_objects(&list_objects_request, 100).await.unwrap();
+    let list_objects_request =
+        ListObjectsRequest::new("store-1", "user:alice", "viewer", "document");
+    let objects_result = resolver
+        .list_objects(&list_objects_request, 100)
+        .await
+        .unwrap();
 
     // For each object, verify ListUsers returns alice
     for object in &objects_result.objects {
-        let list_users_request = ListUsersRequest::new(
-            "store-1",
-            object,
-            "viewer",
-            vec![UserFilter::new("user")],
-        );
+        let list_users_request =
+            ListUsersRequest::new("store-1", object, "viewer", vec![UserFilter::new("user")]);
 
         let users_result = resolver.list_users(&list_users_request).await.unwrap();
         assert!(
-            users_result.users.contains(&UserResult::object("user", "alice")),
+            users_result
+                .users
+                .contains(&UserResult::object("user", "alice")),
             "ListUsers for {} should contain alice",
             object
         );
@@ -1240,16 +1258,17 @@ async fn test_list_users_list_objects_inverse_consistency() {
             _ => continue,
         };
 
-        let list_objects_for_user = ListObjectsRequest::new(
-            "store-1",
-            &user_string,
-            "viewer",
-            "document",
-        );
-        let objects_for_user = resolver.list_objects(&list_objects_for_user, 100).await.unwrap();
+        let list_objects_for_user =
+            ListObjectsRequest::new("store-1", &user_string, "viewer", "document");
+        let objects_for_user = resolver
+            .list_objects(&list_objects_for_user, 100)
+            .await
+            .unwrap();
 
         assert!(
-            objects_for_user.objects.contains(&"document:doc2".to_string()),
+            objects_for_user
+                .objects
+                .contains(&"document:doc2".to_string()),
             "ListObjects for {} should contain document:doc2",
             user_string
         );
@@ -1266,7 +1285,9 @@ async fn test_list_users_list_objects_consistency_with_computed_relations() {
 
     // owner and editor are viewers
     tuple_reader
-        .add_tuple("store-1", "document", "doc1", "owner", "user", "alice", None)
+        .add_tuple(
+            "store-1", "document", "doc1", "owner", "user", "alice", None,
+        )
         .await;
     tuple_reader
         .add_tuple("store-1", "document", "doc1", "editor", "user", "bob", None)
@@ -1323,16 +1344,27 @@ async fn test_list_users_list_objects_consistency_with_computed_relations() {
     let users_result = resolver.list_users(&list_users_request).await.unwrap();
 
     assert_eq!(users_result.users.len(), 2);
-    assert!(users_result.users.contains(&UserResult::object("user", "alice")));
-    assert!(users_result.users.contains(&UserResult::object("user", "bob")));
+    assert!(users_result
+        .users
+        .contains(&UserResult::object("user", "alice")));
+    assert!(users_result
+        .users
+        .contains(&UserResult::object("user", "bob")));
 
     // ListObjects for bob viewer should return doc1 and doc2
     let list_objects_request = ListObjectsRequest::new("store-1", "user:bob", "viewer", "document");
-    let objects_result = resolver.list_objects(&list_objects_request, 100).await.unwrap();
+    let objects_result = resolver
+        .list_objects(&list_objects_request, 100)
+        .await
+        .unwrap();
 
     assert_eq!(objects_result.objects.len(), 2);
-    assert!(objects_result.objects.contains(&"document:doc1".to_string()));
-    assert!(objects_result.objects.contains(&"document:doc2".to_string()));
+    assert!(objects_result
+        .objects
+        .contains(&"document:doc1".to_string()));
+    assert!(objects_result
+        .objects
+        .contains(&"document:doc2".to_string()));
 }
 
 // ========== Section 12: Complex Graph Structures ==========
@@ -1355,10 +1387,14 @@ async fn test_list_users_with_deep_hierarchy() {
         .add_tuple("store-1", "project", "proj1", "parent", "team", "eng", None)
         .await;
     tuple_reader
-        .add_tuple("store-1", "folder", "root", "parent", "project", "proj1", None)
+        .add_tuple(
+            "store-1", "folder", "root", "parent", "project", "proj1", None,
+        )
         .await;
     tuple_reader
-        .add_tuple("store-1", "document", "readme", "parent", "folder", "root", None)
+        .add_tuple(
+            "store-1", "document", "readme", "parent", "folder", "root", None,
+        )
         .await;
 
     let model_reader = Arc::new(MockModelReader::new());
@@ -1503,13 +1539,19 @@ async fn test_list_users_handles_multiple_paths_to_same_user() {
 
     // alice has access through multiple paths
     tuple_reader
-        .add_tuple("store-1", "document", "doc1", "owner", "user", "alice", None)
+        .add_tuple(
+            "store-1", "document", "doc1", "owner", "user", "alice", None,
+        )
         .await;
     tuple_reader
-        .add_tuple("store-1", "document", "doc1", "editor", "user", "alice", None)
+        .add_tuple(
+            "store-1", "document", "doc1", "editor", "user", "alice", None,
+        )
         .await;
     tuple_reader
-        .add_tuple("store-1", "document", "doc1", "viewer", "user", "alice", None)
+        .add_tuple(
+            "store-1", "document", "doc1", "viewer", "user", "alice", None,
+        )
         .await;
 
     let model_reader = Arc::new(MockModelReader::new());
