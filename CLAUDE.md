@@ -968,7 +968,10 @@ Follow this process precisely, always prioritizing:
   - Milestone 1.10 (CEL Condition Evaluation): ✅ Complete
   - Milestone 1.11 (MySQL/MariaDB/TiDB Storage): ✅ Complete
   - Milestone 1.12 (CockroachDB Storage): ✅ Complete
+  - Milestone 1.13 (Expand API): ✅ Complete
+  - Milestone 1.14 (ListObjects API): ✅ Complete
+  - Milestone 1.15 (ListUsers API): 🏗️ In Progress (PR #191)
 
-**Next Step**: Phase 2 - Precomputation Engine (Optional)
+**Next Step**: Complete ListUsers API (PR #191), then Phase 2 - Precomputation Engine (Optional)
 
 **To continue**: Check `plan.md` for detailed test status and say "go" to proceed!
