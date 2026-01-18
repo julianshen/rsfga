@@ -14,9 +14,7 @@ use std::sync::Arc;
 use super::mocks::*;
 use crate::error::DomainError;
 use crate::model::{RelationDefinition, TypeDefinition, Userset};
-use crate::resolver::{
-    GraphResolver, ListUsersRequest, ListUsersResult, UserFilter, UserResult,
-};
+use crate::resolver::{GraphResolver, ListUsersRequest, ListUsersResult, UserFilter, UserResult};
 
 // ========== Section 1: Direct Relations ==========
 
@@ -25,19 +23,32 @@ async fn test_list_users_returns_users_with_direct_relation() {
     // Setup: document:readme has viewer relation with user:alice and user:bob
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
-    
-    tuple_reader.add_tuple("store-1", "document", "readme", "viewer", "user", "alice", None).await;
-    tuple_reader.add_tuple("store-1", "document", "readme", "viewer", "user", "bob", None).await;
+
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "viewer", "user", "bob", None,
+        )
+        .await;
 
     let model_reader = Arc::new(MockModelReader::new());
-    model_reader.add_type("store-1", TypeDefinition {
-        type_name: "document".to_string(),
-        relations: vec![RelationDefinition {
-            name: "viewer".to_string(),
-            type_constraints: vec!["user".into()],
-            rewrite: Userset::This,
-        }],
-    }).await;
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
 
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
@@ -62,18 +73,37 @@ async fn test_list_users_filters_by_user_type() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
 
-    tuple_reader.add_tuple("store-1", "document", "readme", "viewer", "user", "alice", None).await;
-    tuple_reader.add_tuple("store-1", "document", "readme", "viewer", "service_account", "bot-1", None).await;
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store-1",
+            "document",
+            "readme",
+            "viewer",
+            "service_account",
+            "bot-1",
+            None,
+        )
+        .await;
 
     let model_reader = Arc::new(MockModelReader::new());
-    model_reader.add_type("store-1", TypeDefinition {
-        type_name: "document".to_string(),
-        relations: vec![RelationDefinition {
-            name: "viewer".to_string(),
-            type_constraints: vec!["user".into(), "service_account".into()],
-            rewrite: Userset::This,
-        }],
-    }).await;
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into(), "service_account".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
 
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
@@ -95,17 +125,22 @@ async fn test_list_users_filters_by_user_type() {
 async fn test_list_users_returns_empty_for_no_matches() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
-    
+
     let model_reader = Arc::new(MockModelReader::new());
-    model_reader.add_type("store-1", TypeDefinition {
-        type_name: "document".to_string(),
-        relations: vec![RelationDefinition {
-            name: "viewer".to_string(),
-            type_constraints: vec!["user".into()],
-            rewrite: Userset::This,
-        }],
-    }).await;
-    
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
     let request = ListUsersRequest::new(
@@ -126,18 +161,25 @@ async fn test_list_users_returns_empty_for_no_matches() {
 async fn test_list_users_returns_wildcard() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
-    
-    tuple_reader.add_tuple("store-1", "document", "public", "viewer", "user", "*", None).await;
+
+    tuple_reader
+        .add_tuple("store-1", "document", "public", "viewer", "user", "*", None)
+        .await;
 
     let model_reader = Arc::new(MockModelReader::new());
-    model_reader.add_type("store-1", TypeDefinition {
-        type_name: "document".to_string(),
-        relations: vec![RelationDefinition {
-            name: "viewer".to_string(),
-            type_constraints: vec!["user".into()],
-            rewrite: Userset::This,
-        }],
-    }).await;
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
 
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
@@ -160,18 +202,33 @@ async fn test_list_users_returns_wildcard() {
 async fn test_list_users_returns_userset_references() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
-    
-    tuple_reader.add_tuple("store-1", "document", "readme", "viewer", "group", "engineering", Some("member")).await;
+
+    tuple_reader
+        .add_tuple(
+            "store-1",
+            "document",
+            "readme",
+            "viewer",
+            "group",
+            "engineering",
+            Some("member"),
+        )
+        .await;
 
     let model_reader = Arc::new(MockModelReader::new());
-    model_reader.add_type("store-1", TypeDefinition {
-        type_name: "document".to_string(),
-        relations: vec![RelationDefinition {
-            name: "viewer".to_string(),
-            type_constraints: vec!["group".into()],
-            rewrite: Userset::This,
-        }],
-    }).await;
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["group".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
 
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
@@ -196,18 +253,27 @@ async fn test_list_users_returns_userset_references() {
 async fn test_list_users_includes_contextual_tuples() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
-    
-    tuple_reader.add_tuple("store-1", "document", "readme", "viewer", "user", "alice", None).await;
+
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
 
     let model_reader = Arc::new(MockModelReader::new());
-    model_reader.add_type("store-1", TypeDefinition {
-        type_name: "document".to_string(),
-        relations: vec![RelationDefinition {
-            name: "viewer".to_string(),
-            type_constraints: vec!["user".into()],
-            rewrite: Userset::This,
-        }],
-    }).await;
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
 
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
@@ -258,14 +324,19 @@ async fn test_list_users_returns_error_for_nonexistent_store() {
 async fn test_list_users_returns_error_for_empty_relation() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
-    
+
     let model_reader = Arc::new(MockModelReader::new());
     // Basic model setup mostly ignored for validation error early return
-    model_reader.add_type("store-1", TypeDefinition {
-        type_name: "document".to_string(),
-        relations: vec![],
-    }).await;
-    
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![],
+            },
+        )
+        .await;
+
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
     let request = ListUsersRequest::new(
@@ -287,7 +358,7 @@ async fn test_list_users_returns_error_for_empty_relation() {
 async fn test_list_users_returns_error_for_empty_user_filters() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
-    
+
     let model_reader = Arc::new(MockModelReader::new());
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
@@ -333,15 +404,20 @@ async fn test_contextual_tuple_with_invalid_user_format_is_skipped() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
     let model_reader = Arc::new(MockModelReader::new());
-    model_reader.add_type("store-1", TypeDefinition {
-        type_name: "document".to_string(),
-        relations: vec![RelationDefinition {
-            name: "viewer".to_string(),
-            type_constraints: vec!["user".into()],
-            rewrite: Userset::This,
-        }],
-    }).await;
-    
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
     // Contextual tuple with invalid user format (empty type)
@@ -370,15 +446,20 @@ async fn test_contextual_tuple_with_empty_userset_relation_is_skipped() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
     let model_reader = Arc::new(MockModelReader::new());
-    model_reader.add_type("store-1", TypeDefinition {
-        type_name: "document".to_string(),
-        relations: vec![RelationDefinition {
-            name: "viewer".to_string(),
-            type_constraints: vec!["user".into()],
-            rewrite: Userset::This,
-        }],
-    }).await;
-    
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
     // Contextual tuple with invalid user format (empty relation in userset)
@@ -408,20 +489,49 @@ async fn test_contextual_tuple_with_empty_userset_relation_is_skipped() {
 async fn test_list_users_with_multiple_user_filters() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
-    
-    tuple_reader.add_tuple("store-1", "document", "readme", "viewer", "user", "alice", None).await;
-    tuple_reader.add_tuple("store-1", "document", "readme", "viewer", "group", "eng", Some("member")).await;
-    tuple_reader.add_tuple("store-1", "document", "readme", "viewer", "service_account", "bot", None).await;
+
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store-1",
+            "document",
+            "readme",
+            "viewer",
+            "group",
+            "eng",
+            Some("member"),
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store-1",
+            "document",
+            "readme",
+            "viewer",
+            "service_account",
+            "bot",
+            None,
+        )
+        .await;
 
     let model_reader = Arc::new(MockModelReader::new());
-    model_reader.add_type("store-1", TypeDefinition {
-        type_name: "document".to_string(),
-        relations: vec![RelationDefinition {
-            name: "viewer".to_string(),
-            type_constraints: vec!["user".into(), "group".into(), "service_account".into()],
-            rewrite: Userset::This,
-        }],
-    }).await;
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into(), "group".into(), "service_account".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
 
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
@@ -452,18 +562,27 @@ async fn test_list_users_with_multiple_user_filters() {
 async fn test_list_users_deduplicates_results() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
-    
-    tuple_reader.add_tuple("store-1", "document", "readme", "viewer", "user", "alice", None).await;
+
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
 
     let model_reader = Arc::new(MockModelReader::new());
-    model_reader.add_type("store-1", TypeDefinition {
-        type_name: "document".to_string(),
-        relations: vec![RelationDefinition {
-            name: "viewer".to_string(),
-            type_constraints: vec!["user".into()],
-            rewrite: Userset::This,
-        }],
-    }).await;
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
 
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
