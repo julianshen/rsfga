@@ -157,8 +157,8 @@ where
 
         // Check if store exists
         if !self.tuple_reader.store_exists(&request.store_id).await? {
-            return Err(DomainError::ResolverError {
-                message: format!("store not found: {}", request.store_id),
+            return Err(DomainError::StoreNotFound {
+                store_id: request.store_id.clone(),
             });
         }
 
