@@ -14,7 +14,7 @@ use std::sync::Arc;
 use super::mocks::*;
 use crate::error::DomainError;
 use crate::model::{RelationDefinition, TypeDefinition, Userset};
-use crate::resolver::{GraphResolver, ListUsersRequest, UserFilter, UserResult};
+use crate::resolver::{GraphResolver, ListUsersRequest, ResolverConfig, UserFilter, UserResult};
 
 // ========== Section 1: Direct Relations ==========
 
@@ -615,7 +615,7 @@ async fn test_list_users_deduplicates_results() {
 // Computed relation traversal is tracked for future implementation.
 
 #[tokio::test]
-#[ignore = "ListUsers computed relations not yet implemented - documents expected behavior"]
+#[ignore = "ListUsers computed relation resolution requires recursive definition traversal - not yet implemented"]
 async fn test_list_users_resolves_union_relation() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
@@ -686,7 +686,7 @@ async fn test_list_users_resolves_union_relation() {
 }
 
 #[tokio::test]
-#[ignore = "ListUsers computed relations not yet implemented - documents expected behavior"]
+#[ignore = "ListUsers computed relation resolution requires recursive definition traversal - not yet implemented"]
 async fn test_list_users_resolves_intersection_relation() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
@@ -760,7 +760,7 @@ async fn test_list_users_resolves_intersection_relation() {
 }
 
 #[tokio::test]
-#[ignore = "ListUsers computed relations not yet implemented - documents expected behavior"]
+#[ignore = "ListUsers computed relation resolution requires recursive definition traversal - not yet implemented"]
 async fn test_list_users_resolves_exclusion_relation() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
@@ -829,7 +829,7 @@ async fn test_list_users_resolves_exclusion_relation() {
 }
 
 #[tokio::test]
-#[ignore = "ListUsers computed relations not yet implemented - documents expected behavior"]
+#[ignore = "ListUsers computed relation resolution requires recursive definition traversal - not yet implemented"]
 async fn test_list_users_resolves_tuple_to_userset() {
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
@@ -1780,6 +1780,254 @@ async fn test_list_users_exactly_at_max_results_not_truncated() {
         !result.truncated,
         "truncated flag should be false when results exactly match max_results"
     );
+}
+
+// ========== Section: Depth Limit Tests ==========
+
+/// Test that ListUsers returns DepthLimitExceeded error when graph exceeds max_depth.
+/// This ensures the resolver properly enforces depth limits during userset traversal.
+#[tokio::test]
+#[ignore = "ListUsers depth limit test requires computed relation resolution to properly traverse nested definitions"]
+async fn test_list_users_returns_error_on_depth_limit_exceeded() {
+    use std::time::Duration;
+
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    // Create a model with deeply nested Union that will exceed depth limit
+    // viewer -> Union[level1 -> Union[level2 -> Union[level3 -> Union[level4]]]]
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "base".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "level4".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::Union {
+                            children: vec![Userset::ComputedUserset {
+                                relation: "base".to_string(),
+                            }],
+                        },
+                    },
+                    RelationDefinition {
+                        name: "level3".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::Union {
+                            children: vec![Userset::ComputedUserset {
+                                relation: "level4".to_string(),
+                            }],
+                        },
+                    },
+                    RelationDefinition {
+                        name: "level2".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::Union {
+                            children: vec![Userset::ComputedUserset {
+                                relation: "level3".to_string(),
+                            }],
+                        },
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::Union {
+                            children: vec![Userset::ComputedUserset {
+                                relation: "level2".to_string(),
+                            }],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Add a user at the base level
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "base", "user", "alice", None,
+        )
+        .await;
+
+    // Use a very low max_depth (2) so the nested unions exceed it
+    let config = ResolverConfig::default()
+        .with_max_depth(2)
+        .with_timeout(Duration::from_secs(30));
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request, 1000).await;
+
+    // Should return DepthLimitExceeded error
+    assert!(
+        matches!(result, Err(DomainError::DepthLimitExceeded { .. })),
+        "ListUsers should return DepthLimitExceeded error when Union nesting exceeds max_depth, got {:?}",
+        result
+    );
+}
+
+/// Test that ListUsers returns DepthLimitExceeded when traversing deeply nested intersection.
+#[tokio::test]
+#[ignore = "ListUsers depth limit test requires computed relation resolution to properly traverse nested definitions"]
+async fn test_list_users_depth_limit_with_intersection() {
+    use std::time::Duration;
+
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    // Create a model with nested Intersection that will exceed depth limit
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "base".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "level3".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::Intersection {
+                            children: vec![Userset::ComputedUserset {
+                                relation: "base".to_string(),
+                            }],
+                        },
+                    },
+                    RelationDefinition {
+                        name: "level2".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::Intersection {
+                            children: vec![Userset::ComputedUserset {
+                                relation: "level3".to_string(),
+                            }],
+                        },
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::Intersection {
+                            children: vec![Userset::ComputedUserset {
+                                relation: "level2".to_string(),
+                            }],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "base", "user", "alice", None,
+        )
+        .await;
+
+    // Use low max_depth (1) so nested intersections exceed it
+    let config = ResolverConfig::default()
+        .with_max_depth(1)
+        .with_timeout(Duration::from_secs(30));
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request, 1000).await;
+
+    // Should return DepthLimitExceeded error
+    assert!(
+        matches!(result, Err(DomainError::DepthLimitExceeded { .. })),
+        "ListUsers with nested Intersection should return DepthLimitExceeded, got {:?}",
+        result
+    );
+}
+
+/// Test that ListUsers succeeds when Union nesting is within depth limits.
+#[tokio::test]
+#[ignore = "ListUsers depth limit test requires computed relation resolution to properly traverse nested definitions"]
+async fn test_list_users_succeeds_within_depth_limit() {
+    use std::time::Duration;
+
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    // Create a model with simple Union (depth 1)
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::Union {
+                            children: vec![Userset::ComputedUserset {
+                                relation: "owner".to_string(),
+                            }],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "owner", "user", "alice", None,
+        )
+        .await;
+
+    // Use max_depth (25) which is plenty for a single Union level
+    let config = ResolverConfig::default()
+        .with_max_depth(25)
+        .with_timeout(Duration::from_secs(30));
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request, 1000).await;
+
+    // Should succeed and return alice
+    assert!(
+        result.is_ok(),
+        "ListUsers should succeed within depth limit, got {:?}",
+        result
+    );
+    let result = result.unwrap();
+    assert_eq!(result.users.len(), 1);
+    assert!(result.users.contains(&UserResult::object("user", "alice")));
 }
 
 // ========== Section: Exclusion Behavior Documentation ==========

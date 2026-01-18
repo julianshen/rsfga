@@ -1619,21 +1619,29 @@ where
                     && tuple.relation == request.relation
                 {
                     // Parse the user from the contextual tuple
-                    if let Ok((user_type, user_id, user_relation)) =
-                        self.parse_user_string(&tuple.user)
-                    {
-                        if self.user_matches_filters(
-                            &user_type,
-                            user_relation.as_deref(),
-                            &request.user_filters,
-                        ) {
-                            if user_id == "*" {
-                                users.insert(UserResult::wildcard(user_type));
-                            } else if let Some(rel) = user_relation {
-                                users.insert(UserResult::userset(user_type, user_id, rel));
-                            } else {
-                                users.insert(UserResult::object(user_type, user_id));
+                    match self.parse_user_string(&tuple.user) {
+                        Ok((user_type, user_id, user_relation)) => {
+                            if self.user_matches_filters(
+                                &user_type,
+                                user_relation.as_deref(),
+                                &request.user_filters,
+                            ) {
+                                if user_id == "*" {
+                                    users.insert(UserResult::wildcard(user_type));
+                                } else if let Some(rel) = user_relation {
+                                    users.insert(UserResult::userset(user_type, user_id, rel));
+                                } else {
+                                    users.insert(UserResult::object(user_type, user_id));
+                                }
                             }
+                        }
+                        Err(e) => {
+                            warn!(
+                                store_id = %request.store_id,
+                                user = %tuple.user,
+                                error = %e,
+                                "Invalid contextual tuple user format in ListUsers, skipping"
+                            );
                         }
                     }
                 }
@@ -1766,6 +1774,15 @@ where
     }
 
     /// Recursively collects users from a userset rewrite (handles union, intersection, etc.)
+    ///
+    /// # Clippy Allows
+    ///
+    /// - `too_many_arguments`: 8 arguments are required to track recursive traversal state
+    ///   (store_id, object info, userset, filters, contextual tuples, results set, depth).
+    ///   Grouping these into a context struct would add allocation overhead per recursion.
+    ///
+    /// - `only_used_in_recursion`: The `depth` parameter is intentionally only used
+    ///   in recursive calls to track traversal depth and enforce `max_depth` limit.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::only_used_in_recursion)]
     fn collect_users_from_userset<'a>(
