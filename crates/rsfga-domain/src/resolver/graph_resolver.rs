@@ -300,7 +300,7 @@ where
 
         Box::pin(async move {
             // Check depth limit to prevent unbounded recursion (constraint C11: Fail Fast with Bounds)
-            if depth >= self.config.max_depth {
+            println!("DEBUG: depth={} max={} set={:?}", depth, self.config.max_depth, userset); if depth >= self.config.max_depth {
                 return Err(DomainError::DepthLimitExceeded {
                     max_depth: self.config.max_depth,
                 });
@@ -1731,6 +1731,7 @@ where
             // Full exclusion support (tracking which users are excluded by 'but not' relations)
             // would require traversing the exclusion branch and comparing with base results.
             // This matches OpenFGA's current behavior for ListUsers API.
+            // See https://github.com/julianshen/rsfga/issues/192
             excluded_users: Vec::new(),
             truncated,
         })
@@ -1994,7 +1995,10 @@ where
                     }
                 }
                 Userset::Union { children } => {
-                    // Collect users from all children
+                    // TODO(perf): Consider parallelizing union branches with FuturesUnordered
+                    // (similar to Check API at graph_resolver.rs:850-862) after M1.7 benchmarking.
+                    // Currently sequential to avoid race conditions on the shared HashSet result.
+                    // See ADR-003 for async-first design philosophy.
                     for child in children {
                         self.collect_users_from_userset(
                             store_id,
