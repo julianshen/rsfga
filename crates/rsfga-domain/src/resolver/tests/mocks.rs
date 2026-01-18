@@ -159,6 +159,14 @@ impl ModelReader for MockModelReader {
                 model.add_condition(condition.clone());
             }
         }
+        let type_defs = self.type_definitions.read().await;
+        for (key, type_def) in type_defs.iter() {
+            if let Some(key_store_id) = key.split(':').next() {
+                if key_store_id == store_id {
+                    model.type_definitions.push(type_def.clone());
+                }
+            }
+        }
         Ok(model)
     }
 
