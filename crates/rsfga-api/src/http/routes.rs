@@ -211,6 +211,14 @@ impl ApiError {
         Self::new("not_found", message)
     }
 
+    pub fn store_not_found(message: impl Into<String>) -> Self {
+        Self::new("store_id_not_found", message)
+    }
+
+    pub fn model_not_found(message: impl Into<String>) -> Self {
+        Self::new("authorization_model_not_found", message)
+    }
+
     pub fn invalid_input(message: impl Into<String>) -> Self {
         Self::new("validation_error", message)
     }
@@ -223,8 +231,12 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let status = match self.code.as_str() {
-            "not_found" => StatusCode::NOT_FOUND,
-            "validation_error" => StatusCode::BAD_REQUEST,
+            "not_found" | "store_id_not_found" | "authorization_model_not_found" => {
+                StatusCode::NOT_FOUND
+            }
+            "validation_error" | "type_definitions_too_few_items" | "invalid_write_input" => {
+                StatusCode::BAD_REQUEST
+            }
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(self)).into_response()
@@ -235,7 +247,10 @@ impl From<StorageError> for ApiError {
     fn from(err: StorageError) -> Self {
         match &err {
             StorageError::StoreNotFound { store_id } => {
-                ApiError::not_found(format!("store not found: {store_id}"))
+                ApiError::store_not_found(format!("store not found: {store_id}"))
+            }
+            StorageError::ModelNotFound { model_id } => {
+                ApiError::model_not_found(format!("authorization model not found: {model_id}"))
             }
             StorageError::InvalidInput { message } => ApiError::invalid_input(message),
             _ => {
@@ -245,6 +260,11 @@ impl From<StorageError> for ApiError {
         }
     }
 }
+
+// ... (retain From<DomainError> and batch_check_error_to_api_error as they were valid unless modified) ...
+// Actually, I need to include From<DomainError> to be safe or ensure it's not replaced if I don't touch it.
+// The replacement range starts at 202. `From<DomainError>` is at 249.
+// So I MUST include it.
 
 impl From<DomainError> for ApiError {
     fn from(err: DomainError) -> Self {
@@ -266,9 +286,6 @@ impl From<DomainError> for ApiError {
 }
 
 /// Converts a BatchCheckError to an ApiError.
-///
-/// Logs internal errors with structured context to aid debugging while
-/// returning sanitized error messages to clients.
 fn batch_check_error_to_api_error(err: rsfga_server::handlers::batch::BatchCheckError) -> ApiError {
     use rsfga_server::handlers::batch::BatchCheckError;
     match err {
@@ -280,9 +297,7 @@ fn batch_check_error_to_api_error(err: rsfga_server::handlers::batch::BatchCheck
             ApiError::invalid_input(format!("invalid check at index {index}: {message}"))
         }
         BatchCheckError::DomainError(msg) => {
-            // Log full error details for debugging - DO NOT expose to clients
             tracing::error!(error = %msg, "Domain error in HTTP batch check");
-            // Return sanitized message to prevent information leakage
             ApiError::internal_error("internal error during authorization check")
         }
     }
@@ -294,45 +309,26 @@ type ApiResult<T> = Result<T, ApiError>;
 // Health and Readiness Checks
 // ============================================================
 
-/// Basic health check - returns 200 if the server is running.
-///
-/// This is a liveness probe that indicates the server process is alive.
-/// It does NOT check dependencies.
 async fn health_check() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
-/// Readiness check - validates that all dependencies are accessible.
-///
-/// This is a readiness probe that checks:
-/// - Storage backend connectivity (by attempting to list stores)
-///
-/// Returns 200 if ready, 503 if dependencies are unavailable.
-///
-/// Note: Error details are logged but not exposed in the response
-/// to avoid leaking internal implementation details.
 async fn readiness_check<S: DataStore>(State(state): State<Arc<AppState<S>>>) -> impl IntoResponse {
-    // Check storage connectivity by attempting to list stores
     match state.storage.list_stores().await {
         Ok(_) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "ready",
-                "checks": {
-                    "storage": "ok"
-                }
+                "checks": { "storage": "ok" }
             })),
         ),
         Err(e) => {
-            // Log the full error for debugging, but don't expose it
             error!("Readiness check failed: storage unavailable: {}", e);
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(serde_json::json!({
                     "status": "not_ready",
-                    "checks": {
-                        "storage": "unavailable"
-                    }
+                    "checks": { "storage": "unavailable" }
                 })),
             )
         }
@@ -343,13 +339,43 @@ async fn readiness_check<S: DataStore>(State(state): State<Arc<AppState<S>>>) ->
 // Store Management
 // ============================================================
 
-/// Request body for creating a store.
+fn validate_store_id(store_id: &str) -> ApiResult<()> {
+    // OpenFGA store IDs are ULIDs (26 chars, alphanumeric)
+    if store_id.len() != 26 || !store_id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(ApiError::invalid_input(format!(
+            "Invalid store ID format: {}",
+            store_id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_store_name(name: &str) -> ApiResult<()> {
+    // OpenFGA store name rules: 3-64 chars, alphanumeric, dash, dot, underscore
+    if name.len() < 3 || name.len() > 64 {
+        return Err(ApiError::invalid_input(format!(
+            "Store name must be between 3 and 64 characters: {}",
+            name
+        )));
+    }
+
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
+    {
+        return Err(ApiError::invalid_input(format!(
+            "Store name contains invalid characters: {}",
+            name
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateStoreRequest {
     pub name: String,
 }
 
-/// Response for store operations.
 #[derive(Debug, Serialize)]
 pub struct StoreResponse {
     pub id: String,
@@ -373,9 +399,9 @@ async fn create_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     JsonBadRequest(body): JsonBadRequest<CreateStoreRequest>,
 ) -> ApiResult<impl IntoResponse> {
+    validate_store_name(&body.name)?;
     let id = ulid::Ulid::new().to_string();
     let store = state.storage.create_store(&id, &body.name).await?;
-
     Ok((StatusCode::CREATED, Json(StoreResponse::from(store))))
 }
 
@@ -383,6 +409,7 @@ async fn get_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
+    validate_store_id(&store_id)?;
     let store = state.storage.get_store(&store_id).await?;
     Ok(Json(StoreResponse::from(store)))
 }
@@ -395,7 +422,6 @@ async fn list_stores<S: DataStore>(
     Ok(Json(serde_json::json!({ "stores": response })))
 }
 
-/// Request body for updating a store.
 #[derive(Debug, Deserialize)]
 pub struct UpdateStoreRequest {
     pub name: String,
@@ -406,6 +432,8 @@ async fn update_store<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<UpdateStoreRequest>,
 ) -> ApiResult<impl IntoResponse> {
+    validate_store_id(&store_id)?;
+    validate_store_name(&body.name)?;
     let store = state.storage.update_store(&store_id, &body.name).await?;
     Ok(Json(StoreResponse::from(store)))
 }
@@ -414,6 +442,7 @@ async fn delete_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
+    validate_store_id(&store_id)?;
     state.storage.delete_store(&store_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -422,16 +451,11 @@ async fn delete_store<S: DataStore>(
 // Authorization Model Management
 // ============================================================
 
-/// Request body for writing an authorization model.
-/// Matches OpenFGA's WriteAuthorizationModel request format.
 #[derive(Debug, Deserialize)]
 pub struct WriteAuthorizationModelRequest {
-    /// Schema version (e.g., "1.1").
     #[serde(default = "default_schema_version")]
     pub schema_version: String,
-    /// Type definitions for the model.
     pub type_definitions: Vec<serde_json::Value>,
-    /// Optional conditions for the model.
     #[serde(default)]
     pub conditions: Option<serde_json::Value>,
 }
@@ -440,13 +464,11 @@ fn default_schema_version() -> String {
     "1.1".to_string()
 }
 
-/// Response for write authorization model.
 #[derive(Debug, Serialize)]
 pub struct WriteAuthorizationModelResponse {
     pub authorization_model_id: String,
 }
 
-/// Response for a single authorization model.
 #[derive(Debug, Serialize)]
 pub struct AuthorizationModelResponse {
     pub id: String,
@@ -460,7 +482,6 @@ impl TryFrom<StoredAuthorizationModel> for AuthorizationModelResponse {
     type Error = ApiError;
 
     fn try_from(model: StoredAuthorizationModel) -> Result<Self, Self::Error> {
-        // Parse the stored JSON back into structured data
         let parsed: serde_json::Value = serde_json::from_str(&model.model_json).map_err(|e| {
             error!("Failed to parse stored model JSON: {}", e);
             ApiError::internal_error("Failed to parse authorization model")
@@ -475,7 +496,6 @@ impl TryFrom<StoredAuthorizationModel> for AuthorizationModelResponse {
                 ApiError::internal_error("Stored authorization model is invalid")
             })?;
 
-        // Filter out null conditions (treat JSON null as absent)
         let conditions = parsed.get("conditions").cloned().filter(|v| !v.is_null());
 
         Ok(Self {
@@ -487,7 +507,6 @@ impl TryFrom<StoredAuthorizationModel> for AuthorizationModelResponse {
     }
 }
 
-/// Response for listing authorization models.
 #[derive(Debug, Serialize)]
 pub struct ListAuthorizationModelsResponse {
     pub authorization_models: Vec<AuthorizationModelResponse>,
@@ -495,7 +514,6 @@ pub struct ListAuthorizationModelsResponse {
     pub continuation_token: Option<String>,
 }
 
-/// Query parameters for listing authorization models.
 #[derive(Debug, Deserialize)]
 pub struct ListAuthorizationModelsQuery {
     #[serde(default)]
@@ -504,8 +522,6 @@ pub struct ListAuthorizationModelsQuery {
     pub continuation_token: Option<String>,
 }
 
-/// Maximum size for authorization model JSON (1MB, similar to OpenFGA's ~256KB but more lenient).
-/// This is validated at the HTTP layer before storage to prevent oversized payloads.
 const MAX_AUTHORIZATION_MODEL_SIZE: usize = 1024 * 1024; // 1MB
 
 async fn write_authorization_model<S: DataStore>(
@@ -513,30 +529,26 @@ async fn write_authorization_model<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<WriteAuthorizationModelRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validation strategy: Validate at HTTP layer for immediate feedback.
-    // Domain-level validation (schema version, type definition semantics) is deferred
-    // to allow storage of models that may be validated differently across versions.
+    validate_store_id(&store_id)?;
 
-    // Validate type_definitions is not empty (OpenFGA requirement)
     if body.type_definitions.is_empty() {
-        return Err(ApiError::invalid_input("type_definitions cannot be empty"));
+        return Err(ApiError::new(
+            "type_definitions_too_few_items",
+            "type_definitions cannot be empty",
+        ));
     }
 
-    // Generate a new ULID for the model
     let model_id = ulid::Ulid::new().to_string();
 
-    // Serialize the model data to JSON for storage (omit conditions if absent/null)
     let mut model_json = serde_json::json!({
         "type_definitions": body.type_definitions,
     });
-    // Only include conditions if present and not null (OpenFGA compatibility)
     if let Some(ref conditions) = body.conditions {
         if !conditions.is_null() {
             model_json["conditions"] = conditions.clone();
         }
     }
 
-    // Validate model size before storage
     let model_json_str = model_json.to_string();
     if model_json_str.len() > MAX_AUTHORIZATION_MODEL_SIZE {
         return Err(ApiError::invalid_input(format!(
@@ -557,7 +569,6 @@ async fn write_authorization_model<S: DataStore>(
     ))
 }
 
-/// Path parameters for authorization model routes.
 #[derive(Debug, Deserialize)]
 pub struct AuthorizationModelPath {
     pub store_id: String,
@@ -568,13 +579,15 @@ async fn get_authorization_model<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(path): Path<AuthorizationModelPath>,
 ) -> ApiResult<impl IntoResponse> {
+    validate_store_id(&path.store_id)?;
+
     let model = state
         .storage
         .get_authorization_model(&path.store_id, &path.authorization_model_id)
         .await
         .map_err(|e| match e {
             StorageError::ModelNotFound { model_id } => {
-                ApiError::not_found(format!("authorization model not found: {model_id}"))
+                ApiError::model_not_found(format!("authorization model not found: {model_id}"))
             }
             other => ApiError::from(other),
         })?;
@@ -585,7 +598,6 @@ async fn get_authorization_model<S: DataStore>(
     })))
 }
 
-/// Default and maximum page size for listing authorization models (OpenFGA limit).
 const DEFAULT_AUTHORIZATION_MODELS_PAGE_SIZE: u32 = 50;
 
 async fn list_authorization_models<S: DataStore>(
@@ -593,7 +605,8 @@ async fn list_authorization_models<S: DataStore>(
     Path(store_id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<ListAuthorizationModelsQuery>,
 ) -> ApiResult<impl IntoResponse> {
-    // Use OpenFGA default (50) when not specified, clamp to max 50 when provided
+    validate_store_id(&store_id)?;
+
     let page_size = Some(
         query
             .page_size
@@ -628,46 +641,33 @@ async fn list_authorization_models<S: DataStore>(
 // ============================================================
 
 /// Request body for check operation.
-// Fields will be used when full resolver is integrated.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct CheckRequestBody {
-    pub tuple_key: TupleKeyBody,
+    pub tuple_key: CheckTupleKeyBody,
     #[serde(default)]
     pub authorization_model_id: Option<String>,
     #[serde(default)]
     pub contextual_tuples: Option<ContextualTuplesBody>,
-    /// CEL evaluation context for condition evaluation.
-    /// Contains values that will be accessible as `request.<key>` in CEL expressions.
     #[serde(default)]
     pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
-/// Relationship condition for conditional tuples.
 #[derive(Debug, Deserialize)]
 pub struct RelationshipConditionBody {
-    /// The name of the condition (must match a condition defined in the model).
     pub name: String,
-    /// Optional context parameters for the condition.
     #[serde(default)]
     pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct TupleKeyBody {
-    pub user: String,
-    pub relation: String,
-    pub object: String,
-    /// Optional condition for conditional relationships.
+pub struct CheckTupleKeyBody {
+    pub user: Option<String>,
+    pub relation: Option<String>,
+    pub object: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub condition: Option<RelationshipConditionBody>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct ContextualTuplesBody {
-    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
-    pub tuple_keys: Vec<TupleKeyBody>,
 }
 
 fn deserialize_null_as_empty_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
@@ -679,7 +679,22 @@ where
     Ok(opt.unwrap_or_default())
 }
 
-/// Response for check operation.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct ContextualTuplesBody {
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub tuple_keys: Vec<TupleKeyBody>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TupleKeyBody {
+    pub user: String,
+    pub relation: String,
+    pub object: String,
+    #[serde(default)]
+    pub condition: Option<RelationshipConditionBody>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CheckResponseBody {
     pub allowed: bool,
@@ -692,7 +707,59 @@ async fn check<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<CheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
-    // Convert contextual tuples from HTTP format to domain format
+    validate_store_id(&store_id)?;
+
+    // Validate tuple key fields
+    let mut missing_fields = Vec::new();
+    if body.tuple_key.user.is_none() {
+        missing_fields.push("user");
+    }
+    if body.tuple_key.relation.is_none() {
+        missing_fields.push("relation");
+    }
+    if body.tuple_key.object.is_none() {
+        missing_fields.push("object");
+    }
+
+    if !missing_fields.is_empty() {
+        return Err(ApiError::invalid_input(format!(
+            "Missing fields: {}",
+            missing_fields.join(", ")
+        )));
+    }
+
+    // Ensure authorization model exists
+    // If ID is provided, verify it exists. If not, verify latest exists.
+    let _model_id = if let Some(id) = &body.authorization_model_id {
+        state
+            .storage
+            .get_authorization_model(&store_id, id)
+            .await
+            .map(|m| m.id)
+            .map_err(|e| match e {
+                StorageError::ModelNotFound { model_id } => {
+                    ApiError::model_not_found(format!("authorization model not found: {model_id}"))
+                }
+                other => ApiError::from(other),
+            })?
+    } else {
+        state
+            .storage
+            .get_latest_authorization_model(&store_id)
+            .await
+            .map(|m| m.id)
+            .map_err(|e| match e {
+                StorageError::ModelNotFound { .. } => {
+                    ApiError::model_not_found("latest authorization model not found")
+                }
+                other => ApiError::from(other),
+            })?
+    };
+
+    let user = body.tuple_key.user.unwrap();
+    let relation = body.tuple_key.relation.unwrap();
+    let object = body.tuple_key.object.unwrap();
+
     let contextual_tuples: Vec<ContextualTuple> = body
         .contextual_tuples
         .map(|ct| {
@@ -715,17 +782,15 @@ async fn check<S: DataStore>(
         })
         .unwrap_or_default();
 
-    // Create domain check request with context (defaults to empty HashMap if not provided)
     let check_request = DomainCheckRequest::with_context(
         store_id,
-        body.tuple_key.user,
-        body.tuple_key.relation,
-        body.tuple_key.object,
+        user,
+        relation,
+        object,
         contextual_tuples,
         body.context.unwrap_or_default(),
     );
 
-    // Delegate to GraphResolver for full graph traversal
     let result = state.resolver.check(&check_request).await?;
 
     Ok(Json(CheckResponseBody {
@@ -1106,6 +1171,31 @@ async fn write_tuples<S: DataStore>(
 
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
+
+    // Ensure authorization model exists (Schema Validation Pre-check)
+    if let Some(id) = &body.authorization_model_id {
+        state
+            .storage
+            .get_authorization_model(&store_id, id)
+            .await
+            .map_err(|e| match e {
+                StorageError::ModelNotFound { model_id } => {
+                    ApiError::model_not_found(format!("authorization model not found: {model_id}"))
+                }
+                other => ApiError::from(other),
+            })?;
+    } else {
+        state
+            .storage
+            .get_latest_authorization_model(&store_id)
+            .await
+            .map_err(|e| match e {
+                StorageError::ModelNotFound { .. } => {
+                    ApiError::model_not_found("latest authorization model not found")
+                }
+                other => ApiError::from(other),
+            })?;
+    }
 
     // Convert write tuples - fail if any tuple key is invalid
     // No clones in happy path - error contains user/object for messages

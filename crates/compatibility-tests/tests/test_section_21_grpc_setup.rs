@@ -164,7 +164,8 @@ async fn test_can_call_authorization_model_service_methods() -> Result<()> {
 
     // Assert: Should return model ID
     assert!(
-        model_response.get("authorization_model_id").is_some() || model_response.get("authorizationModelId").is_some(),
+        model_response.get("authorization_model_id").is_some()
+            || model_response.get("authorizationModelId").is_some(),
         "WriteAuthorizationModel should return model ID (checked both snake_case and camelCase)"
     );
     let model_id = model_response.get("authorization_model_id")
@@ -185,7 +186,8 @@ async fn test_can_call_authorization_model_service_methods() -> Result<()> {
 
     // Assert: Should return the model
     assert!(
-        read_response.get("authorization_model").is_some() || read_response.get("authorizationModel").is_some(),
+        read_response.get("authorization_model").is_some()
+            || read_response.get("authorizationModel").is_some(),
         "ReadAuthorizationModel should return the model (checked both snake_case and camelCase)"
     );
 

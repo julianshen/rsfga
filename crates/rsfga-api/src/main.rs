@@ -86,7 +86,13 @@ async fn main() -> anyhow::Result<()> {
             let storage = Arc::new(MemoryDataStore::new());
             let state = AppState::new(storage.clone());
             let router = create_router_with_observability(state, metrics_state);
-            run_server(router, addr, Some((config.server.host, config.server.grpc_port)), storage).await
+            run_server(
+                router,
+                addr,
+                Some((config.server.host, config.server.grpc_port)),
+                storage,
+            )
+            .await
         }
         "postgres" | "cockroachdb" => {
             let database_url = config.storage.database_url.as_ref().ok_or_else(|| {
@@ -123,7 +129,13 @@ async fn main() -> anyhow::Result<()> {
 
             let state = AppState::new(storage.clone());
             let router = create_router_with_observability(state, metrics_state);
-            run_server(router, addr, Some((config.server.host, config.server.grpc_port)), storage).await
+            run_server(
+                router,
+                addr,
+                Some((config.server.host, config.server.grpc_port)),
+                storage,
+            )
+            .await
         }
         "mysql" => {
             let database_url = config.storage.database_url.as_ref().ok_or_else(|| {
@@ -154,7 +166,13 @@ async fn main() -> anyhow::Result<()> {
 
             let state = AppState::new(storage.clone());
             let router = create_router_with_observability(state, metrics_state);
-            run_server(router, addr, Some((config.server.host, config.server.grpc_port)), storage).await
+            run_server(
+                router,
+                addr,
+                Some((config.server.host, config.server.grpc_port)),
+                storage,
+            )
+            .await
         }
         _ => {
             error!("Unknown storage backend: {}", config.storage.backend);

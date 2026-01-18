@@ -35,14 +35,11 @@ pub fn proto_to_domain_model(proto_model: proto::AuthorizationModel) -> domain::
 
 fn proto_to_domain_type_definition(proto_def: proto::TypeDefinition) -> domain::TypeDefinition {
     let mut relations = Vec::new();
-    let metadata_relations = proto_def
-        .metadata
-        .map(|m| m.relations)
-        .unwrap_or_default();
+    let metadata_relations = proto_def.metadata.map(|m| m.relations).unwrap_or_default();
 
     for (name, userset) in proto_def.relations {
         let metadata = metadata_relations.get(&name);
-        
+
         let type_constraints = if let Some(meta) = metadata {
             meta.directly_related_user_types
                 .iter()
@@ -58,7 +55,7 @@ fn proto_to_domain_type_definition(proto_def: proto::TypeDefinition) -> domain::
             rewrite: proto_to_domain_userset(userset),
         });
     }
-    
+
     // Sort relations by name for deterministic order (optional but good)
     relations.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -107,22 +104,24 @@ fn proto_to_domain_userset(proto_userset: proto::Userset) -> domain::Userset {
                 computed_userset,
             }
         }
-        Some(proto::userset::Userset::Union(usersets)) => {
-            domain::Userset::Union {
-                children: usersets.child.into_iter().map(proto_to_domain_userset).collect(),
-            }
-        }
-        Some(proto::userset::Userset::Intersection(usersets)) => {
-            domain::Userset::Intersection {
-                children: usersets.child.into_iter().map(proto_to_domain_userset).collect(),
-            }
-        }
-        Some(proto::userset::Userset::Difference(diff)) => {
-            domain::Userset::Exclusion {
-                base: Box::new(proto_to_domain_userset(*diff.base.unwrap_or_default())),
-                subtract: Box::new(proto_to_domain_userset(*diff.subtract.unwrap_or_default())),
-            }
-        }
+        Some(proto::userset::Userset::Union(usersets)) => domain::Userset::Union {
+            children: usersets
+                .child
+                .into_iter()
+                .map(proto_to_domain_userset)
+                .collect(),
+        },
+        Some(proto::userset::Userset::Intersection(usersets)) => domain::Userset::Intersection {
+            children: usersets
+                .child
+                .into_iter()
+                .map(proto_to_domain_userset)
+                .collect(),
+        },
+        Some(proto::userset::Userset::Difference(diff)) => domain::Userset::Exclusion {
+            base: Box::new(proto_to_domain_userset(*diff.base.unwrap_or_default())),
+            subtract: Box::new(proto_to_domain_userset(*diff.subtract.unwrap_or_default())),
+        },
         None => domain::Userset::This, // Fallback? Or panic? This implies invalid model.
     }
 }
@@ -132,9 +131,10 @@ fn proto_to_domain_condition(proto_cond: proto::Condition) -> domain::Condition 
         .parameters
         .into_iter()
         .map(|(name, param_ref)| {
-             // param_ref.type_name is i32 enum value
-             let type_name_enum = proto::TypeName::try_from(param_ref.type_name).unwrap_or(proto::TypeName::Unspecified);
-             domain::ConditionParameter::new(name, type_name_enum.as_str_name().to_string())
+            // param_ref.type_name is i32 enum value
+            let type_name_enum = proto::TypeName::try_from(param_ref.type_name)
+                .unwrap_or(proto::TypeName::Unspecified);
+            domain::ConditionParameter::new(name, type_name_enum.as_str_name().to_string())
         })
         .collect();
 
@@ -145,13 +145,14 @@ fn proto_to_domain_condition(proto_cond: proto::Condition) -> domain::Condition 
     }
 }
 
-
 // ===================================
 // Domain -> Proto
 // ===================================
 
 /// Convert Domain AuthorizationModel to Proto AuthorizationModel.
-pub fn domain_to_proto_model(domain_model: domain::AuthorizationModel) -> proto::AuthorizationModel {
+pub fn domain_to_proto_model(
+    domain_model: domain::AuthorizationModel,
+) -> proto::AuthorizationModel {
     let type_definitions = domain_model
         .type_definitions
         .into_iter()
@@ -177,19 +178,25 @@ fn domain_to_proto_type_definition(domain_def: domain::TypeDefinition) -> proto:
     let mut metadata_relations_map = HashMap::new();
 
     for relation in domain_def.relations {
-        relations_map.insert(relation.name.clone(), domain_to_proto_userset(relation.rewrite));
-        
+        relations_map.insert(
+            relation.name.clone(),
+            domain_to_proto_userset(relation.rewrite),
+        );
+
         let directly_related_user_types = relation
             .type_constraints
             .into_iter()
             .map(domain_to_proto_relation_reference)
             .collect();
 
-        metadata_relations_map.insert(relation.name, proto::RelationMetadata {
-            directly_related_user_types,
-            module: String::new(), // Todo
-            source_info: String::new(), // Todo
-        });
+        metadata_relations_map.insert(
+            relation.name,
+            proto::RelationMetadata {
+                directly_related_user_types,
+                module: String::new(),      // Todo
+                source_info: String::new(), // Todo
+            },
+        );
     }
 
     proto::TypeDefinition {
@@ -203,12 +210,24 @@ fn domain_to_proto_type_definition(domain_def: domain::TypeDefinition) -> proto:
     }
 }
 
-fn domain_to_proto_relation_reference(constraint: domain::TypeConstraint) -> proto::RelationReference {
+fn domain_to_proto_relation_reference(
+    constraint: domain::TypeConstraint,
+) -> proto::RelationReference {
     let (type_name, relation_or_wildcard) = if constraint.type_name.ends_with(":*") {
         let base_type = constraint.type_name.trim_end_matches(":*").to_string();
-        (base_type, Some(proto::relation_reference::RelationOrWildcard::Wildcard(proto::Wildcard {})))
+        (
+            base_type,
+            Some(proto::relation_reference::RelationOrWildcard::Wildcard(
+                proto::Wildcard {},
+            )),
+        )
     } else if let Some((base_type, relation)) = constraint.type_name.split_once('#') {
-        (base_type.to_string(), Some(proto::relation_reference::RelationOrWildcard::Relation(relation.to_string())))
+        (
+            base_type.to_string(),
+            Some(proto::relation_reference::RelationOrWildcard::Relation(
+                relation.to_string(),
+            )),
+        )
     } else {
         (constraint.type_name, None)
     };
@@ -229,23 +248,22 @@ fn domain_to_proto_userset(domain_userset: domain::Userset) -> proto::Userset {
                 object: String::new(), // Unused in this context?
             })
         }
-        domain::Userset::TupleToUserset { tupleset, computed_userset } => {
-            proto::userset::Userset::TupleToUserset(proto::TupleToUserset {
-                tupleset: Some(proto::ObjectRelation {
-                    relation: tupleset,
-                    object: String::new(),
-                }),
-                computed_userset: Some(proto::ObjectRelation {
-                    relation: computed_userset,
-                    object: String::new(),
-                }),
-            })
-        }
-        domain::Userset::Union { children } => {
-            proto::userset::Userset::Union(proto::Usersets {
-                child: children.into_iter().map(domain_to_proto_userset).collect(),
-            })
-        }
+        domain::Userset::TupleToUserset {
+            tupleset,
+            computed_userset,
+        } => proto::userset::Userset::TupleToUserset(proto::TupleToUserset {
+            tupleset: Some(proto::ObjectRelation {
+                relation: tupleset,
+                object: String::new(),
+            }),
+            computed_userset: Some(proto::ObjectRelation {
+                relation: computed_userset,
+                object: String::new(),
+            }),
+        }),
+        domain::Userset::Union { children } => proto::userset::Userset::Union(proto::Usersets {
+            child: children.into_iter().map(domain_to_proto_userset).collect(),
+        }),
         domain::Userset::Intersection { children } => {
             proto::userset::Userset::Intersection(proto::Usersets {
                 child: children.into_iter().map(domain_to_proto_userset).collect(),
@@ -269,11 +287,15 @@ fn domain_to_proto_condition(domain_cond: domain::Condition) -> proto::Condition
         .parameters
         .into_iter()
         .map(|param| {
-            let type_name_enum = proto::TypeName::from_str_name(&param.type_name).unwrap_or(proto::TypeName::Unspecified);
-            (param.name, proto::ConditionParamTypeRef {
-                type_name: type_name_enum as i32,
-                generic_types: Vec::new(),
-            })
+            let type_name_enum = proto::TypeName::from_str_name(&param.type_name)
+                .unwrap_or(proto::TypeName::Unspecified);
+            (
+                param.name,
+                proto::ConditionParamTypeRef {
+                    type_name: type_name_enum as i32,
+                    generic_types: Vec::new(),
+                },
+            )
         })
         .collect();
 

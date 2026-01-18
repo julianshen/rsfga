@@ -12,31 +12,103 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         // Don't generate transport-specific code (we'll handle this ourselves)
         .build_transport(false)
-        .type_attribute("openfga.v1.AuthorizationModel", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.TypeDefinition", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.Relation", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.Metadata", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.RelationMetadata", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.Userset", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.Object", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.UsersetUser", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.TypedWildcard", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.Difference", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.TupleToUserset", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.TupleToUserset", "#[serde(rename_all = \"camelCase\")]")
-        .type_attribute("openfga.v1.Condition", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.ConditionParamTypeRef", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.TypeName", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.ConditionMetadata", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.RelationReference", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.Wildcard", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.Usersets", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.DirectUserset", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.ObjectRelation", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(
+            "openfga.v1.AuthorizationModel",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.TypeDefinition",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.Relation",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.Metadata",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.RelationMetadata",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.Userset",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.Object",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.UsersetUser",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.TypedWildcard",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.Difference",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.TupleToUserset",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.TupleToUserset",
+            "#[serde(rename_all = \"camelCase\")]",
+        )
+        .type_attribute(
+            "openfga.v1.Condition",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.ConditionParamTypeRef",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.TypeName",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.ConditionMetadata",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.RelationReference",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.Wildcard",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.Usersets",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.DirectUserset",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.ObjectRelation",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
         // Oneof attributes - trying to target the synthetic enum by field name path
-        .type_attribute("openfga.v1.RelationReference.relation_or_wildcard", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.Userset.userset", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("openfga.v1.Userset.userset", "#[serde(rename_all = \"camelCase\")]")
+        .type_attribute(
+            "openfga.v1.RelationReference.relation_or_wildcard",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.Userset.userset",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "openfga.v1.Userset.userset",
+            "#[serde(rename_all = \"camelCase\")]",
+        )
         .field_attribute("openfga.v1.Userset.userset", "#[serde(flatten)]")
         .file_descriptor_set_path(
             std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap())

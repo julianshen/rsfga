@@ -22,15 +22,15 @@ use crate::utils::{format_user, parse_object, parse_user};
 use crate::proto::openfga::v1::{
     open_fga_service_server::OpenFgaService, user, AuthorizationModel, BatchCheckRequest,
     BatchCheckResponse, BatchCheckSingleResult, CheckError, CheckRequest, CheckResponse, Computed,
-    Condition, CreateStoreRequest, CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse,
-    ErrorCode, ExpandRequest, ExpandResponse, FgaObject, GetStoreRequest, GetStoreResponse, Leaf,
+    CreateStoreRequest, CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse, ErrorCode,
+    ExpandRequest, ExpandResponse, FgaObject, GetStoreRequest, GetStoreResponse, Leaf,
     ListObjectsRequest, ListObjectsResponse, ListStoresRequest, ListStoresResponse,
     ListUsersRequest, ListUsersResponse, Node, Nodes, ObjectRelation, ReadAssertionsRequest,
     ReadAssertionsResponse, ReadAuthorizationModelRequest, ReadAuthorizationModelResponse,
     ReadAuthorizationModelsRequest, ReadAuthorizationModelsResponse, ReadChangesRequest,
     ReadChangesResponse, ReadRequest, ReadResponse, RelationshipCondition, Store, Tuple, TupleKey,
-    TupleToUserset, TypeDefinition, TypedWildcard, UpdateStoreRequest, UpdateStoreResponse, User,
-    Users, UsersetTree, UsersetUser, WriteAssertionsRequest, WriteAssertionsResponse,
+    TupleToUserset, TypedWildcard, UpdateStoreRequest, UpdateStoreResponse, User, Users,
+    UsersetTree, UsersetUser, WriteAssertionsRequest, WriteAssertionsResponse,
     WriteAuthorizationModelRequest, WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
 
@@ -1249,10 +1249,9 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         for model in result.items {
             // Deserialize stored JSON directly to Proto AuthorizationModel
             // This assumes storage contains OpenFGA-compliant JSON (which we write below)
-            let proto_model: AuthorizationModel = 
-                serde_json::from_str(&model.model_json)
+            let proto_model: AuthorizationModel = serde_json::from_str(&model.model_json)
                 .map_err(|e| Status::internal(format!("Failed to parse stored model: {}", e)))?;
-                
+
             authorization_models.push(proto_model);
         }
 
@@ -1280,8 +1279,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             })?;
 
         // Deserialize stored JSON directly to Proto AuthorizationModel
-        let proto_model: AuthorizationModel = 
-            serde_json::from_str(&model.model_json)
+        let proto_model: AuthorizationModel = serde_json::from_str(&model.model_json)
             .map_err(|e| Status::internal(format!("Failed to parse stored model: {}", e)))?;
 
         Ok(Response::new(ReadAuthorizationModelResponse {
@@ -1309,7 +1307,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         let model_id = ulid::Ulid::new().to_string();
 
         // Construct Proto AuthorizationModel from request parts
-        let mut proto_model = crate::proto::openfga::v1::AuthorizationModel {
+        let proto_model = crate::proto::openfga::v1::AuthorizationModel {
             id: model_id.clone(),
             schema_version: req.schema_version,
             type_definitions: req.type_definitions,
@@ -1318,13 +1316,13 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         // Convert Proto Model to Domain Model using converter merely for VALIDATION
         // This ensures the model structure is valid according to domain rules
-        let domain_model = super::converters::proto_to_domain_model(proto_model.clone());
-        
+        let _domain_model = super::converters::proto_to_domain_model(proto_model.clone());
+
         // Serialize PROTO model to JSON for storage (OpenFGA standard format)
         // This ensures compatibility with DataStoreModelReader and other tools
         let json_model = serde_json::to_value(&proto_model)
             .map_err(|e| Status::internal(format!("Failed to serialize model: {}", e)))?;
-        
+
         let json_string = json_model.to_string();
         const MAX_AUTHORIZATION_MODEL_SIZE: usize = 1024 * 1024; // 1MB
         if json_string.len() > MAX_AUTHORIZATION_MODEL_SIZE {
