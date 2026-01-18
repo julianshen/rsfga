@@ -37,8 +37,8 @@ struct BenchTupleReader {
     stores: HashSet<String>,
     /// Tuples keyed by "store:object_type:object_id:relation"
     tuples: HashMap<String, Vec<StoredTupleRef>>,
-    /// Objects keyed by "store:type"
-    objects: HashMap<String, Vec<String>>,
+    /// Objects keyed by "store:type" - uses HashSet for O(1) existence checks
+    objects: HashMap<String, HashSet<String>>,
 }
 
 impl BenchTupleReader {
@@ -54,6 +54,15 @@ impl BenchTupleReader {
         self.stores.insert(store_id.to_string());
     }
 
+    /// Track an object for get_objects_of_type lookups.
+    fn track_object(&mut self, store_id: &str, object_type: &str, object_id: &str) {
+        let obj_key = format!("{store_id}:{object_type}");
+        self.objects
+            .entry(obj_key)
+            .or_default()
+            .insert(object_id.to_string());
+    }
+
     fn add_tuple(
         &mut self,
         store_id: &str,
@@ -66,13 +75,7 @@ impl BenchTupleReader {
         let key = format!("{store_id}:{object_type}:{object_id}:{relation}");
         let tuple = StoredTupleRef::new(user_type, user_id, None);
         self.tuples.entry(key).or_default().push(tuple);
-
-        // Track objects for get_objects_of_type
-        let obj_key = format!("{store_id}:{object_type}");
-        let objects = self.objects.entry(obj_key).or_default();
-        if !objects.contains(&object_id.to_string()) {
-            objects.push(object_id.to_string());
-        }
+        self.track_object(store_id, object_type, object_id);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -89,13 +92,7 @@ impl BenchTupleReader {
         let key = format!("{store_id}:{object_type}:{object_id}:{relation}");
         let tuple = StoredTupleRef::new(user_type, user_id, Some(user_relation.to_string()));
         self.tuples.entry(key).or_default().push(tuple);
-
-        // Track objects
-        let obj_key = format!("{store_id}:{object_type}");
-        let objects = self.objects.entry(obj_key).or_default();
-        if !objects.contains(&object_id.to_string()) {
-            objects.push(object_id.to_string());
-        }
+        self.track_object(store_id, object_type, object_id);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -119,13 +116,7 @@ impl BenchTupleReader {
             condition_context,
         );
         self.tuples.entry(key).or_default().push(tuple);
-
-        // Track objects
-        let obj_key = format!("{store_id}:{object_type}");
-        let objects = self.objects.entry(obj_key).or_default();
-        if !objects.contains(&object_id.to_string()) {
-            objects.push(object_id.to_string());
-        }
+        self.track_object(store_id, object_type, object_id);
     }
 
     fn add_wildcard_tuple(
@@ -139,13 +130,7 @@ impl BenchTupleReader {
         let key = format!("{store_id}:{object_type}:{object_id}:{relation}");
         let tuple = StoredTupleRef::new(user_type, "*", None);
         self.tuples.entry(key).or_default().push(tuple);
-
-        // Track objects
-        let obj_key = format!("{store_id}:{object_type}");
-        let objects = self.objects.entry(obj_key).or_default();
-        if !objects.contains(&object_id.to_string()) {
-            objects.push(object_id.to_string());
-        }
+        self.track_object(store_id, object_type, object_id);
     }
 }
 
@@ -173,7 +158,11 @@ impl TupleReader for BenchTupleReader {
         _limit: usize,
     ) -> DomainResult<Vec<String>> {
         let key = format!("{store_id}:{object_type}");
-        Ok(self.objects.get(&key).cloned().unwrap_or_default())
+        Ok(self
+            .objects
+            .get(&key)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default())
     }
 }
 
@@ -466,52 +455,32 @@ fn create_condition_setup() -> (Arc<BenchTupleReader>, Arc<BenchModelReader>) {
 // Benchmarks
 // =============================================================================
 
-/// Benchmark ListUsers with small number of direct users (10).
-fn bench_list_users_direct_small(c: &mut Criterion) {
+/// Benchmark ListUsers with direct users (parameterized by user count).
+fn bench_list_users_direct(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let (tuple_reader, model_reader) = create_direct_users_setup(10);
-    let resolver = GraphResolver::new(tuple_reader, model_reader);
-
     let mut group = c.benchmark_group("list_users_direct");
     group.throughput(Throughput::Elements(1));
 
-    group.bench_function("small_10_users", |b| {
-        b.to_async(&rt).iter(|| async {
-            let request = ListUsersRequest::new(
-                "bench-store",
-                "document:doc1",
-                "viewer",
-                vec![UserFilter::new("user")],
-            );
-            let result = resolver.list_users(black_box(&request), 1000).await;
-            black_box(result)
-        })
-    });
+    for &(name, user_count, max_results) in &[
+        ("small_10_users", 10, 1000),
+        ("large_1000_users", 1000, 2000),
+    ] {
+        let (tuple_reader, model_reader) = create_direct_users_setup(user_count);
+        let resolver = GraphResolver::new(tuple_reader, model_reader);
 
-    group.finish();
-}
-
-/// Benchmark ListUsers with large number of direct users (1000).
-fn bench_list_users_direct_large(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
-    let (tuple_reader, model_reader) = create_direct_users_setup(1000);
-    let resolver = GraphResolver::new(tuple_reader, model_reader);
-
-    let mut group = c.benchmark_group("list_users_direct");
-    group.throughput(Throughput::Elements(1));
-
-    group.bench_function("large_1000_users", |b| {
-        b.to_async(&rt).iter(|| async {
-            let request = ListUsersRequest::new(
-                "bench-store",
-                "document:doc1",
-                "viewer",
-                vec![UserFilter::new("user")],
-            );
-            let result = resolver.list_users(black_box(&request), 2000).await;
-            black_box(result)
-        })
-    });
+        group.bench_function(name, |b| {
+            b.to_async(&rt).iter(|| async {
+                let request = ListUsersRequest::new(
+                    "bench-store",
+                    "document:doc1",
+                    "viewer",
+                    vec![UserFilter::new("user")],
+                );
+                let result = resolver.list_users(black_box(&request), max_results).await;
+                black_box(result)
+            })
+        });
+    }
 
     group.finish();
 }
@@ -678,8 +647,7 @@ fn bench_list_users_scalability(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    bench_list_users_direct_small,
-    bench_list_users_direct_large,
+    bench_list_users_direct,
     bench_list_users_wildcards,
     bench_list_users_usersets,
     bench_list_users_conditions,
