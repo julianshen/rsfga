@@ -6,7 +6,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::process::Command;
-use std::sync::OnceLock;
 use std::time::Duration;
 use url::Url;
 use uuid::Uuid;

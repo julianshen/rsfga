@@ -16,8 +16,8 @@ pub fn proto_to_domain_model(proto_model: proto::AuthorizationModel) -> domain::
 
     let conditions = proto_model
         .conditions
-        .into_iter()
-        .map(|(_, c)| proto_to_domain_condition(c))
+        .into_values()
+        .map(proto_to_domain_condition)
         .collect();
 
     let mut model = domain::AuthorizationModel::with_types_and_conditions(
