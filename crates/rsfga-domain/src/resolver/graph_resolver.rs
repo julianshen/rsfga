@@ -1596,6 +1596,20 @@ where
                 tuple.user_relation.as_deref(),
                 &request.user_filters,
             ) {
+                // Evaluate condition if present - only include user if condition passes
+                let condition_ok = self
+                    .evaluate_condition(
+                        &request.store_id,
+                        tuple.condition_name.as_deref(),
+                        tuple.condition_context.as_ref(),
+                        &request.context,
+                    )
+                    .await?;
+
+                if !condition_ok {
+                    continue; // Condition failed, skip this tuple
+                }
+
                 // Check for wildcard
                 if tuple.user_id == "*" {
                     users.insert(UserResult::wildcard(&tuple.user_type));
@@ -1626,6 +1640,20 @@ where
                                 user_relation.as_deref(),
                                 &request.user_filters,
                             ) {
+                                // Evaluate condition if present - only include user if condition passes
+                                let condition_ok = self
+                                    .evaluate_condition(
+                                        &request.store_id,
+                                        tuple.condition_name.as_deref(),
+                                        tuple.condition_context.as_ref(),
+                                        &request.context,
+                                    )
+                                    .await?;
+
+                                if !condition_ok {
+                                    continue; // Condition failed, skip this tuple
+                                }
+
                                 if user_id == "*" {
                                     users.insert(UserResult::wildcard(user_type));
                                 } else if let Some(rel) = user_relation {

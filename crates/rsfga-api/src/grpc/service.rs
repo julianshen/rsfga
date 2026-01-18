@@ -1008,11 +1008,28 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                         }
                         let (object_type, object_id) = object.unwrap();
 
-                        Some(rsfga_domain::resolver::ContextualTuple::new(
-                            format_user(user_type, user_id, user_relation),
-                            tk.relation,
-                            format!("{object_type}:{object_id}"),
-                        ))
+                        let user_str = format_user(user_type, user_id, user_relation);
+                        let object_str = format!("{object_type}:{object_id}");
+
+                        // Preserve condition if present
+                        if let Some(condition) = tk.condition {
+                            let condition_context = condition
+                                .context
+                                .and_then(|ctx| prost_struct_to_hashmap(ctx).ok());
+                            Some(rsfga_domain::resolver::ContextualTuple::with_condition(
+                                user_str,
+                                tk.relation,
+                                object_str,
+                                condition.name,
+                                condition_context,
+                            ))
+                        } else {
+                            Some(rsfga_domain::resolver::ContextualTuple::new(
+                                user_str,
+                                tk.relation,
+                                object_str,
+                            ))
+                        }
                     })
                     .collect()
             })
