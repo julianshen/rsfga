@@ -10,6 +10,15 @@
 //! - User filter behavior
 //!
 //! Run with: cargo test --test listusers_tests
+//!
+//! ## Storage Backend Note
+//!
+//! These tests currently use `MemoryDataStore` directly, which is consistent
+//! with the existing `listobjects_tests.rs` pattern. To run against real
+//! database backends (PostgreSQL, MySQL, CockroachDB), a future enhancement
+//! could add a factory function that selects the backend via environment
+//! variables. This would allow the same test suite to validate behavior
+//! across all supported storage implementations.
 
 mod common;
 
@@ -523,10 +532,10 @@ async fn test_listusers_concurrent_same_object_consistent() {
 
 /// Test: ListUsers respects timeout for expensive queries.
 ///
-/// Note: This test requires a way to simulate slow queries. In production,
-/// this would test actual timeout behavior with complex relation graphs.
+/// Note: This test verifies the request completes in a reasonable time
+/// and doesn't hang indefinitely.
 #[tokio::test]
-async fn test_listusers_timeout_returns_partial_results_or_error() {
+async fn test_listusers_respects_timeout() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = create_store_with_model(&storage).await;
 
@@ -561,12 +570,13 @@ async fn test_listusers_timeout_returns_partial_results_or_error() {
 
     let elapsed = start.elapsed();
 
-    // Should either succeed with partial results or return timeout error
-    // The important thing is it shouldn't hang indefinitely
+    // The request should complete around the timeout duration, not hang indefinitely.
+    // We add a grace period to account for test overhead.
     assert!(
-        elapsed < Duration::from_secs(10),
-        "ListUsers should not hang - took {:?}",
-        elapsed
+        elapsed < LISTUSERS_TIMEOUT.saturating_add(Duration::from_secs(2)),
+        "ListUsers should respect timeout. Took {:?}, expected to be less than ~{:?}",
+        elapsed,
+        LISTUSERS_TIMEOUT
     );
 
     // Either success (200) or timeout (504) is acceptable
