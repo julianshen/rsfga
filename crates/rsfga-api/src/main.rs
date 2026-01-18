@@ -19,12 +19,14 @@ use clap::Parser;
 use tokio::signal;
 use tracing::{error, info, Level};
 
+use rsfga_api::grpc::{OpenFgaGrpcService, OpenFgaServiceServer};
 use rsfga_api::http::{create_router_with_observability, AppState};
 use rsfga_api::observability::{init_metrics, init_observability, LoggingConfig, TracingConfig};
 use rsfga_server::ServerConfig;
 use rsfga_storage::{
-    MemoryDataStore, MySQLConfig, MySQLDataStore, PostgresConfig, PostgresDataStore,
+    DataStore, MemoryDataStore, MySQLConfig, MySQLDataStore, PostgresConfig, PostgresDataStore,
 };
+use tonic::transport::Server;
 
 /// RSFGA - High-Performance OpenFGA-Compatible Authorization Server
 #[derive(Parser, Debug)]
@@ -82,9 +84,9 @@ async fn main() -> anyhow::Result<()> {
         "memory" => {
             info!("Using in-memory storage backend");
             let storage = Arc::new(MemoryDataStore::new());
-            let state = AppState::new(storage);
+            let state = AppState::new(storage.clone());
             let router = create_router_with_observability(state, metrics_state);
-            run_server(router, addr).await
+            run_server(router, addr, Some((config.server.host, config.server.grpc_port)), storage).await
         }
         "postgres" | "cockroachdb" => {
             let database_url = config.storage.database_url.as_ref().ok_or_else(|| {
@@ -119,9 +121,9 @@ async fn main() -> anyhow::Result<()> {
 
             let storage = Arc::new(storage);
 
-            let state = AppState::new(storage);
+            let state = AppState::new(storage.clone());
             let router = create_router_with_observability(state, metrics_state);
-            run_server(router, addr).await
+            run_server(router, addr, Some((config.server.host, config.server.grpc_port)), storage).await
         }
         "mysql" => {
             let database_url = config.storage.database_url.as_ref().ok_or_else(|| {
@@ -150,9 +152,9 @@ async fn main() -> anyhow::Result<()> {
 
             let storage = Arc::new(storage);
 
-            let state = AppState::new(storage);
+            let state = AppState::new(storage.clone());
             let router = create_router_with_observability(state, metrics_state);
-            run_server(router, addr).await
+            run_server(router, addr, Some((config.server.host, config.server.grpc_port)), storage).await
         }
         _ => {
             error!("Unknown storage backend: {}", config.storage.backend);
@@ -161,11 +163,51 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Run the HTTP server with graceful shutdown.
-async fn run_server(router: axum::Router, addr: SocketAddr) -> anyhow::Result<()> {
-    info!(%addr, "Server listening");
+/// Run the HTTP and gRPC servers with graceful shutdown.
+async fn run_server<S: DataStore>(
+    router: axum::Router,
+    addr: SocketAddr,
+    grpc_config: Option<(String, u16)>,
+    storage: Arc<S>,
+) -> anyhow::Result<()> {
+    info!(%addr, "HTTP Server listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    // Spawn gRPC server if configured
+    if let Some((host, port)) = grpc_config {
+        let grpc_addr: SocketAddr = format!("{}:{}", host, port).parse()?;
+        let grpc_service = OpenFgaGrpcService::new(storage);
+
+        // Enable gRPC Reflection
+        let reflection_service = tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(
+                rsfga_api::proto::openfga::v1::FILE_DESCRIPTOR_SET,
+            )
+            .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
+            .build()
+            .expect("Failed to build gRPC reflection service");
+
+        // Enable gRPC Health
+        let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+        health_reporter
+            .set_serving::<OpenFgaServiceServer<OpenFgaGrpcService<S>>>()
+            .await;
+
+        info!(addr = %grpc_addr, "gRPC Server listening");
+
+        tokio::spawn(async move {
+            if let Err(e) = Server::builder()
+                .add_service(reflection_service)
+                .add_service(health_service)
+                .add_service(OpenFgaServiceServer::new(grpc_service))
+                .serve(grpc_addr)
+                .await
+            {
+                error!("gRPC server error: {}", e);
+            }
+        });
+    }
 
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())

@@ -61,6 +61,10 @@ pub struct ServerSettings {
     #[serde(default = "default_port")]
     pub port: u16,
 
+    /// Port to listen on for gRPC
+    #[serde(default = "default_grpc_port")]
+    pub grpc_port: u16,
+
     /// Request timeout in seconds
     #[serde(default = "default_request_timeout")]
     pub request_timeout_secs: u64,
@@ -75,6 +79,7 @@ impl Default for ServerSettings {
         Self {
             host: default_host(),
             port: default_port(),
+            grpc_port: default_grpc_port(),
             request_timeout_secs: default_request_timeout(),
             max_connections: default_max_connections(),
         }
@@ -87,6 +92,10 @@ fn default_host() -> String {
 
 fn default_port() -> u16 {
     8080
+}
+
+fn default_grpc_port() -> u16 {
+    8081
 }
 
 fn default_request_timeout() -> u64 {
@@ -406,6 +415,7 @@ tracing:
         // Verify values were loaded
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 9090);
+        assert_eq!(config.server.grpc_port, 8081); // Default value since not specified in yaml
         assert_eq!(config.server.request_timeout_secs, 60);
         assert_eq!(config.storage.backend, "memory");
         assert_eq!(config.storage.pool_size, 20);
@@ -559,6 +569,7 @@ storage:
         // Check default values
         assert_eq!(config.server.host, "0.0.0.0");
         assert_eq!(config.server.port, 8080);
+        assert_eq!(config.server.grpc_port, 8081);
         assert_eq!(config.storage.backend, "memory");
         assert_eq!(config.logging.level, "info");
         assert!(!config.logging.json);
@@ -580,6 +591,7 @@ storage:
         // Should have default port but overridden host
         assert_eq!(config.server.host, "192.168.1.1");
         assert_eq!(config.server.port, 8080); // default
+        assert_eq!(config.server.grpc_port, 8081); // default
     }
 
     /// Test: Config hot-reload works (if supported)

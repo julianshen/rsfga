@@ -13,6 +13,7 @@
 //! ```
 
 mod service;
+pub mod converters;
 
 pub use service::OpenFgaGrpcService;
 

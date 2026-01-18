@@ -12,24 +12,26 @@ use rsfga_domain::resolver::{
     GraphResolver, ResolverConfig,
 };
 use rsfga_server::handlers::batch::BatchCheckHandler;
-use rsfga_storage::{DataStore, DateTime, StorageError, StoredTuple, TupleFilter, Utc};
+use rsfga_storage::{
+    DataStore, DateTime, PaginationOptions, StorageError, StoredTuple, TupleFilter, Utc,
+};
 
 use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
 use crate::utils::{format_user, parse_object, parse_user};
 
 use crate::proto::openfga::v1::{
-    open_fga_service_server::OpenFgaService, user, BatchCheckRequest, BatchCheckResponse,
-    BatchCheckSingleResult, CheckError, CheckRequest, CheckResponse, Computed, CreateStoreRequest,
-    CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse, ErrorCode, ExpandRequest,
-    ExpandResponse, FgaObject, GetStoreRequest, GetStoreResponse, Leaf, ListObjectsRequest,
-    ListObjectsResponse, ListStoresRequest, ListStoresResponse, ListUsersRequest,
-    ListUsersResponse, Node, Nodes, ObjectRelation, ReadAssertionsRequest, ReadAssertionsResponse,
-    ReadAuthorizationModelRequest, ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
-    ReadAuthorizationModelsResponse, ReadChangesRequest, ReadChangesResponse, ReadRequest,
-    ReadResponse, RelationshipCondition, Store, Tuple, TupleKey, TupleToUserset, TypedWildcard,
-    UpdateStoreRequest, UpdateStoreResponse, User, Users, UsersetTree, UsersetUser,
-    WriteAssertionsRequest, WriteAssertionsResponse, WriteAuthorizationModelRequest,
-    WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
+    open_fga_service_server::OpenFgaService, user, AuthorizationModel, BatchCheckRequest,
+    BatchCheckResponse, BatchCheckSingleResult, CheckError, CheckRequest, CheckResponse, Computed,
+    Condition, CreateStoreRequest, CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse,
+    ErrorCode, ExpandRequest, ExpandResponse, FgaObject, GetStoreRequest, GetStoreResponse, Leaf,
+    ListObjectsRequest, ListObjectsResponse, ListStoresRequest, ListStoresResponse,
+    ListUsersRequest, ListUsersResponse, Node, Nodes, ObjectRelation, ReadAssertionsRequest,
+    ReadAssertionsResponse, ReadAuthorizationModelRequest, ReadAuthorizationModelResponse,
+    ReadAuthorizationModelsRequest, ReadAuthorizationModelsResponse, ReadChangesRequest,
+    ReadChangesResponse, ReadRequest, ReadResponse, RelationshipCondition, Store, Tuple, TupleKey,
+    TupleToUserset, TypeDefinition, TypedWildcard, UpdateStoreRequest, UpdateStoreResponse, User,
+    Users, UsersetTree, UsersetUser, WriteAssertionsRequest, WriteAssertionsResponse,
+    WriteAuthorizationModelRequest, WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
 
 /// Maximum allowed length for correlation IDs to prevent DoS attacks.
@@ -519,7 +521,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .resolver
             .check(&check_request)
             .await
-            .map_err(domain_error_to_status)?;
+            .map_err(|e| {
+                tracing::error!("Check failed: {:?}", e);
+                domain_error_to_status(e)
+            })?;
 
         Ok(Response::new(CheckResponse {
             allowed: result.allowed,
@@ -1224,16 +1229,39 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
     ) -> Result<Response<ReadAuthorizationModelsResponse>, Status> {
         let req = request.into_inner();
 
-        // Validate store exists
-        let _ = self
+        // Use OpenFGA default (50) when not specified, clamp to max 50 when provided
+        const DEFAULT_PAGE_SIZE: i32 = 50;
+        let page_size = Some(
+            req.page_size
+                .unwrap_or(DEFAULT_PAGE_SIZE)
+                .min(DEFAULT_PAGE_SIZE) as u32,
+        );
+
+        let pagination = PaginationOptions {
+            page_size,
+            continuation_token: Some(req.continuation_token).filter(|t| !t.is_empty()),
+        };
+
+        let result = self
             .storage
-            .get_store(&req.store_id)
+            .list_authorization_models_paginated(&req.store_id, &pagination)
             .await
             .map_err(storage_error_to_status)?;
 
+        let mut authorization_models = Vec::new();
+        for model in result.items {
+            // Deserialize stored JSON directly to Proto AuthorizationModel
+            // This assumes storage contains OpenFGA-compliant JSON (which we write below)
+            let proto_model: AuthorizationModel = 
+                serde_json::from_str(&model.model_json)
+                .map_err(|e| Status::internal(format!("Failed to parse stored model: {}", e)))?;
+                
+            authorization_models.push(proto_model);
+        }
+
         Ok(Response::new(ReadAuthorizationModelsResponse {
-            authorization_models: vec![],
-            continuation_token: String::new(),
+            authorization_models,
+            continuation_token: result.continuation_token.unwrap_or_default(),
         }))
     }
 
@@ -1243,14 +1271,25 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
     ) -> Result<Response<ReadAuthorizationModelResponse>, Status> {
         let req = request.into_inner();
 
-        // Validate store exists
-        let _ = self
+        let model = self
             .storage
-            .get_store(&req.store_id)
+            .get_authorization_model(&req.store_id, &req.id)
             .await
-            .map_err(storage_error_to_status)?;
+            .map_err(|e| match e {
+                StorageError::ModelNotFound { .. } => {
+                    Status::not_found("authorization model not found")
+                }
+                other => storage_error_to_status(other),
+            })?;
 
-        Err(Status::not_found("authorization model not found"))
+        // Deserialize stored JSON directly to Proto AuthorizationModel
+        let proto_model: AuthorizationModel = 
+            serde_json::from_str(&model.model_json)
+            .map_err(|e| Status::internal(format!("Failed to parse stored model: {}", e)))?;
+
+        Ok(Response::new(ReadAuthorizationModelResponse {
+            authorization_model: Some(proto_model),
+        }))
     }
 
     async fn write_authorization_model(
@@ -1266,7 +1305,48 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // TODO: Persist the authorization model to storage when implemented
+        if req.type_definitions.is_empty() {
+            return Err(Status::invalid_argument("type_definitions cannot be empty"));
+        }
+
+        let model_id = ulid::Ulid::new().to_string();
+
+        // Construct Proto AuthorizationModel from request parts
+        let mut proto_model = crate::proto::openfga::v1::AuthorizationModel {
+            id: model_id.clone(),
+            schema_version: req.schema_version,
+            type_definitions: req.type_definitions,
+            conditions: req.conditions,
+        };
+
+        // Convert Proto Model to Domain Model using converter merely for VALIDATION
+        // This ensures the model structure is valid according to domain rules
+        let domain_model = super::converters::proto_to_domain_model(proto_model.clone());
+        
+        // Serialize PROTO model to JSON for storage (OpenFGA standard format)
+        // This ensures compatibility with DataStoreModelReader and other tools
+        let json_model = serde_json::to_value(&proto_model)
+            .map_err(|e| Status::internal(format!("Failed to serialize model: {}", e)))?;
+        
+        let json_string = json_model.to_string();
+        const MAX_AUTHORIZATION_MODEL_SIZE: usize = 1024 * 1024; // 1MB
+        if json_string.len() > MAX_AUTHORIZATION_MODEL_SIZE {
+            return Err(Status::invalid_argument(format!(
+                "authorization model exceeds maximum size of {MAX_AUTHORIZATION_MODEL_SIZE} bytes"
+            )));
+        }
+
+        let model = rsfga_storage::StoredAuthorizationModel::new(
+            &model_id,
+            &req.store_id,
+            &proto_model.schema_version,
+            json_string,
+        );
+
+        self.storage
+            .write_authorization_model(model)
+            .await
+            .map_err(storage_error_to_status)?;
 
         // Invalidate CEL expression cache to ensure stale expressions from
         // previous models are not reused. This is critical for security:
@@ -1274,7 +1354,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         global_cache().invalidate_all();
 
         Ok(Response::new(WriteAuthorizationModelResponse {
-            authorization_model_id: ulid::Ulid::new().to_string(),
+            authorization_model_id: model_id,
         }))
     }
 

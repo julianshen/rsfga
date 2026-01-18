@@ -73,15 +73,11 @@ pub const CHANGELOG_SETTLE_TIME_SHORT: Duration = Duration::from_millis(50);
 // Shared HTTP Client (Issue #26)
 // ============================================================================
 
-/// Global shared reqwest::Client for connection pool reuse.
-/// Creating a new Client for each request is inefficient as reqwest::Client
-/// holds a connection pool internally and is meant to be created once and reused.
-static SHARED_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-
-/// Get a reference to the shared HTTP client.
-/// This lazily initializes the client on first use and reuses it for all subsequent calls.
-pub fn shared_client() -> &'static reqwest::Client {
-    SHARED_CLIENT.get_or_init(reqwest::Client::new)
+/// Get a HTTP client.
+/// This creates a new client each time to avoid issues with tokio api across different tests
+/// which run in different runtimes.
+pub fn shared_client() -> reqwest::Client {
+    reqwest::Client::new()
 }
 
 // ============================================================================

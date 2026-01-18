@@ -875,7 +875,14 @@ pub struct ExpandRequestBody {
 #[derive(Debug, Serialize)]
 pub struct ExpandResponseBody {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tree: Option<ExpandNodeBody>,
+    pub tree: Option<ExpandTreeBody>,
+}
+
+/// A tree structure containing the root node.
+#[derive(Debug, Serialize)]
+pub struct ExpandTreeBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<ExpandNodeBody>,
 }
 
 /// A node in the expansion tree.
@@ -1051,7 +1058,9 @@ async fn expand<S: DataStore>(
 
     // Convert domain result to HTTP response
     Ok(Json(ExpandResponseBody {
-        tree: Some(expand_node_to_body(result.tree.root)),
+        tree: Some(ExpandTreeBody {
+            root: Some(expand_node_to_body(result.tree.root)),
+        }),
     }))
 }
 

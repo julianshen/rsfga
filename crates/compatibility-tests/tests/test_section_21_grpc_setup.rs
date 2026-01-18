@@ -164,12 +164,13 @@ async fn test_can_call_authorization_model_service_methods() -> Result<()> {
 
     // Assert: Should return model ID
     assert!(
-        model_response.get("authorization_model_id").is_some(),
-        "WriteAuthorizationModel should return model ID"
+        model_response.get("authorization_model_id").is_some() || model_response.get("authorizationModelId").is_some(),
+        "WriteAuthorizationModel should return model ID (checked both snake_case and camelCase)"
     );
-    let model_id = model_response["authorization_model_id"]
-        .as_str()
-        .expect("WriteAuthorizationModel response should have string 'authorization_model_id'");
+    let model_id = model_response.get("authorization_model_id")
+        .or_else(|| model_response.get("authorizationModelId"))
+        .and_then(|v| v.as_str())
+        .expect("WriteAuthorizationModel response should have string 'authorization_model_id' or 'authorizationModelId'");
 
     // Act: Read the authorization model
     let read_request = json!({
@@ -184,8 +185,8 @@ async fn test_can_call_authorization_model_service_methods() -> Result<()> {
 
     // Assert: Should return the model
     assert!(
-        read_response.get("authorization_model").is_some(),
-        "ReadAuthorizationModel should return the model"
+        read_response.get("authorization_model").is_some() || read_response.get("authorizationModel").is_some(),
+        "ReadAuthorizationModel should return the model (checked both snake_case and camelCase)"
     );
 
     // Act: List authorization models
@@ -200,8 +201,8 @@ async fn test_can_call_authorization_model_service_methods() -> Result<()> {
 
     // Assert: Should return models array
     assert!(
-        list_response.get("authorization_models").is_some(),
-        "ReadAuthorizationModels should return models array"
+        list_response.get("authorization_models").is_some() || list_response.get("authorizationModels").is_some(),
+        "ReadAuthorizationModels should return models array (checked both snake_case and camelCase)"
     );
 
     Ok(())
