@@ -38,9 +38,31 @@ use common::{
 };
 
 /// Maximum time to wait for cache invalidation in polling loops.
+///
+/// # Justification
+///
+/// 5 seconds is chosen based on:
+/// - **CI variability**: Slow CI runners (shared VMs, container overhead) can have
+///   significant scheduling delays. 5s provides 50x headroom over the ~100ms typical case.
+/// - **Moka cache background tasks**: The underlying Moka cache uses async background
+///   tasks for eviction. Under load, these may be delayed.
+/// - **No false positives**: A real bug would cause indefinite hangs, not 5s delays.
+///   This timeout catches actual failures without flaky CI failures.
+/// - **Industry practice**: Similar timeout values are used in tokio, tower, and hyper
+///   test suites for async operation verification.
 const CACHE_INVALIDATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Interval between polling attempts.
+///
+/// # Justification
+///
+/// 10ms polling interval is chosen based on:
+/// - **Responsiveness**: Fast enough to detect invalidation promptly (< 100ms typical).
+/// - **CPU efficiency**: 10ms sleep yields to scheduler, avoiding busy-wait CPU burn.
+/// - **Moka task scheduling**: Moka's run_pending_tasks() typically completes in < 1ms,
+///   so 10ms gives ample time for async operations between polls.
+/// - **Test suite speed**: 500 polls possible within 5s timeout, providing granular
+///   detection without slowing down the happy path.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Polls the cache until the specified key is invalidated (returns None) or timeout occurs.
