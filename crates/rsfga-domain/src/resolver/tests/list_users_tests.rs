@@ -1787,7 +1787,6 @@ async fn test_list_users_exactly_at_max_results_not_truncated() {
 /// Test that ListUsers returns DepthLimitExceeded error when graph exceeds max_depth.
 /// This ensures the resolver properly enforces depth limits during userset traversal.
 #[tokio::test]
-#[ignore = "ListUsers depth limit test requires computed relation resolution to properly traverse nested definitions"]
 async fn test_list_users_returns_error_on_depth_limit_exceeded() {
     use std::time::Duration;
 
@@ -1796,7 +1795,8 @@ async fn test_list_users_returns_error_on_depth_limit_exceeded() {
 
     let model_reader = Arc::new(MockModelReader::new());
     // Create a model with deeply nested Union that will exceed depth limit
-    // viewer -> Union[level1 -> Union[level2 -> Union[level3 -> Union[level4]]]]
+    // viewer -> Union -> Union -> Union -> Computed[base]
+    // Depth:    1        2        3        4
     model_reader
         .add_type(
             "store-1",
@@ -1809,38 +1809,15 @@ async fn test_list_users_returns_error_on_depth_limit_exceeded() {
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
-                        name: "level4".to_string(),
-                        type_constraints: vec![],
-                        rewrite: Userset::Union {
-                            children: vec![Userset::ComputedUserset {
-                                relation: "base".to_string(),
-                            }],
-                        },
-                    },
-                    RelationDefinition {
-                        name: "level3".to_string(),
-                        type_constraints: vec![],
-                        rewrite: Userset::Union {
-                            children: vec![Userset::ComputedUserset {
-                                relation: "level4".to_string(),
-                            }],
-                        },
-                    },
-                    RelationDefinition {
-                        name: "level2".to_string(),
-                        type_constraints: vec![],
-                        rewrite: Userset::Union {
-                            children: vec![Userset::ComputedUserset {
-                                relation: "level3".to_string(),
-                            }],
-                        },
-                    },
-                    RelationDefinition {
                         name: "viewer".to_string(),
                         type_constraints: vec![],
                         rewrite: Userset::Union {
-                            children: vec![Userset::ComputedUserset {
-                                relation: "level2".to_string(),
+                            children: vec![Userset::Union {
+                                children: vec![Userset::Union {
+                                    children: vec![Userset::ComputedUserset {
+                                        relation: "base".to_string(),
+                                    }],
+                                }],
                             }],
                         },
                     },
@@ -1872,24 +1849,27 @@ async fn test_list_users_returns_error_on_depth_limit_exceeded() {
     let result = resolver.list_users(&request, 1000).await;
 
     // Should return DepthLimitExceeded error
-    assert!(
-        matches!(result, Err(DomainError::DepthLimitExceeded { .. })),
-        "ListUsers should return DepthLimitExceeded error when Union nesting exceeds max_depth, got {:?}",
-        result
-    );
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        DomainError::DepthLimitExceeded { max_depth } => {
+            assert_eq!(max_depth, 2);
+        }
+        err => panic!("Expected DepthLimitExceeded, got: {:?}", err),
+    }
 }
 
 /// Test that ListUsers returns DepthLimitExceeded when traversing deeply nested intersection.
 #[tokio::test]
-#[ignore = "ListUsers depth limit test requires computed relation resolution to properly traverse nested definitions"]
-async fn test_list_users_depth_limit_with_intersection() {
+async fn test_list_users_returns_error_on_intersection_depth_limit_exceeded() {
     use std::time::Duration;
 
     let tuple_reader = Arc::new(MockTupleReader::new());
     tuple_reader.add_store("store-1").await;
 
     let model_reader = Arc::new(MockModelReader::new());
-    // Create a model with nested Intersection that will exceed depth limit
+    // Create a model with deeply nested Intersection
+    // viewer -> Intersection -> Intersection -> Intersection -> Computed[base]
+    // Depth:    1               2               3               4
     model_reader
         .add_type(
             "store-1",
@@ -1902,29 +1882,15 @@ async fn test_list_users_depth_limit_with_intersection() {
                         rewrite: Userset::This,
                     },
                     RelationDefinition {
-                        name: "level3".to_string(),
-                        type_constraints: vec![],
-                        rewrite: Userset::Intersection {
-                            children: vec![Userset::ComputedUserset {
-                                relation: "base".to_string(),
-                            }],
-                        },
-                    },
-                    RelationDefinition {
-                        name: "level2".to_string(),
-                        type_constraints: vec![],
-                        rewrite: Userset::Intersection {
-                            children: vec![Userset::ComputedUserset {
-                                relation: "level3".to_string(),
-                            }],
-                        },
-                    },
-                    RelationDefinition {
                         name: "viewer".to_string(),
                         type_constraints: vec![],
                         rewrite: Userset::Intersection {
-                            children: vec![Userset::ComputedUserset {
-                                relation: "level2".to_string(),
+                            children: vec![Userset::Intersection {
+                                children: vec![Userset::Intersection {
+                                    children: vec![Userset::ComputedUserset {
+                                        relation: "base".to_string(),
+                                    }],
+                                }],
                             }],
                         },
                     },
@@ -1939,9 +1905,9 @@ async fn test_list_users_depth_limit_with_intersection() {
         )
         .await;
 
-    // Use low max_depth (1) so nested intersections exceed it
+    // Use low max_depth (2) so nested intersections exceed it
     let config = ResolverConfig::default()
-        .with_max_depth(1)
+        .with_max_depth(2)
         .with_timeout(Duration::from_secs(30));
     let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
 
@@ -1955,16 +1921,17 @@ async fn test_list_users_depth_limit_with_intersection() {
     let result = resolver.list_users(&request, 1000).await;
 
     // Should return DepthLimitExceeded error
-    assert!(
-        matches!(result, Err(DomainError::DepthLimitExceeded { .. })),
-        "ListUsers with nested Intersection should return DepthLimitExceeded, got {:?}",
-        result
-    );
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        DomainError::DepthLimitExceeded { max_depth } => {
+            assert_eq!(max_depth, 2);
+        }
+        err => panic!("Expected DepthLimitExceeded, got: {:?}", err),
+    }
 }
 
 /// Test that ListUsers succeeds when Union nesting is within depth limits.
 #[tokio::test]
-#[ignore = "ListUsers depth limit test requires computed relation resolution to properly traverse nested definitions"]
 async fn test_list_users_succeeds_within_depth_limit() {
     use std::time::Duration;
 
