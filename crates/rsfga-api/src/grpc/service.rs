@@ -521,10 +521,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .resolver
             .check(&check_request)
             .await
-            .map_err(|e| {
-                tracing::error!("Check failed: {:?}", e);
-                domain_error_to_status(e)
-            })?;
+            .map_err(domain_error_to_status)?;
 
         Ok(Response::new(CheckResponse {
             allowed: result.allowed,

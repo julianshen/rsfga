@@ -23,6 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute("openfga.v1.TypedWildcard", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute("openfga.v1.Difference", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute("openfga.v1.TupleToUserset", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("openfga.v1.TupleToUserset", "#[serde(rename_all = \"camelCase\")]")
         .type_attribute("openfga.v1.Condition", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute("openfga.v1.ConditionParamTypeRef", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute("openfga.v1.TypeName", "#[derive(serde::Serialize, serde::Deserialize)]")
@@ -35,6 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Oneof attributes - trying to target the synthetic enum by field name path
         .type_attribute("openfga.v1.RelationReference.relation_or_wildcard", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute("openfga.v1.Userset.userset", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("openfga.v1.Userset.userset", "#[serde(rename_all = \"camelCase\")]")
+        .field_attribute("openfga.v1.Userset.userset", "#[serde(flatten)]")
         .file_descriptor_set_path(
             std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap())
                 .join("openfga_descriptor.bin"),
