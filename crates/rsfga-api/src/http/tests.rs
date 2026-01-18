@@ -85,12 +85,12 @@ async fn test_check_endpoint_returns_200() {
     let app = create_router(state);
 
     // Create a store with authorization model
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    setup_store_with_model(&storage, "01H0JA00000000000000000000", "Test-Store").await;
 
     // Write a tuple
     storage
         .write_tuple(
-            "test-store",
+            "01H0JA00000000000000000000",
             rsfga_storage::StoredTuple::new("document", "readme", "viewer", "user", "alice", None),
         )
         .await
@@ -101,7 +101,7 @@ async fn test_check_endpoint_returns_200() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri("/stores/01H0JA00000000000000000000/check")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -133,7 +133,7 @@ async fn test_check_endpoint_returns_200() {
 async fn test_check_endpoint_validates_request_body() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -144,7 +144,7 @@ async fn test_check_endpoint_validates_request_body() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri("/stores/01H0JA00000000000000000000/check")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{ "invalid": "body" }"#))
                 .unwrap(),
@@ -167,7 +167,7 @@ async fn test_check_endpoint_returns_correct_response_format() {
     let storage = Arc::new(MemoryDataStore::new());
 
     // Create a store with authorization model
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    setup_store_with_model(&storage, "01H0JA00000000000000000000", "Test-Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -177,7 +177,7 @@ async fn test_check_endpoint_returns_correct_response_format() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri("/stores/01H0JA00000000000000000000/check")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -209,7 +209,7 @@ async fn test_check_endpoint_returns_correct_response_format() {
 #[tokio::test]
 async fn test_expand_endpoint_returns_200() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    setup_store_with_model(&storage, "01H0JA00000000000000000000", "Test-Store").await;
 
     let state = AppState::new(storage);
     let app = create_router(state);
@@ -218,7 +218,7 @@ async fn test_expand_endpoint_returns_200() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/expand")
+                .uri("/stores/01H0JA00000000000000000000/expand")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -241,7 +241,7 @@ async fn test_expand_endpoint_returns_200() {
 async fn test_write_endpoint_returns_200() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -252,7 +252,7 @@ async fn test_write_endpoint_returns_200() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri("/stores/01H0JA00000000000000000000/write")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -280,7 +280,7 @@ async fn test_write_endpoint_returns_200() {
 async fn test_read_endpoint_returns_200() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -291,7 +291,7 @@ async fn test_read_endpoint_returns_200() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/read")
+                .uri("/stores/01H0JA00000000000000000000/read")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{}"#))
                 .unwrap(),
@@ -313,7 +313,7 @@ async fn test_read_endpoint_returns_200() {
 async fn test_invalid_json_returns_400() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -324,7 +324,7 @@ async fn test_invalid_json_returns_400() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri("/stores/01H0JA00000000000000000000/check")
                 .header("content-type", "application/json")
                 .body(Body::from("{ invalid json }"))
                 .unwrap(),
@@ -344,7 +344,7 @@ async fn test_nonexistent_store_returns_404() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/nonexistent-store/check")
+                .uri("/stores/01H0JA00000000000000000001/check")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -371,7 +371,7 @@ async fn test_nonexistent_store_returns_404() {
 async fn test_validation_errors_return_400_with_details() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -391,7 +391,7 @@ async fn test_validation_errors_return_400_with_details() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/batch-check")
+                .uri("/stores/01H0JA00000000000000000000/batch-check")
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),
@@ -531,7 +531,7 @@ async fn test_requests_within_body_limit_succeed() {
     let storage = Arc::new(MemoryDataStore::new());
 
     // Create a store with authorization model
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    setup_store_with_model(&storage, "01H0JA00000000000000000000", "Test-Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     // Use a small limit for testing (1KB)
@@ -542,7 +542,7 @@ async fn test_requests_within_body_limit_succeed() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri("/stores/01H0JA00000000000000000000/check")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -569,7 +569,7 @@ async fn test_requests_within_body_limit_succeed() {
 async fn test_requests_exceeding_body_limit_rejected() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -591,7 +591,7 @@ async fn test_requests_exceeding_body_limit_rejected() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri("/stores/01H0JA00000000000000000000/check")
                 .header("content-type", "application/json")
                 .body(Body::from(large_payload))
                 .unwrap(),
@@ -612,7 +612,7 @@ async fn test_requests_exceeding_body_limit_rejected() {
 async fn test_update_store_updates_name() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Original Name")
+        .create_store("01H0JA00000000000000000000", "Original-Name")
         .await
         .unwrap();
 
@@ -623,9 +623,9 @@ async fn test_update_store_updates_name() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/stores/test-store")
+                .uri("/stores/01H0JA00000000000000000000")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"name": "Updated Name"}"#))
+                .body(Body::from(r#"{"name": "Updated-Name"}"#))
                 .unwrap(),
         )
         .await
@@ -639,14 +639,14 @@ async fn test_update_store_updates_name() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     // Response should contain the updated store
-    assert_eq!(json["id"], "test-store");
-    assert_eq!(json["name"], "Updated Name");
+    assert_eq!(json["id"], "01H0JA00000000000000000000");
+    assert_eq!(json["name"], "Updated-Name");
     assert!(json.get("created_at").is_some());
     assert!(json.get("updated_at").is_some());
 
     // Verify the store was actually updated in storage
-    let store = storage.get_store("test-store").await.unwrap();
-    assert_eq!(store.name, "Updated Name");
+    let store = storage.get_store("01H0JA00000000000000000000").await.unwrap();
+    assert_eq!(store.name, "Updated-Name");
 }
 
 /// Test: PUT /stores/{store_id} returns 404 for non-existent store
@@ -658,9 +658,9 @@ async fn test_update_store_returns_404_for_nonexistent() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/stores/nonexistent-store")
+                .uri("/stores/01H0JA00000000000000000001")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"name": "New Name"}"#))
+                .body(Body::from(r#"{"name": "New-Name"}"#))
                 .unwrap(),
         )
         .await
@@ -674,7 +674,7 @@ async fn test_update_store_returns_404_for_nonexistent() {
 async fn test_update_store_validates_name() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Original Name")
+        .create_store("01H0JA00000000000000000000", "Original-Name")
         .await
         .unwrap();
 
@@ -686,7 +686,7 @@ async fn test_update_store_validates_name() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/stores/test-store")
+                .uri("/stores/01H0JA00000000000000000000")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"name": ""}"#))
                 .unwrap(),
@@ -716,7 +716,7 @@ async fn test_created_store_id_is_ulid_format() {
                 .method("POST")
                 .uri("/stores")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"name": "test-store"}"#))
+                .body(Body::from(r#"{"name": "01H0JA00000000000000000000"}"#))
                 .unwrap(),
         )
         .await
@@ -758,12 +758,12 @@ async fn test_check_handles_null_contextual_tuple_keys() {
     let storage = Arc::new(MemoryDataStore::new());
 
     // Create a store with authorization model
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    setup_store_with_model(&storage, "01H0JA00000000000000000000", "Test-Store").await;
 
     // Write a tuple to check against
     storage
         .write_tuple(
-            "test-store",
+            "01H0JA00000000000000000000",
             rsfga_storage::StoredTuple::new("document", "readme", "viewer", "user", "alice", None),
         )
         .await
@@ -777,7 +777,7 @@ async fn test_check_handles_null_contextual_tuple_keys() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri("/stores/01H0JA00000000000000000000/check")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -813,11 +813,11 @@ async fn test_check_handles_missing_contextual_tuples() {
     let storage = Arc::new(MemoryDataStore::new());
 
     // Create a store with authorization model
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    setup_store_with_model(&storage, "01H0JA00000000000000000000", "Test-Store").await;
 
     storage
         .write_tuple(
-            "test-store",
+            "01H0JA00000000000000000000",
             rsfga_storage::StoredTuple::new("document", "readme", "viewer", "user", "bob", None),
         )
         .await
@@ -831,7 +831,7 @@ async fn test_check_handles_missing_contextual_tuples() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri("/stores/01H0JA00000000000000000000/check")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -865,7 +865,7 @@ async fn test_check_handles_missing_contextual_tuples() {
 async fn test_write_authorization_model_returns_201() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -876,7 +876,7 @@ async fn test_write_authorization_model_returns_201() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/authorization-models")
+                .uri("/stores/01H0JA00000000000000000000/authorization-models")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -929,14 +929,14 @@ async fn test_write_authorization_model_returns_201() {
 async fn test_list_authorization_models_returns_200() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
     // Write a model directly to storage
     let model = rsfga_storage::StoredAuthorizationModel::new(
         "01HXK0ABCDEFGHIJKLMNOPQRST",
-        "test-store",
+        "01H0JA00000000000000000000",
         "1.1",
         r#"{"type_definitions": [{"type": "user"}]}"#,
     );
@@ -949,7 +949,7 @@ async fn test_list_authorization_models_returns_200() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/stores/test-store/authorization-models")
+                .uri("/stores/01H0JA00000000000000000000/authorization-models")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -976,14 +976,14 @@ async fn test_list_authorization_models_returns_200() {
 async fn test_get_authorization_model_returns_200() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
     // Write a model directly to storage
     let model = rsfga_storage::StoredAuthorizationModel::new(
         "01HXK0ABCDEFGHIJKLMNOPQRST",
-        "test-store",
+        "01H0JA00000000000000000000",
         "1.1",
         r#"{"type_definitions": [{"type": "user"}], "conditions": null}"#,
     );
@@ -996,7 +996,7 @@ async fn test_get_authorization_model_returns_200() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/stores/test-store/authorization-models/01HXK0ABCDEFGHIJKLMNOPQRST")
+                .uri("/stores/01H0JA00000000000000000000/authorization-models/01HXK0ABCDEFGHIJKLMNOPQRST")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1021,7 +1021,7 @@ async fn test_get_authorization_model_returns_200() {
 async fn test_get_nonexistent_authorization_model_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1032,7 +1032,7 @@ async fn test_get_nonexistent_authorization_model_returns_404() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/stores/test-store/authorization-models/nonexistent")
+                .uri("/stores/01H0JA00000000000000000000/authorization-models/nonexistent")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1053,7 +1053,7 @@ async fn test_write_authorization_model_to_nonexistent_store_returns_404() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/nonexistent-store/authorization-models")
+                .uri("/stores/01H0JA00000000000000000001/authorization-models")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1074,7 +1074,7 @@ async fn test_write_authorization_model_to_nonexistent_store_returns_404() {
 async fn test_write_authorization_model_with_empty_type_definitions_returns_400() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1085,7 +1085,7 @@ async fn test_write_authorization_model_with_empty_type_definitions_returns_400(
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/authorization-models")
+                .uri("/stores/01H0JA00000000000000000000/authorization-models")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1115,7 +1115,7 @@ async fn test_write_authorization_model_with_empty_type_definitions_returns_400(
 async fn test_list_authorization_models_with_invalid_continuation_token_returns_400() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1126,7 +1126,7 @@ async fn test_list_authorization_models_with_invalid_continuation_token_returns_
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/stores/test-store/authorization-models?continuation_token=invalid")
+                .uri("/stores/01H0JA00000000000000000000/authorization-models?continuation_token=invalid")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1150,7 +1150,7 @@ async fn test_list_authorization_models_with_invalid_continuation_token_returns_
 async fn test_list_authorization_models_pagination_works() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1158,7 +1158,7 @@ async fn test_list_authorization_models_pagination_works() {
     for i in 0..3 {
         let model = StoredAuthorizationModel::new(
             format!("model-{i}"),
-            "test-store",
+            "01H0JA00000000000000000000",
             "1.1",
             format!(r#"{{"type_definitions": [{{"type": "type{i}"}}]}}"#),
         );
@@ -1174,7 +1174,7 @@ async fn test_list_authorization_models_pagination_works() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/stores/test-store/authorization-models?page_size=2")
+                .uri("/stores/01H0JA00000000000000000000/authorization-models?page_size=2")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1198,7 +1198,7 @@ async fn test_list_authorization_models_pagination_works() {
             Request::builder()
                 .method("GET")
                 .uri(format!(
-                    "/stores/test-store/authorization-models?page_size=2&continuation_token={token}"
+                    "/stores/01H0JA00000000000000000000/authorization-models?page_size=2&continuation_token={token}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -1223,7 +1223,7 @@ async fn test_list_authorization_models_pagination_works() {
 async fn test_write_authorization_model_rejects_oversized_model() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1243,7 +1243,7 @@ async fn test_write_authorization_model_rejects_oversized_model() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/authorization-models")
+                .uri("/stores/01H0JA00000000000000000000/authorization-models")
                 .header("content-type", "application/json")
                 .body(Body::from(body_json.to_string()))
                 .unwrap(),
@@ -1272,7 +1272,7 @@ async fn test_write_authorization_model_rejects_oversized_model() {
 async fn test_list_authorization_models_returns_latest_first() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1282,7 +1282,7 @@ async fn test_list_authorization_models_returns_latest_first() {
         "type_definitions": [{"type": "document"}]
     });
     let model1 =
-        StoredAuthorizationModel::new("model-001", "test-store", "1.1", model_json1.to_string());
+        StoredAuthorizationModel::new("model-001", "01H0JA00000000000000000000", "1.1", model_json1.to_string());
     storage.write_authorization_model(model1).await.unwrap();
 
     // Small delay to ensure different timestamps
@@ -1294,7 +1294,7 @@ async fn test_list_authorization_models_returns_latest_first() {
         "type_definitions": [{"type": "user"}]
     });
     let model2 =
-        StoredAuthorizationModel::new("model-002", "test-store", "1.1", model_json2.to_string());
+        StoredAuthorizationModel::new("model-002", "01H0JA00000000000000000000", "1.1", model_json2.to_string());
     storage.write_authorization_model(model2).await.unwrap();
 
     let state = AppState::new(storage);
@@ -1305,7 +1305,7 @@ async fn test_list_authorization_models_returns_latest_first() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/stores/test-store/authorization-models")
+                .uri("/stores/01H0JA00000000000000000000/authorization-models")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1342,7 +1342,7 @@ async fn test_list_authorization_models_returns_latest_first() {
 async fn test_write_endpoint_parses_conditions() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1354,7 +1354,7 @@ async fn test_write_endpoint_parses_conditions() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri("/stores/01H0JA00000000000000000000/write")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1385,7 +1385,7 @@ async fn test_write_endpoint_parses_conditions() {
 
     // Verify the tuple was written with the condition
     let tuples = storage
-        .read_tuples("test-store", &Default::default())
+        .read_tuples("01H0JA00000000000000000000", &Default::default())
         .await
         .unwrap();
 
@@ -1414,7 +1414,7 @@ async fn test_write_endpoint_parses_conditions() {
 async fn test_write_endpoint_parses_condition_without_context() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1426,7 +1426,7 @@ async fn test_write_endpoint_parses_condition_without_context() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri("/stores/01H0JA00000000000000000000/write")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1453,7 +1453,7 @@ async fn test_write_endpoint_parses_condition_without_context() {
 
     // Verify the tuple was written
     let tuples = storage
-        .read_tuples("test-store", &Default::default())
+        .read_tuples("01H0JA00000000000000000000", &Default::default())
         .await
         .unwrap();
 
@@ -1472,7 +1472,7 @@ async fn test_write_endpoint_parses_condition_without_context() {
 async fn test_write_endpoint_ignores_empty_condition_name() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1484,7 +1484,7 @@ async fn test_write_endpoint_ignores_empty_condition_name() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri("/stores/01H0JA00000000000000000000/write")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1512,7 +1512,7 @@ async fn test_write_endpoint_ignores_empty_condition_name() {
 
     // Verify the tuple was written without condition
     let tuples = storage
-        .read_tuples("test-store", &Default::default())
+        .read_tuples("01H0JA00000000000000000000", &Default::default())
         .await
         .unwrap();
 
@@ -1531,7 +1531,7 @@ async fn test_write_endpoint_ignores_empty_condition_name() {
 async fn test_write_endpoint_handles_multiple_tuples_with_conditions() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1543,7 +1543,7 @@ async fn test_write_endpoint_handles_multiple_tuples_with_conditions() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri("/stores/01H0JA00000000000000000000/write")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1584,7 +1584,7 @@ async fn test_write_endpoint_handles_multiple_tuples_with_conditions() {
 
     // Verify all tuples were written
     let tuples = storage
-        .read_tuples("test-store", &Default::default())
+        .read_tuples("01H0JA00000000000000000000", &Default::default())
         .await
         .unwrap();
 
@@ -1611,7 +1611,7 @@ async fn test_write_endpoint_handles_multiple_tuples_with_conditions() {
 async fn test_write_endpoint_rejects_invalid_condition_name() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1623,7 +1623,7 @@ async fn test_write_endpoint_rejects_invalid_condition_name() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri("/stores/01H0JA00000000000000000000/write")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1663,7 +1663,7 @@ async fn test_write_endpoint_rejects_invalid_condition_name() {
 async fn test_write_endpoint_accepts_valid_condition_name_formats() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1675,7 +1675,7 @@ async fn test_write_endpoint_accepts_valid_condition_name_formats() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri("/stores/01H0JA00000000000000000000/write")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1702,7 +1702,7 @@ async fn test_write_endpoint_accepts_valid_condition_name_formats() {
 
     // Verify the tuple was written with the condition
     let tuples = storage
-        .read_tuples("test-store", &Default::default())
+        .read_tuples("01H0JA00000000000000000000", &Default::default())
         .await
         .unwrap();
     assert_eq!(tuples.len(), 1);
@@ -1719,7 +1719,7 @@ async fn test_write_endpoint_accepts_valid_condition_name_formats() {
 async fn test_read_endpoint_returns_conditions() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
-        .create_store("test-store", "Test Store")
+        .create_store("01H0JA00000000000000000000", "Test-Store")
         .await
         .unwrap();
 
@@ -1730,7 +1730,7 @@ async fn test_read_endpoint_returns_conditions() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri("/stores/01H0JA00000000000000000000/write")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1765,7 +1765,7 @@ async fn test_read_endpoint_returns_conditions() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/read")
+                .uri("/stores/01H0JA00000000000000000000/read")
                 .header("content-type", "application/json")
                 .body(Body::from("{}"))
                 .unwrap(),

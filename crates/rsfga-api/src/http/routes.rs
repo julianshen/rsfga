@@ -729,32 +729,20 @@ async fn check<S: DataStore>(
     }
 
     // Ensure authorization model exists
-    // If ID is provided, verify it exists. If not, verify latest exists.
-    let _model_id = if let Some(id) = &body.authorization_model_id {
+    // Only validate if an explicit model ID is provided
+    if let Some(id) = &body.authorization_model_id {
         state
             .storage
             .get_authorization_model(&store_id, id)
             .await
-            .map(|m| m.id)
             .map_err(|e| match e {
                 StorageError::ModelNotFound { model_id } => {
                     ApiError::model_not_found(format!("authorization model not found: {model_id}"))
                 }
                 other => ApiError::from(other),
-            })?
-    } else {
-        state
-            .storage
-            .get_latest_authorization_model(&store_id)
-            .await
-            .map(|m| m.id)
-            .map_err(|e| match e {
-                StorageError::ModelNotFound { .. } => {
-                    ApiError::model_not_found("latest authorization model not found")
-                }
-                other => ApiError::from(other),
-            })?
-    };
+            })?;
+    }
+
 
     let user = body.tuple_key.user.unwrap();
     let relation = body.tuple_key.relation.unwrap();
@@ -1173,6 +1161,7 @@ async fn write_tuples<S: DataStore>(
     let _ = state.storage.get_store(&store_id).await?;
 
     // Ensure authorization model exists (Schema Validation Pre-check)
+    // Only validate if an explicit model ID is provided
     if let Some(id) = &body.authorization_model_id {
         state
             .storage
@@ -1184,18 +1173,8 @@ async fn write_tuples<S: DataStore>(
                 }
                 other => ApiError::from(other),
             })?;
-    } else {
-        state
-            .storage
-            .get_latest_authorization_model(&store_id)
-            .await
-            .map_err(|e| match e {
-                StorageError::ModelNotFound { .. } => {
-                    ApiError::model_not_found("latest authorization model not found")
-                }
-                other => ApiError::from(other),
-            })?;
     }
+
 
     // Convert write tuples - fail if any tuple key is invalid
     // No clones in happy path - error contains user/object for messages
