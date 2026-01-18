@@ -2224,3 +2224,45 @@ async fn test_list_users_accepts_valid_filter_formats() {
     let result = resolver.list_users(&request, 1000).await;
     assert!(result.is_ok(), "Valid filter formats should be accepted");
 }
+
+// ========== Section 10: max_results Validation ==========
+
+#[tokio::test]
+async fn test_list_users_rejects_zero_max_results() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    // max_results = 0 should be rejected
+    let result = resolver.list_users(&request, 0).await;
+    assert!(result.is_err(), "max_results = 0 should be rejected");
+
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, DomainError::ResolverError { .. }),
+        "Should return ResolverError for invalid max_results"
+    );
+}

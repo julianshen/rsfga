@@ -1486,6 +1486,13 @@ where
         request: &super::types::ListUsersRequest,
         max_results: usize,
     ) -> DomainResult<super::types::ListUsersResult> {
+        // Validate max_results is positive
+        if max_results == 0 {
+            return Err(DomainError::ResolverError {
+                message: "max_results must be greater than 0".to_string(),
+            });
+        }
+
         // Per-operation timeout for the entire list_users operation.
         // Prevents indefinite blocking on pathological graphs.
         const LIST_USERS_TIMEOUT: Duration = Duration::from_secs(30);

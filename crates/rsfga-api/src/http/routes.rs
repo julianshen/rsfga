@@ -1883,10 +1883,18 @@ async fn list_users<S: DataStore>(
         return Err(ApiError::invalid_input("user_filters cannot be empty"));
     }
 
-    // Validate user filter types
+    // Validate user filter types and relations
     for filter in &body.user_filters {
         if filter.r#type.is_empty() {
             return Err(ApiError::invalid_input("user_filters type cannot be empty"));
+        }
+        // If relation is provided, it must not be empty
+        if let Some(ref rel) = filter.relation {
+            if rel.is_empty() {
+                return Err(ApiError::invalid_input(
+                    "user_filters relation cannot be empty",
+                ));
+            }
         }
     }
 
