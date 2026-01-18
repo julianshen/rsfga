@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Methodology**: Kent Beck's Test-Driven Development (TDD) + Tidy First principles
 **Language**: Rust 1.75+ (Edition 2021)
 **Test Coverage Target**: >90%
-**Current Phase**: Architecture & Design ✅ Complete | Implementation ⏸️ Awaiting Approval
+**Current Phase**: Phase 1 (MVP) ✅ Complete | Phase 1.15 (ListUsers API) 🏗️ In Progress
 
 ---
 
@@ -158,14 +158,15 @@ rsfga/
 │   └── Cargo.toml
 ├── rsfga-server/          # Request handlers and business logic
 │   ├── src/
-│   │   ├── handlers/      # Check, Batch, Write, Read handlers
+│   │   ├── handlers/      # Check, Batch, Write, Read, Expand, ListObjects, ListUsers handlers
 │   │   └── middleware/    # Auth, metrics, tracing
 │   └── Cargo.toml
 ├── rsfga-domain/          # Core authorization logic
 │   ├── src/
 │   │   ├── model/         # Type system, DSL parser, AST
-│   │   ├── resolver/      # Graph resolver (async, parallel)
+│   │   ├── resolver/      # Graph resolver (Check, Expand, ListObjects, ListUsers)
 │   │   ├── cache/         # Check cache (DashMap + Moka)
+│   │   ├── cel/           # CEL condition evaluation
 │   │   └── validation/    # Model validation
 │   └── Cargo.toml
 ├── rsfga-storage/         # Storage abstraction layer
@@ -968,7 +969,10 @@ Follow this process precisely, always prioritizing:
   - Milestone 1.10 (CEL Condition Evaluation): ✅ Complete
   - Milestone 1.11 (MySQL/MariaDB/TiDB Storage): ✅ Complete
   - Milestone 1.12 (CockroachDB Storage): ✅ Complete
+  - Milestone 1.13 (Expand API): ✅ Complete
+  - Milestone 1.14 (ListObjects API): ✅ Complete
+  - Milestone 1.15 (ListUsers API): 🏗️ In Progress (PR #191)
 
-**Next Step**: Phase 2 - Precomputation Engine (Optional)
+**Next Step**: Complete ListUsers API (PR #191), then Phase 2 - Precomputation Engine (Optional)
 
 **To continue**: Check `plan.md` for detailed test status and say "go" to proceed!
