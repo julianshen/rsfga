@@ -132,4 +132,55 @@ impl<S: DataStore> AppState<S> {
             assertions: Arc::new(DashMap::new()),
         }
     }
+
+    /// Creates a new application state with a shared cache.
+    ///
+    /// This constructor allows multiple `AppState` instances to share the same
+    /// cache, which is essential for testing cache invalidation behavior.
+    /// The resolver will use the shared cache for both reads and writes.
+    ///
+    /// # Arguments
+    ///
+    /// * `storage` - The storage backend
+    /// * `cache` - A shared cache instance
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let cache = Arc::new(CheckCache::new(CheckCacheConfig::default().with_enabled(true)));
+    /// let state1 = AppState::with_shared_cache(storage.clone(), cache.clone());
+    /// let state2 = AppState::with_shared_cache(storage.clone(), cache.clone());
+    /// // Both state1 and state2 share the same cache
+    /// ```
+    pub fn with_shared_cache(storage: Arc<S>, cache: Arc<CheckCache>) -> Self {
+        // Create adapters to bridge storage to domain traits
+        let tuple_reader = Arc::new(DataStoreTupleReader::new(Arc::clone(&storage)));
+        let model_reader = Arc::new(DataStoreModelReader::new(Arc::clone(&storage)));
+
+        // Create the graph resolver with the shared cache if enabled
+        let resolver_config = if cache.is_enabled() {
+            ResolverConfig::default().with_cache(Arc::clone(&cache))
+        } else {
+            ResolverConfig::default()
+        };
+        let resolver = Arc::new(GraphResolver::with_config(
+            Arc::clone(&tuple_reader),
+            Arc::clone(&model_reader),
+            resolver_config,
+        ));
+
+        // Create the batch handler with the shared cache
+        let batch_handler = Arc::new(BatchCheckHandler::new(
+            Arc::clone(&resolver),
+            Arc::clone(&cache),
+        ));
+
+        Self {
+            storage,
+            batch_handler,
+            resolver,
+            cache,
+            assertions: Arc::new(DashMap::new()),
+        }
+    }
 }

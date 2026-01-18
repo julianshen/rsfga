@@ -51,6 +51,7 @@ use axum::{
 use tower::ServiceExt;
 
 use rsfga_api::http::{create_router, AppState};
+use rsfga_domain::cache::CheckCacheConfig;
 use rsfga_storage::{DataStore, MemoryDataStore, StoredAuthorizationModel};
 
 /// Set up a simple authorization model for tests.
@@ -75,6 +76,43 @@ pub async fn setup_simple_model(storage: &MemoryDataStore, store_id: &str) {
 /// which is the correct pattern for Axum's `oneshot` testing.
 pub fn create_test_app(storage: &Arc<MemoryDataStore>) -> axum::Router {
     let state = AppState::new(Arc::clone(storage));
+    create_router(state)
+}
+
+use rsfga_domain::cache::CheckCache;
+
+/// Create a shared cache for testing.
+///
+/// Returns an Arc-wrapped cache that can be shared across multiple AppState instances.
+pub fn create_shared_cache() -> Arc<CheckCache> {
+    let cache_config = CheckCacheConfig::default().with_enabled(true);
+    Arc::new(CheckCache::new(cache_config))
+}
+
+/// Create a shared cache with custom configuration.
+pub fn create_shared_cache_with_config(cache_config: CheckCacheConfig) -> Arc<CheckCache> {
+    Arc::new(CheckCache::new(cache_config))
+}
+
+/// Create a test app with a shared cache.
+///
+/// All AppState instances created with the same cache will share cache entries,
+/// allowing proper testing of cache invalidation.
+pub fn create_test_app_with_shared_cache(
+    storage: &Arc<MemoryDataStore>,
+    cache: &Arc<CheckCache>,
+) -> axum::Router {
+    let state = AppState::with_shared_cache(Arc::clone(storage), Arc::clone(cache));
+    create_router(state)
+}
+
+/// Create a test app with caching enabled (convenience function).
+///
+/// Note: This creates a new cache for each call. For testing cache invalidation,
+/// use `create_test_app_with_shared_cache` with a shared cache instead.
+pub fn create_test_app_with_cache(storage: &Arc<MemoryDataStore>) -> axum::Router {
+    let cache_config = CheckCacheConfig::default().with_enabled(true);
+    let state = AppState::with_cache_config(Arc::clone(storage), cache_config);
     create_router(state)
 }
 
