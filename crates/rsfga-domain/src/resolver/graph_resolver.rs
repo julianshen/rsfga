@@ -1455,11 +1455,16 @@ where
     /// This is the inverse of `list_objects` - given an object and relation,
     /// it returns all users that have that relation to the object.
     ///
+    /// # Arguments
+    ///
+    /// * `request` - The ListUsers request containing object, relation, and user filters
+    /// * `max_results` - Maximum number of results to return (for DoS protection)
+    ///
     /// # DoS Protection
     ///
     /// This method applies the same protections as `list_objects`:
-    /// - Concurrency limit on parallel checks
-    /// - Per-operation timeout
+    /// - Result limit with truncation flag
+    /// - Per-operation timeout (30s)
     /// - User filter validation
     ///
     /// # Example
@@ -1471,12 +1476,39 @@ where
     ///     "viewer",
     ///     vec![UserFilter::new("user")],
     /// );
-    /// let result = resolver.list_users(&request).await?;
+    /// let result = resolver.list_users(&request, 1000).await?;
     /// // result.users = [UserResult::Object { user_type: "user", user_id: "alice" }, ...]
+    /// // result.truncated = false (or true if more than 1000 users exist)
     /// ```
     pub async fn list_users(
         &self,
         request: &super::types::ListUsersRequest,
+        max_results: usize,
+    ) -> DomainResult<super::types::ListUsersResult> {
+        // Per-operation timeout for the entire list_users operation.
+        // Prevents indefinite blocking on pathological graphs.
+        const LIST_USERS_TIMEOUT: Duration = Duration::from_secs(30);
+
+        // Wrap the entire operation with a timeout
+        match timeout(
+            LIST_USERS_TIMEOUT,
+            self.list_users_inner(request, max_results),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(DomainError::OperationTimeout {
+                operation: "list_users".to_string(),
+                timeout_secs: LIST_USERS_TIMEOUT.as_secs(),
+            }),
+        }
+    }
+
+    /// Inner implementation of list_users without timeout wrapper.
+    async fn list_users_inner(
+        &self,
+        request: &super::types::ListUsersRequest,
+        max_results: usize,
     ) -> DomainResult<super::types::ListUsersResult> {
         use super::types::{ListUsersResult, UserResult};
         use std::collections::HashSet;
@@ -1505,7 +1537,50 @@ where
             });
         }
 
-        // Collect users from all sources using a HashSet to deduplicate
+        // Validate user_filter format: type_name must be non-empty and contain valid characters
+        for filter in &request.user_filters {
+            if filter.type_name.is_empty() {
+                return Err(DomainError::ResolverError {
+                    message: "user_filter type cannot be empty".to_string(),
+                });
+            }
+            // Only allow alphanumeric, underscore, and dash (same as object type validation)
+            if !filter
+                .type_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return Err(DomainError::ResolverError {
+                    message: format!(
+                        "user_filter type contains invalid characters: {}",
+                        filter.type_name
+                    ),
+                });
+            }
+            // Also validate relation if provided
+            if let Some(ref relation) = filter.relation {
+                if relation.is_empty() {
+                    return Err(DomainError::ResolverError {
+                        message: "user_filter relation cannot be empty when provided".to_string(),
+                    });
+                }
+                if !relation
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                {
+                    return Err(DomainError::ResolverError {
+                        message: format!(
+                            "user_filter relation contains invalid characters: {}",
+                            relation
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Collect users from all sources using a HashSet to deduplicate.
+        // We collect all matching users first, then apply truncation at the end.
+        // This ensures consistent deduplication before applying the limit.
         let mut users: HashSet<UserResult> = HashSet::new();
 
         // 1. Get tuples directly assigned to this object/relation
@@ -1596,9 +1671,31 @@ where
             }
         }
 
+        // Check if we exceeded the effective limit (max_results + 1)
+        // If so, we need to truncate and set the truncated flag
+        let mut user_vec: Vec<_> = users.into_iter().collect();
+        let truncated = user_vec.len() > max_results;
+        if truncated {
+            let original_count = user_vec.len();
+            user_vec.truncate(max_results);
+            warn!(
+                store_id = %request.store_id,
+                object = %request.object,
+                relation = %request.relation,
+                max_results = %max_results,
+                total_users = %original_count,
+                "ListUsers results truncated due to max_results limit"
+            );
+        }
+
         Ok(ListUsersResult {
-            users: users.into_iter().collect(),
+            users: user_vec,
+            // Note: excluded_users is currently always empty.
+            // Full exclusion support (tracking which users are excluded by 'but not' relations)
+            // would require traversing the exclusion branch and comparing with base results.
+            // This matches OpenFGA's current behavior for ListUsers API.
             excluded_users: Vec::new(),
+            truncated,
         })
     }
 

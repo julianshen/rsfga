@@ -25,6 +25,13 @@ pub enum DomainError {
     #[error("timeout after {duration_ms}ms")]
     Timeout { duration_ms: u64 },
 
+    /// Operation timeout (for list operations).
+    #[error("operation '{operation}' timed out after {timeout_secs}s")]
+    OperationTimeout {
+        operation: String,
+        timeout_secs: u64,
+    },
+
     /// Cycle detected in relation graph.
     #[error("cycle detected in relation graph: {path}")]
     CycleDetected { path: String },

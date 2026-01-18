@@ -1037,10 +1037,12 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             context,
         );
 
-        // Call the resolver
+        // Call the resolver with default max results for DoS protection.
+        // OpenFGA's proto doesn't support pagination for ListUsers, so we use an internal limit.
+        const DEFAULT_MAX_RESULTS: usize = 1000;
         let result = self
             .resolver
-            .list_users(&list_request)
+            .list_users(&list_request, DEFAULT_MAX_RESULTS)
             .await
             .map_err(domain_error_to_status)?;
 

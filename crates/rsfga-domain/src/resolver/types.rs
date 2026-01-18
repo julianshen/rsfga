@@ -490,4 +490,6 @@ pub struct ListUsersResult {
     pub users: Vec<UserResult>,
     /// Users excluded from access (for exclusion relations).
     pub excluded_users: Vec<UserResult>,
+    /// Whether the results were truncated due to max_results limit.
+    pub truncated: bool,
 }

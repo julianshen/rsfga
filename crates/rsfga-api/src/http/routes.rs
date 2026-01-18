@@ -1948,8 +1948,13 @@ async fn list_users<S: DataStore>(
         body.context.unwrap_or_default(),
     );
 
-    // Call the resolver
-    let result = state.resolver.list_users(&list_request).await?;
+    // Call the resolver with default max results for DoS protection.
+    // OpenFGA's API doesn't support pagination for ListUsers, so we use an internal limit.
+    const DEFAULT_MAX_RESULTS: usize = 1000;
+    let result = state
+        .resolver
+        .list_users(&list_request, DEFAULT_MAX_RESULTS)
+        .await?;
 
     // Helper to convert domain result to API response body
     fn to_user_result_body(user: UserResult) -> UserResultBody {

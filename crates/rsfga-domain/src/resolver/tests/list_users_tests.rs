@@ -59,7 +59,7 @@ async fn test_list_users_returns_users_with_direct_relation() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     assert_eq!(result.users.len(), 2);
     assert!(result.users.contains(&UserResult::object("user", "alice")));
@@ -115,7 +115,7 @@ async fn test_list_users_filters_by_user_type() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     assert_eq!(result.users.len(), 1);
     assert!(result.users.contains(&UserResult::object("user", "alice")));
@@ -150,7 +150,7 @@ async fn test_list_users_returns_empty_for_no_matches() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     assert!(result.users.is_empty());
 }
@@ -190,7 +190,7 @@ async fn test_list_users_returns_wildcard() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     assert_eq!(result.users.len(), 1);
     assert!(result.users.contains(&UserResult::wildcard("user")));
@@ -239,7 +239,7 @@ async fn test_list_users_returns_userset_references() {
         vec![UserFilter::with_relation("group", "member")],
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     assert_eq!(result.users.len(), 1);
     assert!(result
@@ -293,7 +293,7 @@ async fn test_list_users_includes_contextual_tuples() {
         HashMap::new(),
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     assert_eq!(result.users.len(), 2);
     assert!(result.users.contains(&UserResult::object("user", "alice")));
@@ -315,7 +315,7 @@ async fn test_list_users_returns_error_for_nonexistent_store() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await;
+    let result = resolver.list_users(&request, 1000).await;
 
     assert!(matches!(result, Err(DomainError::StoreNotFound { .. })));
 }
@@ -346,7 +346,7 @@ async fn test_list_users_returns_error_for_empty_relation() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await;
+    let result = resolver.list_users(&request, 1000).await;
 
     assert!(matches!(
         result,
@@ -369,7 +369,7 @@ async fn test_list_users_returns_error_for_empty_user_filters() {
         vec![], // Empty user filters
     );
 
-    let result = resolver.list_users(&request).await;
+    let result = resolver.list_users(&request, 1000).await;
 
     // This returns a generic ResolverError or InvalidInput
     assert!(matches!(result, Err(DomainError::ResolverError { .. })));
@@ -389,7 +389,7 @@ async fn test_list_users_returns_error_for_invalid_object() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await;
+    let result = resolver.list_users(&request, 1000).await;
 
     assert!(matches!(
         result,
@@ -437,7 +437,7 @@ async fn test_contextual_tuple_with_invalid_user_format_is_skipped() {
     );
 
     // Should succeed but skip the invalid tuple
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
     assert!(result.users.is_empty());
 }
 
@@ -479,7 +479,7 @@ async fn test_contextual_tuple_with_empty_userset_relation_is_skipped() {
     );
 
     // Should succeed but skip the invalid tuple
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
     assert!(result.users.is_empty());
 }
 
@@ -546,7 +546,7 @@ async fn test_list_users_with_multiple_user_filters() {
         ],
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     // Should return alice and group:eng#member, but NOT service_account:bot
     assert_eq!(result.users.len(), 2);
@@ -602,7 +602,7 @@ async fn test_list_users_deduplicates_results() {
         HashMap::new(),
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     // Should only have alice once
     assert_eq!(result.users.len(), 1);
@@ -677,7 +677,7 @@ async fn test_list_users_resolves_union_relation() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     // Both alice (owner) and bob (editor) should be viewers
     assert_eq!(result.users.len(), 2);
@@ -752,7 +752,7 @@ async fn test_list_users_resolves_intersection_relation() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     // Only alice should be returned (has both member AND approved)
     assert_eq!(result.users.len(), 1);
@@ -821,7 +821,7 @@ async fn test_list_users_resolves_exclusion_relation() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     // Only alice should be returned (member but not banned)
     assert_eq!(result.users.len(), 1);
@@ -892,7 +892,7 @@ async fn test_list_users_resolves_tuple_to_userset() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     // Alice should be returned (viewer of parent folder)
     assert_eq!(result.users.len(), 1);
@@ -956,7 +956,7 @@ proptest! {
             );
 
             // Should not panic - either succeeds or returns an error
-            let _result = resolver.list_users(&request).await;
+            let _result = resolver.list_users(&request, 1000).await;
         });
     }
 
@@ -1015,7 +1015,7 @@ proptest! {
             // Use a timeout to ensure termination
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                resolver.list_users(&request),
+                resolver.list_users(&request, 1000),
             )
             .await;
 
@@ -1069,7 +1069,7 @@ proptest! {
                 vec![UserFilter::new("user")],
             );
 
-            let result = resolver.list_users(&request).await.unwrap();
+            let result = resolver.list_users(&request, 1000).await.unwrap();
 
             // All returned users should be of type "user"
             result.users.iter().all(|u| {
@@ -1129,7 +1129,7 @@ proptest! {
                 vec![UserFilter::new("user")],
             );
 
-            let list_result = resolver.list_users(&list_request).await.unwrap();
+            let list_result = resolver.list_users(&list_request, 1000).await.unwrap();
 
             // Verify Check returns true for each returned user
             let mut all_match = true;
@@ -1232,7 +1232,10 @@ async fn test_list_users_list_objects_inverse_consistency() {
         let list_users_request =
             ListUsersRequest::new("store-1", object, "viewer", vec![UserFilter::new("user")]);
 
-        let users_result = resolver.list_users(&list_users_request).await.unwrap();
+        let users_result = resolver
+            .list_users(&list_users_request, 1000)
+            .await
+            .unwrap();
         assert!(
             users_result
                 .users
@@ -1249,7 +1252,7 @@ async fn test_list_users_list_objects_inverse_consistency() {
         "viewer",
         vec![UserFilter::new("user")],
     );
-    let users_doc2 = resolver.list_users(&list_users_doc2).await.unwrap();
+    let users_doc2 = resolver.list_users(&list_users_doc2, 1000).await.unwrap();
 
     // For each user, verify ListObjects returns doc2
     for user_result in &users_doc2.users {
@@ -1341,7 +1344,10 @@ async fn test_list_users_list_objects_consistency_with_computed_relations() {
         "viewer",
         vec![UserFilter::new("user")],
     );
-    let users_result = resolver.list_users(&list_users_request).await.unwrap();
+    let users_result = resolver
+        .list_users(&list_users_request, 1000)
+        .await
+        .unwrap();
 
     assert_eq!(users_result.users.len(), 2);
     assert!(users_result
@@ -1524,7 +1530,7 @@ async fn test_list_users_with_deep_hierarchy() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     // Alice should be found through: org:acme -> team:eng -> project:proj1 -> folder:root -> document:readme
     assert_eq!(result.users.len(), 1);
@@ -1600,9 +1606,406 @@ async fn test_list_users_handles_multiple_paths_to_same_user() {
         vec![UserFilter::new("user")],
     );
 
-    let result = resolver.list_users(&request).await.unwrap();
+    let result = resolver.list_users(&request, 1000).await.unwrap();
 
     // alice should appear only once despite multiple paths
     assert_eq!(result.users.len(), 1);
     assert!(result.users.contains(&UserResult::object("user", "alice")));
+}
+
+// ========== Section: Truncation Tests ==========
+
+#[tokio::test]
+async fn test_list_users_truncates_when_exceeding_max_results() {
+    // Setup: Create many users so we can test truncation
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    // Add 10 users
+    for i in 0..10 {
+        tuple_reader
+            .add_tuple(
+                "store-1",
+                "document",
+                "readme",
+                "viewer",
+                "user",
+                &format!("user{}", i),
+                None,
+            )
+            .await;
+    }
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    // Request with max_results = 5 (less than the 10 users we have)
+    let result = resolver.list_users(&request, 5).await.unwrap();
+
+    // Should truncate to 5 results
+    assert_eq!(result.users.len(), 5);
+    // Should indicate truncation
+    assert!(
+        result.truncated,
+        "truncated flag should be true when results exceed max_results"
+    );
+}
+
+#[tokio::test]
+async fn test_list_users_not_truncated_when_under_max_results() {
+    // Setup: Create a few users
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "viewer", "user", "bob", None,
+        )
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    // Request with max_results = 10 (more than the 2 users we have)
+    let result = resolver.list_users(&request, 10).await.unwrap();
+
+    // Should return all 2 users
+    assert_eq!(result.users.len(), 2);
+    // Should NOT indicate truncation
+    assert!(
+        !result.truncated,
+        "truncated flag should be false when results are under max_results"
+    );
+}
+
+#[tokio::test]
+async fn test_list_users_exactly_at_max_results_not_truncated() {
+    // Setup: Create exactly max_results users
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    // Add exactly 5 users
+    for i in 0..5 {
+        tuple_reader
+            .add_tuple(
+                "store-1",
+                "document",
+                "readme",
+                "viewer",
+                "user",
+                &format!("user{}", i),
+                None,
+            )
+            .await;
+    }
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    // Request with max_results = 5 (exactly the number of users we have)
+    let result = resolver.list_users(&request, 5).await.unwrap();
+
+    // Should return all 5 users
+    assert_eq!(result.users.len(), 5);
+    // Should NOT indicate truncation (exact match is not truncated)
+    assert!(
+        !result.truncated,
+        "truncated flag should be false when results exactly match max_results"
+    );
+}
+
+// ========== Section: Exclusion Behavior Documentation ==========
+
+/// This test documents the current behavior of excluded_users in ListUsers.
+///
+/// Note: excluded_users is currently always empty because full exclusion support
+/// (tracking which users are excluded by 'but not' relations) is not yet implemented.
+/// This matches OpenFGA's current behavior where excluded_users is rarely populated.
+///
+/// When full exclusion support is added, this test should be updated to verify
+/// that excluded users are properly returned for 'but not' relations.
+#[tokio::test]
+async fn test_list_users_excluded_users_is_empty_for_direct_relations() {
+    // Setup: document:readme has viewer relation with user:alice
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request, 1000).await.unwrap();
+
+    // Current behavior: excluded_users is always empty
+    assert!(
+        result.excluded_users.is_empty(),
+        "excluded_users should be empty (exclusion tracking not yet implemented)"
+    );
+    // Users are returned normally
+    assert_eq!(result.users.len(), 1);
+    assert!(result.users.contains(&UserResult::object("user", "alice")));
+}
+
+// ========== Section: User Filter Validation Tests ==========
+
+#[tokio::test]
+async fn test_list_users_rejects_empty_filter_type() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Empty type_name in filter
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("")], // Empty type
+    );
+
+    let result = resolver.list_users(&request, 1000).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("user_filter type cannot be empty"),
+        "Expected error about empty type, got: {}",
+        err
+    );
+}
+
+#[tokio::test]
+async fn test_list_users_rejects_filter_type_with_invalid_characters() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Type with colon (invalid)
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user:invalid")], // Contains colon
+    );
+
+    let result = resolver.list_users(&request, 1000).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("invalid characters"),
+        "Expected error about invalid characters, got: {}",
+        err
+    );
+}
+
+#[tokio::test]
+async fn test_list_users_rejects_filter_with_empty_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["group".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Filter with empty relation
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::with_relation("group", "")], // Empty relation
+    );
+
+    let result = resolver.list_users(&request, 1000).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("user_filter relation cannot be empty"),
+        "Expected error about empty relation, got: {}",
+        err
+    );
+}
+
+#[tokio::test]
+async fn test_list_users_accepts_valid_filter_formats() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Valid type names with underscores and dashes
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![
+            UserFilter::new("user"),
+            UserFilter::new("service_account"),
+            UserFilter::new("user-group"),
+        ],
+    );
+
+    let result = resolver.list_users(&request, 1000).await;
+    assert!(result.is_ok(), "Valid filter formats should be accepted");
 }
