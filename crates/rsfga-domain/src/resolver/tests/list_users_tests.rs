@@ -2266,3 +2266,267 @@ async fn test_list_users_rejects_zero_max_results() {
         "Should return ResolverError for invalid max_results"
     );
 }
+
+// ========== Section 11: Excluded Users Tracking (Issue #192) ==========
+
+#[tokio::test]
+async fn test_list_users_tracks_excluded_users() {
+    // Setup: viewer = editor but not blocked
+    // user:alice is editor only, user:bob is both editor AND blocked
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    // alice is an editor (will be included)
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "editor", "user", "alice", None,
+        )
+        .await;
+    // bob is an editor (but will be excluded because also blocked)
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "editor", "user", "bob", None,
+        )
+        .await;
+    // bob is blocked
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "blocked", "user", "bob", None,
+        )
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "blocked".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        // viewer = editor but not blocked
+                        rewrite: Userset::Exclusion {
+                            base: Box::new(Userset::ComputedUserset {
+                                relation: "editor".to_string(),
+                            }),
+                            subtract: Box::new(Userset::ComputedUserset {
+                                relation: "blocked".to_string(),
+                            }),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request, 1000).await.unwrap();
+
+    // alice should be in users (editor but not blocked)
+    assert!(
+        result.users.contains(&UserResult::object("user", "alice")),
+        "alice should be in users"
+    );
+
+    // bob should NOT be in users (he's blocked)
+    assert!(
+        !result.users.contains(&UserResult::object("user", "bob")),
+        "bob should not be in users"
+    );
+
+    // bob should be in excluded_users (was editor but excluded by blocked)
+    assert!(
+        result
+            .excluded_users
+            .contains(&UserResult::object("user", "bob")),
+        "bob should be in excluded_users"
+    );
+}
+
+#[tokio::test]
+async fn test_list_users_excluded_users_empty_when_no_exclusions() {
+    // Setup: viewer = editor (no exclusion)
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "editor", "user", "alice", None,
+        )
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        // viewer = editor (no exclusion)
+                        rewrite: Userset::ComputedUserset {
+                            relation: "editor".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request, 1000).await.unwrap();
+
+    assert_eq!(result.users.len(), 1);
+    assert!(
+        result.excluded_users.is_empty(),
+        "excluded_users should be empty when no exclusion relation"
+    );
+}
+
+#[tokio::test]
+async fn test_list_users_tracks_nested_exclusions() {
+    // Setup: viewer = (admin or editor) but not blocked
+    // Tests that exclusions are tracked even with union in base
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    tuple_reader.add_store("store-1").await;
+
+    // alice is admin (will be included)
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "admin", "user", "alice", None,
+        )
+        .await;
+    // bob is editor but blocked (will be excluded)
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "editor", "user", "bob", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "blocked", "user", "bob", None,
+        )
+        .await;
+    // charlie is editor and not blocked (will be included)
+    tuple_reader
+        .add_tuple(
+            "store-1", "document", "readme", "editor", "user", "charlie", None,
+        )
+        .await;
+
+    let model_reader = Arc::new(MockModelReader::new());
+    model_reader
+        .add_type(
+            "store-1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "admin".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "blocked".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        // viewer = (admin or editor) but not blocked
+                        rewrite: Userset::Exclusion {
+                            base: Box::new(Userset::Union {
+                                children: vec![
+                                    Userset::ComputedUserset {
+                                        relation: "admin".to_string(),
+                                    },
+                                    Userset::ComputedUserset {
+                                        relation: "editor".to_string(),
+                                    },
+                                ],
+                            }),
+                            subtract: Box::new(Userset::ComputedUserset {
+                                relation: "blocked".to_string(),
+                            }),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListUsersRequest::new(
+        "store-1",
+        "document:readme",
+        "viewer",
+        vec![UserFilter::new("user")],
+    );
+
+    let result = resolver.list_users(&request, 1000).await.unwrap();
+
+    // alice and charlie should be in users
+    assert!(
+        result.users.contains(&UserResult::object("user", "alice")),
+        "alice should be in users"
+    );
+    assert!(
+        result
+            .users
+            .contains(&UserResult::object("user", "charlie")),
+        "charlie should be in users"
+    );
+
+    // bob should be excluded
+    assert!(
+        !result.users.contains(&UserResult::object("user", "bob")),
+        "bob should not be in users"
+    );
+    assert!(
+        result
+            .excluded_users
+            .contains(&UserResult::object("user", "bob")),
+        "bob should be in excluded_users"
+    );
+}

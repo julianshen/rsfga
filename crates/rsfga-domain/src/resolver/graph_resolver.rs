@@ -1706,6 +1706,9 @@ where
                 relation: request.relation.clone(),
             })?;
 
+        // Track users excluded by 'but not' relations (issue #192)
+        let mut excluded_users: HashSet<super::types::UserResult> = HashSet::new();
+
         // Recursively collect users from computed usersets
         self.collect_users_from_userset(
             &request.store_id,
@@ -1716,6 +1719,7 @@ where
             &request.contextual_tuples,
             &request.context,
             &mut users,
+            &mut excluded_users,
             0,
         )
         .await?;
@@ -1737,14 +1741,12 @@ where
             );
         }
 
+        // Convert excluded_users to Vec (not truncated - provides visibility)
+        let excluded_vec: Vec<_> = excluded_users.into_iter().collect();
+
         Ok(ListUsersResult {
             users: user_vec,
-            // Note: excluded_users is currently always empty.
-            // Full exclusion support (tracking which users are excluded by 'but not' relations)
-            // would require traversing the exclusion branch and comparing with base results.
-            // This matches OpenFGA's current behavior for ListUsers API.
-            // See https://github.com/julianshen/rsfga/issues/192
-            excluded_users: Vec::new(),
+            excluded_users: excluded_vec,
             truncated,
         })
     }
@@ -1837,6 +1839,7 @@ where
         contextual_tuples: &'a Arc<Vec<super::types::ContextualTuple>>,
         request_context: &'a HashMap<String, serde_json::Value>,
         users: &'a mut HashSet<super::types::UserResult>,
+        excluded_users: &'a mut HashSet<super::types::UserResult>,
         depth: u32,
     ) -> BoxFuture<'a, DomainResult<()>> {
         Box::pin(async move {
@@ -2021,6 +2024,7 @@ where
                             contextual_tuples,
                             request_context,
                             users,
+                            excluded_users,
                             depth + 1,
                         )
                         .await?;
@@ -2041,6 +2045,7 @@ where
                             contextual_tuples,
                             request_context,
                             &mut intersection_users,
+                            excluded_users,
                             depth + 1,
                         )
                         .await?;
@@ -2056,6 +2061,7 @@ where
                                 contextual_tuples,
                                 request_context,
                                 &mut child_users,
+                                excluded_users,
                                 depth + 1,
                             )
                             .await?;
@@ -2079,6 +2085,7 @@ where
                         contextual_tuples,
                         request_context,
                         &mut base_users,
+                        excluded_users, // Pass through for nested exclusions
                         depth + 1,
                     )
                     .await?;
@@ -2093,13 +2100,17 @@ where
                         contextual_tuples,
                         request_context,
                         &mut subtract_users,
+                        excluded_users, // Pass through for nested exclusions
                         depth + 1,
                     )
                     .await?;
 
-                    // Add base users that are not in subtract
+                    // Add base users that are NOT in subtract to results
+                    // Add base users that ARE in subtract to excluded_users (issue #192)
                     for user in base_users {
-                        if !subtract_users.contains(&user) {
+                        if subtract_users.contains(&user) {
+                            excluded_users.insert(user); // Track exclusion
+                        } else {
                             users.insert(user);
                         }
                     }

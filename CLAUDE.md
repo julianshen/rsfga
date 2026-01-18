@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Methodology**: Kent Beck's Test-Driven Development (TDD) + Tidy First principles
 **Language**: Rust 1.75+ (Edition 2021)
 **Test Coverage Target**: >90%
-**Current Phase**: Architecture & Design ✅ Complete | Implementation ⏸️ Awaiting Approval
+**Current Phase**: Phase 1 (MVP) ✅ Complete | Phase 1.15 (ListUsers API) 🏗️ In Progress
 
 ---
 
@@ -158,14 +158,15 @@ rsfga/
 │   └── Cargo.toml
 ├── rsfga-server/          # Request handlers and business logic
 │   ├── src/
-│   │   ├── handlers/      # Check, Batch, Write, Read handlers
+│   │   ├── handlers/      # Check, Batch, Write, Read, Expand, ListObjects, ListUsers handlers
 │   │   └── middleware/    # Auth, metrics, tracing
 │   └── Cargo.toml
 ├── rsfga-domain/          # Core authorization logic
 │   ├── src/
 │   │   ├── model/         # Type system, DSL parser, AST
-│   │   ├── resolver/      # Graph resolver (async, parallel)
+│   │   ├── resolver/      # Graph resolver (Check, Expand, ListObjects, ListUsers)
 │   │   ├── cache/         # Check cache (DashMap + Moka)
+│   │   ├── cel/           # CEL condition evaluation
 │   │   └── validation/    # Model validation
 │   └── Cargo.toml
 ├── rsfga-storage/         # Storage abstraction layer
