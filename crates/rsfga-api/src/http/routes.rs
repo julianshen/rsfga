@@ -1868,9 +1868,10 @@ async fn list_users<S: DataStore>(
     // Validate object type format
     validate_object_type(&body.object.r#type)?;
 
-    // Validate object id
-    if body.object.id.is_empty() {
-        return Err(ApiError::invalid_input("object.id cannot be empty"));
+    // Validate full object reference format (not just empty ID)
+    let object_str = format!("{}:{}", body.object.r#type, body.object.id);
+    if parse_object(&object_str).is_none() {
+        return Err(ApiError::invalid_input("object has invalid format"));
     }
 
     // Validate relation format
@@ -1888,12 +1889,15 @@ async fn list_users<S: DataStore>(
         if filter.r#type.is_empty() {
             return Err(ApiError::invalid_input("user_filters type cannot be empty"));
         }
-        // If relation is provided, it must not be empty
+        // If relation is provided, validate its format
         if let Some(ref rel) = filter.relation {
             if rel.is_empty() {
                 return Err(ApiError::invalid_input(
                     "user_filters relation cannot be empty",
                 ));
+            }
+            if let Some(err) = validate_relation_format(rel) {
+                return Err(ApiError::invalid_input(err));
             }
         }
     }
@@ -1973,8 +1977,7 @@ async fn list_users<S: DataStore>(
         })
         .unwrap_or_default();
 
-    // Create domain request
-    let object_str = format!("{}:{}", body.object.r#type, body.object.id);
+    // Create domain request (object_str already validated above)
     let list_request = ListUsersRequest::with_context(
         store_id,
         object_str,

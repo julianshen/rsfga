@@ -1696,26 +1696,29 @@ where
             .ok_or_else(|| DomainError::TypeNotFound {
                 type_name: object_type.to_string(),
             })?;
-        // Find the relation definition
-        if let Some(relation_def) = type_def
+        // Find the relation definition - relation must exist in model
+        let relation_def = type_def
             .relations
             .iter()
             .find(|r| r.name == request.relation)
-        {
-            // Recursively collect users from computed usersets
-            self.collect_users_from_userset(
-                &request.store_id,
-                object_type,
-                object_id,
-                &relation_def.rewrite,
-                &request.user_filters,
-                &request.contextual_tuples,
-                &request.context,
-                &mut users,
-                0,
-            )
-            .await?;
-        }
+            .ok_or_else(|| DomainError::RelationNotFound {
+                type_name: object_type.to_string(),
+                relation: request.relation.clone(),
+            })?;
+
+        // Recursively collect users from computed usersets
+        self.collect_users_from_userset(
+            &request.store_id,
+            object_type,
+            object_id,
+            &relation_def.rewrite,
+            &request.user_filters,
+            &request.contextual_tuples,
+            &request.context,
+            &mut users,
+            0,
+        )
+        .await?;
 
         // Check if we exceeded the effective limit (max_results + 1)
         // If so, we need to truncate and set the truncated flag
