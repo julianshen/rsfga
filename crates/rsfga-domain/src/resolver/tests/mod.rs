@@ -9,8 +9,11 @@
 //! - Contextual tuples
 //! - Safety features (depth limiting, cycle detection, timeouts)
 //! - Edge cases and type constraints
+//! - ListUsers API
 
 mod mocks;
 
+#[cfg(test)]
+mod list_users_tests;
 #[cfg(test)]
 mod resolver_tests;

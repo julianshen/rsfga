@@ -19,7 +19,7 @@
 //! - **Timeout Handling**: Configurable timeout (default 30s) prevents
 //!   hanging on pathological graphs.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -299,6 +299,7 @@ where
         use super::types::{ExpandLeaf, ExpandLeafValue, ExpandNode};
 
         Box::pin(async move {
+            // Check depth limit to prevent unbounded recursion (constraint C11: Fail Fast with Bounds)
             // Check depth limit to prevent unbounded recursion (constraint C11: Fail Fast with Bounds)
             if depth >= self.config.max_depth {
                 return Err(DomainError::DepthLimitExceeded {
@@ -1447,6 +1448,665 @@ where
         Ok(super::types::ListObjectsResult {
             objects,
             truncated: result_truncated,
+        })
+    }
+
+    /// Lists users that have a specific relation to an object.
+    ///
+    /// This is the inverse of `list_objects` - given an object and relation,
+    /// it returns all users that have that relation to the object.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - The ListUsers request containing object, relation, and user filters
+    /// * `max_results` - Maximum number of results to return (for DoS protection)
+    ///
+    /// # DoS Protection
+    ///
+    /// This method applies the same protections as `list_objects`:
+    /// - Result limit with truncation flag
+    /// - Per-operation timeout (30s)
+    /// - User filter validation
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let request = ListUsersRequest::new(
+    ///     "store-id",
+    ///     "document:readme",
+    ///     "viewer",
+    ///     vec![UserFilter::new("user")],
+    /// );
+    /// let result = resolver.list_users(&request, 1000).await?;
+    /// // result.users = [UserResult::Object { user_type: "user", user_id: "alice" }, ...]
+    /// // result.truncated = false (or true if more than 1000 users exist)
+    /// ```
+    pub async fn list_users(
+        &self,
+        request: &super::types::ListUsersRequest,
+        max_results: usize,
+    ) -> DomainResult<super::types::ListUsersResult> {
+        // Validate max_results is positive
+        if max_results == 0 {
+            return Err(DomainError::ResolverError {
+                message: "max_results must be greater than 0".to_string(),
+            });
+        }
+
+        // Per-operation timeout for the entire list_users operation.
+        // Prevents indefinite blocking on pathological graphs.
+        const LIST_USERS_TIMEOUT: Duration = Duration::from_secs(30);
+
+        // Wrap the entire operation with a timeout
+        match timeout(
+            LIST_USERS_TIMEOUT,
+            self.list_users_inner(request, max_results),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(DomainError::OperationTimeout {
+                operation: "list_users".to_string(),
+                timeout_secs: LIST_USERS_TIMEOUT.as_secs(),
+            }),
+        }
+    }
+
+    /// Inner implementation of list_users without timeout wrapper.
+    async fn list_users_inner(
+        &self,
+        request: &super::types::ListUsersRequest,
+        max_results: usize,
+    ) -> DomainResult<super::types::ListUsersResult> {
+        use super::types::{ListUsersResult, UserResult};
+        use std::collections::HashSet;
+
+        // Check if store exists
+        if !self.tuple_reader.store_exists(&request.store_id).await? {
+            return Err(DomainError::StoreNotFound {
+                store_id: request.store_id.clone(),
+            });
+        }
+
+        // Parse object into type and id
+        let (object_type, object_id) = self.parse_object(&request.object)?;
+
+        // Validate relation format
+        if request.relation.is_empty() {
+            return Err(DomainError::InvalidRelationFormat {
+                value: request.relation.clone(),
+            });
+        }
+
+        // Validate user_filters is not empty (OpenFGA requirement)
+        if request.user_filters.is_empty() {
+            return Err(DomainError::ResolverError {
+                message: "user_filters cannot be empty".to_string(),
+            });
+        }
+
+        // Validate user_filter format: type_name must be non-empty and contain valid characters
+        for filter in &request.user_filters {
+            if filter.type_name.is_empty() {
+                return Err(DomainError::ResolverError {
+                    message: "user_filter type cannot be empty".to_string(),
+                });
+            }
+            // Only allow alphanumeric, underscore, and dash (same as object type validation)
+            if !filter
+                .type_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return Err(DomainError::ResolverError {
+                    message: format!(
+                        "user_filter type contains invalid characters: {}",
+                        filter.type_name
+                    ),
+                });
+            }
+            // Also validate relation if provided
+            if let Some(ref relation) = filter.relation {
+                if relation.is_empty() {
+                    return Err(DomainError::ResolverError {
+                        message: "user_filter relation cannot be empty when provided".to_string(),
+                    });
+                }
+                if !relation
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                {
+                    return Err(DomainError::ResolverError {
+                        message: format!(
+                            "user_filter relation contains invalid characters: {}",
+                            relation
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Collect users from all sources using a HashSet to deduplicate.
+        // We collect all matching users first, then apply truncation at the end.
+        // This ensures consistent deduplication before applying the limit.
+        let mut users: HashSet<UserResult> = HashSet::new();
+
+        // 1. Get tuples directly assigned to this object/relation
+        let tuples = self
+            .tuple_reader
+            .read_tuples(&request.store_id, object_type, object_id, &request.relation)
+            .await?;
+
+        for tuple in tuples {
+            // Check if this tuple's user matches any user filter
+            if self.user_matches_filters(
+                &tuple.user_type,
+                tuple.user_relation.as_deref(),
+                &request.user_filters,
+            ) {
+                // Evaluate condition if present - only include user if condition passes
+                let condition_ok = self
+                    .evaluate_condition(
+                        &request.store_id,
+                        tuple.condition_name.as_deref(),
+                        tuple.condition_context.as_ref(),
+                        &request.context,
+                    )
+                    .await?;
+
+                if !condition_ok {
+                    continue; // Condition failed, skip this tuple
+                }
+
+                // Check for wildcard
+                if tuple.user_id == "*" {
+                    users.insert(UserResult::wildcard(&tuple.user_type));
+                } else if let Some(ref rel) = tuple.user_relation {
+                    // Userset reference (e.g., group:eng#member)
+                    users.insert(UserResult::userset(&tuple.user_type, &tuple.user_id, rel));
+                } else {
+                    // Direct user
+                    users.insert(UserResult::object(&tuple.user_type, &tuple.user_id));
+                }
+            }
+        }
+
+        // 2. Also check contextual tuples
+        for tuple in request.contextual_tuples.iter() {
+            // Parse the contextual tuple's object
+            if let Ok((ctx_obj_type, ctx_obj_id)) = self.parse_object(&tuple.object) {
+                // Check if this tuple applies to our target object
+                if ctx_obj_type == object_type
+                    && ctx_obj_id == object_id
+                    && tuple.relation == request.relation
+                {
+                    // Parse the user from the contextual tuple
+                    match self.parse_user_string(&tuple.user) {
+                        Ok((user_type, user_id, user_relation)) => {
+                            if self.user_matches_filters(
+                                &user_type,
+                                user_relation.as_deref(),
+                                &request.user_filters,
+                            ) {
+                                // Evaluate condition if present - only include user if condition passes
+                                let condition_ok = self
+                                    .evaluate_condition(
+                                        &request.store_id,
+                                        tuple.condition_name.as_deref(),
+                                        tuple.condition_context.as_ref(),
+                                        &request.context,
+                                    )
+                                    .await?;
+
+                                if !condition_ok {
+                                    continue; // Condition failed, skip this tuple
+                                }
+
+                                if user_id == "*" {
+                                    users.insert(UserResult::wildcard(user_type));
+                                } else if let Some(rel) = user_relation {
+                                    users.insert(UserResult::userset(user_type, user_id, rel));
+                                } else {
+                                    users.insert(UserResult::object(user_type, user_id));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                store_id = %request.store_id,
+                                user = %tuple.user,
+                                error = %e,
+                                "Invalid contextual tuple user format in ListUsers, skipping"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Handle computed relations (union, intersection, etc.)
+        // Get the authorization model to check for computed relations
+        let model = self.model_reader.get_model(&request.store_id).await?;
+
+        // Find the type definition for the object type
+        let type_def = model
+            .type_definitions
+            .iter()
+            .find(|td| td.type_name == object_type)
+            .ok_or_else(|| DomainError::TypeNotFound {
+                type_name: object_type.to_string(),
+            })?;
+        // Find the relation definition - relation must exist in model
+        let relation_def = type_def
+            .relations
+            .iter()
+            .find(|r| r.name == request.relation)
+            .ok_or_else(|| DomainError::RelationNotFound {
+                type_name: object_type.to_string(),
+                relation: request.relation.clone(),
+            })?;
+
+        // Recursively collect users from computed usersets
+        self.collect_users_from_userset(
+            &request.store_id,
+            object_type,
+            object_id,
+            &relation_def.rewrite,
+            &request.user_filters,
+            &request.contextual_tuples,
+            &request.context,
+            &mut users,
+            0,
+        )
+        .await?;
+
+        // Check if we exceeded the effective limit (max_results + 1)
+        // If so, we need to truncate and set the truncated flag
+        let mut user_vec: Vec<_> = users.into_iter().collect();
+        let truncated = user_vec.len() > max_results;
+        if truncated {
+            let original_count = user_vec.len();
+            user_vec.truncate(max_results);
+            warn!(
+                store_id = %request.store_id,
+                object = %request.object,
+                relation = %request.relation,
+                max_results = %max_results,
+                total_users = %original_count,
+                "ListUsers results truncated due to max_results limit"
+            );
+        }
+
+        Ok(ListUsersResult {
+            users: user_vec,
+            // Note: excluded_users is currently always empty.
+            // Full exclusion support (tracking which users are excluded by 'but not' relations)
+            // would require traversing the exclusion branch and comparing with base results.
+            // This matches OpenFGA's current behavior for ListUsers API.
+            // See https://github.com/julianshen/rsfga/issues/192
+            excluded_users: Vec::new(),
+            truncated,
+        })
+    }
+
+    /// Helper to parse a user string like "user:alice" or "group:eng#member" into components.
+    /// Returns DomainResult for consistent error handling.
+    fn parse_user_string(&self, user: &str) -> DomainResult<(String, String, Option<String>)> {
+        let (user_type, user_id, user_relation) =
+            if let Some((obj_part, relation)) = user.split_once('#') {
+                // Userset format: "type:id#relation"
+                if relation.is_empty() {
+                    return Err(DomainError::InvalidUserFormat {
+                        value: user.to_string(),
+                    });
+                }
+                let (user_type, user_id) =
+                    obj_part
+                        .split_once(':')
+                        .ok_or_else(|| DomainError::InvalidUserFormat {
+                            value: user.to_string(),
+                        })?;
+                (user_type, user_id, Some(relation))
+            } else {
+                // Direct format: "type:id"
+                let (user_type, user_id) =
+                    user.split_once(':')
+                        .ok_or_else(|| DomainError::InvalidUserFormat {
+                            value: user.to_string(),
+                        })?;
+                (user_type, user_id, None)
+            };
+
+        // Validate non-empty parts
+        if user_type.is_empty() || user_id.is_empty() {
+            return Err(DomainError::InvalidUserFormat {
+                value: user.to_string(),
+            });
+        }
+
+        Ok((
+            user_type.to_string(),
+            user_id.to_string(),
+            user_relation.map(String::from),
+        ))
+    }
+
+    /// Checks if a user type (and optional relation) matches any of the user filters.
+    fn user_matches_filters(
+        &self,
+        user_type: &str,
+        user_relation: Option<&str>,
+        user_filters: &[super::types::UserFilter],
+    ) -> bool {
+        for filter in user_filters {
+            if filter.type_name == user_type {
+                match (&filter.relation, user_relation) {
+                    // Filter requires a relation and it matches
+                    (Some(filter_rel), Some(user_rel)) if filter_rel == user_rel => return true,
+                    // Filter has no relation requirement and user has no relation
+                    (None, None) => return true,
+                    // Filter has no relation requirement - match any user of this type
+                    // (including wildcards and usersets)
+                    (None, _) => return true,
+                    _ => continue,
+                }
+            }
+        }
+        false
+    }
+
+    /// Recursively collects users from a userset rewrite (handles union, intersection, etc.)
+    ///
+    /// # Clippy Allows
+    ///
+    /// - `too_many_arguments`: 9 arguments are required to track recursive traversal state
+    ///   (store_id, object info, userset, filters, contextual tuples, context, results set, depth).
+    ///   Grouping these into a context struct would add allocation overhead per recursion.
+    ///
+    /// - `only_used_in_recursion`: The `depth` parameter is intentionally only used
+    ///   in recursive calls to track traversal depth and enforce `max_depth` limit.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::only_used_in_recursion)]
+    fn collect_users_from_userset<'a>(
+        &'a self,
+        store_id: &'a str,
+        object_type: &'a str,
+        object_id: &'a str,
+        userset: &'a Userset,
+        user_filters: &'a [super::types::UserFilter],
+        contextual_tuples: &'a Arc<Vec<super::types::ContextualTuple>>,
+        request_context: &'a HashMap<String, serde_json::Value>,
+        users: &'a mut HashSet<super::types::UserResult>,
+        depth: u32,
+    ) -> BoxFuture<'a, DomainResult<()>> {
+        Box::pin(async move {
+            // Depth limit to prevent infinite recursion - return error to indicate incomplete results
+            if depth >= self.config.max_depth {
+                return Err(DomainError::DepthLimitExceeded {
+                    max_depth: self.config.max_depth,
+                });
+            }
+
+            match userset {
+                Userset::This => {
+                    // Already handled in main list_users - direct tuples
+                }
+                Userset::ComputedUserset { relation } => {
+                    // Get users from the computed relation
+                    let tuples = self
+                        .tuple_reader
+                        .read_tuples(store_id, object_type, object_id, relation)
+                        .await?;
+
+                    for tuple in tuples {
+                        if self.user_matches_filters(
+                            &tuple.user_type,
+                            tuple.user_relation.as_deref(),
+                            user_filters,
+                        ) {
+                            // Evaluate condition before inserting user
+                            let condition_ok = self
+                                .evaluate_condition(
+                                    store_id,
+                                    tuple.condition_name.as_deref(),
+                                    tuple.condition_context.as_ref(),
+                                    request_context,
+                                )
+                                .await?;
+
+                            if !condition_ok {
+                                continue; // Condition failed, skip this tuple
+                            }
+
+                            if tuple.user_id == "*" {
+                                users.insert(super::types::UserResult::wildcard(&tuple.user_type));
+                            } else if let Some(ref rel) = tuple.user_relation {
+                                users.insert(super::types::UserResult::userset(
+                                    &tuple.user_type,
+                                    &tuple.user_id,
+                                    rel,
+                                ));
+                            } else {
+                                users.insert(super::types::UserResult::object(
+                                    &tuple.user_type,
+                                    &tuple.user_id,
+                                ));
+                            }
+                        }
+                    }
+
+                    // Also check contextual tuples for this relation
+                    for ctx_tuple in contextual_tuples.iter() {
+                        if let Ok((ctx_obj_type, ctx_obj_id)) = self.parse_object(&ctx_tuple.object)
+                        {
+                            if ctx_obj_type == object_type
+                                && ctx_obj_id == object_id
+                                && ctx_tuple.relation == *relation
+                            {
+                                if let Ok((user_type, user_id, user_relation)) =
+                                    self.parse_user_string(&ctx_tuple.user)
+                                {
+                                    if self.user_matches_filters(
+                                        &user_type,
+                                        user_relation.as_deref(),
+                                        user_filters,
+                                    ) {
+                                        // Evaluate condition before inserting user
+                                        let condition_ok = self
+                                            .evaluate_condition(
+                                                store_id,
+                                                ctx_tuple.condition_name.as_deref(),
+                                                ctx_tuple.condition_context.as_ref(),
+                                                request_context,
+                                            )
+                                            .await?;
+
+                                        if !condition_ok {
+                                            continue; // Condition failed, skip this tuple
+                                        }
+
+                                        if user_id == "*" {
+                                            users.insert(super::types::UserResult::wildcard(
+                                                user_type,
+                                            ));
+                                        } else if let Some(rel) = user_relation {
+                                            users.insert(super::types::UserResult::userset(
+                                                user_type, user_id, rel,
+                                            ));
+                                        } else {
+                                            users.insert(super::types::UserResult::object(
+                                                user_type, user_id,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Userset::TupleToUserset {
+                    tupleset,
+                    computed_userset,
+                } => {
+                    // Get tuples from the tupleset relation (e.g., "parent")
+                    let tupleset_tuples = self
+                        .tuple_reader
+                        .read_tuples(store_id, object_type, object_id, tupleset)
+                        .await?;
+
+                    // For each parent, recursively get users with the computed_userset relation
+                    for tuple in tupleset_tuples {
+                        // Use tuple fields directly instead of parsing
+                        let parent_type = &tuple.user_type;
+                        let parent_id = &tuple.user_id;
+
+                        // Read users from the parent's computed_userset relation
+                        let parent_tuples = self
+                            .tuple_reader
+                            .read_tuples(store_id, parent_type, parent_id, computed_userset)
+                            .await?;
+
+                        for parent_tuple in parent_tuples {
+                            if self.user_matches_filters(
+                                &parent_tuple.user_type,
+                                parent_tuple.user_relation.as_deref(),
+                                user_filters,
+                            ) {
+                                // Evaluate condition before inserting user
+                                let condition_ok = self
+                                    .evaluate_condition(
+                                        store_id,
+                                        parent_tuple.condition_name.as_deref(),
+                                        parent_tuple.condition_context.as_ref(),
+                                        request_context,
+                                    )
+                                    .await?;
+
+                                if !condition_ok {
+                                    continue; // Condition failed, skip this tuple
+                                }
+
+                                if parent_tuple.user_id == "*" {
+                                    users.insert(super::types::UserResult::wildcard(
+                                        &parent_tuple.user_type,
+                                    ));
+                                } else if let Some(ref rel) = parent_tuple.user_relation {
+                                    users.insert(super::types::UserResult::userset(
+                                        &parent_tuple.user_type,
+                                        &parent_tuple.user_id,
+                                        rel,
+                                    ));
+                                } else {
+                                    users.insert(super::types::UserResult::object(
+                                        &parent_tuple.user_type,
+                                        &parent_tuple.user_id,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                Userset::Union { children } => {
+                    // TODO(perf): Consider parallelizing union branches with FuturesUnordered
+                    // (similar to Check API at graph_resolver.rs:850-862) after M1.7 benchmarking.
+                    // Currently sequential to avoid race conditions on the shared HashSet result.
+                    // See ADR-003 for async-first design philosophy.
+                    for child in children {
+                        self.collect_users_from_userset(
+                            store_id,
+                            object_type,
+                            object_id,
+                            child,
+                            user_filters,
+                            contextual_tuples,
+                            request_context,
+                            users,
+                            depth + 1,
+                        )
+                        .await?;
+                    }
+                }
+                Userset::Intersection { children } => {
+                    // For intersection, we need to find users that are in ALL children
+                    // Start with users from the first child, then intersect with others
+                    if let Some((first, rest)) = children.split_first() {
+                        let mut intersection_users: HashSet<super::types::UserResult> =
+                            HashSet::new();
+                        self.collect_users_from_userset(
+                            store_id,
+                            object_type,
+                            object_id,
+                            first,
+                            user_filters,
+                            contextual_tuples,
+                            request_context,
+                            &mut intersection_users,
+                            depth + 1,
+                        )
+                        .await?;
+
+                        for child in rest {
+                            let mut child_users: HashSet<super::types::UserResult> = HashSet::new();
+                            self.collect_users_from_userset(
+                                store_id,
+                                object_type,
+                                object_id,
+                                child,
+                                user_filters,
+                                contextual_tuples,
+                                request_context,
+                                &mut child_users,
+                                depth + 1,
+                            )
+                            .await?;
+
+                            // Keep only users that are in both sets
+                            intersection_users.retain(|u| child_users.contains(u));
+                        }
+
+                        users.extend(intersection_users);
+                    }
+                }
+                Userset::Exclusion { base, subtract } => {
+                    // Get users from base, then remove those in subtract
+                    let mut base_users: HashSet<super::types::UserResult> = HashSet::new();
+                    self.collect_users_from_userset(
+                        store_id,
+                        object_type,
+                        object_id,
+                        base,
+                        user_filters,
+                        contextual_tuples,
+                        request_context,
+                        &mut base_users,
+                        depth + 1,
+                    )
+                    .await?;
+
+                    let mut subtract_users: HashSet<super::types::UserResult> = HashSet::new();
+                    self.collect_users_from_userset(
+                        store_id,
+                        object_type,
+                        object_id,
+                        subtract,
+                        user_filters,
+                        contextual_tuples,
+                        request_context,
+                        &mut subtract_users,
+                        depth + 1,
+                    )
+                    .await?;
+
+                    // Add base users that are not in subtract
+                    for user in base_users {
+                        if !subtract_users.contains(&user) {
+                            users.insert(user);
+                        }
+                    }
+                }
+            }
+
+            Ok(())
         })
     }
 }

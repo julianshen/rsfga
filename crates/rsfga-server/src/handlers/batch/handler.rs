@@ -366,8 +366,8 @@ fn classify_domain_error_kind(err: &rsfga_domain::error::DomainError) -> BatchCh
         | DomainError::StoreNotFound { .. } => BatchCheckItemErrorKind::Validation,
 
         // Server errors (500) - internal issues
-        DomainError::Timeout { .. } | DomainError::ResolverError { .. } => {
-            BatchCheckItemErrorKind::Internal
-        }
+        DomainError::Timeout { .. }
+        | DomainError::OperationTimeout { .. }
+        | DomainError::ResolverError { .. } => BatchCheckItemErrorKind::Internal,
     }
 }

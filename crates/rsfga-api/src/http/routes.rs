@@ -102,6 +102,7 @@ fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
         .route("/stores/:store_id/write", post(write_tuples::<S>))
         .route("/stores/:store_id/read", post(read_tuples::<S>))
         .route("/stores/:store_id/list-objects", post(list_objects::<S>))
+        .route("/stores/:store_id/list-users", post(list_users::<S>))
         .route("/stores/:store_id/changes", get(read_changes::<S>))
         .route(
             "/stores/:store_id/assertions/:authorization_model_id",
@@ -1733,11 +1734,25 @@ async fn list_objects<S: DataStore>(
                     }
                     let (object_type, object_id) = object.unwrap();
 
-                    Some(rsfga_domain::resolver::ContextualTuple::new(
-                        format_user(user_type, user_id, user_relation),
-                        tk.relation,
-                        format!("{object_type}:{object_id}"),
-                    ))
+                    let user_str = format_user(user_type, user_id, user_relation);
+                    let object_str = format!("{object_type}:{object_id}");
+
+                    // Preserve condition if present
+                    if let Some(condition) = tk.condition {
+                        Some(rsfga_domain::resolver::ContextualTuple::with_condition(
+                            user_str,
+                            tk.relation,
+                            object_str,
+                            condition.name,
+                            condition.context,
+                        ))
+                    } else {
+                        Some(rsfga_domain::resolver::ContextualTuple::new(
+                            user_str,
+                            tk.relation,
+                            object_str,
+                        ))
+                    }
                 })
                 .collect()
         })
@@ -1762,5 +1777,263 @@ async fn list_objects<S: DataStore>(
     Ok(Json(ListObjectsResponseBody {
         objects: result.objects,
         truncated: result.truncated,
+    }))
+}
+
+// ============================================================
+// List Users Operation
+// ============================================================
+
+/// Request body for list users operation.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct ListUsersRequestBody {
+    /// The object to check permissions for.
+    pub object: ObjectBody,
+    /// The relation to check.
+    pub relation: String,
+    /// Filter for user types to return.
+    pub user_filters: Vec<UserFilterBody>,
+    #[serde(default)]
+    pub authorization_model_id: Option<String>,
+    #[serde(default)]
+    pub contextual_tuples: Option<ContextualTuplesBody>,
+    #[serde(default)]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+/// Object reference in ListUsers request.
+#[derive(Debug, Deserialize)]
+pub struct ObjectBody {
+    pub r#type: String,
+    pub id: String,
+}
+
+/// User filter in ListUsers request.
+#[derive(Debug, Deserialize)]
+pub struct UserFilterBody {
+    pub r#type: String,
+    #[serde(default)]
+    pub relation: Option<String>,
+}
+
+/// Response for list users operation.
+#[derive(Debug, Serialize)]
+pub struct ListUsersResponseBody {
+    pub users: Vec<UserResultBody>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_users: Vec<UserResultBody>,
+}
+
+/// A user result in the response.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum UserResultBody {
+    Object { object: UserObjectBody },
+    Userset { userset: UserUsersetBody },
+    Wildcard { wildcard: UserWildcardBody },
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserObjectBody {
+    pub r#type: String,
+    pub id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserUsersetBody {
+    pub r#type: String,
+    pub id: String,
+    pub relation: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserWildcardBody {
+    pub r#type: String,
+}
+
+async fn list_users<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(store_id): Path<String>,
+    JsonBadRequest(body): JsonBadRequest<ListUsersRequestBody>,
+) -> ApiResult<impl IntoResponse> {
+    use crate::validation::{
+        estimate_context_size, json_exceeds_max_depth, validate_relation_format,
+        MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
+    };
+    use rsfga_domain::resolver::{ListUsersRequest, UserFilter, UserResult};
+    use rsfga_storage::traits::validate_object_type;
+    use tracing::warn;
+
+    // Validate object type format
+    validate_object_type(&body.object.r#type)?;
+
+    // Validate full object reference format (not just empty ID)
+    let object_str = format!("{}:{}", body.object.r#type, body.object.id);
+    if parse_object(&object_str).is_none() {
+        return Err(ApiError::invalid_input("object has invalid format"));
+    }
+
+    // Validate relation format
+    if let Some(err) = validate_relation_format(&body.relation) {
+        return Err(ApiError::invalid_input(err));
+    }
+
+    // Validate user_filters not empty
+    if body.user_filters.is_empty() {
+        return Err(ApiError::invalid_input("user_filters cannot be empty"));
+    }
+
+    // Validate user filter types and relations
+    for filter in &body.user_filters {
+        if filter.r#type.is_empty() {
+            return Err(ApiError::invalid_input("user_filters type cannot be empty"));
+        }
+        // If relation is provided, validate its format
+        if let Some(ref rel) = filter.relation {
+            if rel.is_empty() {
+                return Err(ApiError::invalid_input(
+                    "user_filters relation cannot be empty",
+                ));
+            }
+            if let Some(err) = validate_relation_format(rel) {
+                return Err(ApiError::invalid_input(err));
+            }
+        }
+    }
+
+    // Validate context if provided (DoS protection)
+    if let Some(ctx) = &body.context {
+        if estimate_context_size(ctx) > MAX_CONDITION_CONTEXT_SIZE {
+            return Err(ApiError::invalid_input(format!(
+                "context size exceeds maximum of {MAX_CONDITION_CONTEXT_SIZE} bytes"
+            )));
+        }
+
+        for value in ctx.values() {
+            if json_exceeds_max_depth(value, 2) {
+                return Err(ApiError::invalid_input(format!(
+                    "context nested too deeply (max depth {MAX_JSON_DEPTH})"
+                )));
+            }
+        }
+    }
+
+    // Convert user_filters
+    let user_filters: Vec<UserFilter> = body
+        .user_filters
+        .into_iter()
+        .map(|f| {
+            if let Some(rel) = f.relation {
+                UserFilter::with_relation(f.r#type, rel)
+            } else {
+                UserFilter::new(f.r#type)
+            }
+        })
+        .collect();
+
+    // Convert contextual tuples if provided
+    let contextual_tuples = body
+        .contextual_tuples
+        .map(|ct| {
+            ct.tuple_keys
+                .into_iter()
+                .filter_map(|tk| {
+                    let user = parse_user(&tk.user);
+                    if user.is_none() {
+                        warn!("Invalid user format in contextual tuple: {}", tk.user);
+                        return None;
+                    }
+                    let (user_type, user_id, user_relation) = user.unwrap();
+
+                    let object = parse_object(&tk.object);
+                    if object.is_none() {
+                        warn!("Invalid object format in contextual tuple: {}", tk.object);
+                        return None;
+                    }
+                    let (object_type, object_id) = object.unwrap();
+
+                    let user_str = format_user(user_type, user_id, user_relation);
+                    let object_str = format!("{object_type}:{object_id}");
+
+                    // Preserve condition if present
+                    if let Some(condition) = tk.condition {
+                        Some(rsfga_domain::resolver::ContextualTuple::with_condition(
+                            user_str,
+                            tk.relation,
+                            object_str,
+                            condition.name,
+                            condition.context,
+                        ))
+                    } else {
+                        Some(rsfga_domain::resolver::ContextualTuple::new(
+                            user_str,
+                            tk.relation,
+                            object_str,
+                        ))
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Create domain request (object_str already validated above)
+    let list_request = ListUsersRequest::with_context(
+        store_id,
+        object_str,
+        body.relation,
+        user_filters,
+        contextual_tuples,
+        body.context.unwrap_or_default(),
+    );
+
+    // Call the resolver with default max results for DoS protection.
+    // OpenFGA's API doesn't support pagination for ListUsers, so we use an internal limit.
+    const DEFAULT_MAX_RESULTS: usize = 1000;
+    let result = state
+        .resolver
+        .list_users(&list_request, DEFAULT_MAX_RESULTS)
+        .await?;
+
+    // Helper to convert domain result to API response body
+    fn to_user_result_body(user: UserResult) -> UserResultBody {
+        match user {
+            UserResult::Object { user_type, user_id } => UserResultBody::Object {
+                object: UserObjectBody {
+                    r#type: user_type,
+                    id: user_id,
+                },
+            },
+            UserResult::Userset {
+                userset_type,
+                userset_id,
+                relation,
+            } => UserResultBody::Userset {
+                userset: UserUsersetBody {
+                    r#type: userset_type,
+                    id: userset_id,
+                    relation,
+                },
+            },
+            UserResult::Wildcard { wildcard_type } => UserResultBody::Wildcard {
+                wildcard: UserWildcardBody {
+                    r#type: wildcard_type,
+                },
+            },
+        }
+    }
+
+    // Convert domain results to response format
+    let users: Vec<UserResultBody> = result.users.into_iter().map(to_user_result_body).collect();
+
+    let excluded_users: Vec<UserResultBody> = result
+        .excluded_users
+        .into_iter()
+        .map(to_user_result_body)
+        .collect();
+
+    Ok(Json(ListUsersResponseBody {
+        users,
+        excluded_users,
     }))
 }
