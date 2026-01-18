@@ -1733,11 +1733,21 @@ async fn list_objects<S: DataStore>(
                     }
                     let (object_type, object_id) = object.unwrap();
 
-                    Some(rsfga_domain::resolver::ContextualTuple::new(
-                        format_user(user_type, user_id, user_relation),
-                        tk.relation,
-                        format!("{object_type}:{object_id}"),
-                    ))
+                    if let Some(condition) = tk.condition {
+                        Some(rsfga_domain::resolver::ContextualTuple::with_condition(
+                            format_user(user_type, user_id, user_relation),
+                            tk.relation,
+                            format!("{object_type}:{object_id}"),
+                            &condition.name,
+                            condition.context,
+                        ))
+                    } else {
+                        Some(rsfga_domain::resolver::ContextualTuple::new(
+                            format_user(user_type, user_id, user_relation),
+                            tk.relation,
+                            format!("{object_type}:{object_id}"),
+                        ))
+                    }
                 })
                 .collect()
         })
