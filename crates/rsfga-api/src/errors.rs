@@ -171,6 +171,12 @@ fn classify_domain_error_detailed(err: &DomainError) -> DomainErrorKind {
         DomainError::InvalidRelationFormat { value } => {
             DomainErrorKind::InvalidInput(format!("invalid relation format: {value}"))
         }
+        DomainError::OperationTimeout {
+            operation,
+            timeout_secs,
+        } => DomainErrorKind::Timeout(format!(
+            "operation '{operation}' timed out after {timeout_secs}s"
+        )),
         DomainError::StoreNotFound { store_id } => {
             DomainErrorKind::NotFound(format!("store not found: {store_id}"))
         }
@@ -227,6 +233,9 @@ fn classify_domain_error_generic(err: &DomainError) -> DomainErrorKind {
         }
         DomainError::InvalidRelationFormat { .. } => {
             DomainErrorKind::InvalidInput("invalid relation format".to_string())
+        }
+        DomainError::OperationTimeout { .. } => {
+            DomainErrorKind::Timeout("operation timed out".to_string())
         }
         DomainError::StoreNotFound { .. } => {
             DomainErrorKind::NotFound("store not found".to_string())

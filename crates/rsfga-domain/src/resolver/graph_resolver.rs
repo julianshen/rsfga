@@ -300,7 +300,8 @@ where
 
         Box::pin(async move {
             // Check depth limit to prevent unbounded recursion (constraint C11: Fail Fast with Bounds)
-            println!("DEBUG: depth={} max={} set={:?}", depth, self.config.max_depth, userset); if depth >= self.config.max_depth {
+            // Check depth limit to prevent unbounded recursion (constraint C11: Fail Fast with Bounds)
+            if depth >= self.config.max_depth {
                 return Err(DomainError::DepthLimitExceeded {
                     max_depth: self.config.max_depth,
                 });
@@ -1681,31 +1682,32 @@ where
         let model = self.model_reader.get_model(&request.store_id).await?;
 
         // Find the type definition for the object type
-        if let Some(type_def) = model
+        let type_def = model
             .type_definitions
             .iter()
             .find(|td| td.type_name == object_type)
+            .ok_or_else(|| DomainError::TypeNotFound {
+                type_name: object_type.to_string(),
+            })?;
+        // Find the relation definition
+        if let Some(relation_def) = type_def
+            .relations
+            .iter()
+            .find(|r| r.name == request.relation)
         {
-            // Find the relation definition
-            if let Some(relation_def) = type_def
-                .relations
-                .iter()
-                .find(|r| r.name == request.relation)
-            {
-                // Recursively collect users from computed usersets
-                self.collect_users_from_userset(
-                    &request.store_id,
-                    object_type,
-                    object_id,
-                    &relation_def.rewrite,
-                    &request.user_filters,
-                    &request.contextual_tuples,
-                    &request.context,
-                    &mut users,
-                    0,
-                )
-                .await?;
-            }
+            // Recursively collect users from computed usersets
+            self.collect_users_from_userset(
+                &request.store_id,
+                object_type,
+                object_id,
+                &relation_def.rewrite,
+                &request.user_filters,
+                &request.contextual_tuples,
+                &request.context,
+                &mut users,
+                0,
+            )
+            .await?;
         }
 
         // Check if we exceeded the effective limit (max_results + 1)
