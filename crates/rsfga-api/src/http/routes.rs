@@ -1951,11 +1951,9 @@ async fn list_users<S: DataStore>(
     // Call the resolver
     let result = state.resolver.list_users(&list_request).await?;
 
-    // Convert domain results to response format
-    let users: Vec<UserResultBody> = result
-        .users
-        .into_iter()
-        .map(|u| match u {
+    // Helper to convert domain result to API response body
+    fn to_user_result_body(user: UserResult) -> UserResultBody {
+        match user {
             UserResult::Object { user_type, user_id } => UserResultBody::Object {
                 object: UserObjectBody {
                     r#type: user_type,
@@ -1978,36 +1976,16 @@ async fn list_users<S: DataStore>(
                     r#type: wildcard_type,
                 },
             },
-        })
-        .collect();
+        }
+    }
+
+    // Convert domain results to response format
+    let users: Vec<UserResultBody> = result.users.into_iter().map(to_user_result_body).collect();
 
     let excluded_users: Vec<UserResultBody> = result
         .excluded_users
         .into_iter()
-        .map(|u| match u {
-            UserResult::Object { user_type, user_id } => UserResultBody::Object {
-                object: UserObjectBody {
-                    r#type: user_type,
-                    id: user_id,
-                },
-            },
-            UserResult::Userset {
-                userset_type,
-                userset_id,
-                relation,
-            } => UserResultBody::Userset {
-                userset: UserUsersetBody {
-                    r#type: userset_type,
-                    id: userset_id,
-                    relation,
-                },
-            },
-            UserResult::Wildcard { wildcard_type } => UserResultBody::Wildcard {
-                wildcard: UserWildcardBody {
-                    r#type: wildcard_type,
-                },
-            },
-        })
+        .map(to_user_result_body)
         .collect();
 
     Ok(Json(ListUsersResponseBody {

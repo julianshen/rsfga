@@ -955,8 +955,23 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 ct.tuple_keys
                     .into_iter()
                     .filter_map(|tk| {
-                        let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
-                        let (object_type, object_id) = parse_object(&tk.object)?;
+                        let user = parse_user(&tk.user);
+                        if user.is_none() {
+                            tracing::warn!("Invalid user format in contextual tuple: {}", tk.user);
+                            return None;
+                        }
+                        let (user_type, user_id, user_relation) = user.unwrap();
+
+                        let object = parse_object(&tk.object);
+                        if object.is_none() {
+                            tracing::warn!(
+                                "Invalid object format in contextual tuple: {}",
+                                tk.object
+                            );
+                            return None;
+                        }
+                        let (object_type, object_id) = object.unwrap();
+
                         Some(rsfga_domain::resolver::ContextualTuple::new(
                             format_user(user_type, user_id, user_relation),
                             tk.relation,

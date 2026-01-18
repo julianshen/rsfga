@@ -1544,7 +1544,7 @@ where
                     && tuple.relation == request.relation
                 {
                     // Parse the user from the contextual tuple
-                    if let Some((user_type, user_id, user_relation)) =
+                    if let Ok((user_type, user_id, user_relation)) =
                         self.parse_user_string(&tuple.user)
                     {
                         if self.user_matches_filters(
@@ -1603,20 +1603,45 @@ where
     }
 
     /// Helper to parse a user string like "user:alice" or "group:eng#member" into components.
-    fn parse_user_string(&self, user: &str) -> Option<(String, String, Option<String>)> {
-        if let Some((obj_part, relation)) = user.split_once('#') {
-            // Userset format: "type:id#relation"
-            let (user_type, user_id) = obj_part.split_once(':')?;
-            Some((
-                user_type.to_string(),
-                user_id.to_string(),
-                Some(relation.to_string()),
-            ))
-        } else {
-            // Direct format: "type:id"
-            let (user_type, user_id) = user.split_once(':')?;
-            Some((user_type.to_string(), user_id.to_string(), None))
+    /// Returns DomainResult for consistent error handling.
+    fn parse_user_string(&self, user: &str) -> DomainResult<(String, String, Option<String>)> {
+        let (user_type, user_id, user_relation) =
+            if let Some((obj_part, relation)) = user.split_once('#') {
+                // Userset format: "type:id#relation"
+                if relation.is_empty() {
+                    return Err(DomainError::InvalidUserFormat {
+                        value: user.to_string(),
+                    });
+                }
+                let (user_type, user_id) =
+                    obj_part
+                        .split_once(':')
+                        .ok_or_else(|| DomainError::InvalidUserFormat {
+                            value: user.to_string(),
+                        })?;
+                (user_type, user_id, Some(relation))
+            } else {
+                // Direct format: "type:id"
+                let (user_type, user_id) =
+                    user.split_once(':')
+                        .ok_or_else(|| DomainError::InvalidUserFormat {
+                            value: user.to_string(),
+                        })?;
+                (user_type, user_id, None)
+            };
+
+        // Validate non-empty parts
+        if user_type.is_empty() || user_id.is_empty() {
+            return Err(DomainError::InvalidUserFormat {
+                value: user.to_string(),
+            });
         }
+
+        Ok((
+            user_type.to_string(),
+            user_id.to_string(),
+            user_relation.map(String::from),
+        ))
     }
 
     /// Checks if a user type (and optional relation) matches any of the user filters.
@@ -1696,6 +1721,41 @@ where
                             }
                         }
                     }
+
+                    // Also check contextual tuples for this relation
+                    for ctx_tuple in contextual_tuples.iter() {
+                        if let Ok((ctx_obj_type, ctx_obj_id)) = self.parse_object(&ctx_tuple.object)
+                        {
+                            if ctx_obj_type == object_type
+                                && ctx_obj_id == object_id
+                                && ctx_tuple.relation == *relation
+                            {
+                                if let Ok((user_type, user_id, user_relation)) =
+                                    self.parse_user_string(&ctx_tuple.user)
+                                {
+                                    if self.user_matches_filters(
+                                        &user_type,
+                                        user_relation.as_deref(),
+                                        user_filters,
+                                    ) {
+                                        if user_id == "*" {
+                                            users.insert(super::types::UserResult::wildcard(
+                                                user_type,
+                                            ));
+                                        } else if let Some(rel) = user_relation {
+                                            users.insert(super::types::UserResult::userset(
+                                                user_type, user_id, rel,
+                                            ));
+                                        } else {
+                                            users.insert(super::types::UserResult::object(
+                                                user_type, user_id,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 Userset::TupleToUserset {
                     tupleset,
@@ -1709,36 +1769,37 @@ where
 
                     // For each parent, recursively get users with the computed_userset relation
                     for tuple in tupleset_tuples {
-                        let parent_object = format!("{}:{}", tuple.user_type, tuple.user_id);
-                        if let Ok((parent_type, parent_id)) = self.parse_object(&parent_object) {
-                            // Read users from the parent's computed_userset relation
-                            let parent_tuples = self
-                                .tuple_reader
-                                .read_tuples(store_id, parent_type, parent_id, computed_userset)
-                                .await?;
+                        // Use tuple fields directly instead of parsing
+                        let parent_type = &tuple.user_type;
+                        let parent_id = &tuple.user_id;
 
-                            for parent_tuple in parent_tuples {
-                                if self.user_matches_filters(
-                                    &parent_tuple.user_type,
-                                    parent_tuple.user_relation.as_deref(),
-                                    user_filters,
-                                ) {
-                                    if parent_tuple.user_id == "*" {
-                                        users.insert(super::types::UserResult::wildcard(
-                                            &parent_tuple.user_type,
-                                        ));
-                                    } else if let Some(ref rel) = parent_tuple.user_relation {
-                                        users.insert(super::types::UserResult::userset(
-                                            &parent_tuple.user_type,
-                                            &parent_tuple.user_id,
-                                            rel,
-                                        ));
-                                    } else {
-                                        users.insert(super::types::UserResult::object(
-                                            &parent_tuple.user_type,
-                                            &parent_tuple.user_id,
-                                        ));
-                                    }
+                        // Read users from the parent's computed_userset relation
+                        let parent_tuples = self
+                            .tuple_reader
+                            .read_tuples(store_id, parent_type, parent_id, computed_userset)
+                            .await?;
+
+                        for parent_tuple in parent_tuples {
+                            if self.user_matches_filters(
+                                &parent_tuple.user_type,
+                                parent_tuple.user_relation.as_deref(),
+                                user_filters,
+                            ) {
+                                if parent_tuple.user_id == "*" {
+                                    users.insert(super::types::UserResult::wildcard(
+                                        &parent_tuple.user_type,
+                                    ));
+                                } else if let Some(ref rel) = parent_tuple.user_relation {
+                                    users.insert(super::types::UserResult::userset(
+                                        &parent_tuple.user_type,
+                                        &parent_tuple.user_id,
+                                        rel,
+                                    ));
+                                } else {
+                                    users.insert(super::types::UserResult::object(
+                                        &parent_tuple.user_type,
+                                        &parent_tuple.user_id,
+                                    ));
                                 }
                             }
                         }
