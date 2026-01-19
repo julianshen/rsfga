@@ -1892,6 +1892,68 @@ impl DataStore for MySQLDataStore {
     }
 
     #[instrument(skip(self))]
+    async fn delete_authorization_model(
+        &self,
+        store_id: &str,
+        model_id: &str,
+    ) -> StorageResult<()> {
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("delete_authorization_model_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Delete the model (with timeout protection)
+        let model_id_owned = model_id.to_string();
+        let result = self
+            .execute_with_timeout("delete_authorization_model", async {
+                sqlx::query(
+                    r#"
+                    DELETE FROM authorization_models
+                    WHERE store_id = ? AND id = ?
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .bind(&model_id_owned)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to delete authorization model: {e}"),
+                })
+            })
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(StorageError::ModelNotFound {
+                model_id: model_id.to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
     async fn health_check(&self) -> StorageResult<HealthStatus> {
         let start = std::time::Instant::now();
 

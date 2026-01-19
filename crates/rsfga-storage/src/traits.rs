@@ -788,6 +788,23 @@ pub trait DataStore: Send + Sync + 'static {
         store_id: &str,
     ) -> StorageResult<StoredAuthorizationModel>;
 
+    /// Deletes an authorization model by ID.
+    ///
+    /// # Behavior
+    ///
+    /// - Deletes only the model metadata; existing tuples remain accessible.
+    /// - Deleted models will not appear in `list_authorization_models` results.
+    /// - Attempts to `get_authorization_model` for a deleted model return `ModelNotFound`.
+    /// - If the deleted model was the latest, `get_latest_authorization_model` returns
+    ///   the next most recent model (or `ModelNotFound` if no models remain).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
+    /// Returns `StorageError::ModelNotFound` if the model doesn't exist.
+    async fn delete_authorization_model(&self, store_id: &str, model_id: &str)
+        -> StorageResult<()>;
+
     // Health check operations
 
     /// Checks the health of the storage backend.
