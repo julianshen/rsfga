@@ -2087,14 +2087,25 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                         user: tuple_key.user,
                         relation: tuple_key.relation,
                         object: tuple_key.object,
-                        condition: tuple_key.condition.map(|c| AssertionCondition {
-                            name: c.name,
-                            context: c
+                        condition: tuple_key.condition.map(|c| {
+                            let condition_name = c.name;
+                            let context = c
                                 .context
                                 .map(prost_struct_to_hashmap)
                                 .transpose()
+                                .map_err(|e| {
+                                    tracing::warn!(
+                                        condition_name = %condition_name,
+                                        error = %e,
+                                        "Failed to convert assertion condition context"
+                                    );
+                                })
                                 .ok()
-                                .flatten(),
+                                .flatten();
+                            AssertionCondition {
+                                name: condition_name,
+                                context,
+                            }
                         }),
                     },
                     expectation: a.expectation,
@@ -2109,14 +2120,25 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                                     user: tk.user,
                                     relation: tk.relation,
                                     object: tk.object,
-                                    condition: tk.condition.map(|c| AssertionCondition {
-                                        name: c.name,
-                                        context: c
+                                    condition: tk.condition.map(|c| {
+                                        let condition_name = c.name;
+                                        let context = c
                                             .context
                                             .map(prost_struct_to_hashmap)
                                             .transpose()
+                                            .map_err(|e| {
+                                                tracing::warn!(
+                                                    condition_name = %condition_name,
+                                                    error = %e,
+                                                    "Failed to convert contextual tuple condition context"
+                                                );
+                                            })
                                             .ok()
-                                            .flatten(),
+                                            .flatten();
+                                        AssertionCondition {
+                                            name: condition_name,
+                                            context,
+                                        }
                                     }),
                                 })
                                 .collect(),
