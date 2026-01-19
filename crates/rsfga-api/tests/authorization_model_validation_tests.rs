@@ -600,11 +600,11 @@ async fn test_check_accepts_authorization_model_id_parameter() {
     );
 }
 
-/// Test: Check with non-existent authorization_model_id returns error.
-/// Note: The system currently returns 200 with allowed=false when the model is not found,
-/// as it falls back to "no permission" rather than erroring. This documents that behavior.
+/// Test: Check with non-existent authorization_model_id returns allowed=false.
+/// The system gracefully handles missing model IDs by returning allowed=false
+/// rather than erroring, following a "fail-safe" security pattern.
 #[tokio::test]
-async fn test_check_with_nonexistent_authorization_model_id_returns_error() {
+async fn test_check_with_nonexistent_authorization_model_id_returns_allowed_false() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
@@ -622,30 +622,18 @@ async fn test_check_with_nonexistent_authorization_model_id_returns_error() {
     )
     .await;
 
-    // When a non-existent model ID is provided:
-    // - The system may return 400 BAD_REQUEST with an error OR
-    // - Return 200 OK with allowed=false (graceful degradation)
-    // Both behaviors are acceptable - document whichever the system implements
-    if status == StatusCode::BAD_REQUEST {
-        assert_eq!(
-            response["code"].as_str(),
-            Some("authorization_model_not_found"),
-            "Error code should be 'authorization_model_not_found'. Got: {:?}",
-            response
-        );
-    } else {
-        // Graceful degradation: returns allowed=false for non-existent model
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "Check with non-existent model ID should return 200 OK or 400 BAD_REQUEST"
-        );
-        assert_eq!(
-            response["allowed"].as_bool(),
-            Some(false),
-            "Check with non-existent model ID should return allowed=false"
-        );
-    }
+    // System returns 200 OK with allowed=false for non-existent model IDs
+    // This is a fail-safe pattern: when in doubt, deny access
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Check with non-existent model ID should return 200 OK"
+    );
+    assert_eq!(
+        response["allowed"].as_bool(),
+        Some(false),
+        "Check with non-existent model ID should return allowed=false"
+    );
 }
 
 /// Test: List models returns all versions in order.
@@ -1183,10 +1171,10 @@ async fn test_expand_with_nonexistent_relation_returns_400() {
     );
 }
 
-/// Test: ListObjects with non-existent type returns error or empty result.
-/// Note: The system may return 400 (strict validation) or 200 with empty objects (graceful).
+/// Test: ListObjects with non-existent type returns empty result.
+/// The system gracefully handles non-existent types by returning an empty objects array.
 #[tokio::test]
-async fn test_list_objects_with_nonexistent_type_returns_error_or_empty() {
+async fn test_list_objects_with_nonexistent_type_returns_empty() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
@@ -1201,33 +1189,22 @@ async fn test_list_objects_with_nonexistent_type_returns_error_or_empty() {
     )
     .await;
 
-    // Either behavior is acceptable:
-    // - 400 BAD_REQUEST with validation_error (strict validation)
-    // - 200 OK with empty objects array (graceful handling)
-    if status == StatusCode::BAD_REQUEST {
-        assert_eq!(
-            response["code"].as_str(),
-            Some("validation_error"),
-            "Error code should be 'validation_error'"
-        );
-    } else {
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "ListObjects with non-existent type should return 200 OK or 400 BAD_REQUEST"
-        );
-        // Response should have objects field (may be empty array)
-        assert!(
-            response.get("objects").is_some(),
-            "Response should have 'objects' field"
-        );
-    }
+    // System returns 200 OK with empty objects array for non-existent types
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "ListObjects with non-existent type should return 200 OK"
+    );
+    assert!(
+        response.get("objects").is_some(),
+        "Response should have 'objects' field"
+    );
 }
 
-/// Test: ListObjects with non-existent relation returns error or empty result.
-/// Note: The system may return 400 (strict validation) or 200 with empty objects (graceful).
+/// Test: ListObjects with non-existent relation returns empty result.
+/// The system gracefully handles non-existent relations by returning an empty objects array.
 #[tokio::test]
-async fn test_list_objects_with_nonexistent_relation_returns_error_or_empty() {
+async fn test_list_objects_with_nonexistent_relation_returns_empty() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
@@ -1242,27 +1219,16 @@ async fn test_list_objects_with_nonexistent_relation_returns_error_or_empty() {
     )
     .await;
 
-    // Either behavior is acceptable:
-    // - 400 BAD_REQUEST with validation_error (strict validation)
-    // - 200 OK with empty objects array (graceful handling)
-    if status == StatusCode::BAD_REQUEST {
-        assert_eq!(
-            response["code"].as_str(),
-            Some("validation_error"),
-            "Error code should be 'validation_error'"
-        );
-    } else {
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "ListObjects with non-existent relation should return 200 OK or 400 BAD_REQUEST"
-        );
-        // Response should have objects field (may be empty array)
-        assert!(
-            response.get("objects").is_some(),
-            "Response should have 'objects' field"
-        );
-    }
+    // System returns 200 OK with empty objects array for non-existent relations
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "ListObjects with non-existent relation should return 200 OK"
+    );
+    assert!(
+        response.get("objects").is_some(),
+        "Response should have 'objects' field"
+    );
 }
 
 // ============================================================
