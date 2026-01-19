@@ -1,7 +1,7 @@
 mod common;
 
 use anyhow::Result;
-use common::{get_openfga_url, grpc_call};
+use common::{get_openfga_url, grpc_call, grpc_call_with_error};
 use serde_json::json;
 
 // ============================================================================
@@ -13,42 +13,61 @@ use serde_json::json;
 //
 // ============================================================================
 
-/// Execute REST call with reqwest (blocking for simplicity in comparison tests)
+/// Execute REST call and return raw response (status code and body text).
+/// This is the base function used by both `rest_call` and `rest_call_with_status`.
+async fn rest_call_raw(
+    client: &reqwest::Client,
+    method: &str,
+    path: &str,
+    data: Option<&serde_json::Value>,
+) -> Result<(reqwest::StatusCode, String)> {
+    let url = format!("{}{}", get_openfga_url(), path);
+
+    let mut builder = match method {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "DELETE" => client.delete(&url),
+        _ => anyhow::bail!("Unsupported method: {method}"),
+    };
+    if let Some(json_data) = data {
+        builder = builder.json(json_data);
+    }
+
+    let response = builder.send().await?;
+    let status = response.status();
+    let text = response.text().await?;
+    Ok((status, text))
+}
+
+/// Execute REST call and return parsed JSON. Fails on non-2xx responses.
 async fn rest_call(
     client: &reqwest::Client,
     method: &str,
     path: &str,
     data: Option<&serde_json::Value>,
 ) -> Result<serde_json::Value> {
-    let url = format!("{}{}", get_openfga_url(), path);
+    let (status, text) = rest_call_raw(client, method, path, data).await?;
 
-    let response = {
-        let mut builder = match method {
-            "GET" => client.get(&url),
-            "POST" => client.post(&url),
-            "DELETE" => client.delete(&url),
-            _ => anyhow::bail!("Unsupported method: {method}"),
-        };
-        if let Some(json_data) = data {
-            builder = builder.json(json_data);
-        }
-        builder.send().await?
-    };
-
-    // Fail early on non-2xx responses
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
         anyhow::bail!("REST call failed with status {status}: {text}");
     }
 
-    let text = response.text().await?;
     if text.trim().is_empty() {
         return Ok(json!({}));
     }
 
     let json: serde_json::Value = serde_json::from_str(&text)?;
     Ok(json)
+}
+
+/// Execute REST call and return status code and body (doesn't fail on non-2xx).
+async fn rest_call_with_status(
+    client: &reqwest::Client,
+    method: &str,
+    path: &str,
+    data: Option<&serde_json::Value>,
+) -> Result<(reqwest::StatusCode, String)> {
+    rest_call_raw(client, method, path, data).await
 }
 
 // ============================================================================
@@ -901,6 +920,1103 @@ async fn test_grpc_listobjects_matches_rest() -> Result<()> {
     assert_eq!(grpc_set, rest_set, "Both should return same objects");
     assert!(grpc_set.contains("document:doc1"));
     assert!(grpc_set.contains("document:doc2"));
+
+    Ok(())
+}
+
+/// Test: gRPC ListUsers matches REST ListUsers
+#[tokio::test]
+async fn test_grpc_listusers_matches_rest() -> Result<()> {
+    let client = reqwest::Client::new();
+
+    // Setup
+    let store = rest_call(
+        &client,
+        "POST",
+        "/stores",
+        Some(&json!({"name": "listusers-parity-test"})),
+    )
+    .await?;
+    let store_id = store["id"].as_str().unwrap();
+
+    let model = json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "document",
+                "relations": {"viewer": {"this": {}}},
+                "metadata": {
+                    "relations": {
+                        "viewer": {"directly_related_user_types": [{"type": "user"}]}
+                    }
+                }
+            }
+        ]
+    });
+
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/authorization-models"),
+        Some(&model),
+    )
+    .await?;
+
+    // Write tuples - multiple users have access to a document
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/write"),
+        Some(&json!({
+            "writes": {
+                "tuple_keys": [
+                    {"user": "user:alice", "relation": "viewer", "object": "document:shared-doc"},
+                    {"user": "user:bob", "relation": "viewer", "object": "document:shared-doc"},
+                    {"user": "user:charlie", "relation": "viewer", "object": "document:other-doc"}
+                ]
+            }
+        })),
+    )
+    .await?;
+
+    // ListUsers via gRPC
+    let grpc_list = grpc_call(
+        "openfga.v1.OpenFGAService/ListUsers",
+        &json!({
+            "store_id": store_id,
+            "object": {
+                "type": "document",
+                "id": "shared-doc"
+            },
+            "relation": "viewer",
+            "user_filters": [{"type": "user"}]
+        }),
+    )?;
+
+    // ListUsers via REST
+    let rest_list = rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/list-users"),
+        Some(&json!({
+            "object": {
+                "type": "document",
+                "id": "shared-doc"
+            },
+            "relation": "viewer",
+            "user_filters": [{"type": "user"}]
+        })),
+    )
+    .await?;
+
+    // Assert: Both should return same users
+    let grpc_users = grpc_list["users"].as_array().unwrap();
+    let rest_users = rest_list["users"].as_array().unwrap();
+
+    assert_eq!(
+        grpc_users.len(),
+        rest_users.len(),
+        "Should return same number of users"
+    );
+    assert_eq!(grpc_users.len(), 2, "Should have 2 users with access");
+
+    // Extract user IDs using helper function
+    let grpc_set = extract_user_ids(grpc_users);
+    let rest_set = extract_user_ids(rest_users);
+
+    assert_eq!(grpc_set, rest_set, "Both should return same users");
+    assert!(grpc_set.contains("alice"), "Should contain alice");
+    assert!(grpc_set.contains("bob"), "Should contain bob");
+
+    Ok(())
+}
+
+// ============================================================================
+// Error Response Mapping Tests
+// ============================================================================
+//
+// These tests verify that HTTP status codes and gRPC status codes are
+// equivalent for the same error scenarios. Users should see consistent
+// error semantics regardless of protocol.
+//
+// HTTP -> gRPC code mapping:
+// - 400 Bad Request -> INVALID_ARGUMENT (3)
+// - 404 Not Found -> NOT_FOUND (5)
+// - 409 Conflict -> ALREADY_EXISTS (6) or FAILED_PRECONDITION (9)
+// - 422 Unprocessable Entity -> INVALID_ARGUMENT (3)
+// - 500 Internal Server Error -> INTERNAL (13)
+//
+// ============================================================================
+
+/// Helper function to extract user IDs from a ListUsers response array
+fn extract_user_ids(users: &[serde_json::Value]) -> std::collections::HashSet<String> {
+    users
+        .iter()
+        .filter_map(|u| {
+            u.get("object")
+                .and_then(|o| o.get("id"))
+                .and_then(|id| id.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect()
+}
+
+/// Helper function to check if a JSON response has a non-empty continuation token
+/// Handles both snake_case (REST) and camelCase (gRPC/grpcurl) field naming
+fn has_continuation_token(response: &serde_json::Value) -> bool {
+    // Try snake_case first (standard REST), then camelCase (grpcurl output)
+    let token = response
+        .get("continuation_token")
+        .or_else(|| response.get("continuationToken"));
+
+    token
+        .and_then(|t| t.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+}
+
+/// Test: Error for non-existent store matches across protocols
+/// HTTP 404 should correspond to gRPC NOT_FOUND
+#[tokio::test]
+async fn test_error_nonexistent_store_parity() -> Result<()> {
+    let client = reqwest::Client::new();
+    let fake_store_id = "nonexistent-store-12345";
+
+    // Try to get store via REST
+    let (rest_status, _rest_body) =
+        rest_call_with_status(&client, "GET", &format!("/stores/{fake_store_id}"), None).await?;
+
+    // Try to get store via gRPC
+    let (grpc_success, _stdout, grpc_stderr) = grpc_call_with_error(
+        "openfga.v1.OpenFGAService/GetStore",
+        &json!({"store_id": fake_store_id}),
+    )?;
+
+    // Assert: REST returns 404
+    assert_eq!(
+        rest_status.as_u16(),
+        404,
+        "REST should return 404 for non-existent store"
+    );
+
+    // Assert: gRPC fails with NOT_FOUND
+    assert!(!grpc_success, "gRPC should fail for non-existent store");
+    assert!(
+        grpc_stderr.contains("NotFound")
+            || grpc_stderr.contains("not found")
+            || grpc_stderr.contains("Code: NotFound"),
+        "gRPC error should indicate not found: {grpc_stderr}"
+    );
+
+    Ok(())
+}
+
+/// Test: Error for invalid tuple format matches across protocols
+/// HTTP 400 should correspond to gRPC INVALID_ARGUMENT
+#[tokio::test]
+async fn test_error_invalid_tuple_parity() -> Result<()> {
+    let client = reqwest::Client::new();
+
+    // Create a valid store first
+    let store = rest_call(
+        &client,
+        "POST",
+        "/stores",
+        Some(&json!({"name": "error-parity-test"})),
+    )
+    .await?;
+    let store_id = store["id"].as_str().unwrap();
+
+    // Create model
+    let model = json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "document",
+                "relations": {"viewer": {"this": {}}},
+                "metadata": {
+                    "relations": {
+                        "viewer": {"directly_related_user_types": [{"type": "user"}]}
+                    }
+                }
+            }
+        ]
+    });
+
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/authorization-models"),
+        Some(&model),
+    )
+    .await?;
+
+    // Try to write tuple with invalid format (missing colon in user)
+    let invalid_write = json!({
+        "writes": {
+            "tuple_keys": [{
+                "user": "invalid_user_format",  // Missing type:id format
+                "relation": "viewer",
+                "object": "document:doc1"
+            }]
+        }
+    });
+
+    // Try via REST
+    let (rest_status, _rest_body) = rest_call_with_status(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/write"),
+        Some(&invalid_write),
+    )
+    .await?;
+
+    // Try via gRPC
+    let (grpc_success, _stdout, grpc_stderr) = grpc_call_with_error(
+        "openfga.v1.OpenFGAService/Write",
+        &json!({
+            "store_id": store_id,
+            "writes": {
+                "tuple_keys": [{
+                    "user": "invalid_user_format",
+                    "relation": "viewer",
+                    "object": "document:doc1"
+                }]
+            }
+        }),
+    )?;
+
+    // Assert: REST returns 400
+    assert_eq!(
+        rest_status.as_u16(),
+        400,
+        "REST should return 400 for invalid tuple format"
+    );
+
+    // Assert: gRPC fails with INVALID_ARGUMENT
+    assert!(!grpc_success, "gRPC should fail for invalid tuple format");
+    assert!(
+        grpc_stderr.contains("InvalidArgument")
+            || grpc_stderr.contains("invalid")
+            || grpc_stderr.contains("Code: InvalidArgument"),
+        "gRPC error should indicate invalid argument: {grpc_stderr}"
+    );
+
+    Ok(())
+}
+
+/// Test: Error for check with non-existent relation matches across protocols
+#[tokio::test]
+async fn test_error_invalid_relation_parity() -> Result<()> {
+    let client = reqwest::Client::new();
+
+    // Create store with simple model
+    let store = rest_call(
+        &client,
+        "POST",
+        "/stores",
+        Some(&json!({"name": "relation-error-parity-test"})),
+    )
+    .await?;
+    let store_id = store["id"].as_str().unwrap();
+
+    let model = json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "document",
+                "relations": {"viewer": {"this": {}}},
+                "metadata": {
+                    "relations": {
+                        "viewer": {"directly_related_user_types": [{"type": "user"}]}
+                    }
+                }
+            }
+        ]
+    });
+
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/authorization-models"),
+        Some(&model),
+    )
+    .await?;
+
+    // Try to check with non-existent relation
+    let check_request = json!({
+        "tuple_key": {
+            "user": "user:alice",
+            "relation": "nonexistent_relation",
+            "object": "document:doc1"
+        }
+    });
+
+    // Try via REST
+    let (rest_status, _rest_body) = rest_call_with_status(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/check"),
+        Some(&check_request),
+    )
+    .await?;
+
+    // Try via gRPC
+    let (grpc_success, _stdout, grpc_stderr) = grpc_call_with_error(
+        "openfga.v1.OpenFGAService/Check",
+        &json!({
+            "store_id": store_id,
+            "tuple_key": {
+                "user": "user:alice",
+                "relation": "nonexistent_relation",
+                "object": "document:doc1"
+            }
+        }),
+    )?;
+
+    // Both should return error for undefined relation
+    // OpenFGA returns 400 Bad Request for undefined relations
+    assert_eq!(
+        rest_status.as_u16(),
+        400,
+        "REST should return 400 Bad Request for undefined relation, got {rest_status}"
+    );
+    assert!(!grpc_success, "gRPC should fail for undefined relation");
+    assert!(
+        grpc_stderr.contains("InvalidArgument")
+            || grpc_stderr.contains("invalid")
+            || grpc_stderr.contains("relation"),
+        "gRPC error should indicate invalid argument for undefined relation: {grpc_stderr}"
+    );
+
+    Ok(())
+}
+
+/// Test: Error for invalid type in check matches across protocols
+#[tokio::test]
+async fn test_error_invalid_type_parity() -> Result<()> {
+    let client = reqwest::Client::new();
+
+    // Create store with simple model
+    let store = rest_call(
+        &client,
+        "POST",
+        "/stores",
+        Some(&json!({"name": "type-error-parity-test"})),
+    )
+    .await?;
+    let store_id = store["id"].as_str().unwrap();
+
+    let model = json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "document",
+                "relations": {"viewer": {"this": {}}},
+                "metadata": {
+                    "relations": {
+                        "viewer": {"directly_related_user_types": [{"type": "user"}]}
+                    }
+                }
+            }
+        ]
+    });
+
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/authorization-models"),
+        Some(&model),
+    )
+    .await?;
+
+    // Try to check with non-existent type
+    let check_request = json!({
+        "tuple_key": {
+            "user": "user:alice",
+            "relation": "viewer",
+            "object": "nonexistent_type:doc1"
+        }
+    });
+
+    // Try via REST
+    let (rest_status, _rest_body) = rest_call_with_status(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/check"),
+        Some(&check_request),
+    )
+    .await?;
+
+    // Try via gRPC
+    let (grpc_success, _stdout, grpc_stderr) = grpc_call_with_error(
+        "openfga.v1.OpenFGAService/Check",
+        &json!({
+            "store_id": store_id,
+            "tuple_key": {
+                "user": "user:alice",
+                "relation": "viewer",
+                "object": "nonexistent_type:doc1"
+            }
+        }),
+    )?;
+
+    // Both should return error for undefined type
+    // OpenFGA returns 400 Bad Request for undefined types
+    assert_eq!(
+        rest_status.as_u16(),
+        400,
+        "REST should return 400 Bad Request for undefined type, got {rest_status}"
+    );
+    assert!(!grpc_success, "gRPC should fail for undefined type");
+    assert!(
+        grpc_stderr.contains("InvalidArgument")
+            || grpc_stderr.contains("invalid")
+            || grpc_stderr.contains("type"),
+        "gRPC error should indicate invalid argument for undefined type: {grpc_stderr}"
+    );
+
+    Ok(())
+}
+
+// ============================================================================
+// Read Pagination Token Parity Tests
+// ============================================================================
+
+/// Test: Read with pagination tokens returns identical results across protocols
+#[tokio::test]
+async fn test_read_pagination_token_parity() -> Result<()> {
+    let client = reqwest::Client::new();
+
+    // Setup
+    let store = rest_call(
+        &client,
+        "POST",
+        "/stores",
+        Some(&json!({"name": "pagination-parity-test"})),
+    )
+    .await?;
+    let store_id = store["id"].as_str().unwrap();
+
+    let model = json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "document",
+                "relations": {"viewer": {"this": {}}},
+                "metadata": {
+                    "relations": {
+                        "viewer": {"directly_related_user_types": [{"type": "user"}]}
+                    }
+                }
+            }
+        ]
+    });
+
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/authorization-models"),
+        Some(&model),
+    )
+    .await?;
+
+    // Write multiple tuples to trigger pagination
+    let tuples: Vec<serde_json::Value> = (0..10)
+        .map(|i| {
+            json!({
+                "user": format!("user:paguser{i}"),
+                "relation": "viewer",
+                "object": format!("document:pagdoc{i}")
+            })
+        })
+        .collect();
+
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/write"),
+        Some(&json!({
+            "writes": {
+                "tuple_keys": tuples
+            }
+        })),
+    )
+    .await?;
+
+    // Read with page size via gRPC
+    let grpc_read = grpc_call(
+        "openfga.v1.OpenFGAService/Read",
+        &json!({
+            "store_id": store_id,
+            "tuple_key": {},
+            "page_size": 3
+        }),
+    )?;
+
+    // Read with page size via REST
+    let rest_read = rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/read"),
+        Some(&json!({
+            "tuple_key": {},
+            "page_size": 3
+        })),
+    )
+    .await?;
+
+    // Both should return same number of tuples in first page
+    let grpc_tuples = grpc_read["tuples"].as_array().unwrap();
+    let rest_tuples = rest_read["tuples"].as_array().unwrap();
+
+    assert_eq!(
+        grpc_tuples.len(),
+        rest_tuples.len(),
+        "First page should return same number of tuples"
+    );
+    assert!(
+        grpc_tuples.len() <= 3,
+        "First page should respect page_size limit"
+    );
+
+    // Both should have continuation tokens since we have 10 tuples and page_size=3
+    let grpc_has_token = has_continuation_token(&grpc_read);
+    let rest_has_token = has_continuation_token(&rest_read);
+
+    // With 10 tuples and page_size=3, there should be more data, so tokens should exist
+    assert!(
+        grpc_has_token,
+        "gRPC should have continuation token when more data exists (10 tuples, page_size=3)"
+    );
+    assert!(
+        rest_has_token,
+        "REST should have continuation token when more data exists (10 tuples, page_size=3)"
+    );
+    assert_eq!(
+        grpc_has_token, rest_has_token,
+        "Both protocols should have matching continuation token presence"
+    );
+
+    Ok(())
+}
+
+// ============================================================================
+// Batch Check Deduplication Parity Tests
+// ============================================================================
+
+/// Test: Batch check with duplicate requests handles deduplication consistently
+#[tokio::test]
+async fn test_batch_check_deduplication_parity() -> Result<()> {
+    let client = reqwest::Client::new();
+
+    // Setup
+    let store = rest_call(
+        &client,
+        "POST",
+        "/stores",
+        Some(&json!({"name": "dedup-parity-test"})),
+    )
+    .await?;
+    let store_id = store["id"].as_str().unwrap();
+
+    let model = json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "document",
+                "relations": {"viewer": {"this": {}}},
+                "metadata": {
+                    "relations": {
+                        "viewer": {"directly_related_user_types": [{"type": "user"}]}
+                    }
+                }
+            }
+        ]
+    });
+
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/authorization-models"),
+        Some(&model),
+    )
+    .await?;
+
+    // Write a tuple
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/write"),
+        Some(&json!({
+            "writes": {
+                "tuple_keys": [{
+                    "user": "user:dedup-user",
+                    "relation": "viewer",
+                    "object": "document:dedup-doc"
+                }]
+            }
+        })),
+    )
+    .await?;
+
+    // Batch check with duplicate tuples but different correlation IDs
+    let batch_request = json!({
+        "checks": [
+            {
+                "tuple_key": {
+                    "user": "user:dedup-user",
+                    "relation": "viewer",
+                    "object": "document:dedup-doc"
+                },
+                "correlation_id": "check-a"
+            },
+            {
+                "tuple_key": {
+                    "user": "user:dedup-user",
+                    "relation": "viewer",
+                    "object": "document:dedup-doc"
+                },
+                "correlation_id": "check-b"
+            },
+            {
+                "tuple_key": {
+                    "user": "user:dedup-user",
+                    "relation": "viewer",
+                    "object": "document:dedup-doc"
+                },
+                "correlation_id": "check-c"
+            }
+        ]
+    });
+
+    // Batch check via gRPC
+    let grpc_batch = grpc_call(
+        "openfga.v1.OpenFGAService/BatchCheck",
+        &json!({
+            "store_id": store_id,
+            "checks": batch_request["checks"]
+        }),
+    )?;
+
+    // Batch check via REST
+    let rest_batch = rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/batch-check"),
+        Some(&batch_request),
+    )
+    .await?;
+
+    let grpc_result = grpc_batch["result"].as_object().unwrap();
+    let rest_result = rest_batch["result"].as_object().unwrap();
+
+    // All correlation IDs should be present in both responses
+    for id in ["check-a", "check-b", "check-c"] {
+        assert!(
+            grpc_result.contains_key(id),
+            "gRPC should have correlation ID {id}"
+        );
+        assert!(
+            rest_result.contains_key(id),
+            "REST should have correlation ID {id}"
+        );
+
+        // All should be allowed since they're the same tuple
+        let grpc_allowed = grpc_result[id]
+            .get("allowed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let rest_allowed = rest_result[id]
+            .get("allowed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        assert!(grpc_allowed, "gRPC {id} should be allowed");
+        assert!(rest_allowed, "REST {id} should be allowed");
+        assert_eq!(
+            grpc_allowed, rest_allowed,
+            "Both protocols should return same result for {id}"
+        );
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Expand Tree Structure Deep Comparison
+// ============================================================================
+
+/// Test: Expand returns identical tree structure across protocols (union case)
+#[tokio::test]
+async fn test_expand_tree_union_parity() -> Result<()> {
+    let client = reqwest::Client::new();
+
+    // Setup with union relation
+    let store = rest_call(
+        &client,
+        "POST",
+        "/stores",
+        Some(&json!({"name": "expand-union-parity-test"})),
+    )
+    .await?;
+    let store_id = store["id"].as_str().unwrap();
+
+    // Model with union relation (viewer can be direct OR via editor)
+    let model = json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "document",
+                "relations": {
+                    "editor": {"this": {}},
+                    "viewer": {
+                        "union": {
+                            "child": [
+                                {"this": {}},
+                                {"computedUserset": {"relation": "editor"}}
+                            ]
+                        }
+                    }
+                },
+                "metadata": {
+                    "relations": {
+                        "editor": {"directly_related_user_types": [{"type": "user"}]},
+                        "viewer": {"directly_related_user_types": [{"type": "user"}]}
+                    }
+                }
+            }
+        ]
+    });
+
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/authorization-models"),
+        Some(&model),
+    )
+    .await?;
+
+    // Write tuples for both branches of the union
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/write"),
+        Some(&json!({
+            "writes": {
+                "tuple_keys": [
+                    {"user": "user:direct-viewer", "relation": "viewer", "object": "document:union-doc"},
+                    {"user": "user:editor-viewer", "relation": "editor", "object": "document:union-doc"}
+                ]
+            }
+        })),
+    )
+    .await?;
+
+    // Expand via gRPC
+    let grpc_expand = grpc_call(
+        "openfga.v1.OpenFGAService/Expand",
+        &json!({
+            "store_id": store_id,
+            "tuple_key": {
+                "relation": "viewer",
+                "object": "document:union-doc"
+            }
+        }),
+    )?;
+
+    // Expand via REST
+    let rest_expand = rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/expand"),
+        Some(&json!({
+            "tuple_key": {
+                "relation": "viewer",
+                "object": "document:union-doc"
+            }
+        })),
+    )
+    .await?;
+
+    // Both should have tree with root
+    assert!(grpc_expand.get("tree").is_some(), "gRPC should have tree");
+    assert!(rest_expand.get("tree").is_some(), "REST should have tree");
+
+    let grpc_tree = &grpc_expand["tree"];
+    let rest_tree = &rest_expand["tree"];
+
+    assert!(
+        grpc_tree.get("root").is_some(),
+        "gRPC tree should have root"
+    );
+    assert!(
+        rest_tree.get("root").is_some(),
+        "REST tree should have root"
+    );
+
+    // Both roots should have the same type of node (union in this case)
+    let grpc_root = &grpc_tree["root"];
+    let rest_root = &rest_tree["root"];
+
+    // Check that both have union nodes
+    let grpc_has_union = grpc_root.get("union").is_some();
+    let rest_has_union = rest_root.get("union").is_some();
+
+    assert_eq!(
+        grpc_has_union, rest_has_union,
+        "Both should have same tree structure type"
+    );
+
+    // Verify root name matches (should be "document:union-doc#viewer")
+    let grpc_name = grpc_root.get("name").and_then(|v| v.as_str());
+    let rest_name = rest_root.get("name").and_then(|v| v.as_str());
+    assert_eq!(grpc_name, rest_name, "Root names should match exactly");
+
+    // If union exists, verify the child count matches
+    if grpc_has_union {
+        let grpc_union = &grpc_root["union"];
+        let rest_union = &rest_root["union"];
+
+        let grpc_nodes = grpc_union.get("nodes").and_then(|n| n.as_array());
+        let rest_nodes = rest_union.get("nodes").and_then(|n| n.as_array());
+
+        assert_eq!(
+            grpc_nodes.map(|n| n.len()),
+            rest_nodes.map(|n| n.len()),
+            "Union should have same number of child nodes"
+        );
+    }
+
+    Ok(())
+}
+
+/// Test: Expand returns identical tree for computed userset across protocols
+#[tokio::test]
+async fn test_expand_computed_userset_parity() -> Result<()> {
+    let client = reqwest::Client::new();
+
+    // Setup with computed userset relation
+    let store = rest_call(
+        &client,
+        "POST",
+        "/stores",
+        Some(&json!({"name": "expand-computed-parity-test"})),
+    )
+    .await?;
+    let store_id = store["id"].as_str().unwrap();
+
+    // Model with parent folder relation
+    let model = json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "folder",
+                "relations": {
+                    "viewer": {"this": {}}
+                },
+                "metadata": {
+                    "relations": {
+                        "viewer": {"directly_related_user_types": [{"type": "user"}]}
+                    }
+                }
+            },
+            {
+                "type": "document",
+                "relations": {
+                    "parent": {"this": {}},
+                    "viewer": {
+                        "tupleToUserset": {
+                            "tupleset": {"relation": "parent"},
+                            "computedUserset": {"relation": "viewer"}
+                        }
+                    }
+                },
+                "metadata": {
+                    "relations": {
+                        "parent": {"directly_related_user_types": [{"type": "folder"}]},
+                        "viewer": {"directly_related_user_types": [{"type": "user"}]}
+                    }
+                }
+            }
+        ]
+    });
+
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/authorization-models"),
+        Some(&model),
+    )
+    .await?;
+
+    // Write tuples for computed relation
+    rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/write"),
+        Some(&json!({
+            "writes": {
+                "tuple_keys": [
+                    {"user": "folder:parent-folder", "relation": "parent", "object": "document:child-doc"},
+                    {"user": "user:folder-viewer", "relation": "viewer", "object": "folder:parent-folder"}
+                ]
+            }
+        })),
+    )
+    .await?;
+
+    // Expand via gRPC
+    let grpc_expand = grpc_call(
+        "openfga.v1.OpenFGAService/Expand",
+        &json!({
+            "store_id": store_id,
+            "tuple_key": {
+                "relation": "viewer",
+                "object": "document:child-doc"
+            }
+        }),
+    )?;
+
+    // Expand via REST
+    let rest_expand = rest_call(
+        &client,
+        "POST",
+        &format!("/stores/{store_id}/expand"),
+        Some(&json!({
+            "tuple_key": {
+                "relation": "viewer",
+                "object": "document:child-doc"
+            }
+        })),
+    )
+    .await?;
+
+    // Both should have tree with root
+    assert!(grpc_expand.get("tree").is_some(), "gRPC should have tree");
+    assert!(rest_expand.get("tree").is_some(), "REST should have tree");
+
+    let grpc_tree = &grpc_expand["tree"];
+    let rest_tree = &rest_expand["tree"];
+
+    assert!(
+        grpc_tree.get("root").is_some(),
+        "gRPC tree should have root"
+    );
+    assert!(
+        rest_tree.get("root").is_some(),
+        "REST tree should have root"
+    );
+
+    // Verify both trees have similar structure
+    let grpc_root = &grpc_tree["root"];
+    let rest_root = &rest_tree["root"];
+
+    // Both should have the same relation name
+    let grpc_name = grpc_root.get("name").and_then(|v| v.as_str());
+    let rest_name = rest_root.get("name").and_then(|v| v.as_str());
+    assert_eq!(grpc_name, rest_name, "Root names should match exactly");
+
+    // Check that both trees have the same node type
+    // For tupleToUserset, we expect a leaf node with users
+    let grpc_has_leaf = grpc_root.get("leaf").is_some();
+    let rest_has_leaf = rest_root.get("leaf").is_some();
+    assert_eq!(
+        grpc_has_leaf, rest_has_leaf,
+        "Both should have same node type (leaf presence)"
+    );
+
+    // If leaf exists, verify the users match
+    if grpc_has_leaf {
+        let grpc_leaf = &grpc_root["leaf"];
+        let rest_leaf = &rest_root["leaf"];
+
+        // Check if both have users array
+        let grpc_has_users = grpc_leaf.get("users").is_some();
+        let rest_has_users = rest_leaf.get("users").is_some();
+        assert_eq!(
+            grpc_has_users, rest_has_users,
+            "Both should have or lack users consistently"
+        );
+
+        // If users exist, compare the count and actual user values
+        if grpc_has_users {
+            let grpc_users = grpc_leaf["users"].get("users").and_then(|u| u.as_array());
+            let rest_users = rest_leaf["users"].get("users").and_then(|u| u.as_array());
+            assert_eq!(
+                grpc_users.map(|u| u.len()),
+                rest_users.map(|u| u.len()),
+                "Both should have same number of users"
+            );
+
+            // Compare actual user values (extract user strings and compare as sets)
+            if let (Some(grpc_arr), Some(rest_arr)) = (grpc_users, rest_users) {
+                let grpc_user_set: std::collections::HashSet<String> = grpc_arr
+                    .iter()
+                    .filter_map(|u| u.as_str().map(|s| s.to_string()))
+                    .collect();
+                let rest_user_set: std::collections::HashSet<String> = rest_arr
+                    .iter()
+                    .filter_map(|u| u.as_str().map(|s| s.to_string()))
+                    .collect();
+                assert_eq!(
+                    grpc_user_set, rest_user_set,
+                    "User sets should be identical between protocols"
+                );
+            }
+        }
+    }
+
+    // Check for tupleToUserset node type at root level
+    let grpc_has_tuple_to_userset = grpc_root.get("tupleToUserset").is_some();
+    let rest_has_tuple_to_userset = rest_root.get("tupleToUserset").is_some();
+    assert_eq!(
+        grpc_has_tuple_to_userset, rest_has_tuple_to_userset,
+        "Both should have same tupleToUserset node presence at root"
+    );
+
+    // Check for computed node type at root level
+    let grpc_has_computed = grpc_root.get("computed").is_some();
+    let rest_has_computed = rest_root.get("computed").is_some();
+    assert_eq!(
+        grpc_has_computed, rest_has_computed,
+        "Both should have same computed node presence at root"
+    );
+
+    // Also check nested structures - tupleToUserset/computed may be inside leaf nodes
+    let grpc_nested_computed = grpc_root
+        .get("leaf")
+        .and_then(|l| l.get("computed"))
+        .is_some();
+    let rest_nested_computed = rest_root
+        .get("leaf")
+        .and_then(|l| l.get("computed"))
+        .is_some();
+    assert_eq!(
+        grpc_nested_computed, rest_nested_computed,
+        "Both should have same nested computed node presence"
+    );
+
+    let grpc_nested_ttu = grpc_root
+        .get("leaf")
+        .and_then(|l| l.get("tupleToUserset"))
+        .is_some();
+    let rest_nested_ttu = rest_root
+        .get("leaf")
+        .and_then(|l| l.get("tupleToUserset"))
+        .is_some();
+    assert_eq!(
+        grpc_nested_ttu, rest_nested_ttu,
+        "Both should have same nested tupleToUserset node presence"
+    );
 
     Ok(())
 }
