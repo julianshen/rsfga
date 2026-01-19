@@ -825,8 +825,8 @@ async fn test_listusers_truncates_at_limit() {
 
 /// Test: Continuation token from store A doesn't work for store B queries.
 ///
-/// Note: This tests current behavior. Tokens may or may not be validated
-/// against store context depending on implementation.
+/// This test verifies that using a continuation token from one store with
+/// another store either fails or returns the correct store's data (no leakage).
 #[tokio::test]
 async fn test_cross_store_token_validation() {
     let storage = Arc::new(MemoryDataStore::new());
@@ -857,11 +857,37 @@ async fn test_cross_store_token_validation() {
     let store_b = response["id"].as_str().unwrap().to_string();
     setup_simple_model(&storage, &store_b).await;
 
-    // Write tuples to store A
-    write_test_tuples(&storage, &store_a, 25).await;
+    // Write DISTINGUISHABLE tuples to store A (prefixed with "store_a_")
+    for i in 0..25 {
+        let tuple = StoredTuple {
+            user_type: "user".to_string(),
+            user_id: format!("store_a_user{i:04}"),
+            user_relation: None,
+            relation: "viewer".to_string(),
+            object_type: "document".to_string(),
+            object_id: format!("store_a_doc{i:04}"),
+            condition_name: None,
+            condition_context: None,
+            created_at: Some(Utc::now()),
+        };
+        storage.write_tuple(&store_a, tuple).await.unwrap();
+    }
 
-    // Write tuples to store B
-    write_test_tuples(&storage, &store_b, 25).await;
+    // Write DISTINGUISHABLE tuples to store B (prefixed with "store_b_")
+    for i in 0..25 {
+        let tuple = StoredTuple {
+            user_type: "user".to_string(),
+            user_id: format!("store_b_user{i:04}"),
+            user_relation: None,
+            relation: "viewer".to_string(),
+            object_type: "document".to_string(),
+            object_id: format!("store_b_doc{i:04}"),
+            condition_name: None,
+            condition_context: None,
+            created_at: Some(Utc::now()),
+        };
+        storage.write_tuple(&store_b, tuple).await.unwrap();
+    }
 
     // Get continuation token from store A
     let (status, response) = post_json(
@@ -874,12 +900,23 @@ async fn test_cross_store_token_validation() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    // Verify first page contains store A data
+    let store_a_tuples = response["tuples"].as_array().unwrap();
+    for tuple in store_a_tuples {
+        let user = tuple["key"]["user"].as_str().unwrap();
+        assert!(
+            user.starts_with("user:store_a_"),
+            "Store A should return store_a_ prefixed users, got: {}",
+            user
+        );
+    }
+
     let token_from_store_a = response["continuation_token"]
         .as_str()
         .expect("Should have token");
 
     // Try to use store A's token with store B
-    let (status, _response) = post_json(
+    let (status, response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_b}/read"),
         serde_json::json!({
@@ -891,13 +928,48 @@ async fn test_cross_store_token_validation() {
 
     // This documents actual behavior:
     // - If tokens are store-scoped: Should return 400 or empty results
-    // - If tokens are just offsets: May work but return store B's data
-    // Both are acceptable - the key is no data leakage from store A to B
+    // - If tokens are just cursors: May work but MUST return store B's data only
+    // The key requirement is NO DATA LEAKAGE from store A to store B
     assert!(
         status == StatusCode::OK || status == StatusCode::BAD_REQUEST,
         "Cross-store token should either work (different data) or fail, got: {}",
         status
     );
+
+    // CRITICAL: If status is OK, verify NO data leakage - all tuples must belong to store B
+    if status == StatusCode::OK {
+        let tuples = response["tuples"].as_array().unwrap();
+        for tuple in tuples {
+            let user = tuple["key"]["user"].as_str().unwrap();
+            let object = tuple["key"]["object"].as_str().unwrap();
+
+            // Verify user belongs to store B (not store A)
+            assert!(
+                !user.contains("store_a_"),
+                "DATA LEAKAGE: Store B returned store A's user data: {}",
+                user
+            );
+
+            // Verify object belongs to store B (not store A)
+            assert!(
+                !object.contains("store_a_"),
+                "DATA LEAKAGE: Store B returned store A's object data: {}",
+                object
+            );
+
+            // Verify data is from store B
+            assert!(
+                user.starts_with("user:store_b_"),
+                "Store B should only return store_b_ prefixed users, got: {}",
+                user
+            );
+            assert!(
+                object.starts_with("document:store_b_"),
+                "Store B should only return store_b_ prefixed objects, got: {}",
+                object
+            );
+        }
+    }
 }
 
 // =============================================================================
