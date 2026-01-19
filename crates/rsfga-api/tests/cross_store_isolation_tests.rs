@@ -49,11 +49,19 @@ const CACHE_INVALIDATION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Polling interval for cache checks.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// Number of stores for concurrent isolation tests.
+const NUM_CONCURRENT_STORES: usize = 10;
+
+/// Number of operations per store in concurrent tests.
+const OPS_PER_STORE: usize = 20;
+
 // =============================================================================
 // Test Helpers
 // =============================================================================
 
 /// Polls the cache until the specified key is invalidated (returns None) or timeout occurs.
+///
+/// Uses assertion instead of panic for better test failure diagnostics.
 async fn wait_for_cache_invalidation(cache: &CheckCache, key: &CacheKey) {
     let start = std::time::Instant::now();
     loop {
@@ -61,12 +69,12 @@ async fn wait_for_cache_invalidation(cache: &CheckCache, key: &CacheKey) {
         if cache.get(key).await.is_none() {
             return;
         }
-        if start.elapsed() > CACHE_INVALIDATION_TIMEOUT {
-            panic!(
-                "Cache invalidation timeout: key {:?} still present after {:?}",
-                key, CACHE_INVALIDATION_TIMEOUT
-            );
-        }
+        assert!(
+            start.elapsed() <= CACHE_INVALIDATION_TIMEOUT,
+            "Cache invalidation timeout: key {:?} still present after {:?}",
+            key,
+            CACHE_INVALIDATION_TIMEOUT
+        );
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
@@ -743,12 +751,10 @@ async fn test_concurrent_operations_different_stores_isolated() {
 
     let storage = Arc::new(MemoryDataStore::new());
     let cache = create_shared_cache();
-    let num_stores = 10;
-    let ops_per_store = 20;
 
     // Create multiple stores
     let mut store_ids = Vec::new();
-    for i in 0..num_stores {
+    for i in 0..NUM_CONCURRENT_STORES {
         let (status, response) = post_json(
             create_test_app(&storage),
             "/stores",
@@ -770,7 +776,7 @@ async fn test_concurrent_operations_different_stores_isolated() {
             let cache = Arc::clone(&cache);
             let store_id = store_id.clone();
 
-            (0..ops_per_store).map(move |op_idx| {
+            (0..OPS_PER_STORE).map(move |op_idx| {
                 let storage = Arc::clone(&storage);
                 let cache = Arc::clone(&cache);
                 let store_id = store_id.clone();
@@ -836,10 +842,10 @@ async fn test_concurrent_operations_different_stores_isolated() {
             .unwrap();
         assert_eq!(
             tuples.len(),
-            ops_per_store,
+            OPS_PER_STORE,
             "Store {} should have exactly {} tuples",
             store_idx,
-            ops_per_store
+            OPS_PER_STORE
         );
     }
 }
@@ -1114,9 +1120,11 @@ async fn test_store_deletion_isolated() {
         }),
     )
     .await;
-    assert!(
-        status == StatusCode::NOT_FOUND || status.is_client_error(),
-        "Deleted store should return error"
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "Deleted store should return NOT_FOUND, got {}",
+        status
     );
 }
 
