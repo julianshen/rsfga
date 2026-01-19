@@ -15,8 +15,25 @@
 //! that doesn't exist is NOT an error. This matches OpenFGA behavior and
 //! simplifies client code (no need to check existence before delete).
 //!
-//! Some backends may return `TupleNotFound` while others succeed silently.
-//! Both behaviors are acceptable per the DataStore trait contract.
+//! ## Backend-Specific Behavior
+//!
+//! Different backends may handle non-existent tuple deletion differently:
+//! - **In-Memory**: Returns `Ok(())` (silent success)
+//! - **PostgreSQL**: May return `Ok(())` or `Err(TupleNotFound)`
+//! - **MySQL**: May return `Ok(())` or `Err(TupleNotFound)`
+//! - **CockroachDB**: May return `Ok(())` or `Err(TupleNotFound)`
+//!
+//! Both behaviors are acceptable per the DataStore trait contract. Tests
+//! that verify delete behavior accept either outcome.
+//!
+//! ## Store Deletion (Cascade)
+//!
+//! When a store is deleted, all associated data is removed:
+//! - All tuples in the store
+//! - All authorization models in the store
+//! - The store metadata itself
+//!
+//! Subsequent reads from a deleted store return `StoreNotFound`.
 //!
 //! # Test Scope
 //!
@@ -209,16 +226,46 @@ async fn create_cockroachdb_store() -> PostgresDataStore {
 }
 
 /// Clean up test stores matching a prefix using concurrent deletion.
+///
+/// # Error Handling
+///
+/// Cleanup is best-effort: errors during deletion are logged but don't fail
+/// the test. This prevents cascading failures when one store can't be deleted
+/// (e.g., due to foreign key constraints or concurrent access).
 async fn cleanup_test_stores<S: DataStore>(store: &S, prefix: &str) {
-    if let Ok(stores) = store.list_stores().await {
-        let delete_futures: Vec<_> = stores
-            .iter()
-            .filter(|s| s.id.starts_with(prefix))
-            .map(|s| store.delete_store(&s.id))
-            .collect();
+    let stores = match store.list_stores().await {
+        Ok(stores) => stores,
+        Err(e) => {
+            eprintln!("[cleanup] Warning: Failed to list stores: {e}");
+            return;
+        }
+    };
 
-        // Execute all deletes concurrently
-        let _ = futures::future::join_all(delete_futures).await;
+    let stores_to_delete: Vec<_> = stores
+        .iter()
+        .filter(|s| s.id.starts_with(prefix))
+        .collect();
+
+    if stores_to_delete.is_empty() {
+        return;
+    }
+
+    let delete_futures: Vec<_> = stores_to_delete
+        .iter()
+        .map(|s| store.delete_store(&s.id))
+        .collect();
+
+    // Execute all deletes concurrently and collect results
+    let results = futures::future::join_all(delete_futures).await;
+
+    // Log any failures (don't fail the test, cleanup is best-effort)
+    for (store_info, result) in stores_to_delete.iter().zip(results.iter()) {
+        if let Err(e) = result {
+            eprintln!(
+                "[cleanup] Warning: Failed to delete store '{}': {e}",
+                store_info.id
+            );
+        }
     }
 }
 
