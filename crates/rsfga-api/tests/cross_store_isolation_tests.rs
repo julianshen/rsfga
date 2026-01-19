@@ -1274,14 +1274,7 @@ async fn test_pagination_tokens_scoped_to_store() {
         storage
             .write_tuple(
                 &store_2,
-                StoredTuple::new(
-                    "document",
-                    format!("doc{i}"),
-                    "viewer",
-                    "user",
-                    "bob",
-                    None,
-                ),
+                StoredTuple::new("document", format!("doc{i}"), "viewer", "user", "bob", None),
             )
             .await
             .unwrap();
