@@ -798,6 +798,14 @@ pub trait DataStore: Send + Sync + 'static {
     /// - If the deleted model was the latest, `get_latest_authorization_model` returns
     ///   the next most recent model (or `ModelNotFound` if no models remain).
     ///
+    /// # Concurrency
+    ///
+    /// - Concurrent deletions of the same model are safe; one will succeed and others
+    ///   will return `ModelNotFound`.
+    /// - Concurrent deletion and read operations are safe; reads may see the model
+    ///   before or after deletion depending on timing.
+    /// - Implementations must ensure atomicity of the delete operation itself.
+    ///
     /// # Errors
     ///
     /// Returns `StorageError::StoreNotFound` if the store doesn't exist.

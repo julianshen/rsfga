@@ -2008,7 +2008,7 @@ mod tests {
         store.write_authorization_model(model1).await.unwrap();
 
         // Small delay to ensure different timestamps
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         let model2 = StoredAuthorizationModel::new(
             "model-2".to_string(),
@@ -2088,7 +2088,7 @@ mod tests {
                 r#"{"type_definitions": [{"type": "user"}]}"#.to_string(),
             );
             store.write_authorization_model(model).await.unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
         // List should have 3 models

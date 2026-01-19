@@ -1900,31 +1900,9 @@ impl DataStore for MySQLDataStore {
         // Validate input bounds
         validate_store_id(store_id)?;
 
-        // Verify store exists (with timeout protection)
+        // Optimized: Try delete first, only check store existence if delete fails
+        // This reduces happy-path queries from 2 to 1
         let store_id_owned = store_id.to_string();
-        let store_exists: bool = self
-            .execute_with_timeout("delete_authorization_model_store_check", async {
-                sqlx::query_scalar(
-                    r#"
-                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
-                    "#,
-                )
-                .bind(&store_id_owned)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to check store existence: {e}"),
-                })
-            })
-            .await?;
-
-        if !store_exists {
-            return Err(StorageError::StoreNotFound {
-                store_id: store_id.to_string(),
-            });
-        }
-
-        // Delete the model (with timeout protection)
         let model_id_owned = model_id.to_string();
         let result = self
             .execute_with_timeout("delete_authorization_model", async {
@@ -1945,6 +1923,29 @@ impl DataStore for MySQLDataStore {
             .await?;
 
         if result.rows_affected() == 0 {
+            // Delete failed - determine if it's because the store or model doesn't exist
+            let store_exists: bool = self
+                .execute_with_timeout("delete_authorization_model_store_check", async {
+                    sqlx::query_scalar(
+                        r#"
+                        SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                        "#,
+                    )
+                    .bind(&store_id_owned)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to check store existence: {e}"),
+                    })
+                })
+                .await?;
+
+            if !store_exists {
+                return Err(StorageError::StoreNotFound {
+                    store_id: store_id.to_string(),
+                });
+            }
+
             return Err(StorageError::ModelNotFound {
                 model_id: model_id.to_string(),
             });
