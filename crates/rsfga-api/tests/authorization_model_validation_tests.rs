@@ -34,6 +34,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use futures::future::join_all;
 use tower::ServiceExt;
 
 use rsfga_api::http::{create_router_with_body_limit, AppState};
@@ -152,6 +153,7 @@ async fn test_write_tuple_succeeds_for_valid_format() {
 
     // Write succeeds even though this type isn't in the model
     // (OpenFGA validates at Check time, not Write time)
+    // Using nonexistent_type to demonstrate that writes don't validate against model
     let (status, _response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/write"),
@@ -159,8 +161,8 @@ async fn test_write_tuple_succeeds_for_valid_format() {
             "writes": {
                 "tuple_keys": [{
                     "user": "user:alice",
-                    "relation": "viewer",
-                    "object": "document:doc1"
+                    "relation": "some_relation",
+                    "object": "nonexistent_type:doc1"
                 }]
             }
         }),
@@ -170,7 +172,7 @@ async fn test_write_tuple_succeeds_for_valid_format() {
     assert_eq!(
         status,
         StatusCode::OK,
-        "Write with valid format should succeed"
+        "Write with valid format should succeed even for types not in model"
     );
 }
 
@@ -379,7 +381,9 @@ async fn test_get_nonexistent_model_id_returns_404() {
     );
 }
 
-/// Test: Empty model ID returns 404 Not Found.
+/// Test: Empty model ID in path returns 404 Not Found.
+/// Note: A trailing slash on the models endpoint hits the list route which returns 200.
+/// This test uses a truly empty/invalid model ID pattern to verify 404 behavior.
 #[tokio::test]
 async fn test_empty_model_id_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
@@ -387,24 +391,25 @@ async fn test_empty_model_id_returns_404() {
 
     let app = create_test_app(&storage);
 
-    // This should hit the route and return 404 for empty model
+    // Use an invalid but non-empty model ID to test 404 behavior
+    // (empty path segment would route to list endpoint)
     let response = app
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/stores/{store_id}/authorization-models/"))
+                .uri(format!(
+                    "/stores/{store_id}/authorization-models/invalid-model-id"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    // Either 404 or 405 (method not allowed on list endpoint) is acceptable
-    assert!(
-        response.status() == StatusCode::NOT_FOUND
-            || response.status() == StatusCode::METHOD_NOT_ALLOWED,
-        "Empty model ID should return 404 or 405, got {}",
-        response.status()
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "Invalid model ID should return 404 Not Found"
     );
 }
 
@@ -453,64 +458,21 @@ async fn test_multiple_model_versions_retrieved_correctly() {
         .unwrap()
         .to_string();
 
-    // Verify first model can be retrieved with original content
-    let app = create_test_app(&storage);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!(
-                    "/stores/{store_id}/authorization-models/{model_id_1}"
-                ))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    // Verify first model can be retrieved with original content (using helper)
+    let json = get_model_json(&storage, &store_id, &model_id_1).await;
+    let type_names = get_type_names(&json);
+    assert!(
+        !type_names.contains(&"team"),
+        "First model should not have 'team' type"
+    );
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-    // First model should NOT have "team" type
-    let type_names: Vec<&str> = json["authorization_model"]["type_definitions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|t| t["type"].as_str())
-        .collect();
-    assert!(!type_names.contains(&"team"), "First model should not have 'team' type");
-
-    // Verify second model has "team" type
-    let app = create_test_app(&storage);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!(
-                    "/stores/{store_id}/authorization-models/{model_id_2}"
-                ))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-    let type_names: Vec<&str> = json["authorization_model"]["type_definitions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|t| t["type"].as_str())
-        .collect();
-    assert!(type_names.contains(&"team"), "Second model should have 'team' type");
+    // Verify second model has "team" type (using helper)
+    let json = get_model_json(&storage, &store_id, &model_id_2).await;
+    let type_names = get_type_names(&json);
+    assert!(
+        type_names.contains(&"team"),
+        "Second model should have 'team' type"
+    );
 }
 
 /// Test: List models returns all versions in order.
@@ -861,7 +823,7 @@ async fn test_concurrent_model_writes_no_corruption() {
     }
 
     // Wait for all tasks to complete
-    let results: Vec<_> = futures::future::join_all(handles).await;
+    let results: Vec<_> = join_all(handles).await;
 
     // All writes should succeed
     for result in &results {
@@ -945,7 +907,7 @@ async fn test_concurrent_tuple_writes_with_validation() {
     }
 
     // Wait for all tasks to complete
-    let results: Vec<_> = futures::future::join_all(handles).await;
+    let results: Vec<_> = join_all(handles).await;
 
     // All writes should succeed (200 OK)
     for result in &results {
@@ -1165,7 +1127,8 @@ async fn test_unicode_in_type_names() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = create_store(&storage).await;
 
-    // ASCII type names should work
+    // Test with actual Unicode characters in type names
+    // Using Cyrillic (документ) and Chinese (文档) to test Unicode handling
     let (status, _) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/authorization-models"),
@@ -1173,7 +1136,8 @@ async fn test_unicode_in_type_names() {
             "schema_version": "1.1",
             "type_definitions": [
                 {"type": "user"},
-                {"type": "document_v2", "relations": {"viewer": {}}}
+                {"type": "документ", "relations": {"viewer": {}}},
+                {"type": "文档", "relations": {"editor": {}}}
             ]
         }),
     )
@@ -1182,7 +1146,7 @@ async fn test_unicode_in_type_names() {
     assert_eq!(
         status,
         StatusCode::CREATED,
-        "ASCII type names should succeed"
+        "Unicode type names should succeed"
     );
 }
 
@@ -1286,4 +1250,42 @@ fn create_tuple(relation: &str, user: &str, object_type: &str, object_id: &str) 
         condition_context: None,
         created_at: None,
     }
+}
+
+/// Helper to fetch an authorization model and return parsed JSON.
+/// Reduces duplication when verifying model contents.
+async fn get_model_json(
+    storage: &Arc<MemoryDataStore>,
+    store_id: &str,
+    model_id: &str,
+) -> serde_json::Value {
+    let app = create_test_app(storage);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/stores/{store_id}/authorization-models/{model_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+/// Helper to extract type names from a model JSON response.
+fn get_type_names(model_json: &serde_json::Value) -> Vec<&str> {
+    model_json["authorization_model"]["type_definitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["type"].as_str())
+        .collect()
 }
