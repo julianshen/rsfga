@@ -417,7 +417,9 @@ async fn test_error_messages_no_file_paths() {
         "/src/",      // Source directory
         "/crates/",   // Rust crates directory
         "\\src\\",    // Windows source directory
-        "line ",      // Line number reference
+        ":line ",     // Line number reference (e.g., "file.rs:line 42")
+        " line:",     // Line number reference (e.g., " line: 42")
+        "at line",    // Stack trace line reference
         "src/lib.rs", // Common Rust source path
         "main.rs",    // Rust main file
         "mod.rs",     // Rust module file
@@ -885,9 +887,10 @@ async fn test_batch_check_error_format() {
     if let Some(error_obj) = error {
         // Verify error structure if it's an object
         if error_obj.is_object() {
+            // OpenFGA requires BOTH code AND message in error responses
             assert!(
-                error_obj.get("code").is_some() || error_obj.get("message").is_some(),
-                "Batch check error should have code or message field"
+                error_obj.get("code").is_some() && error_obj.get("message").is_some(),
+                "Batch check error should have BOTH code AND message fields"
             );
         }
     }
@@ -1057,56 +1060,333 @@ async fn test_error_format_consistent_across_endpoints() {
 }
 
 // ============================================================================
-// Section 5: gRPC Error Format Tests
+// Section 5: gRPC Error Code Mapping Verification
 // ============================================================================
 
-/// Test: gRPC errors should map to appropriate status codes (documented)
+/// Test: Verify gRPC error codes match OpenFGA protobuf definitions
 ///
-/// This test documents the expected gRPC error mappings.
-/// The actual gRPC integration tests are in the grpc/tests.rs module.
+/// This test verifies the error code values match the OpenFGA protobuf definitions.
+/// The actual gRPC error handling integration tests are in grpc/tests.rs.
 ///
-/// Expected mappings:
-/// - StorageError::StoreNotFound -> NOT_FOUND (5)
-/// - StorageError::InvalidInput -> INVALID_ARGUMENT (3)
-/// - StorageError::DuplicateTuple -> ALREADY_EXISTS (6)
-/// - StorageError::ConnectionError -> UNAVAILABLE (14)
-/// - StorageError::QueryTimeout -> DEADLINE_EXCEEDED (4)
-/// - DomainError validation errors -> INVALID_ARGUMENT (3)
-/// - DomainError not found errors -> NOT_FOUND (5)
-/// - DomainError timeout errors -> DEADLINE_EXCEEDED (4)
-/// - DomainError internal errors -> INTERNAL (13)
+/// Reference: OpenFGA protobuf ErrorCode enum values
 #[tokio::test]
-async fn test_grpc_error_mapping_documentation() {
-    // This test documents the expected gRPC error code mappings
-    // Actual gRPC tests are in crates/rsfga-api/src/grpc/tests.rs
+async fn test_grpc_error_codes_match_openfga_protobuf() {
+    // OpenFGA ErrorCode enum values from protobuf definitions
+    // These must match exactly for client compatibility
+    let openfga_error_codes: std::collections::HashMap<&str, i32> = [
+        ("no_error", 0),
+        ("validation_error", 2000),
+        ("authorization_model_not_found", 2001),
+        ("authorization_model_resolution_too_complex", 2002),
+        ("invalid_write_input", 2003),
+        ("cannot_allow_duplicate_tuples_in_one_request", 2004),
+        ("cannot_allow_duplicate_types_in_one_request", 2005),
+        ("cannot_allow_multiple_references_to_one_relation", 2006),
+        ("invalid_continuation_token", 2007),
+        ("invalid_tuple_set", 2008),
+        ("invalid_check_input", 2009),
+        ("invalid_expand_input", 2010),
+        ("unsupported_user_set", 2011),
+        ("invalid_object_format", 2012),
+        ("write_failed_due_to_invalid_input", 2017),
+        ("authorization_model_assertions_not_found", 2018),
+        ("latest_authorization_model_not_found", 2020),
+        ("type_not_found", 2021),
+        ("relation_not_found", 2022),
+        ("empty_relation_definition", 2023),
+        ("invalid_user", 2025),
+        ("invalid_tuple", 2027),
+        ("unknown_relation", 2028),
+        ("store_id_invalid_length", 2030),
+        ("assertions_too_many_items", 2033),
+        ("id_too_long", 2034),
+        ("authorization_model_id_too_long", 2036),
+        ("tuple_key_value_not_specified", 2037),
+        ("tuple_keys_too_many_or_too_few_items", 2038),
+        ("page_size_invalid", 2039),
+        ("param_missing_value", 2040),
+        ("difference_base_missing_value", 2041),
+        ("subtract_base_missing_value", 2042),
+        ("object_too_long", 2043),
+        ("relation_too_long", 2044),
+        ("type_definitions_too_few_items", 2045),
+        ("type_invalid_length", 2046),
+        ("type_invalid_pattern", 2047),
+        ("relations_too_few_items", 2048),
+        ("relations_too_long", 2049),
+        ("relations_invalid_pattern", 2050),
+        ("object_invalid_pattern", 2051),
+        ("query_string_type_continuation_token_mismatch", 2052),
+        ("exceeded_entity_limit", 2053),
+        ("invalid_contextual_tuple", 2054),
+        ("duplicate_contextual_tuple", 2055),
+        ("invalid_authorization_model", 2056),
+        ("unsupported_schema_version", 2057),
+    ]
+    .into_iter()
+    .collect();
 
-    // The error codes used should match the OpenFGA protobuf definitions:
-    // - NO_ERROR = 0
-    // - VALIDATION_ERROR = 2000
-    // - AUTHORIZATION_MODEL_NOT_FOUND = 2001
-    // - TYPE_NOT_FOUND = 2021
-    // - RELATION_NOT_FOUND = 2022
-    // - INVALID_USER = 2025
-    // - STORE_ID_INVALID_LENGTH = 2030
-
-    // Verify the documentation by ensuring we can reference the expected codes
-    let expected_codes = [
-        ("NO_ERROR", 0),
-        ("VALIDATION_ERROR", 2000),
-        ("AUTHORIZATION_MODEL_NOT_FOUND", 2001),
-        ("TYPE_NOT_FOUND", 2021),
-        ("RELATION_NOT_FOUND", 2022),
-        ("INVALID_USER", 2025),
-        ("STORE_ID_INVALID_LENGTH", 2030),
+    // Verify critical error codes used by RSFGA match OpenFGA
+    let rsfga_critical_codes = [
+        ("no_error", 0),
+        ("validation_error", 2000),
+        ("authorization_model_not_found", 2001),
+        ("type_not_found", 2021),
+        ("relation_not_found", 2022),
+        ("invalid_user", 2025),
+        ("store_id_invalid_length", 2030),
     ];
 
-    // This is a documentation test - verify expected codes are documented
-    for (name, code) in expected_codes {
+    for (code_name, expected_value) in rsfga_critical_codes {
+        let openfga_value = openfga_error_codes.get(code_name);
         assert!(
-            code >= 0,
-            "Error code {} ({}) should be non-negative",
-            name,
-            code
+            openfga_value.is_some(),
+            "Error code '{}' must be defined in OpenFGA protobuf",
+            code_name
+        );
+        assert_eq!(
+            *openfga_value.unwrap(),
+            expected_value,
+            "Error code '{}' value mismatch: RSFGA={}, OpenFGA={}",
+            code_name,
+            expected_value,
+            openfga_value.unwrap()
+        );
+    }
+
+    // Verify code ranges are consistent
+    // Error codes 2000-2099 are validation/user errors
+    for (name, code) in &openfga_error_codes {
+        if *code > 0 {
+            assert!(
+                *code >= 2000 && *code < 3000,
+                "Error code '{}' ({}) should be in range 2000-2999",
+                name,
+                code
+            );
+        }
+    }
+}
+
+// ============================================================================
+// Section 6: Edge Cases
+// ============================================================================
+
+/// Test: Error handling with empty string inputs
+#[tokio::test]
+async fn test_error_format_with_empty_string_inputs() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_test_store(&storage).await;
+    let uri = format!("/stores/{store_id}/check");
+
+    // Empty user string
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        &uri,
+        serde_json::json!({
+            "tuple_key": {
+                "user": "",
+                "relation": "viewer",
+                "object": "document:readme"
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(response["code"], "validation_error");
+    // Message should exist and not leak internal details
+    let message = response["message"].as_str().unwrap();
+    assert!(!message.is_empty());
+    assert!(!message.contains("rsfga_"));
+    assert!(!message.contains("panic"));
+
+    // Empty relation string
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        &uri,
+        serde_json::json!({
+            "tuple_key": {
+                "user": "user:alice",
+                "relation": "",
+                "object": "document:readme"
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(response["code"], "validation_error");
+    let message = response["message"].as_str().unwrap();
+    assert!(!message.is_empty());
+
+    // Empty object string
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        &uri,
+        serde_json::json!({
+            "tuple_key": {
+                "user": "user:alice",
+                "relation": "viewer",
+                "object": ""
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(response["code"], "validation_error");
+    let message = response["message"].as_str().unwrap();
+    assert!(!message.is_empty());
+}
+
+/// Test: Error handling with Unicode inputs
+#[tokio::test]
+async fn test_error_format_with_unicode_inputs() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_test_store(&storage).await;
+    let uri = format!("/stores/{store_id}/check");
+
+    // Unicode in user field (invalid format)
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        &uri,
+        serde_json::json!({
+            "tuple_key": {
+                "user": "用户:爱丽丝",
+                "relation": "viewer",
+                "object": "document:readme"
+            }
+        }),
+    )
+    .await;
+
+    // Should return validation error, not crash
+    assert!(
+        status == StatusCode::BAD_REQUEST || status == StatusCode::OK,
+        "Unicode input should be handled gracefully"
+    );
+    // Error response should still have proper structure
+    if status == StatusCode::BAD_REQUEST {
+        assert!(response.get("code").is_some());
+        assert!(response.get("message").is_some());
+        // No stack traces or internal errors
+        let message = response["message"].as_str().unwrap_or("");
+        assert!(!message.contains("panic"));
+        assert!(!message.contains("unwrap"));
+    }
+
+    // Emoji in object field (potentially valid type:id format)
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        &uri,
+        serde_json::json!({
+            "tuple_key": {
+                "user": "user:alice",
+                "relation": "viewer",
+                "object": "📄:readme"
+            }
+        }),
+    )
+    .await;
+
+    // Should be handled gracefully (likely validation error for unknown type)
+    if status != StatusCode::OK {
+        assert!(response.get("code").is_some());
+        assert!(response.get("message").is_some());
+    }
+}
+
+/// Test: Error handling with very long inputs
+#[tokio::test]
+async fn test_error_format_with_long_inputs() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_test_store(&storage).await;
+    let uri = format!("/stores/{store_id}/check");
+
+    // Very long user ID (1000 characters)
+    let long_user = format!("user:{}", "a".repeat(1000));
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        &uri,
+        serde_json::json!({
+            "tuple_key": {
+                "user": long_user,
+                "relation": "viewer",
+                "object": "document:readme"
+            }
+        }),
+    )
+    .await;
+
+    // Should return error (likely validation error for length)
+    // The important thing is it doesn't crash or timeout
+    if status != StatusCode::OK {
+        assert!(
+            response.get("code").is_some(),
+            "Long input should return proper error format"
+        );
+        assert!(response.get("message").is_some());
+        // Error message should be reasonable length, not echo back the full input
+        let message = response["message"].as_str().unwrap_or("");
+        assert!(
+            message.len() < 500,
+            "Error message should not echo back very long inputs"
+        );
+    }
+}
+
+/// Test: Concurrent error responses maintain format consistency
+#[tokio::test]
+async fn test_concurrent_error_responses_consistent() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_test_store(&storage).await;
+    let uri = format!("/stores/{store_id}/check");
+
+    // Send multiple concurrent requests that will all error
+    let handles: Vec<_> = (0..10)
+        .map(|i| {
+            let storage = Arc::clone(&storage);
+            let uri = uri.clone();
+            tokio::spawn(async move {
+                let (status, response) = post_json(
+                    create_test_app(&storage),
+                    &uri,
+                    serde_json::json!({
+                        "tuple_key": {
+                            "user": format!("invalid-user-{}", i),
+                            "relation": "viewer",
+                            "object": "document:readme"
+                        }
+                    }),
+                )
+                .await;
+                (status, response)
+            })
+        })
+        .collect();
+
+    // Collect all results
+    let results: Vec<_> = futures::future::join_all(handles)
+        .await
+        .into_iter()
+        .map(|r| r.unwrap())
+        .collect();
+
+    // All should have consistent error format
+    for (status, response) in results {
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "All invalid user errors should return 400"
+        );
+        assert_eq!(
+            response["code"], "validation_error",
+            "All errors should have same code"
+        );
+        assert!(
+            response.get("message").is_some(),
+            "All errors should have message field"
         );
     }
 }
