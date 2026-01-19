@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use tonic::{Request, Response, Status};
 
 use rsfga_domain::cache::{CheckCache, CheckCacheConfig};
@@ -12,22 +13,31 @@ use rsfga_domain::resolver::{
     GraphResolver, ResolverConfig,
 };
 use rsfga_server::handlers::batch::BatchCheckHandler;
-use rsfga_storage::{DataStore, DateTime, StorageError, StoredTuple, TupleFilter, Utc};
+use rsfga_storage::{
+    DataStore, DateTime, PaginationOptions, StorageError, StoredAuthorizationModel, StoredTuple,
+    TupleFilter, Utc,
+};
 
 use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
+use crate::http::state::{
+    AssertionKey, AssertionTupleKey, ContextualTuplesWrapper, StoredAssertion,
+};
 use crate::utils::{format_user, parse_object, parse_user};
 
 use crate::proto::openfga::v1::{
-    open_fga_service_server::OpenFgaService, user, BatchCheckRequest, BatchCheckResponse,
-    BatchCheckSingleResult, CheckError, CheckRequest, CheckResponse, Computed, CreateStoreRequest,
-    CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse, ErrorCode, ExpandRequest,
-    ExpandResponse, FgaObject, GetStoreRequest, GetStoreResponse, Leaf, ListObjectsRequest,
-    ListObjectsResponse, ListStoresRequest, ListStoresResponse, ListUsersRequest,
-    ListUsersResponse, Node, Nodes, ObjectRelation, ReadAssertionsRequest, ReadAssertionsResponse,
-    ReadAuthorizationModelRequest, ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
+    open_fga_service_server::OpenFgaService, user, Assertion, AuthorizationModel,
+    BatchCheckRequest, BatchCheckResponse, BatchCheckSingleResult, CheckError, CheckRequest,
+    CheckResponse, Computed, Condition, ConditionMetadata, ConditionParamTypeRef,
+    CreateStoreRequest, CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse, Difference,
+    DirectUserset, ErrorCode, ExpandRequest, ExpandResponse, FgaObject, GetStoreRequest,
+    GetStoreResponse, Leaf, ListObjectsRequest, ListObjectsResponse, ListStoresRequest,
+    ListStoresResponse, ListUsersRequest, ListUsersResponse, Metadata, Node, Nodes, ObjectRelation,
+    ReadAssertionsRequest, ReadAssertionsResponse, ReadAuthorizationModelRequest,
+    ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
     ReadAuthorizationModelsResponse, ReadChangesRequest, ReadChangesResponse, ReadRequest,
-    ReadResponse, RelationshipCondition, Store, Tuple, TupleKey, TupleToUserset, TypedWildcard,
-    UpdateStoreRequest, UpdateStoreResponse, User, Users, UsersetTree, UsersetUser,
+    ReadResponse, RelationMetadata, RelationReference, RelationshipCondition, Store, Tuple,
+    TupleKey, TupleToUserset, TypeDefinition, TypeName, TypedWildcard, UpdateStoreRequest,
+    UpdateStoreResponse, User, Users, Userset, UsersetTree, UsersetUser, Usersets, Wildcard,
     WriteAssertionsRequest, WriteAssertionsResponse, WriteAuthorizationModelRequest,
     WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
@@ -59,6 +69,9 @@ pub struct OpenFgaGrpcService<S: DataStore> {
     batch_handler: Arc<BatchCheckHandler<DataStoreTupleReader<S>, DataStoreModelReader<S>>>,
     /// The check result cache, stored for future invalidation in write handlers.
     cache: Arc<CheckCache>,
+    /// In-memory assertions storage (store_id, model_id) -> assertions.
+    /// Shared with HTTP layer format for consistency.
+    assertions: Arc<DashMap<AssertionKey, Vec<StoredAssertion>>>,
 }
 
 impl<S: DataStore> OpenFgaGrpcService<S> {
@@ -112,6 +125,7 @@ impl<S: DataStore> OpenFgaGrpcService<S> {
             resolver,
             batch_handler,
             cache,
+            assertions: Arc::new(DashMap::new()),
         }
     }
 
@@ -475,6 +489,491 @@ fn expand_node_to_proto(node: rsfga_domain::resolver::ExpandNode) -> Node {
         }
     }
 }
+
+// ============================================================
+// Proto-JSON Conversion Functions for Authorization Models
+// ============================================================
+// These functions convert between proto TypeDefinition/Condition and JSON
+// to maintain storage format compatibility with the HTTP layer.
+
+/// Converts a proto TypeDefinition to JSON for storage.
+fn type_definition_to_json(td: &TypeDefinition) -> serde_json::Value {
+    let mut obj = serde_json::json!({
+        "type": td.r#type,
+    });
+
+    // Convert relations map
+    if !td.relations.is_empty() {
+        let relations: serde_json::Map<String, serde_json::Value> = td
+            .relations
+            .iter()
+            .map(|(k, v)| (k.clone(), userset_to_json(v)))
+            .collect();
+        obj["relations"] = serde_json::Value::Object(relations);
+    }
+
+    // Convert metadata if present
+    if let Some(ref metadata) = td.metadata {
+        obj["metadata"] = metadata_to_json(metadata);
+    }
+
+    obj
+}
+
+/// Converts a proto Userset to JSON.
+fn userset_to_json(us: &Userset) -> serde_json::Value {
+    use crate::proto::openfga::v1::userset::Userset as US;
+    match &us.userset {
+        Some(US::This(_)) => serde_json::json!({ "this": {} }),
+        Some(US::ComputedUserset(or)) => serde_json::json!({
+            "computedUserset": {
+                "relation": or.relation
+            }
+        }),
+        Some(US::TupleToUserset(ttu)) => {
+            let mut obj = serde_json::json!({});
+            if let Some(ref ts) = ttu.tupleset {
+                obj["tupleset"] = serde_json::json!({ "relation": ts.relation });
+            }
+            if let Some(ref cus) = ttu.computed_userset {
+                obj["computedUserset"] = serde_json::json!({ "relation": cus.relation });
+            }
+            serde_json::json!({ "tupleToUserset": obj })
+        }
+        Some(US::Union(children)) => serde_json::json!({
+            "union": {
+                "child": children.child.iter().map(userset_to_json).collect::<Vec<_>>()
+            }
+        }),
+        Some(US::Intersection(children)) => serde_json::json!({
+            "intersection": {
+                "child": children.child.iter().map(userset_to_json).collect::<Vec<_>>()
+            }
+        }),
+        Some(US::Difference(diff)) => {
+            let mut obj = serde_json::json!({});
+            if let Some(ref base) = diff.base {
+                obj["base"] = userset_to_json(base);
+            }
+            if let Some(ref subtract) = diff.subtract {
+                obj["subtract"] = userset_to_json(subtract);
+            }
+            serde_json::json!({ "difference": obj })
+        }
+        None => serde_json::json!({}),
+    }
+}
+
+/// Converts proto Metadata to JSON.
+fn metadata_to_json(md: &Metadata) -> serde_json::Value {
+    let mut obj = serde_json::json!({});
+    if !md.relations.is_empty() {
+        let relations: serde_json::Map<String, serde_json::Value> = md
+            .relations
+            .iter()
+            .map(|(k, v)| (k.clone(), relation_metadata_to_json(v)))
+            .collect();
+        obj["relations"] = serde_json::Value::Object(relations);
+    }
+    if !md.module.is_empty() {
+        obj["module"] = serde_json::Value::String(md.module.clone());
+    }
+    if !md.source_info.is_empty() {
+        obj["source_info"] = serde_json::Value::String(md.source_info.clone());
+    }
+    obj
+}
+
+/// Converts proto RelationMetadata to JSON.
+fn relation_metadata_to_json(rm: &RelationMetadata) -> serde_json::Value {
+    let mut obj = serde_json::json!({});
+    if !rm.directly_related_user_types.is_empty() {
+        obj["directly_related_user_types"] = serde_json::json!(rm
+            .directly_related_user_types
+            .iter()
+            .map(relation_reference_to_json)
+            .collect::<Vec<_>>());
+    }
+    if !rm.module.is_empty() {
+        obj["module"] = serde_json::Value::String(rm.module.clone());
+    }
+    if !rm.source_info.is_empty() {
+        obj["source_info"] = serde_json::Value::String(rm.source_info.clone());
+    }
+    obj
+}
+
+/// Converts proto RelationReference to JSON.
+fn relation_reference_to_json(rr: &RelationReference) -> serde_json::Value {
+    use crate::proto::openfga::v1::relation_reference::RelationOrWildcard;
+    let mut obj = serde_json::json!({ "type": rr.r#type });
+    match &rr.relation_or_wildcard {
+        Some(RelationOrWildcard::Relation(rel)) => {
+            obj["relation"] = serde_json::Value::String(rel.clone());
+        }
+        Some(RelationOrWildcard::Wildcard(_)) => {
+            obj["wildcard"] = serde_json::json!({});
+        }
+        None => {}
+    }
+    if !rr.condition.is_empty() {
+        obj["condition"] = serde_json::Value::String(rr.condition.clone());
+    }
+    obj
+}
+
+/// Converts a proto Condition to JSON for storage.
+fn condition_to_json(cond: &Condition) -> serde_json::Value {
+    let mut obj = serde_json::json!({
+        "name": cond.name,
+        "expression": cond.expression,
+    });
+    if !cond.parameters.is_empty() {
+        let params: serde_json::Map<String, serde_json::Value> = cond
+            .parameters
+            .iter()
+            .map(|(k, v)| (k.clone(), condition_param_to_json(v)))
+            .collect();
+        obj["parameters"] = serde_json::Value::Object(params);
+    }
+    if let Some(ref md) = cond.metadata {
+        let mut md_obj = serde_json::json!({});
+        if !md.module.is_empty() {
+            md_obj["module"] = serde_json::Value::String(md.module.clone());
+        }
+        if !md.source_info.is_empty() {
+            md_obj["source_info"] = serde_json::Value::String(md.source_info.clone());
+        }
+        obj["metadata"] = md_obj;
+    }
+    obj
+}
+
+/// Converts proto ConditionParamTypeRef to JSON.
+fn condition_param_to_json(cp: &ConditionParamTypeRef) -> serde_json::Value {
+    let type_name = type_name_to_string(cp.type_name);
+    let mut obj = serde_json::json!({ "type_name": type_name });
+    if !cp.generic_types.is_empty() {
+        obj["generic_types"] = serde_json::json!(cp
+            .generic_types
+            .iter()
+            .map(|t| type_name_to_string(*t))
+            .collect::<Vec<_>>());
+    }
+    obj
+}
+
+/// Converts proto TypeName enum to string.
+fn type_name_to_string(tn: i32) -> String {
+    match TypeName::try_from(tn) {
+        Ok(TypeName::Unspecified) => "TYPE_NAME_UNSPECIFIED",
+        Ok(TypeName::Any) => "TYPE_NAME_ANY",
+        Ok(TypeName::Bool) => "TYPE_NAME_BOOL",
+        Ok(TypeName::String) => "TYPE_NAME_STRING",
+        Ok(TypeName::Int) => "TYPE_NAME_INT",
+        Ok(TypeName::Uint) => "TYPE_NAME_UINT",
+        Ok(TypeName::Double) => "TYPE_NAME_DOUBLE",
+        Ok(TypeName::Duration) => "TYPE_NAME_DURATION",
+        Ok(TypeName::Timestamp) => "TYPE_NAME_TIMESTAMP",
+        Ok(TypeName::Map) => "TYPE_NAME_MAP",
+        Ok(TypeName::List) => "TYPE_NAME_LIST",
+        Ok(TypeName::Ipaddress) => "TYPE_NAME_IPADDRESS",
+        Err(_) => "TYPE_NAME_UNSPECIFIED",
+    }
+    .to_string()
+}
+
+/// Parses a JSON type definition into a proto TypeDefinition.
+fn json_to_type_definition(json: &serde_json::Value) -> Option<TypeDefinition> {
+    let type_name = json.get("type")?.as_str()?.to_string();
+    let relations = json
+        .get("relations")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| json_to_userset(v).map(|us| (k.clone(), us)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let metadata = json.get("metadata").and_then(json_to_metadata);
+
+    Some(TypeDefinition {
+        r#type: type_name,
+        relations,
+        metadata,
+    })
+}
+
+/// Parses JSON into a proto Userset.
+fn json_to_userset(json: &serde_json::Value) -> Option<Userset> {
+    use crate::proto::openfga::v1::userset::Userset as US;
+
+    if json.get("this").is_some() {
+        return Some(Userset {
+            userset: Some(US::This(DirectUserset {})),
+        });
+    }
+
+    if let Some(cu) = json.get("computedUserset") {
+        let relation = cu.get("relation")?.as_str()?.to_string();
+        return Some(Userset {
+            userset: Some(US::ComputedUserset(ObjectRelation {
+                object: String::new(),
+                relation,
+            })),
+        });
+    }
+
+    if let Some(ttu) = json.get("tupleToUserset") {
+        let tupleset = ttu.get("tupleset").and_then(|ts| {
+            Some(ObjectRelation {
+                object: String::new(),
+                relation: ts.get("relation")?.as_str()?.to_string(),
+            })
+        });
+        let computed_userset = ttu.get("computedUserset").and_then(|cus| {
+            Some(ObjectRelation {
+                object: String::new(),
+                relation: cus.get("relation")?.as_str()?.to_string(),
+            })
+        });
+        return Some(Userset {
+            userset: Some(US::TupleToUserset(TupleToUserset {
+                tupleset,
+                computed_userset,
+            })),
+        });
+    }
+
+    if let Some(union) = json.get("union") {
+        let children = union
+            .get("child")
+            .and_then(|c| c.as_array())
+            .map(|arr| arr.iter().filter_map(json_to_userset).collect())
+            .unwrap_or_default();
+        return Some(Userset {
+            userset: Some(US::Union(Usersets { child: children })),
+        });
+    }
+
+    if let Some(intersection) = json.get("intersection") {
+        let children = intersection
+            .get("child")
+            .and_then(|c| c.as_array())
+            .map(|arr| arr.iter().filter_map(json_to_userset).collect())
+            .unwrap_or_default();
+        return Some(Userset {
+            userset: Some(US::Intersection(Usersets { child: children })),
+        });
+    }
+
+    if let Some(diff) = json.get("difference") {
+        let base = diff.get("base").and_then(json_to_userset).map(Box::new);
+        let subtract = diff.get("subtract").and_then(json_to_userset).map(Box::new);
+        return Some(Userset {
+            userset: Some(US::Difference(Box::new(Difference { base, subtract }))),
+        });
+    }
+
+    None
+}
+
+/// Parses JSON into proto Metadata.
+fn json_to_metadata(json: &serde_json::Value) -> Option<Metadata> {
+    let relations = json
+        .get("relations")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| json_to_relation_metadata(v).map(|rm| (k.clone(), rm)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let module = json
+        .get("module")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let source_info = json
+        .get("source_info")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Some(Metadata {
+        relations,
+        module,
+        source_info,
+    })
+}
+
+/// Parses JSON into proto RelationMetadata.
+fn json_to_relation_metadata(json: &serde_json::Value) -> Option<RelationMetadata> {
+    let directly_related_user_types = json
+        .get("directly_related_user_types")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(json_to_relation_reference).collect())
+        .unwrap_or_default();
+
+    let module = json
+        .get("module")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let source_info = json
+        .get("source_info")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Some(RelationMetadata {
+        directly_related_user_types,
+        module,
+        source_info,
+    })
+}
+
+/// Parses JSON into proto RelationReference.
+fn json_to_relation_reference(json: &serde_json::Value) -> Option<RelationReference> {
+    use crate::proto::openfga::v1::relation_reference::RelationOrWildcard;
+
+    let type_name = json.get("type")?.as_str()?.to_string();
+    let relation_or_wildcard = if json.get("wildcard").is_some() {
+        Some(RelationOrWildcard::Wildcard(Wildcard {}))
+    } else {
+        json.get("relation")
+            .and_then(|r| r.as_str())
+            .map(|s| RelationOrWildcard::Relation(s.to_string()))
+    };
+    let condition = json
+        .get("condition")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Some(RelationReference {
+        r#type: type_name,
+        relation_or_wildcard,
+        condition,
+    })
+}
+
+/// Parses JSON into a proto Condition.
+fn json_to_condition(json: &serde_json::Value) -> Option<Condition> {
+    let name = json.get("name")?.as_str()?.to_string();
+    let expression = json
+        .get("expression")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let parameters = json
+        .get("parameters")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| json_to_condition_param(v).map(|cp| (k.clone(), cp)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let metadata = json.get("metadata").map(|md| ConditionMetadata {
+        module: md
+            .get("module")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        source_info: md
+            .get("source_info")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+    });
+
+    Some(Condition {
+        name,
+        expression,
+        parameters,
+        metadata,
+    })
+}
+
+/// Parses JSON into proto ConditionParamTypeRef.
+fn json_to_condition_param(json: &serde_json::Value) -> Option<ConditionParamTypeRef> {
+    let type_name = json
+        .get("type_name")
+        .and_then(|v| v.as_str())
+        .map(string_to_type_name)
+        .unwrap_or(TypeName::Unspecified as i32);
+    let generic_types = json
+        .get("generic_types")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(string_to_type_name)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(ConditionParamTypeRef {
+        type_name,
+        generic_types,
+    })
+}
+
+/// Converts string to proto TypeName enum value.
+fn string_to_type_name(s: &str) -> i32 {
+    match s {
+        "TYPE_NAME_ANY" => TypeName::Any as i32,
+        "TYPE_NAME_BOOL" => TypeName::Bool as i32,
+        "TYPE_NAME_STRING" => TypeName::String as i32,
+        "TYPE_NAME_INT" => TypeName::Int as i32,
+        "TYPE_NAME_UINT" => TypeName::Uint as i32,
+        "TYPE_NAME_DOUBLE" => TypeName::Double as i32,
+        "TYPE_NAME_DURATION" => TypeName::Duration as i32,
+        "TYPE_NAME_TIMESTAMP" => TypeName::Timestamp as i32,
+        "TYPE_NAME_MAP" => TypeName::Map as i32,
+        "TYPE_NAME_LIST" => TypeName::List as i32,
+        "TYPE_NAME_IPADDRESS" => TypeName::Ipaddress as i32,
+        _ => TypeName::Unspecified as i32,
+    }
+}
+
+/// Converts a StoredAuthorizationModel to a proto AuthorizationModel.
+fn stored_model_to_proto(stored: &StoredAuthorizationModel) -> Option<AuthorizationModel> {
+    // Parse the stored JSON
+    let parsed: serde_json::Value = serde_json::from_str(&stored.model_json).ok()?;
+
+    // Extract and convert type_definitions
+    let type_definitions: Vec<TypeDefinition> = parsed
+        .get("type_definitions")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(json_to_type_definition).collect())
+        .unwrap_or_default();
+
+    // Extract and convert conditions
+    let conditions: std::collections::HashMap<String, Condition> = parsed
+        .get("conditions")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| json_to_condition(v).map(|c| (k.clone(), c)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(AuthorizationModel {
+        id: stored.id.clone(),
+        schema_version: stored.schema_version.clone(),
+        type_definitions,
+        conditions,
+    })
+}
+
+/// Maximum size for authorization model JSON (1MB, same as HTTP layer).
+const MAX_AUTHORIZATION_MODEL_SIZE: usize = 1024 * 1024;
 
 #[tonic::async_trait]
 impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
@@ -1235,7 +1734,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         }))
     }
 
-    // Authorization model operations (stubs)
+    // Authorization model operations
     async fn read_authorization_models(
         &self,
         request: Request<ReadAuthorizationModelsRequest>,
@@ -1249,9 +1748,34 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
+        // Parse pagination from request
+        let page_size = req.page_size.map(|ps| ps.min(50)).unwrap_or(50);
+        let pagination = PaginationOptions {
+            page_size: Some(page_size as u32),
+            continuation_token: if req.continuation_token.is_empty() {
+                None
+            } else {
+                Some(req.continuation_token)
+            },
+        };
+
+        // Fetch models from storage with pagination
+        let result = self
+            .storage
+            .list_authorization_models_paginated(&req.store_id, &pagination)
+            .await
+            .map_err(storage_error_to_status)?;
+
+        // Convert stored models to proto AuthorizationModel
+        let authorization_models: Vec<AuthorizationModel> = result
+            .items
+            .into_iter()
+            .filter_map(|stored| stored_model_to_proto(&stored))
+            .collect();
+
         Ok(Response::new(ReadAuthorizationModelsResponse {
-            authorization_models: vec![],
-            continuation_token: String::new(),
+            authorization_models,
+            continuation_token: result.continuation_token.unwrap_or_default(),
         }))
     }
 
@@ -1268,7 +1792,25 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        Err(Status::not_found("authorization model not found"))
+        // Fetch the specific model from storage
+        let stored = self
+            .storage
+            .get_authorization_model(&req.store_id, &req.id)
+            .await
+            .map_err(|e| match e {
+                StorageError::ModelNotFound { model_id } => {
+                    Status::not_found(format!("authorization model not found: {model_id}"))
+                }
+                other => storage_error_to_status(other),
+            })?;
+
+        // Convert to proto AuthorizationModel
+        let authorization_model = stored_model_to_proto(&stored)
+            .ok_or_else(|| Status::internal("failed to parse stored authorization model"))?;
+
+        Ok(Response::new(ReadAuthorizationModelResponse {
+            authorization_model: Some(authorization_model),
+        }))
     }
 
     async fn write_authorization_model(
@@ -1284,7 +1826,56 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // TODO: Persist the authorization model to storage when implemented
+        // Validate type_definitions is not empty (OpenFGA requirement)
+        if req.type_definitions.is_empty() {
+            return Err(Status::invalid_argument("type_definitions cannot be empty"));
+        }
+
+        // Generate a new ULID for the model
+        let model_id = ulid::Ulid::new().to_string();
+
+        // Convert proto TypeDefinitions to JSON for storage
+        let type_definitions_json: Vec<serde_json::Value> = req
+            .type_definitions
+            .iter()
+            .map(type_definition_to_json)
+            .collect();
+
+        // Build model JSON (same format as HTTP layer)
+        let mut model_json = serde_json::json!({
+            "type_definitions": type_definitions_json,
+        });
+
+        // Convert conditions if present
+        if !req.conditions.is_empty() {
+            let conditions_json: serde_json::Map<String, serde_json::Value> = req
+                .conditions
+                .iter()
+                .map(|(k, v)| (k.clone(), condition_to_json(v)))
+                .collect();
+            model_json["conditions"] = serde_json::Value::Object(conditions_json);
+        }
+
+        // Validate model size before storage
+        let model_json_str = model_json.to_string();
+        if model_json_str.len() > MAX_AUTHORIZATION_MODEL_SIZE {
+            return Err(Status::invalid_argument(format!(
+                "authorization model exceeds maximum size of {MAX_AUTHORIZATION_MODEL_SIZE} bytes"
+            )));
+        }
+
+        // Create stored model and persist
+        let stored_model = StoredAuthorizationModel::new(
+            &model_id,
+            &req.store_id,
+            &req.schema_version,
+            model_json_str,
+        );
+
+        self.storage
+            .write_authorization_model(stored_model)
+            .await
+            .map_err(storage_error_to_status)?;
 
         // Invalidate CEL expression cache to ensure stale expressions from
         // previous models are not reused. This is critical for security:
@@ -1292,11 +1883,11 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         global_cache().invalidate_all();
 
         Ok(Response::new(WriteAuthorizationModelResponse {
-            authorization_model_id: ulid::Ulid::new().to_string(),
+            authorization_model_id: model_id,
         }))
     }
 
-    // Assertions (stubs)
+    // Assertions operations
     async fn read_assertions(
         &self,
         request: Request<ReadAssertionsRequest>,
@@ -1310,9 +1901,58 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
+        // Validate model exists
+        let _ = self
+            .storage
+            .get_authorization_model(&req.store_id, &req.authorization_model_id)
+            .await
+            .map_err(|e| match e {
+                StorageError::ModelNotFound { model_id } => {
+                    Status::not_found(format!("authorization model not found: {model_id}"))
+                }
+                other => storage_error_to_status(other),
+            })?;
+
+        // Read assertions from in-memory storage
+        let key = (req.store_id.clone(), req.authorization_model_id.clone());
+        let assertions: Vec<Assertion> = self
+            .assertions
+            .get(&key)
+            .map(|stored| {
+                stored
+                    .value()
+                    .iter()
+                    .map(|sa| Assertion {
+                        tuple_key: Some(TupleKey {
+                            user: sa.tuple_key.user.clone(),
+                            relation: sa.tuple_key.relation.clone(),
+                            object: sa.tuple_key.object.clone(),
+                            condition: None,
+                        }),
+                        expectation: sa.expectation,
+                        contextual_tuples: sa
+                            .contextual_tuples
+                            .as_ref()
+                            .map(|ct| {
+                                ct.tuple_keys
+                                    .iter()
+                                    .map(|tk| TupleKey {
+                                        user: tk.user.clone(),
+                                        relation: tk.relation.clone(),
+                                        object: tk.object.clone(),
+                                        condition: None,
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Ok(Response::new(ReadAssertionsResponse {
             authorization_model_id: req.authorization_model_id,
-            assertions: vec![],
+            assertions,
         }))
     }
 
@@ -1328,6 +1968,54 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .get_store(&req.store_id)
             .await
             .map_err(storage_error_to_status)?;
+
+        // Validate model exists
+        let _ = self
+            .storage
+            .get_authorization_model(&req.store_id, &req.authorization_model_id)
+            .await
+            .map_err(|e| match e {
+                StorageError::ModelNotFound { model_id } => {
+                    Status::not_found(format!("authorization model not found: {model_id}"))
+                }
+                other => storage_error_to_status(other),
+            })?;
+
+        // Convert proto assertions to stored format (same format as HTTP layer)
+        let stored_assertions: Vec<StoredAssertion> = req
+            .assertions
+            .into_iter()
+            .filter_map(|a| {
+                let tuple_key = a.tuple_key?;
+                Some(StoredAssertion {
+                    tuple_key: AssertionTupleKey {
+                        user: tuple_key.user,
+                        relation: tuple_key.relation,
+                        object: tuple_key.object,
+                    },
+                    expectation: a.expectation,
+                    contextual_tuples: if a.contextual_tuples.is_empty() {
+                        None
+                    } else {
+                        Some(ContextualTuplesWrapper {
+                            tuple_keys: a
+                                .contextual_tuples
+                                .into_iter()
+                                .map(|tk| AssertionTupleKey {
+                                    user: tk.user,
+                                    relation: tk.relation,
+                                    object: tk.object,
+                                })
+                                .collect(),
+                        })
+                    },
+                })
+            })
+            .collect();
+
+        // Store assertions (replaces existing)
+        let key = (req.store_id, req.authorization_model_id);
+        self.assertions.insert(key, stored_assertions);
 
         Ok(Response::new(WriteAssertionsResponse {}))
     }

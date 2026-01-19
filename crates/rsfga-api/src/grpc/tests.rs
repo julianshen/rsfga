@@ -774,11 +774,16 @@ async fn test_write_authorization_model_invalidates_cel_cache() {
         cache.entry_count()
     );
 
-    // Call write_authorization_model
+    // Call write_authorization_model with a valid type definition
+    use crate::proto::openfga::v1::TypeDefinition;
     let request = Request::new(WriteAuthorizationModelRequest {
         store_id: "test-store".to_string(),
-        type_definitions: vec![],
-        schema_version: String::new(),
+        type_definitions: vec![TypeDefinition {
+            r#type: "document".to_string(),
+            relations: Default::default(),
+            metadata: None,
+        }],
+        schema_version: "1.1".to_string(),
         conditions: Default::default(),
     });
 
