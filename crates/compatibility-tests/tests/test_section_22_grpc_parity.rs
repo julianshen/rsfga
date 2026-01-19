@@ -1268,7 +1268,7 @@ async fn test_error_invalid_relation_parity() -> Result<()> {
     .await?;
 
     // Try via gRPC
-    let (grpc_success, _stdout, _grpc_stderr) = grpc_call_with_error(
+    let (grpc_success, _stdout, grpc_stderr) = grpc_call_with_error(
         "openfga.v1.OpenFGAService/Check",
         &json!({
             "store_id": store_id,
@@ -1288,6 +1288,12 @@ async fn test_error_invalid_relation_parity() -> Result<()> {
         "REST should return 400 Bad Request for undefined relation, got {rest_status}"
     );
     assert!(!grpc_success, "gRPC should fail for undefined relation");
+    assert!(
+        grpc_stderr.contains("InvalidArgument")
+            || grpc_stderr.contains("invalid")
+            || grpc_stderr.contains("relation"),
+        "gRPC error should indicate invalid argument for undefined relation: {grpc_stderr}"
+    );
 
     Ok(())
 }
@@ -1369,9 +1375,12 @@ async fn test_error_invalid_type_parity() -> Result<()> {
         400,
         "REST should return 400 Bad Request for undefined type, got {rest_status}"
     );
+    assert!(!grpc_success, "gRPC should fail for undefined type");
     assert!(
-        !grpc_success,
-        "gRPC should fail for undefined type: {grpc_stderr}"
+        grpc_stderr.contains("InvalidArgument")
+            || grpc_stderr.contains("invalid")
+            || grpc_stderr.contains("type"),
+        "gRPC error should indicate invalid argument for undefined type: {grpc_stderr}"
     );
 
     Ok(())
@@ -1932,7 +1941,7 @@ async fn test_expand_computed_userset_parity() -> Result<()> {
             "Both should have or lack users consistently"
         );
 
-        // If users exist, compare the count
+        // If users exist, compare the count and actual user values
         if grpc_has_users {
             let grpc_users = grpc_leaf["users"].get("users").and_then(|u| u.as_array());
             let rest_users = rest_leaf["users"].get("users").and_then(|u| u.as_array());
@@ -1941,8 +1950,40 @@ async fn test_expand_computed_userset_parity() -> Result<()> {
                 rest_users.map(|u| u.len()),
                 "Both should have same number of users"
             );
+
+            // Compare actual user values (extract user strings and compare as sets)
+            if let (Some(grpc_arr), Some(rest_arr)) = (grpc_users, rest_users) {
+                let grpc_user_set: std::collections::HashSet<String> = grpc_arr
+                    .iter()
+                    .filter_map(|u| u.as_str().map(|s| s.to_string()))
+                    .collect();
+                let rest_user_set: std::collections::HashSet<String> = rest_arr
+                    .iter()
+                    .filter_map(|u| u.as_str().map(|s| s.to_string()))
+                    .collect();
+                assert_eq!(
+                    grpc_user_set, rest_user_set,
+                    "User sets should be identical between protocols"
+                );
+            }
         }
     }
+
+    // Additionally check for tupleToUserset node type
+    let grpc_has_tuple_to_userset = grpc_root.get("tupleToUserset").is_some();
+    let rest_has_tuple_to_userset = rest_root.get("tupleToUserset").is_some();
+    assert_eq!(
+        grpc_has_tuple_to_userset, rest_has_tuple_to_userset,
+        "Both should have same tupleToUserset node presence"
+    );
+
+    // Check for computed node type
+    let grpc_has_computed = grpc_root.get("computed").is_some();
+    let rest_has_computed = rest_root.get("computed").is_some();
+    assert_eq!(
+        grpc_has_computed, rest_has_computed,
+        "Both should have same computed node presence"
+    );
 
     Ok(())
 }
