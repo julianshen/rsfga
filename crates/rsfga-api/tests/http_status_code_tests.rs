@@ -257,7 +257,7 @@ async fn test_nonexistent_authorization_model_returns_404() {
 /// This test uses a mock storage to verify the error → HTTP status mapping.
 #[tokio::test]
 async fn test_duplicate_tuple_error_returns_409_conflict() {
-    let storage = Arc::new(DuplicateErrorStorage::new());
+    let storage = Arc::new(DuplicateErrorStorage::create());
 
     let state = AppState::new(storage);
     let app = create_router_with_body_limit(state, 1024 * 1024);
@@ -302,7 +302,7 @@ async fn test_duplicate_tuple_error_returns_409_conflict() {
 /// Test: ConditionConflict storage error returns 409 Conflict.
 #[tokio::test]
 async fn test_condition_conflict_error_returns_409() {
-    let storage = Arc::new(ConditionConflictStorage::new());
+    let storage = Arc::new(ConditionConflictStorage::create());
 
     let state = AppState::new(storage);
     let app = create_router_with_body_limit(state, 1024 * 1024);
@@ -426,7 +426,7 @@ async fn test_authorization_model_within_limits_succeeds() {
 #[tokio::test]
 async fn test_readiness_check_returns_503_when_storage_unavailable() {
     // Use a mock storage that returns a connection error
-    let storage = Arc::new(FailingStorage::new());
+    let storage = Arc::new(FailingStorage::create());
 
     let state = AppState::new(storage);
     let app = create_router_with_body_limit(state, 1024 * 1024);
@@ -487,7 +487,7 @@ async fn test_error_response_format_consistency() {
 #[tokio::test]
 async fn test_conflict_error_response_format() {
     // Use mock storage that returns DuplicateTuple error
-    let storage = Arc::new(DuplicateErrorStorage::new());
+    let storage = Arc::new(DuplicateErrorStorage::create());
 
     let state = AppState::new(storage);
     let app = create_router_with_body_limit(state, 1024 * 1024);
@@ -867,159 +867,81 @@ use rsfga_storage::{
 };
 use std::time::Duration;
 
-/// A mock storage that simulates connection failures.
-struct FailingStorage;
-
-impl FailingStorage {
-    fn new() -> Self {
-        Self
-    }
+/// Configurable error behavior for mock storage write operations.
+#[derive(Clone)]
+enum WriteError {
+    /// Return DuplicateTuple error
+    Duplicate,
+    /// Return ConditionConflict error
+    ConditionConflict,
 }
 
-#[async_trait]
-impl DataStore for FailingStorage {
-    async fn create_store(&self, _id: &str, _name: &str) -> StorageResult<Store> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn get_store(&self, _id: &str) -> StorageResult<Store> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn list_stores(&self) -> StorageResult<Vec<Store>> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn list_stores_paginated(
-        &self,
-        _pagination: &PaginationOptions,
-    ) -> StorageResult<PaginatedResult<Store>> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn update_store(&self, _id: &str, _name: &str) -> StorageResult<Store> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn delete_store(&self, _id: &str) -> StorageResult<()> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn write_authorization_model(&self, _model: SAM) -> StorageResult<SAM> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn get_authorization_model(
-        &self,
-        _store_id: &str,
-        _model_id: &str,
-    ) -> StorageResult<SAM> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn get_latest_authorization_model(&self, _store_id: &str) -> StorageResult<SAM> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn list_authorization_models(&self, _store_id: &str) -> StorageResult<Vec<SAM>> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn list_authorization_models_paginated(
-        &self,
-        _store_id: &str,
-        _pagination: &PaginationOptions,
-    ) -> StorageResult<PaginatedResult<SAM>> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn write_tuples(
-        &self,
-        _store_id: &str,
-        _writes: Vec<ST>,
-        _deletes: Vec<ST>,
-    ) -> StorageResult<()> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn read_tuples(&self, _store_id: &str, _filter: &TupleFilter) -> StorageResult<Vec<ST>> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn read_tuples_paginated(
-        &self,
-        _store_id: &str,
-        _filter: &TupleFilter,
-        _pagination: &PaginationOptions,
-    ) -> StorageResult<PaginatedResult<ST>> {
-        Err(StorageError::ConnectionError {
-            message: "database unavailable".to_string(),
-        })
-    }
-
-    async fn health_check(&self) -> StorageResult<HealthStatus> {
-        Err(StorageError::HealthCheckFailed {
-            message: "database unavailable".to_string(),
-        })
-    }
+/// Configurable mock storage for testing error scenarios.
+///
+/// Use factory methods to create pre-configured instances:
+/// - `MockStorage::failing()` - All operations return ConnectionError
+/// - `MockStorage::with_write_error(WriteError::Duplicate)` - Write returns DuplicateTuple
+/// - `MockStorage::with_write_error(WriteError::ConditionConflict)` - Write returns ConditionConflict
+struct MockStorage {
+    /// If true, all operations fail with ConnectionError
+    fail_all: bool,
+    /// Optional error to return on write operations
+    write_error: Option<WriteError>,
 }
 
-/// A mock storage that returns DuplicateTuple error on write.
-struct DuplicateErrorStorage;
-
-impl DuplicateErrorStorage {
-    fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl DataStore for DuplicateErrorStorage {
-    async fn create_store(&self, _id: &str, _name: &str) -> StorageResult<Store> {
-        Ok(Store {
-            id: "test-store".to_string(),
-            name: "Test Store".to_string(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        })
+impl MockStorage {
+    /// Create a mock that fails all operations with ConnectionError.
+    fn failing() -> Self {
+        Self {
+            fail_all: true,
+            write_error: None,
+        }
     }
 
-    async fn get_store(&self, id: &str) -> StorageResult<Store> {
-        Ok(Store {
+    /// Create a mock that returns a specific error on write operations.
+    fn with_write_error(error: WriteError) -> Self {
+        Self {
+            fail_all: false,
+            write_error: Some(error),
+        }
+    }
+
+    fn make_store(id: &str) -> Store {
+        Store {
             id: id.to_string(),
             name: "Test Store".to_string(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
-        })
+        }
+    }
+
+    fn connection_error() -> StorageError {
+        StorageError::ConnectionError {
+            message: "database unavailable".to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl DataStore for MockStorage {
+    async fn create_store(&self, id: &str, _name: &str) -> StorageResult<Store> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
+        Ok(Self::make_store(id))
+    }
+
+    async fn get_store(&self, id: &str) -> StorageResult<Store> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
+        Ok(Self::make_store(id))
     }
 
     async fn list_stores(&self) -> StorageResult<Vec<Store>> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
         Ok(vec![])
     }
 
@@ -1027,6 +949,9 @@ impl DataStore for DuplicateErrorStorage {
         &self,
         _pagination: &PaginationOptions,
     ) -> StorageResult<PaginatedResult<Store>> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
         Ok(PaginatedResult {
             items: vec![],
             continuation_token: None,
@@ -1034,6 +959,9 @@ impl DataStore for DuplicateErrorStorage {
     }
 
     async fn update_store(&self, id: &str, name: &str) -> StorageResult<Store> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
         Ok(Store {
             id: id.to_string(),
             name: name.to_string(),
@@ -1043,150 +971,30 @@ impl DataStore for DuplicateErrorStorage {
     }
 
     async fn delete_store(&self, _id: &str) -> StorageResult<()> {
-        Ok(())
-    }
-
-    async fn write_authorization_model(&self, model: SAM) -> StorageResult<SAM> {
-        Ok(model)
-    }
-
-    async fn get_authorization_model(&self, store_id: &str, model_id: &str) -> StorageResult<SAM> {
-        Ok(SAM::new(model_id, store_id, "1.1", "{}"))
-    }
-
-    async fn get_latest_authorization_model(&self, store_id: &str) -> StorageResult<SAM> {
-        Ok(SAM::new(
-            "model-1",
-            store_id,
-            "1.1",
-            r#"{"type_definitions":[{"type":"user"},{"type":"document","relations":{"viewer":{}}}]}"#,
-        ))
-    }
-
-    async fn list_authorization_models(&self, _store_id: &str) -> StorageResult<Vec<SAM>> {
-        Ok(vec![])
-    }
-
-    async fn list_authorization_models_paginated(
-        &self,
-        _store_id: &str,
-        _pagination: &PaginationOptions,
-    ) -> StorageResult<PaginatedResult<SAM>> {
-        Ok(PaginatedResult {
-            items: vec![],
-            continuation_token: None,
-        })
-    }
-
-    async fn write_tuples(
-        &self,
-        _store_id: &str,
-        writes: Vec<ST>,
-        _deletes: Vec<ST>,
-    ) -> StorageResult<()> {
-        // Always return DuplicateTuple error for any write
-        if let Some(tuple) = writes.first() {
-            return Err(StorageError::DuplicateTuple {
-                object_type: tuple.object_type.clone(),
-                object_id: tuple.object_id.clone(),
-                relation: tuple.relation.clone(),
-                user: format!("{}:{}", tuple.user_type, tuple.user_id),
-            });
+        if self.fail_all {
+            return Err(Self::connection_error());
         }
         Ok(())
     }
 
-    async fn read_tuples(&self, _store_id: &str, _filter: &TupleFilter) -> StorageResult<Vec<ST>> {
-        Ok(vec![])
-    }
-
-    async fn read_tuples_paginated(
-        &self,
-        _store_id: &str,
-        _filter: &TupleFilter,
-        _pagination: &PaginationOptions,
-    ) -> StorageResult<PaginatedResult<ST>> {
-        Ok(PaginatedResult {
-            items: vec![],
-            continuation_token: None,
-        })
-    }
-
-    async fn health_check(&self) -> StorageResult<HealthStatus> {
-        Ok(HealthStatus {
-            healthy: true,
-            latency: Duration::from_millis(1),
-            pool_stats: None,
-            message: Some("mock".to_string()),
-        })
-    }
-}
-
-/// A mock storage that returns ConditionConflict error on write.
-struct ConditionConflictStorage;
-
-impl ConditionConflictStorage {
-    fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl DataStore for ConditionConflictStorage {
-    async fn create_store(&self, _id: &str, _name: &str) -> StorageResult<Store> {
-        Ok(Store {
-            id: "test-store".to_string(),
-            name: "Test Store".to_string(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        })
-    }
-
-    async fn get_store(&self, id: &str) -> StorageResult<Store> {
-        Ok(Store {
-            id: id.to_string(),
-            name: "Test Store".to_string(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        })
-    }
-
-    async fn list_stores(&self) -> StorageResult<Vec<Store>> {
-        Ok(vec![])
-    }
-
-    async fn list_stores_paginated(
-        &self,
-        _pagination: &PaginationOptions,
-    ) -> StorageResult<PaginatedResult<Store>> {
-        Ok(PaginatedResult {
-            items: vec![],
-            continuation_token: None,
-        })
-    }
-
-    async fn update_store(&self, id: &str, name: &str) -> StorageResult<Store> {
-        Ok(Store {
-            id: id.to_string(),
-            name: name.to_string(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        })
-    }
-
-    async fn delete_store(&self, _id: &str) -> StorageResult<()> {
-        Ok(())
-    }
-
     async fn write_authorization_model(&self, model: SAM) -> StorageResult<SAM> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
         Ok(model)
     }
 
     async fn get_authorization_model(&self, store_id: &str, model_id: &str) -> StorageResult<SAM> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
         Ok(SAM::new(model_id, store_id, "1.1", "{}"))
     }
 
     async fn get_latest_authorization_model(&self, store_id: &str) -> StorageResult<SAM> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
         Ok(SAM::new(
             "model-1",
             store_id,
@@ -1196,6 +1004,9 @@ impl DataStore for ConditionConflictStorage {
     }
 
     async fn list_authorization_models(&self, _store_id: &str) -> StorageResult<Vec<SAM>> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
         Ok(vec![])
     }
 
@@ -1204,6 +1015,9 @@ impl DataStore for ConditionConflictStorage {
         _store_id: &str,
         _pagination: &PaginationOptions,
     ) -> StorageResult<PaginatedResult<SAM>> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
         Ok(PaginatedResult {
             items: vec![],
             continuation_token: None,
@@ -1216,24 +1030,37 @@ impl DataStore for ConditionConflictStorage {
         writes: Vec<ST>,
         _deletes: Vec<ST>,
     ) -> StorageResult<()> {
-        // Always return ConditionConflict error for any write
-        if let Some(tuple) = writes.first() {
-            return Err(StorageError::ConditionConflict(Box::new(
-                ConditionConflictError {
-                    store_id: store_id.to_string(),
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
+        if let (Some(error), Some(tuple)) = (&self.write_error, writes.first()) {
+            return match error {
+                WriteError::Duplicate => Err(StorageError::DuplicateTuple {
                     object_type: tuple.object_type.clone(),
                     object_id: tuple.object_id.clone(),
                     relation: tuple.relation.clone(),
                     user: format!("{}:{}", tuple.user_type, tuple.user_id),
-                    existing_condition: Some("condition_a".to_string()),
-                    new_condition: Some("condition_b".to_string()),
-                },
-            )));
+                }),
+                WriteError::ConditionConflict => Err(StorageError::ConditionConflict(Box::new(
+                    ConditionConflictError {
+                        store_id: store_id.to_string(),
+                        object_type: tuple.object_type.clone(),
+                        object_id: tuple.object_id.clone(),
+                        relation: tuple.relation.clone(),
+                        user: format!("{}:{}", tuple.user_type, tuple.user_id),
+                        existing_condition: Some("condition_a".to_string()),
+                        new_condition: Some("condition_b".to_string()),
+                    },
+                ))),
+            };
         }
         Ok(())
     }
 
     async fn read_tuples(&self, _store_id: &str, _filter: &TupleFilter) -> StorageResult<Vec<ST>> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
         Ok(vec![])
     }
 
@@ -1243,6 +1070,9 @@ impl DataStore for ConditionConflictStorage {
         _filter: &TupleFilter,
         _pagination: &PaginationOptions,
     ) -> StorageResult<PaginatedResult<ST>> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
         Ok(PaginatedResult {
             items: vec![],
             continuation_token: None,
@@ -1250,11 +1080,39 @@ impl DataStore for ConditionConflictStorage {
     }
 
     async fn health_check(&self) -> StorageResult<HealthStatus> {
+        if self.fail_all {
+            return Err(StorageError::HealthCheckFailed {
+                message: "database unavailable".to_string(),
+            });
+        }
         Ok(HealthStatus {
             healthy: true,
             latency: Duration::from_millis(1),
             pool_stats: None,
             message: Some("mock".to_string()),
         })
+    }
+}
+
+// Factory functions for backwards compatibility with existing tests
+struct FailingStorage;
+struct DuplicateErrorStorage;
+struct ConditionConflictStorage;
+
+impl FailingStorage {
+    fn create() -> MockStorage {
+        MockStorage::failing()
+    }
+}
+
+impl DuplicateErrorStorage {
+    fn create() -> MockStorage {
+        MockStorage::with_write_error(WriteError::Duplicate)
+    }
+}
+
+impl ConditionConflictStorage {
+    fn create() -> MockStorage {
+        MockStorage::with_write_error(WriteError::ConditionConflict)
     }
 }
