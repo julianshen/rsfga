@@ -61,6 +61,24 @@ const MAX_CORRELATION_ID_LENGTH: usize = 256;
 /// let cache_config = CheckCacheConfig::default().with_enabled(true);
 /// let service = OpenFgaGrpcService::with_cache_config(storage, cache_config);
 /// ```
+///
+/// # Memory Usage Characteristics
+///
+/// Assertions are stored in-memory using a `DashMap`. This design provides:
+/// - Fast read/write access for assertions
+/// - No database storage overhead
+///
+/// **Production Considerations:**
+/// - Assertions are scoped per (store_id, model_id) pair
+/// - Memory grows with number of stores × models × assertions per model
+/// - Assertions are cleaned up when stores are deleted
+/// - Memory is NOT recovered when individual models are deleted (only store deletion)
+/// - For high-volume production environments, consider:
+///   - Limiting number of assertions per model via API validation
+///   - Implementing periodic cleanup of old/unused model assertions
+///   - Monitoring memory usage via metrics
+///
+/// OpenFGA also stores assertions in-memory, so this matches their behavior.
 pub struct OpenFgaGrpcService<S: DataStore> {
     storage: Arc<S>,
     /// The graph resolver for single checks.
@@ -69,8 +87,12 @@ pub struct OpenFgaGrpcService<S: DataStore> {
     batch_handler: Arc<BatchCheckHandler<DataStoreTupleReader<S>, DataStoreModelReader<S>>>,
     /// The check result cache, stored for future invalidation in write handlers.
     cache: Arc<CheckCache>,
-    /// In-memory assertions storage (store_id, model_id) -> assertions.
-    /// Shared with HTTP layer format for consistency.
+    /// In-memory assertions storage keyed by (store_id, model_id).
+    ///
+    /// # Memory Management
+    /// - Entries are removed when stores are deleted via `delete_store`
+    /// - WriteAssertions replaces all assertions for a key (not append)
+    /// - Typical usage: ~100-1000 assertions per model for testing scenarios
     assertions: Arc<DashMap<AssertionKey, Vec<StoredAssertion>>>,
 }
 
@@ -945,24 +967,67 @@ fn string_to_type_name(s: &str) -> i32 {
 }
 
 /// Converts a StoredAuthorizationModel to a proto AuthorizationModel.
+///
+/// Logs warnings when individual type definitions or conditions fail to parse,
+/// instead of silently dropping them. This helps diagnose data corruption issues.
 fn stored_model_to_proto(stored: &StoredAuthorizationModel) -> Option<AuthorizationModel> {
     // Parse the stored JSON
-    let parsed: serde_json::Value = serde_json::from_str(&stored.model_json).ok()?;
+    let parsed: serde_json::Value = match serde_json::from_str(&stored.model_json) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                model_id = %stored.id,
+                store_id = %stored.store_id,
+                error = %e,
+                "Failed to parse authorization model JSON"
+            );
+            return None;
+        }
+    };
 
-    // Extract and convert type_definitions
+    // Extract and convert type_definitions with logging for failures
     let type_definitions: Vec<TypeDefinition> = parsed
         .get("type_definitions")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(json_to_type_definition).collect())
+        .map(|arr| {
+            arr.iter()
+                .enumerate()
+                .filter_map(|(idx, td_json)| match json_to_type_definition(td_json) {
+                    Some(td) => Some(td),
+                    None => {
+                        tracing::warn!(
+                            model_id = %stored.id,
+                            store_id = %stored.store_id,
+                            type_def_index = idx,
+                            type_def_json = %td_json,
+                            "Failed to parse type definition in authorization model"
+                        );
+                        None
+                    }
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
-    // Extract and convert conditions
+    // Extract and convert conditions with logging for failures
     let conditions: std::collections::HashMap<String, Condition> = parsed
         .get("conditions")
         .and_then(|v| v.as_object())
         .map(|obj| {
             obj.iter()
-                .filter_map(|(k, v)| json_to_condition(v).map(|c| (k.clone(), c)))
+                .filter_map(|(k, v)| match json_to_condition(v) {
+                    Some(c) => Some((k.clone(), c)),
+                    None => {
+                        tracing::warn!(
+                            model_id = %stored.id,
+                            store_id = %stored.store_id,
+                            condition_name = %k,
+                            condition_json = %v,
+                            "Failed to parse condition in authorization model"
+                        );
+                        None
+                    }
+                })
                 .collect()
         })
         .unwrap_or_default();

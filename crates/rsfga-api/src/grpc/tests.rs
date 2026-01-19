@@ -1685,3 +1685,904 @@ async fn test_grpc_list_authorization_models() {
     assert!(model_ids.contains(&model_id_1));
     assert!(model_ids.contains(&model_id_2));
 }
+
+// =============================================================================
+// Authorization Model Tests
+// =============================================================================
+
+/// Test: WriteAuthorizationModel persists model and returns valid ID
+#[tokio::test]
+async fn test_write_authorization_model_persists_and_returns_id() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    let request = Request::new(WriteAuthorizationModelRequest {
+        store_id: "test-store".to_string(),
+        type_definitions: vec![
+            TypeDefinition {
+                r#type: "user".to_string(),
+                relations: Default::default(),
+                metadata: None,
+            },
+            TypeDefinition {
+                r#type: "document".to_string(),
+                relations: [(
+                    "viewer".to_string(),
+                    Userset {
+                        userset: Some(crate::proto::openfga::v1::userset::Userset::This(
+                            DirectUserset {},
+                        )),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                metadata: None,
+            },
+        ],
+        schema_version: "1.1".to_string(),
+        conditions: Default::default(),
+    });
+
+    let response = service.write_authorization_model(request).await;
+    assert!(response.is_ok());
+
+    let model_id = response.unwrap().into_inner().authorization_model_id;
+    assert!(!model_id.is_empty());
+
+    // Verify model was persisted by reading it back
+    let read_request = Request::new(ReadAuthorizationModelRequest {
+        store_id: "test-store".to_string(),
+        id: model_id.clone(),
+    });
+
+    let read_response = service.read_authorization_model(read_request).await;
+    assert!(read_response.is_ok());
+
+    let model = read_response
+        .unwrap()
+        .into_inner()
+        .authorization_model
+        .unwrap();
+    assert_eq!(model.id, model_id);
+    assert_eq!(model.type_definitions.len(), 2);
+}
+
+/// Test: WriteAuthorizationModel rejects empty type_definitions
+#[tokio::test]
+async fn test_write_authorization_model_rejects_empty_type_definitions() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(WriteAuthorizationModelRequest {
+        store_id: "test-store".to_string(),
+        type_definitions: vec![], // Empty!
+        schema_version: "1.1".to_string(),
+        conditions: Default::default(),
+    });
+
+    let response = service.write_authorization_model(request).await;
+    assert!(response.is_err());
+
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("type_definitions"));
+    assert!(status.message().contains("empty"));
+}
+
+/// Test: WriteAuthorizationModel rejects oversized models
+#[tokio::test]
+async fn test_write_authorization_model_rejects_oversized_model() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Create a model that exceeds 1MB by having many type definitions with long names
+    let type_definitions: Vec<TypeDefinition> = (0..10000)
+        .map(|i| TypeDefinition {
+            r#type: format!(
+                "type_{}_with_very_long_name_to_increase_size_{}",
+                i,
+                "x".repeat(100)
+            ),
+            relations: Default::default(),
+            metadata: None,
+        })
+        .collect();
+
+    let request = Request::new(WriteAuthorizationModelRequest {
+        store_id: "test-store".to_string(),
+        type_definitions,
+        schema_version: "1.1".to_string(),
+        conditions: Default::default(),
+    });
+
+    let response = service.write_authorization_model(request).await;
+    assert!(response.is_err());
+
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("exceeds maximum size"));
+}
+
+/// Test: ReadAuthorizationModels pagination works correctly
+#[tokio::test]
+async fn test_read_authorization_models_pagination() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Create 5 models
+    for i in 0..5 {
+        let request = Request::new(WriteAuthorizationModelRequest {
+            store_id: "test-store".to_string(),
+            type_definitions: vec![TypeDefinition {
+                r#type: format!("type{i}"),
+                relations: Default::default(),
+                metadata: None,
+            }],
+            schema_version: "1.1".to_string(),
+            conditions: Default::default(),
+        });
+        service.write_authorization_model(request).await.unwrap();
+    }
+
+    // Read with page size 2
+    let request = Request::new(ReadAuthorizationModelsRequest {
+        store_id: "test-store".to_string(),
+        page_size: Some(2),
+        continuation_token: String::new(),
+    });
+
+    let response = service.read_authorization_models(request).await.unwrap();
+    let result = response.into_inner();
+
+    assert_eq!(result.authorization_models.len(), 2);
+    assert!(!result.continuation_token.is_empty());
+
+    // Read next page
+    let request = Request::new(ReadAuthorizationModelsRequest {
+        store_id: "test-store".to_string(),
+        page_size: Some(2),
+        continuation_token: result.continuation_token,
+    });
+
+    let response = service.read_authorization_models(request).await.unwrap();
+    let result = response.into_inner();
+
+    assert_eq!(result.authorization_models.len(), 2);
+}
+
+/// Test: ReadAuthorizationModels caps page size at DEFAULT_PAGE_SIZE (50)
+#[tokio::test]
+async fn test_read_authorization_models_caps_page_size() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Create one model
+    let model = StoredAuthorizationModel::new(
+        ulid::Ulid::new().to_string(),
+        "test-store",
+        "1.1",
+        simple_model_json(),
+    );
+    storage.write_authorization_model(model).await.unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Request with page size > 50 should be capped
+    let request = Request::new(ReadAuthorizationModelsRequest {
+        store_id: "test-store".to_string(),
+        page_size: Some(1000),
+        continuation_token: String::new(),
+    });
+
+    // Should succeed (page size capped, not rejected)
+    let response = service.read_authorization_models(request).await;
+    assert!(response.is_ok());
+}
+
+/// Test: ReadAuthorizationModel returns NOT_FOUND for non-existent model
+#[tokio::test]
+async fn test_read_authorization_model_not_found() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(ReadAuthorizationModelRequest {
+        store_id: "test-store".to_string(),
+        id: "nonexistent-model-id".to_string(),
+    });
+
+    let response = service.read_authorization_model(request).await;
+    assert!(response.is_err());
+    assert_eq!(response.unwrap_err().code(), tonic::Code::NotFound);
+}
+
+// =============================================================================
+// Assertions Tests
+// =============================================================================
+
+/// Test: WriteAssertions and ReadAssertions roundtrip
+#[tokio::test]
+async fn test_assertions_write_and_read_roundtrip() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let model_id = setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    // Write assertions
+    let write_request = Request::new(WriteAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id.clone(),
+        assertions: vec![
+            Assertion {
+                tuple_key: Some(TupleKey {
+                    user: "user:alice".to_string(),
+                    relation: "viewer".to_string(),
+                    object: "document:readme".to_string(),
+                    condition: None,
+                }),
+                expectation: true,
+                contextual_tuples: vec![],
+            },
+            Assertion {
+                tuple_key: Some(TupleKey {
+                    user: "user:bob".to_string(),
+                    relation: "editor".to_string(),
+                    object: "document:readme".to_string(),
+                    condition: None,
+                }),
+                expectation: false,
+                contextual_tuples: vec![],
+            },
+        ],
+    });
+
+    let response = service.write_assertions(write_request).await;
+    assert!(response.is_ok());
+
+    // Read assertions back
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id.clone(),
+    });
+
+    let response = service.read_assertions(read_request).await;
+    assert!(response.is_ok());
+
+    let result = response.unwrap().into_inner();
+    assert_eq!(result.authorization_model_id, model_id);
+    assert_eq!(result.assertions.len(), 2);
+
+    // Verify first assertion
+    let assertion1 = &result.assertions[0];
+    assert_eq!(assertion1.tuple_key.as_ref().unwrap().user, "user:alice");
+    assert!(assertion1.expectation);
+
+    // Verify second assertion
+    let assertion2 = &result.assertions[1];
+    assert_eq!(assertion2.tuple_key.as_ref().unwrap().user, "user:bob");
+    assert!(!assertion2.expectation);
+}
+
+/// Test: Assertions with conditions are preserved
+#[tokio::test]
+async fn test_assertions_preserve_conditions() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let model_id = setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    // Build condition with context
+    let mut context_fields = std::collections::BTreeMap::new();
+    context_fields.insert(
+        "ip_address".to_string(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::StringValue(
+                "192.168.1.1".to_string(),
+            )),
+        },
+    );
+
+    let condition = RelationshipCondition {
+        name: "ip_restriction".to_string(),
+        context: Some(prost_types::Struct {
+            fields: context_fields,
+        }),
+    };
+
+    // Write assertion with condition
+    let write_request = Request::new(WriteAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id.clone(),
+        assertions: vec![Assertion {
+            tuple_key: Some(TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:secret".to_string(),
+                condition: Some(condition),
+            }),
+            expectation: true,
+            contextual_tuples: vec![],
+        }],
+    });
+
+    service.write_assertions(write_request).await.unwrap();
+
+    // Read assertions back
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id,
+    });
+
+    let response = service.read_assertions(read_request).await.unwrap();
+    let assertions = response.into_inner().assertions;
+
+    assert_eq!(assertions.len(), 1);
+    let assertion = &assertions[0];
+    let tuple_key = assertion.tuple_key.as_ref().unwrap();
+
+    // Verify condition is preserved
+    let condition = tuple_key
+        .condition
+        .as_ref()
+        .expect("condition should be preserved");
+    assert_eq!(condition.name, "ip_restriction");
+
+    let context = condition
+        .context
+        .as_ref()
+        .expect("context should be present");
+    let ip_value = context
+        .fields
+        .get("ip_address")
+        .expect("ip_address should exist");
+    assert!(matches!(
+        ip_value.kind,
+        Some(prost_types::value::Kind::StringValue(ref s)) if s == "192.168.1.1"
+    ));
+}
+
+/// Test: Assertions with contextual tuples are preserved
+#[tokio::test]
+async fn test_assertions_preserve_contextual_tuples() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let model_id = setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    // Write assertion with contextual tuples
+    let write_request = Request::new(WriteAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id.clone(),
+        assertions: vec![Assertion {
+            tuple_key: Some(TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:readme".to_string(),
+                condition: None,
+            }),
+            expectation: true,
+            contextual_tuples: vec![
+                TupleKey {
+                    user: "user:alice".to_string(),
+                    relation: "viewer".to_string(),
+                    object: "document:readme".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "user:bob".to_string(),
+                    relation: "editor".to_string(),
+                    object: "document:readme".to_string(),
+                    condition: None,
+                },
+            ],
+        }],
+    });
+
+    service.write_assertions(write_request).await.unwrap();
+
+    // Read assertions back
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id,
+    });
+
+    let response = service.read_assertions(read_request).await.unwrap();
+    let assertions = response.into_inner().assertions;
+
+    assert_eq!(assertions.len(), 1);
+    let assertion = &assertions[0];
+
+    // Verify contextual tuples are preserved
+    assert_eq!(assertion.contextual_tuples.len(), 2);
+    assert_eq!(assertion.contextual_tuples[0].user, "user:alice");
+    assert_eq!(assertion.contextual_tuples[1].user, "user:bob");
+}
+
+/// Test: WriteAssertions replaces existing assertions
+#[tokio::test]
+async fn test_assertions_write_replaces_existing() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let model_id = setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    // Write initial assertions
+    let write_request = Request::new(WriteAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id.clone(),
+        assertions: vec![
+            Assertion {
+                tuple_key: Some(TupleKey {
+                    user: "user:alice".to_string(),
+                    relation: "viewer".to_string(),
+                    object: "document:doc1".to_string(),
+                    condition: None,
+                }),
+                expectation: true,
+                contextual_tuples: vec![],
+            },
+            Assertion {
+                tuple_key: Some(TupleKey {
+                    user: "user:bob".to_string(),
+                    relation: "viewer".to_string(),
+                    object: "document:doc2".to_string(),
+                    condition: None,
+                }),
+                expectation: true,
+                contextual_tuples: vec![],
+            },
+        ],
+    });
+
+    service.write_assertions(write_request).await.unwrap();
+
+    // Verify initial assertions
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id.clone(),
+    });
+    let response = service.read_assertions(read_request).await.unwrap();
+    assert_eq!(response.into_inner().assertions.len(), 2);
+
+    // Write new assertions (should replace)
+    let write_request = Request::new(WriteAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id.clone(),
+        assertions: vec![Assertion {
+            tuple_key: Some(TupleKey {
+                user: "user:carol".to_string(),
+                relation: "owner".to_string(),
+                object: "document:doc3".to_string(),
+                condition: None,
+            }),
+            expectation: false,
+            contextual_tuples: vec![],
+        }],
+    });
+
+    service.write_assertions(write_request).await.unwrap();
+
+    // Verify assertions were replaced
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id,
+    });
+    let response = service.read_assertions(read_request).await.unwrap();
+    let assertions = response.into_inner().assertions;
+
+    assert_eq!(assertions.len(), 1);
+    assert_eq!(assertions[0].tuple_key.as_ref().unwrap().user, "user:carol");
+}
+
+/// Test: ReadAssertions returns empty for non-existent assertions
+#[tokio::test]
+async fn test_assertions_read_returns_empty_for_nonexistent() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let model_id = setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id.clone(),
+    });
+
+    let response = service.read_assertions(read_request).await;
+    assert!(response.is_ok());
+
+    let result = response.unwrap().into_inner();
+    assert_eq!(result.authorization_model_id, model_id);
+    assert!(result.assertions.is_empty());
+}
+
+/// Test: WriteAssertions validates store exists
+#[tokio::test]
+async fn test_assertions_write_validates_store_exists() {
+    let service = test_service();
+
+    let write_request = Request::new(WriteAssertionsRequest {
+        store_id: "nonexistent-store".to_string(),
+        authorization_model_id: "some-model-id".to_string(),
+        assertions: vec![],
+    });
+
+    let response = service.write_assertions(write_request).await;
+    assert!(response.is_err());
+    assert_eq!(response.unwrap_err().code(), tonic::Code::NotFound);
+}
+
+/// Test: WriteAssertions validates model exists
+#[tokio::test]
+async fn test_assertions_write_validates_model_exists() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    let write_request = Request::new(WriteAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: "nonexistent-model".to_string(),
+        assertions: vec![],
+    });
+
+    let response = service.write_assertions(write_request).await;
+    assert!(response.is_err());
+    assert_eq!(response.unwrap_err().code(), tonic::Code::NotFound);
+}
+
+/// Test: ReadAssertions validates store exists
+#[tokio::test]
+async fn test_assertions_read_validates_store_exists() {
+    let service = test_service();
+
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "nonexistent-store".to_string(),
+        authorization_model_id: "some-model-id".to_string(),
+    });
+
+    let response = service.read_assertions(read_request).await;
+    assert!(response.is_err());
+    assert_eq!(response.unwrap_err().code(), tonic::Code::NotFound);
+}
+
+/// Test: ReadAssertions validates model exists
+#[tokio::test]
+async fn test_assertions_read_validates_model_exists() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: "nonexistent-model".to_string(),
+    });
+
+    let response = service.read_assertions(read_request).await;
+    assert!(response.is_err());
+    assert_eq!(response.unwrap_err().code(), tonic::Code::NotFound);
+}
+
+// =============================================================================
+// Store Deletion and Cleanup Tests
+// =============================================================================
+
+/// Test: DeleteStore cleans up assertions
+#[tokio::test]
+async fn test_delete_store_cleans_up_assertions() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let model_id = setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Write assertions
+    let write_request = Request::new(WriteAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id.clone(),
+        assertions: vec![Assertion {
+            tuple_key: Some(TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:readme".to_string(),
+                condition: None,
+            }),
+            expectation: true,
+            contextual_tuples: vec![],
+        }],
+    });
+    service.write_assertions(write_request).await.unwrap();
+
+    // Verify assertions exist
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id.clone(),
+    });
+    let response = service.read_assertions(read_request).await.unwrap();
+    assert_eq!(response.into_inner().assertions.len(), 1);
+
+    // Delete the store
+    let delete_request = Request::new(DeleteStoreRequest {
+        store_id: "test-store".to_string(),
+    });
+    service.delete_store(delete_request).await.unwrap();
+
+    // Create the store again
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+    let new_model_id = setup_simple_model(&storage, "test-store").await;
+
+    // Verify assertions were cleaned up (reading with old model_id should fail since model doesn't exist)
+    // but reading with new model should show no assertions
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: new_model_id,
+    });
+    let response = service.read_assertions(read_request).await.unwrap();
+    assert!(response.into_inner().assertions.is_empty());
+}
+
+// =============================================================================
+// Proto-JSON Conversion Roundtrip Tests
+// =============================================================================
+
+/// Test: TypeDefinition proto-JSON roundtrip preserves data
+#[tokio::test]
+async fn test_type_definition_roundtrip() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Create a complex type definition with various userset types
+    let type_definitions = vec![
+        TypeDefinition {
+            r#type: "user".to_string(),
+            relations: Default::default(),
+            metadata: None,
+        },
+        TypeDefinition {
+            r#type: "group".to_string(),
+            relations: [(
+                "member".to_string(),
+                Userset {
+                    userset: Some(crate::proto::openfga::v1::userset::Userset::This(
+                        DirectUserset {},
+                    )),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            metadata: None,
+        },
+        TypeDefinition {
+            r#type: "document".to_string(),
+            relations: [
+                (
+                    "owner".to_string(),
+                    Userset {
+                        userset: Some(crate::proto::openfga::v1::userset::Userset::This(
+                            DirectUserset {},
+                        )),
+                    },
+                ),
+                (
+                    "viewer".to_string(),
+                    Userset {
+                        userset: Some(crate::proto::openfga::v1::userset::Userset::Union(
+                            Usersets {
+                                child: vec![
+                                    Userset {
+                                        userset: Some(
+                                            crate::proto::openfga::v1::userset::Userset::This(
+                                                DirectUserset {},
+                                            ),
+                                        ),
+                                    },
+                                    Userset {
+                                        userset: Some(
+                                            crate::proto::openfga::v1::userset::Userset::ComputedUserset(
+                                                ObjectRelation {
+                                                    object: String::new(),
+                                                    relation: "owner".to_string(),
+                                                },
+                                            ),
+                                        ),
+                                    },
+                                ],
+                            },
+                        )),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            metadata: None,
+        },
+    ];
+
+    // Write the model
+    let write_request = Request::new(WriteAuthorizationModelRequest {
+        store_id: "test-store".to_string(),
+        type_definitions: type_definitions.clone(),
+        schema_version: "1.1".to_string(),
+        conditions: Default::default(),
+    });
+
+    let response = service
+        .write_authorization_model(write_request)
+        .await
+        .unwrap();
+    let model_id = response.into_inner().authorization_model_id;
+
+    // Read the model back
+    let read_request = Request::new(ReadAuthorizationModelRequest {
+        store_id: "test-store".to_string(),
+        id: model_id,
+    });
+
+    let response = service
+        .read_authorization_model(read_request)
+        .await
+        .unwrap();
+    let model = response.into_inner().authorization_model.unwrap();
+
+    // Verify type definitions were preserved
+    assert_eq!(model.type_definitions.len(), 3);
+
+    // Find the document type
+    let doc_type = model
+        .type_definitions
+        .iter()
+        .find(|td| td.r#type == "document")
+        .expect("document type should exist");
+
+    // Verify viewer relation has union with 2 children
+    let viewer_rel = doc_type
+        .relations
+        .get("viewer")
+        .expect("viewer relation should exist");
+    if let Some(crate::proto::openfga::v1::userset::Userset::Union(union)) = &viewer_rel.userset {
+        assert_eq!(union.child.len(), 2);
+    } else {
+        panic!("viewer should be a union");
+    }
+}
+
+/// Test: Conditions in authorization model are preserved
+#[tokio::test]
+async fn test_authorization_model_conditions_roundtrip() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Create model with conditions
+    let mut conditions = std::collections::HashMap::new();
+    conditions.insert(
+        "ip_restriction".to_string(),
+        Condition {
+            name: "ip_restriction".to_string(),
+            expression: "request.ip == '192.168.1.1'".to_string(),
+            parameters: [(
+                "allowed_ip".to_string(),
+                ConditionParamTypeRef {
+                    type_name: TypeName::String as i32,
+                    generic_types: vec![],
+                },
+            )]
+            .into_iter()
+            .collect(),
+            metadata: None,
+        },
+    );
+
+    let write_request = Request::new(WriteAuthorizationModelRequest {
+        store_id: "test-store".to_string(),
+        type_definitions: vec![TypeDefinition {
+            r#type: "document".to_string(),
+            relations: Default::default(),
+            metadata: None,
+        }],
+        schema_version: "1.1".to_string(),
+        conditions,
+    });
+
+    let response = service
+        .write_authorization_model(write_request)
+        .await
+        .unwrap();
+    let model_id = response.into_inner().authorization_model_id;
+
+    // Read the model back
+    let read_request = Request::new(ReadAuthorizationModelRequest {
+        store_id: "test-store".to_string(),
+        id: model_id,
+    });
+
+    let response = service
+        .read_authorization_model(read_request)
+        .await
+        .unwrap();
+    let model = response.into_inner().authorization_model.unwrap();
+
+    // Verify conditions were preserved
+    assert_eq!(model.conditions.len(), 1);
+    let condition = model
+        .conditions
+        .get("ip_restriction")
+        .expect("condition should exist");
+    assert_eq!(condition.name, "ip_restriction");
+    assert_eq!(condition.expression, "request.ip == '192.168.1.1'");
+    assert!(condition.parameters.contains_key("allowed_ip"));
+}

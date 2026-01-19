@@ -72,6 +72,17 @@ pub struct ContextualTuplesWrapper {
 /// let cache_config = CheckCacheConfig::default().with_enabled(true);
 /// let state = AppState::with_cache_config(storage, cache_config);
 /// ```
+///
+/// # Memory Usage for Assertions
+///
+/// Assertions are stored in-memory using a `DashMap`. Memory grows with the
+/// number of stores × models × assertions. Assertions are cleaned up when
+/// stores are deleted. OpenFGA also stores assertions in-memory, so this
+/// matches their behavior. For production deployments, monitor memory usage
+/// and consider limiting assertions per model if needed.
+///
+/// # Assertions Key Type
+///
 /// Key for assertions storage: (store_id, authorization_model_id).
 pub type AssertionKey = (String, String);
 
@@ -85,7 +96,8 @@ pub struct AppState<S: DataStore> {
     pub resolver: Arc<GraphResolver<DataStoreTupleReader<S>, DataStoreModelReader<S>>>,
     /// The check result cache (always created, but only attached to resolver if enabled).
     pub cache: Arc<CheckCache>,
-    /// In-memory assertions storage (store_id, model_id) -> assertions.
+    /// In-memory assertions storage keyed by (store_id, model_id).
+    /// See struct-level documentation for memory usage characteristics.
     pub assertions: Arc<DashMap<AssertionKey, Vec<StoredAssertion>>>,
 }
 
