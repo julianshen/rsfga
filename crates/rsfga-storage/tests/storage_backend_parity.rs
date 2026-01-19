@@ -9,6 +9,15 @@
 //! Security-Critical: Authorization bugs in one backend but not others
 //! could lead to unauthorized access. These tests ensure parity.
 //!
+//! # Delete Operation Semantics
+//!
+//! The storage layer follows **idempotent delete semantics**: deleting a tuple
+//! that doesn't exist is NOT an error. This matches OpenFGA behavior and
+//! simplifies client code (no need to check existence before delete).
+//!
+//! Some backends may return `TupleNotFound` while others succeed silently.
+//! Both behaviors are acceptable per the DataStore trait contract.
+//!
 //! To run these tests:
 //!   # In-memory only (always runs)
 //!   cargo test -p rsfga-storage --test storage_backend_parity
@@ -32,6 +41,67 @@ use rsfga_storage::{
 };
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+// ============================================================================
+// Test Constants
+// ============================================================================
+
+/// Number of concurrent tasks for parallelism tests.
+/// Must be <= MAX_DB_CONNECTIONS to ensure true parallelism.
+const CONCURRENT_TASK_COUNT: u32 = 20;
+
+/// Number of tuples each concurrent task writes.
+const TUPLES_PER_TASK: u32 = 50;
+
+/// Total tuples expected from concurrent write tests.
+const TOTAL_CONCURRENT_TUPLES: usize = (CONCURRENT_TASK_COUNT * TUPLES_PER_TASK) as usize;
+
+/// Number of tuples for batch concurrent write tests.
+const BATCH_TUPLES_PER_TASK: u32 = 100;
+
+/// Number of concurrent tasks for batch write tests.
+const BATCH_CONCURRENT_TASK_COUNT: u32 = 10;
+
+/// Total tuples expected from batch concurrent tests.
+const TOTAL_BATCH_TUPLES: usize = (BATCH_CONCURRENT_TASK_COUNT * BATCH_TUPLES_PER_TASK) as usize;
+
+/// Number of tuples for pagination integrity tests.
+const PAGINATION_TEST_TUPLE_COUNT: usize = 100;
+
+/// Page size for pagination tests (odd number to test edge cases).
+const PAGINATION_PAGE_SIZE: u32 = 7;
+
+/// Number of tuples per type for filtered pagination tests.
+const FILTERED_PAGINATION_TUPLE_COUNT: usize = 50;
+
+/// Page size for filtered pagination tests.
+const FILTERED_PAGINATION_PAGE_SIZE: u32 = 11;
+
+/// Number of stores for list_stores tests.
+const LIST_STORES_COUNT: usize = 5;
+
+/// Number of stores for paginated list_stores tests.
+const LIST_STORES_PAGINATED_COUNT: usize = 25;
+
+/// Page size for paginated list_stores tests.
+const LIST_STORES_PAGE_SIZE: u32 = 7;
+
+/// Number of tuples for large dataset tests.
+const LARGE_DATASET_TUPLE_COUNT: usize = 10_000;
+
+/// Number of unique users in large dataset tests.
+const LARGE_DATASET_USER_COUNT: usize = 100;
+
+/// Page size for large dataset pagination.
+const LARGE_DATASET_PAGE_SIZE: u32 = 1000;
+
+/// Maximum database connections - must support CONCURRENT_TASK_COUNT + headroom.
+const MAX_DB_CONNECTIONS: u32 = 25;
+
+/// Minimum expected parallelism speedup factor.
+/// If sequential would take N*T, parallel should take < N*T/SPEEDUP_FACTOR.
+const MIN_PARALLELISM_SPEEDUP: f64 = 2.0;
 
 // ============================================================================
 // Test Infrastructure
@@ -62,7 +132,7 @@ fn create_memory_store() -> MemoryDataStore {
 async fn create_postgres_store() -> PostgresDataStore {
     let config = PostgresConfig {
         database_url: get_postgres_url(),
-        max_connections: 5,
+        max_connections: MAX_DB_CONNECTIONS,
         min_connections: 1,
         connect_timeout_secs: 30,
         ..Default::default()
@@ -84,7 +154,7 @@ async fn create_postgres_store() -> PostgresDataStore {
 async fn create_mysql_store() -> MySQLDataStore {
     let config = MySQLConfig {
         database_url: get_mysql_url(),
-        max_connections: 5,
+        max_connections: MAX_DB_CONNECTIONS,
         min_connections: 1,
         connect_timeout_secs: 30,
         ..Default::default()
@@ -106,7 +176,7 @@ async fn create_mysql_store() -> MySQLDataStore {
 async fn create_cockroachdb_store() -> PostgresDataStore {
     let config = PostgresConfig {
         database_url: get_cockroachdb_url(),
-        max_connections: 5,
+        max_connections: MAX_DB_CONNECTIONS,
         min_connections: 1,
         connect_timeout_secs: 30,
         ..Default::default()
@@ -125,14 +195,17 @@ async fn create_cockroachdb_store() -> PostgresDataStore {
     store
 }
 
-/// Clean up test stores matching a prefix
+/// Clean up test stores matching a prefix using concurrent deletion.
 async fn cleanup_test_stores<S: DataStore>(store: &S, prefix: &str) {
     if let Ok(stores) = store.list_stores().await {
-        for s in stores {
-            if s.id.starts_with(prefix) {
-                let _ = store.delete_store(&s.id).await;
-            }
-        }
+        let delete_futures: Vec<_> = stores
+            .iter()
+            .filter(|s| s.id.starts_with(prefix))
+            .map(|s| store.delete_store(&s.id))
+            .collect();
+
+        // Execute all deletes concurrently
+        let _ = futures::future::join_all(delete_futures).await;
     }
 }
 
@@ -268,8 +341,8 @@ async fn run_pagination_integrity_test<S: DataStore>(store: &S, store_id: &str) 
         .await
         .unwrap();
 
-    // Write 100 tuples with unique IDs
-    let tuples: Vec<StoredTuple> = (0..100)
+    // Write tuples with unique IDs
+    let tuples: Vec<StoredTuple> = (0..PAGINATION_TEST_TUPLE_COUNT)
         .map(|i| StoredTuple {
             object_type: "document".to_string(),
             object_id: format!("doc{i:03}"), // Zero-padded for consistent ordering
@@ -288,11 +361,10 @@ async fn run_pagination_integrity_test<S: DataStore>(store: &S, store_id: &str) 
     // Collect all tuples through pagination
     let mut all_collected: Vec<StoredTuple> = Vec::new();
     let mut continuation_token: Option<String> = None;
-    let page_size = 7; // Use odd number to test edge cases
 
     loop {
         let pagination = PaginationOptions {
-            page_size: Some(page_size),
+            page_size: Some(PAGINATION_PAGE_SIZE),
             continuation_token: continuation_token.clone(),
         };
 
@@ -324,12 +396,12 @@ async fn run_pagination_integrity_test<S: DataStore>(store: &S, store_id: &str) 
     // Verify no skipping
     assert_eq!(
         all_collected.len(),
-        100,
-        "Pagination should return all 100 tuples without skipping"
+        PAGINATION_TEST_TUPLE_COUNT,
+        "Pagination should return all {PAGINATION_TEST_TUPLE_COUNT} tuples without skipping"
     );
 
     // Verify all expected items are present
-    for i in 0..100 {
+    for i in 0..PAGINATION_TEST_TUPLE_COUNT {
         let expected_id = format!("doc{i:03}:user{i:03}");
         assert!(
             unique_ids.contains(&expected_id),
@@ -348,10 +420,10 @@ async fn run_pagination_with_filter_integrity_test<S: DataStore>(store: &S, stor
         .await
         .unwrap();
 
-    // Write 50 tuples for "document" type and 50 for "folder" type
+    // Write tuples for "document" type and "folder" type
     let mut tuples: Vec<StoredTuple> = Vec::new();
 
-    for i in 0..50 {
+    for i in 0..FILTERED_PAGINATION_TUPLE_COUNT {
         tuples.push(StoredTuple {
             object_type: "document".to_string(),
             object_id: format!("doc{i:03}"),
@@ -365,7 +437,7 @@ async fn run_pagination_with_filter_integrity_test<S: DataStore>(store: &S, stor
         });
     }
 
-    for i in 0..50 {
+    for i in 0..FILTERED_PAGINATION_TUPLE_COUNT {
         tuples.push(StoredTuple {
             object_type: "folder".to_string(),
             object_id: format!("folder{i:03}"),
@@ -389,11 +461,10 @@ async fn run_pagination_with_filter_integrity_test<S: DataStore>(store: &S, stor
 
     let mut all_collected: Vec<StoredTuple> = Vec::new();
     let mut continuation_token: Option<String> = None;
-    let page_size = 11;
 
     loop {
         let pagination = PaginationOptions {
-            page_size: Some(page_size),
+            page_size: Some(FILTERED_PAGINATION_PAGE_SIZE),
             continuation_token: continuation_token.clone(),
         };
 
@@ -413,8 +484,8 @@ async fn run_pagination_with_filter_integrity_test<S: DataStore>(store: &S, stor
     // Should only get document tuples
     assert_eq!(
         all_collected.len(),
-        50,
-        "Filter should return exactly 50 document tuples"
+        FILTERED_PAGINATION_TUPLE_COUNT,
+        "Filter should return exactly {FILTERED_PAGINATION_TUPLE_COUNT} document tuples"
     );
 
     // All should be documents
@@ -425,7 +496,11 @@ async fn run_pagination_with_filter_integrity_test<S: DataStore>(store: &S, stor
 
     // Verify no duplicates
     let unique_ids: HashSet<String> = all_collected.iter().map(|t| t.object_id.clone()).collect();
-    assert_eq!(unique_ids.len(), 50, "No duplicates in filtered results");
+    assert_eq!(
+        unique_ids.len(),
+        FILTERED_PAGINATION_TUPLE_COUNT,
+        "No duplicates in filtered results"
+    );
 
     // Cleanup
     store.delete_store(store_id).await.unwrap();
@@ -489,7 +564,11 @@ async fn test_pagination_with_filter_integrity_cockroachdb() {
 // Section 3: Concurrent Write Consistency Tests
 // ============================================================================
 
-/// Generic helper: Test concurrent writes don't corrupt state
+/// Generic helper: Test concurrent writes don't corrupt state.
+///
+/// This test also verifies actual parallelism by measuring elapsed time.
+/// If operations were serialized, total time would be ~N * single_op_time.
+/// Parallel execution should complete in significantly less time.
 async fn run_concurrent_write_consistency_test<S: DataStore + 'static>(
     store: Arc<S>,
     store_id: &str,
@@ -501,15 +580,35 @@ async fn run_concurrent_write_consistency_test<S: DataStore + 'static>(
 
     let store_id_owned = store_id.to_string();
 
-    // Spawn 20 concurrent tasks, each writing 50 unique tuples
-    let mut handles = Vec::new();
+    // Measure a single write to establish baseline
+    let baseline_start = Instant::now();
+    let baseline_tuple = StoredTuple {
+        object_type: "document".to_string(),
+        object_id: "baseline-doc".to_string(),
+        relation: "viewer".to_string(),
+        user_type: "user".to_string(),
+        user_id: "baseline-user".to_string(),
+        user_relation: None,
+        condition_name: None,
+        condition_context: None,
+        created_at: None,
+    };
+    store
+        .write_tuple(&store_id_owned, baseline_tuple)
+        .await
+        .unwrap();
+    let single_write_time = baseline_start.elapsed();
 
-    for task_id in 0..20u32 {
+    // Spawn concurrent tasks, each writing unique tuples
+    let mut handles = Vec::new();
+    let parallel_start = Instant::now();
+
+    for task_id in 0..CONCURRENT_TASK_COUNT {
         let store = Arc::clone(&store);
         let store_id = store_id_owned.clone();
 
         handles.push(tokio::spawn(async move {
-            for tuple_id in 0..50u32 {
+            for tuple_id in 0..TUPLES_PER_TASK {
                 let tuple = StoredTuple {
                     object_type: "document".to_string(),
                     object_id: format!("doc-{task_id}-{tuple_id}"),
@@ -535,16 +634,18 @@ async fn run_concurrent_write_consistency_test<S: DataStore + 'static>(
         handle.await.expect("Task should complete");
     }
 
-    // Verify all tuples were written
+    let parallel_time = parallel_start.elapsed();
+
+    // Verify all tuples were written (excluding baseline)
     let all_tuples = store
         .read_tuples(&store_id_owned, &TupleFilter::default())
         .await
         .unwrap();
 
-    // Should have exactly 20 * 50 = 1000 tuples
+    // Should have baseline + TOTAL_CONCURRENT_TUPLES
     assert_eq!(
         all_tuples.len(),
-        1000,
+        TOTAL_CONCURRENT_TUPLES + 1,
         "All concurrent writes should be persisted without loss"
     );
 
@@ -552,9 +653,28 @@ async fn run_concurrent_write_consistency_test<S: DataStore + 'static>(
     let unique_ids: HashSet<String> = all_tuples.iter().map(|t| t.object_id.clone()).collect();
     assert_eq!(
         unique_ids.len(),
-        1000,
+        TOTAL_CONCURRENT_TUPLES + 1,
         "No duplicates should exist after concurrent writes"
     );
+
+    // Verify parallelism: if truly parallel, time should be much less than sequential
+    // Sequential would take: single_write_time * TOTAL_CONCURRENT_TUPLES
+    // We expect at least MIN_PARALLELISM_SPEEDUP improvement
+    let expected_sequential_time = single_write_time * TOTAL_CONCURRENT_TUPLES as u32;
+    let min_expected_speedup = expected_sequential_time.as_secs_f64() / MIN_PARALLELISM_SPEEDUP;
+
+    // Only assert on speedup if single writes take meaningful time (>1ms)
+    // In-memory stores may be too fast for timing assertions
+    if single_write_time > Duration::from_millis(1) {
+        assert!(
+            parallel_time.as_secs_f64() < min_expected_speedup,
+            "Parallel execution should be at least {MIN_PARALLELISM_SPEEDUP}x faster than sequential. \
+             Single write: {:?}, Parallel total: {:?}, Expected sequential: {:?}",
+            single_write_time,
+            parallel_time,
+            expected_sequential_time
+        );
+    }
 
     // Cleanup
     store.delete_store(&store_id_owned).await.unwrap();
@@ -569,15 +689,16 @@ async fn run_concurrent_batch_write_test<S: DataStore + 'static>(store: Arc<S>, 
 
     let store_id_owned = store_id.to_string();
 
-    // Spawn 10 concurrent tasks, each batch-writing 100 tuples
+    // Spawn concurrent tasks, each batch-writing tuples
     let mut handles = Vec::new();
+    let start = Instant::now();
 
-    for task_id in 0..10u32 {
+    for task_id in 0..BATCH_CONCURRENT_TASK_COUNT {
         let store = Arc::clone(&store);
         let store_id = store_id_owned.clone();
 
         handles.push(tokio::spawn(async move {
-            let tuples: Vec<StoredTuple> = (0..100u32)
+            let tuples: Vec<StoredTuple> = (0..BATCH_TUPLES_PER_TASK)
                 .map(|tuple_id| StoredTuple {
                     object_type: "document".to_string(),
                     object_id: format!("batch-{task_id}-{tuple_id}"),
@@ -603,6 +724,8 @@ async fn run_concurrent_batch_write_test<S: DataStore + 'static>(store: Arc<S>, 
         handle.await.expect("Task should complete");
     }
 
+    let elapsed = start.elapsed();
+
     // Verify all tuples
     let all_tuples = store
         .read_tuples(&store_id_owned, &TupleFilter::default())
@@ -611,8 +734,14 @@ async fn run_concurrent_batch_write_test<S: DataStore + 'static>(store: Arc<S>, 
 
     assert_eq!(
         all_tuples.len(),
-        1000,
+        TOTAL_BATCH_TUPLES,
         "All batch writes should be persisted"
+    );
+
+    // Log timing for visibility (useful for debugging parallelism)
+    eprintln!(
+        "Batch concurrent write: {} tuples in {:?}",
+        TOTAL_BATCH_TUPLES, elapsed
     );
 
     // Cleanup
@@ -774,6 +903,125 @@ async fn run_error_message_parity_test<S: DataStore>(store: &S) {
     }
 }
 
+/// Test invalid tuple field validation across backends
+async fn run_invalid_tuple_field_test<S: DataStore>(store: &S, store_id: &str) {
+    store
+        .create_store(store_id, "Invalid Tuple Field Test")
+        .await
+        .unwrap();
+
+    // Test 1: Empty object_type should fail
+    let invalid_tuple = StoredTuple {
+        object_type: "".to_string(), // Empty - invalid
+        object_id: "doc1".to_string(),
+        relation: "viewer".to_string(),
+        user_type: "user".to_string(),
+        user_id: "alice".to_string(),
+        user_relation: None,
+        condition_name: None,
+        condition_context: None,
+        created_at: None,
+    };
+    let result = store.write_tuple(store_id, invalid_tuple).await;
+    assert!(
+        matches!(result, Err(StorageError::InvalidInput { .. })),
+        "Empty object_type should return InvalidInput, got: {result:?}"
+    );
+
+    // Test 2: Empty object_id should fail
+    let invalid_tuple = StoredTuple {
+        object_type: "document".to_string(),
+        object_id: "".to_string(), // Empty - invalid
+        relation: "viewer".to_string(),
+        user_type: "user".to_string(),
+        user_id: "alice".to_string(),
+        user_relation: None,
+        condition_name: None,
+        condition_context: None,
+        created_at: None,
+    };
+    let result = store.write_tuple(store_id, invalid_tuple).await;
+    assert!(
+        matches!(result, Err(StorageError::InvalidInput { .. })),
+        "Empty object_id should return InvalidInput, got: {result:?}"
+    );
+
+    // Test 3: Empty relation should fail
+    let invalid_tuple = StoredTuple {
+        object_type: "document".to_string(),
+        object_id: "doc1".to_string(),
+        relation: "".to_string(), // Empty - invalid
+        user_type: "user".to_string(),
+        user_id: "alice".to_string(),
+        user_relation: None,
+        condition_name: None,
+        condition_context: None,
+        created_at: None,
+    };
+    let result = store.write_tuple(store_id, invalid_tuple).await;
+    assert!(
+        matches!(result, Err(StorageError::InvalidInput { .. })),
+        "Empty relation should return InvalidInput, got: {result:?}"
+    );
+
+    // Test 4: Empty user_type should fail
+    let invalid_tuple = StoredTuple {
+        object_type: "document".to_string(),
+        object_id: "doc1".to_string(),
+        relation: "viewer".to_string(),
+        user_type: "".to_string(), // Empty - invalid
+        user_id: "alice".to_string(),
+        user_relation: None,
+        condition_name: None,
+        condition_context: None,
+        created_at: None,
+    };
+    let result = store.write_tuple(store_id, invalid_tuple).await;
+    assert!(
+        matches!(result, Err(StorageError::InvalidInput { .. })),
+        "Empty user_type should return InvalidInput, got: {result:?}"
+    );
+
+    // Test 5: Empty user_id should fail
+    let invalid_tuple = StoredTuple {
+        object_type: "document".to_string(),
+        object_id: "doc1".to_string(),
+        relation: "viewer".to_string(),
+        user_type: "user".to_string(),
+        user_id: "".to_string(), // Empty - invalid
+        user_relation: None,
+        condition_name: None,
+        condition_context: None,
+        created_at: None,
+    };
+    let result = store.write_tuple(store_id, invalid_tuple).await;
+    assert!(
+        matches!(result, Err(StorageError::InvalidInput { .. })),
+        "Empty user_id should return InvalidInput, got: {result:?}"
+    );
+
+    // Test 6: Object type with colon (SQL injection attempt) should fail
+    let invalid_tuple = StoredTuple {
+        object_type: "document:admin".to_string(), // Contains colon - invalid
+        object_id: "doc1".to_string(),
+        relation: "viewer".to_string(),
+        user_type: "user".to_string(),
+        user_id: "alice".to_string(),
+        user_relation: None,
+        condition_name: None,
+        condition_context: None,
+        created_at: None,
+    };
+    let result = store.write_tuple(store_id, invalid_tuple).await;
+    assert!(
+        matches!(result, Err(StorageError::InvalidInput { .. })),
+        "Object type with colon should return InvalidInput, got: {result:?}"
+    );
+
+    // Cleanup
+    store.delete_store(store_id).await.unwrap();
+}
+
 #[tokio::test]
 async fn test_error_handling_parity_memory() {
     let store = create_memory_store();
@@ -803,6 +1051,33 @@ async fn test_error_handling_parity_cockroachdb() {
     let store = create_cockroachdb_store().await;
     run_error_handling_parity_test(&store, "parity-error-cockroachdb").await;
     run_error_message_parity_test(&store).await;
+}
+
+#[tokio::test]
+async fn test_invalid_tuple_field_memory() {
+    let store = create_memory_store();
+    run_invalid_tuple_field_test(&store, "parity-invalid-tuple-memory").await;
+}
+
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_invalid_tuple_field_postgres() {
+    let store = create_postgres_store().await;
+    run_invalid_tuple_field_test(&store, "parity-invalid-tuple-postgres").await;
+}
+
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_invalid_tuple_field_mysql() {
+    let store = create_mysql_store().await;
+    run_invalid_tuple_field_test(&store, "parity-invalid-tuple-mysql").await;
+}
+
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_invalid_tuple_field_cockroachdb() {
+    let store = create_cockroachdb_store().await;
+    run_invalid_tuple_field_test(&store, "parity-invalid-tuple-cockroachdb").await;
 }
 
 // ============================================================================
@@ -928,7 +1203,7 @@ async fn test_tuple_without_condition_cockroachdb() {
 /// Generic helper: Test list_stores parity
 async fn run_list_stores_parity_test<S: DataStore>(store: &S, prefix: &str) {
     // Create multiple stores
-    for i in 0..5 {
+    for i in 0..LIST_STORES_COUNT {
         store
             .create_store(&format!("{prefix}-store-{i}"), &format!("Test Store {i}"))
             .await
@@ -938,9 +1213,13 @@ async fn run_list_stores_parity_test<S: DataStore>(store: &S, prefix: &str) {
     // List all stores
     let stores = store.list_stores().await.unwrap();
 
-    // Should have at least 5 stores
+    // Should have at least LIST_STORES_COUNT stores
     let test_stores: Vec<&Store> = stores.iter().filter(|s| s.id.starts_with(prefix)).collect();
-    assert_eq!(test_stores.len(), 5, "Should find all 5 created stores");
+    assert_eq!(
+        test_stores.len(),
+        LIST_STORES_COUNT,
+        "Should find all {LIST_STORES_COUNT} created stores"
+    );
 
     // Verify each store has expected fields
     for s in &test_stores {
@@ -949,15 +1228,15 @@ async fn run_list_stores_parity_test<S: DataStore>(store: &S, prefix: &str) {
     }
 
     // Cleanup
-    for i in 0..5 {
+    for i in 0..LIST_STORES_COUNT {
         let _ = store.delete_store(&format!("{prefix}-store-{i}")).await;
     }
 }
 
 /// Generic helper: Test list_stores_paginated parity
 async fn run_list_stores_paginated_parity_test<S: DataStore>(store: &S, prefix: &str) {
-    // Create 25 stores
-    for i in 0..25 {
+    // Create stores for pagination test
+    for i in 0..LIST_STORES_PAGINATED_COUNT {
         store
             .create_store(
                 &format!("{prefix}-pag-store-{i:02}"),
@@ -973,7 +1252,7 @@ async fn run_list_stores_paginated_parity_test<S: DataStore>(store: &S, prefix: 
 
     loop {
         let pagination = PaginationOptions {
-            page_size: Some(7),
+            page_size: Some(LIST_STORES_PAGE_SIZE),
             continuation_token: continuation_token.clone(),
         };
 
@@ -1001,15 +1280,15 @@ async fn run_list_stores_paginated_parity_test<S: DataStore>(store: &S, prefix: 
         "No duplicate stores in pagination"
     );
 
-    // Should have all 25
+    // Should have all stores
     assert_eq!(
         test_stores.len(),
-        25,
-        "Should paginate through all 25 stores"
+        LIST_STORES_PAGINATED_COUNT,
+        "Should paginate through all {LIST_STORES_PAGINATED_COUNT} stores"
     );
 
     // Cleanup
-    for i in 0..25 {
+    for i in 0..LIST_STORES_PAGINATED_COUNT {
         let _ = store
             .delete_store(&format!("{prefix}-pag-store-{i:02}"))
             .await;
@@ -1212,14 +1491,14 @@ async fn run_large_dataset_parity_test<S: DataStore>(store: &S, store_id: &str) 
         .await
         .unwrap();
 
-    // Generate 10,000 tuples
-    let tuples: Vec<StoredTuple> = (0..10_000)
+    // Generate tuples for large dataset test
+    let tuples: Vec<StoredTuple> = (0..LARGE_DATASET_TUPLE_COUNT)
         .map(|i| StoredTuple {
             object_type: "document".to_string(),
             object_id: format!("large-doc-{i:05}"),
             relation: "viewer".to_string(),
             user_type: "user".to_string(),
-            user_id: format!("large-user-{}", i % 100), // 100 unique users
+            user_id: format!("large-user-{}", i % LARGE_DATASET_USER_COUNT),
             user_relation: None,
             condition_name: None,
             condition_context: None,
@@ -1236,7 +1515,11 @@ async fn run_large_dataset_parity_test<S: DataStore>(store: &S, store_id: &str) 
         .await
         .unwrap();
 
-    assert_eq!(all_tuples.len(), 10_000, "Should read all 10k tuples");
+    assert_eq!(
+        all_tuples.len(),
+        LARGE_DATASET_TUPLE_COUNT,
+        "Should read all {LARGE_DATASET_TUPLE_COUNT} tuples"
+    );
 
     // Filter by user
     let filter = TupleFilter {
@@ -1246,11 +1529,12 @@ async fn run_large_dataset_parity_test<S: DataStore>(store: &S, store_id: &str) 
 
     let filtered = store.read_tuples(store_id, &filter).await.unwrap();
 
-    // User 0 should have 100 tuples (indices 0, 100, 200, ..., 9900)
+    // User 0 should have LARGE_DATASET_TUPLE_COUNT / LARGE_DATASET_USER_COUNT tuples
+    let expected_per_user = LARGE_DATASET_TUPLE_COUNT / LARGE_DATASET_USER_COUNT;
     assert_eq!(
         filtered.len(),
-        100,
-        "User filter should return 100 tuples for user-0"
+        expected_per_user,
+        "User filter should return {expected_per_user} tuples for user-0"
     );
 
     // Paginate through entire dataset
@@ -1259,7 +1543,7 @@ async fn run_large_dataset_parity_test<S: DataStore>(store: &S, store_id: &str) 
 
     loop {
         let pagination = PaginationOptions {
-            page_size: Some(1000),
+            page_size: Some(LARGE_DATASET_PAGE_SIZE),
             continuation_token: continuation_token.clone(),
         };
 
@@ -1277,8 +1561,8 @@ async fn run_large_dataset_parity_test<S: DataStore>(store: &S, store_id: &str) 
     }
 
     assert_eq!(
-        paginated_count, 10_000,
-        "Pagination should return all 10k tuples"
+        paginated_count, LARGE_DATASET_TUPLE_COUNT,
+        "Pagination should return all {LARGE_DATASET_TUPLE_COUNT} tuples"
     );
 
     // Cleanup
