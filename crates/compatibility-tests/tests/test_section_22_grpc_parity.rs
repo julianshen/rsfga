@@ -1002,26 +1002,9 @@ async fn test_grpc_listusers_matches_rest() -> Result<()> {
     );
     assert_eq!(grpc_users.len(), 2, "Should have 2 users with access");
 
-    // Extract user IDs from both responses
-    let grpc_set: std::collections::HashSet<String> = grpc_users
-        .iter()
-        .filter_map(|u| {
-            u.get("object")
-                .and_then(|o| o.get("id"))
-                .and_then(|id| id.as_str())
-                .map(|s| s.to_string())
-        })
-        .collect();
-
-    let rest_set: std::collections::HashSet<String> = rest_users
-        .iter()
-        .filter_map(|u| {
-            u.get("object")
-                .and_then(|o| o.get("id"))
-                .and_then(|id| id.as_str())
-                .map(|s| s.to_string())
-        })
-        .collect();
+    // Extract user IDs using helper function
+    let grpc_set = extract_user_ids(grpc_users);
+    let rest_set = extract_user_ids(rest_users);
 
     assert_eq!(grpc_set, rest_set, "Both should return same users");
     assert!(grpc_set.contains("alice"), "Should contain alice");
@@ -1046,6 +1029,28 @@ async fn test_grpc_listusers_matches_rest() -> Result<()> {
 // - 500 Internal Server Error -> INTERNAL (13)
 //
 // ============================================================================
+
+/// Helper function to extract user IDs from a ListUsers response array
+fn extract_user_ids(users: &[serde_json::Value]) -> std::collections::HashSet<String> {
+    users
+        .iter()
+        .filter_map(|u| {
+            u.get("object")
+                .and_then(|o| o.get("id"))
+                .and_then(|id| id.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect()
+}
+
+/// Helper function to check if a JSON response has a non-empty continuation token
+fn has_continuation_token(response: &serde_json::Value) -> bool {
+    response
+        .get("continuation_token")
+        .and_then(|t| t.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+}
 
 /// Helper function to execute REST call and return status code and body
 async fn rest_call_with_status(
@@ -1276,9 +1281,11 @@ async fn test_error_invalid_relation_parity() -> Result<()> {
     )?;
 
     // Both should return error for undefined relation
-    assert!(
-        rest_status.is_client_error(),
-        "REST should return 4xx error for undefined relation, got {rest_status}"
+    // OpenFGA returns 400 Bad Request for undefined relations
+    assert_eq!(
+        rest_status.as_u16(),
+        400,
+        "REST should return 400 Bad Request for undefined relation, got {rest_status}"
     );
     assert!(!grpc_success, "gRPC should fail for undefined relation");
 
@@ -1356,9 +1363,11 @@ async fn test_error_invalid_type_parity() -> Result<()> {
     )?;
 
     // Both should return error for undefined type
-    assert!(
-        rest_status.is_client_error(),
-        "REST should return 4xx error for undefined type, got {rest_status}"
+    // OpenFGA returns 400 Bad Request for undefined types
+    assert_eq!(
+        rest_status.as_u16(),
+        400,
+        "REST should return 400 Bad Request for undefined type, got {rest_status}"
     );
     assert!(
         !grpc_success,
@@ -1471,16 +1480,8 @@ async fn test_read_pagination_token_parity() -> Result<()> {
     );
 
     // Both should have continuation tokens if more data exists
-    let grpc_has_token = grpc_read.get("continuation_token").is_some()
-        && !grpc_read["continuation_token"]
-            .as_str()
-            .unwrap_or("")
-            .is_empty();
-    let rest_has_token = rest_read.get("continuation_token").is_some()
-        && !rest_read["continuation_token"]
-            .as_str()
-            .unwrap_or("")
-            .is_empty();
+    let grpc_has_token = has_continuation_token(&grpc_read);
+    let rest_has_token = has_continuation_token(&rest_read);
 
     assert_eq!(
         grpc_has_token, rest_has_token,
@@ -1759,6 +1760,26 @@ async fn test_expand_tree_union_parity() -> Result<()> {
         "Both should have same tree structure type"
     );
 
+    // Verify root name matches (should be "document:union-doc#viewer")
+    let grpc_name = grpc_root.get("name").and_then(|v| v.as_str());
+    let rest_name = rest_root.get("name").and_then(|v| v.as_str());
+    assert_eq!(grpc_name, rest_name, "Root names should match exactly");
+
+    // If union exists, verify the child count matches
+    if grpc_has_union {
+        let grpc_union = &grpc_root["union"];
+        let rest_union = &rest_root["union"];
+
+        let grpc_nodes = grpc_union.get("nodes").and_then(|n| n.as_array());
+        let rest_nodes = rest_union.get("nodes").and_then(|n| n.as_array());
+
+        assert_eq!(
+            grpc_nodes.map(|n| n.len()),
+            rest_nodes.map(|n| n.len()),
+            "Union should have same number of child nodes"
+        );
+    }
+
     Ok(())
 }
 
@@ -1868,19 +1889,60 @@ async fn test_expand_computed_userset_parity() -> Result<()> {
     assert!(grpc_expand.get("tree").is_some(), "gRPC should have tree");
     assert!(rest_expand.get("tree").is_some(), "REST should have tree");
 
-    // Verify both trees have similar structure
-    let grpc_tree = &grpc_expand["tree"]["root"];
-    let rest_tree = &rest_expand["tree"]["root"];
+    let grpc_tree = &grpc_expand["tree"];
+    let rest_tree = &rest_expand["tree"];
 
-    // Both should indicate the relation name
-    let grpc_name = grpc_tree.get("name").and_then(|v| v.as_str());
-    let rest_name = rest_tree.get("name").and_then(|v| v.as_str());
-
-    // The name format might differ slightly but should reference the same relation
     assert!(
-        grpc_name.is_some() == rest_name.is_some(),
-        "Both should have or lack name consistently"
+        grpc_tree.get("root").is_some(),
+        "gRPC tree should have root"
     );
+    assert!(
+        rest_tree.get("root").is_some(),
+        "REST tree should have root"
+    );
+
+    // Verify both trees have similar structure
+    let grpc_root = &grpc_tree["root"];
+    let rest_root = &rest_tree["root"];
+
+    // Both should have the same relation name
+    let grpc_name = grpc_root.get("name").and_then(|v| v.as_str());
+    let rest_name = rest_root.get("name").and_then(|v| v.as_str());
+    assert_eq!(grpc_name, rest_name, "Root names should match exactly");
+
+    // Check that both trees have the same node type
+    // For tupleToUserset, we expect a leaf node with users
+    let grpc_has_leaf = grpc_root.get("leaf").is_some();
+    let rest_has_leaf = rest_root.get("leaf").is_some();
+    assert_eq!(
+        grpc_has_leaf, rest_has_leaf,
+        "Both should have same node type (leaf presence)"
+    );
+
+    // If leaf exists, verify the users match
+    if grpc_has_leaf {
+        let grpc_leaf = &grpc_root["leaf"];
+        let rest_leaf = &rest_root["leaf"];
+
+        // Check if both have users array
+        let grpc_has_users = grpc_leaf.get("users").is_some();
+        let rest_has_users = rest_leaf.get("users").is_some();
+        assert_eq!(
+            grpc_has_users, rest_has_users,
+            "Both should have or lack users consistently"
+        );
+
+        // If users exist, compare the count
+        if grpc_has_users {
+            let grpc_users = grpc_leaf["users"].get("users").and_then(|u| u.as_array());
+            let rest_users = rest_leaf["users"].get("users").and_then(|u| u.as_array());
+            assert_eq!(
+                grpc_users.map(|u| u.len()),
+                rest_users.map(|u| u.len()),
+                "Both should have same number of users"
+            );
+        }
+    }
 
     Ok(())
 }
