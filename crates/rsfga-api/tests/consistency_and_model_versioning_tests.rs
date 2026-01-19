@@ -1616,15 +1616,13 @@ async fn test_get_deleted_model_returns_404() {
         .unwrap();
 
     // GET should now return ModelNotFound error
-    let result = storage
-        .get_authorization_model(&store_id, &model_id)
-        .await;
+    let result = storage.get_authorization_model(&store_id, &model_id).await;
+    assert!(result.is_err(), "GET deleted model should return error");
     assert!(
-        result.is_err(),
-        "GET deleted model should return error"
-    );
-    assert!(
-        matches!(result.unwrap_err(), rsfga_storage::StorageError::ModelNotFound { .. }),
+        matches!(
+            result.unwrap_err(),
+            rsfga_storage::StorageError::ModelNotFound { .. }
+        ),
         "Should return ModelNotFound error"
     );
 
