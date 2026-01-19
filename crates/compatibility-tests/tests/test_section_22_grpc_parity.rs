@@ -13,42 +13,61 @@ use serde_json::json;
 //
 // ============================================================================
 
-/// Execute REST call with reqwest (blocking for simplicity in comparison tests)
+/// Execute REST call and return raw response (status code and body text).
+/// This is the base function used by both `rest_call` and `rest_call_with_status`.
+async fn rest_call_raw(
+    client: &reqwest::Client,
+    method: &str,
+    path: &str,
+    data: Option<&serde_json::Value>,
+) -> Result<(reqwest::StatusCode, String)> {
+    let url = format!("{}{}", get_openfga_url(), path);
+
+    let mut builder = match method {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "DELETE" => client.delete(&url),
+        _ => anyhow::bail!("Unsupported method: {method}"),
+    };
+    if let Some(json_data) = data {
+        builder = builder.json(json_data);
+    }
+
+    let response = builder.send().await?;
+    let status = response.status();
+    let text = response.text().await?;
+    Ok((status, text))
+}
+
+/// Execute REST call and return parsed JSON. Fails on non-2xx responses.
 async fn rest_call(
     client: &reqwest::Client,
     method: &str,
     path: &str,
     data: Option<&serde_json::Value>,
 ) -> Result<serde_json::Value> {
-    let url = format!("{}{}", get_openfga_url(), path);
+    let (status, text) = rest_call_raw(client, method, path, data).await?;
 
-    let response = {
-        let mut builder = match method {
-            "GET" => client.get(&url),
-            "POST" => client.post(&url),
-            "DELETE" => client.delete(&url),
-            _ => anyhow::bail!("Unsupported method: {method}"),
-        };
-        if let Some(json_data) = data {
-            builder = builder.json(json_data);
-        }
-        builder.send().await?
-    };
-
-    // Fail early on non-2xx responses
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
         anyhow::bail!("REST call failed with status {status}: {text}");
     }
 
-    let text = response.text().await?;
     if text.trim().is_empty() {
         return Ok(json!({}));
     }
 
     let json: serde_json::Value = serde_json::from_str(&text)?;
     Ok(json)
+}
+
+/// Execute REST call and return status code and body (doesn't fail on non-2xx).
+async fn rest_call_with_status(
+    client: &reqwest::Client,
+    method: &str,
+    path: &str,
+    data: Option<&serde_json::Value>,
+) -> Result<(reqwest::StatusCode, String)> {
+    rest_call_raw(client, method, path, data).await
 }
 
 // ============================================================================
@@ -1055,33 +1074,6 @@ fn has_continuation_token(response: &serde_json::Value) -> bool {
         .and_then(|t| t.as_str())
         .map(|s| !s.is_empty())
         .unwrap_or(false)
-}
-
-/// Helper function to execute REST call and return status code and body
-async fn rest_call_with_status(
-    client: &reqwest::Client,
-    method: &str,
-    path: &str,
-    data: Option<&serde_json::Value>,
-) -> Result<(reqwest::StatusCode, String)> {
-    let url = format!("{}{}", get_openfga_url(), path);
-
-    let response = {
-        let mut builder = match method {
-            "GET" => client.get(&url),
-            "POST" => client.post(&url),
-            "DELETE" => client.delete(&url),
-            _ => anyhow::bail!("Unsupported method: {method}"),
-        };
-        if let Some(json_data) = data {
-            builder = builder.json(json_data);
-        }
-        builder.send().await?
-    };
-
-    let status = response.status();
-    let text = response.text().await?;
-    Ok((status, text))
 }
 
 /// Test: Error for non-existent store matches across protocols
