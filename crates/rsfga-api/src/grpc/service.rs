@@ -20,7 +20,7 @@ use rsfga_storage::{
 
 use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
 use crate::http::state::{
-    AssertionKey, AssertionTupleKey, ContextualTuplesWrapper, StoredAssertion,
+    AssertionCondition, AssertionKey, AssertionTupleKey, ContextualTuplesWrapper, StoredAssertion,
 };
 use crate::utils::{format_user, parse_object, parse_user};
 
@@ -140,6 +140,9 @@ fn storage_error_to_status(err: StorageError) -> Status {
     match &err {
         StorageError::StoreNotFound { store_id } => {
             Status::not_found(format!("store not found: {store_id}"))
+        }
+        StorageError::ModelNotFound { model_id } => {
+            Status::not_found(format!("authorization model not found: {model_id}"))
         }
         StorageError::TupleNotFound { .. } => Status::not_found(err.to_string()),
         StorageError::InvalidInput { message } => Status::invalid_argument(message),
@@ -972,8 +975,13 @@ fn stored_model_to_proto(stored: &StoredAuthorizationModel) -> Option<Authorizat
     })
 }
 
-/// Maximum size for authorization model JSON (1MB, same as HTTP layer).
+/// Maximum size for authorization model JSON (1MB).
+/// This matches the OpenFGA default limit for model size.
 const MAX_AUTHORIZATION_MODEL_SIZE: usize = 1024 * 1024;
+
+/// Default and maximum page size for listing authorization models.
+/// Matches OpenFGA's default behavior to limit memory usage and response size.
+const DEFAULT_PAGE_SIZE: i32 = 50;
 
 #[tonic::async_trait]
 impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
@@ -1684,6 +1692,12 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
+        // Clean up assertions for this store to prevent memory leak.
+        // Assertions are keyed by (store_id, model_id), so we remove all entries
+        // where the store_id matches the deleted store.
+        self.assertions
+            .retain(|(store_id, _model_id), _| store_id != &req.store_id);
+
         Ok(Response::new(DeleteStoreResponse {}))
     }
 
@@ -1748,8 +1762,11 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // Parse pagination from request
-        let page_size = req.page_size.map(|ps| ps.min(50)).unwrap_or(50);
+        // Parse pagination from request, capping at DEFAULT_PAGE_SIZE
+        let page_size = req
+            .page_size
+            .map(|ps| ps.min(DEFAULT_PAGE_SIZE))
+            .unwrap_or(DEFAULT_PAGE_SIZE);
         let pagination = PaginationOptions {
             page_size: Some(page_size as u32),
             continuation_token: if req.continuation_token.is_empty() {
@@ -1766,11 +1783,22 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // Convert stored models to proto AuthorizationModel
+        // Convert stored models to proto AuthorizationModel.
+        // Log warnings for malformed models instead of silently ignoring them.
         let authorization_models: Vec<AuthorizationModel> = result
             .items
             .into_iter()
-            .filter_map(|stored| stored_model_to_proto(&stored))
+            .filter_map(|stored| match stored_model_to_proto(&stored) {
+                Some(model) => Some(model),
+                None => {
+                    tracing::warn!(
+                        model_id = %stored.id,
+                        store_id = %stored.store_id,
+                        "Failed to parse stored authorization model - possible data corruption"
+                    );
+                    None
+                }
+            })
             .collect();
 
         Ok(Response::new(ReadAuthorizationModelsResponse {
@@ -1797,12 +1825,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .storage
             .get_authorization_model(&req.store_id, &req.id)
             .await
-            .map_err(|e| match e {
-                StorageError::ModelNotFound { model_id } => {
-                    Status::not_found(format!("authorization model not found: {model_id}"))
-                }
-                other => storage_error_to_status(other),
-            })?;
+            .map_err(storage_error_to_status)?;
 
         // Convert to proto AuthorizationModel
         let authorization_model = stored_model_to_proto(&stored)
@@ -1906,14 +1929,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .storage
             .get_authorization_model(&req.store_id, &req.authorization_model_id)
             .await
-            .map_err(|e| match e {
-                StorageError::ModelNotFound { model_id } => {
-                    Status::not_found(format!("authorization model not found: {model_id}"))
-                }
-                other => storage_error_to_status(other),
-            })?;
+            .map_err(storage_error_to_status)?;
 
         // Read assertions from in-memory storage
+        // Preserves conditions on tuple keys to avoid data loss.
         let key = (req.store_id.clone(), req.authorization_model_id.clone());
         let assertions: Vec<Assertion> = self
             .assertions
@@ -1927,7 +1946,15 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                             user: sa.tuple_key.user.clone(),
                             relation: sa.tuple_key.relation.clone(),
                             object: sa.tuple_key.object.clone(),
-                            condition: None,
+                            condition: sa.tuple_key.condition.as_ref().map(|c| {
+                                RelationshipCondition {
+                                    name: c.name.clone(),
+                                    context: c
+                                        .context
+                                        .as_ref()
+                                        .map(|ctx| hashmap_to_prost_struct(ctx.clone())),
+                                }
+                            }),
                         }),
                         expectation: sa.expectation,
                         contextual_tuples: sa
@@ -1940,7 +1967,14 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                                         user: tk.user.clone(),
                                         relation: tk.relation.clone(),
                                         object: tk.object.clone(),
-                                        condition: None,
+                                        condition: tk.condition.as_ref().map(|c| {
+                                            RelationshipCondition {
+                                                name: c.name.clone(),
+                                                context: c.context.as_ref().map(|ctx| {
+                                                    hashmap_to_prost_struct(ctx.clone())
+                                                }),
+                                            }
+                                        }),
                                     })
                                     .collect()
                             })
@@ -1974,14 +2008,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .storage
             .get_authorization_model(&req.store_id, &req.authorization_model_id)
             .await
-            .map_err(|e| match e {
-                StorageError::ModelNotFound { model_id } => {
-                    Status::not_found(format!("authorization model not found: {model_id}"))
-                }
-                other => storage_error_to_status(other),
-            })?;
+            .map_err(storage_error_to_status)?;
 
         // Convert proto assertions to stored format (same format as HTTP layer)
+        // Preserves conditions on tuple keys to avoid data loss.
         let stored_assertions: Vec<StoredAssertion> = req
             .assertions
             .into_iter()
@@ -1992,6 +2022,15 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                         user: tuple_key.user,
                         relation: tuple_key.relation,
                         object: tuple_key.object,
+                        condition: tuple_key.condition.map(|c| AssertionCondition {
+                            name: c.name,
+                            context: c
+                                .context
+                                .map(prost_struct_to_hashmap)
+                                .transpose()
+                                .ok()
+                                .flatten(),
+                        }),
                     },
                     expectation: a.expectation,
                     contextual_tuples: if a.contextual_tuples.is_empty() {
@@ -2005,6 +2044,15 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                                     user: tk.user,
                                     relation: tk.relation,
                                     object: tk.object,
+                                    condition: tk.condition.map(|c| AssertionCondition {
+                                        name: c.name,
+                                        context: c
+                                            .context
+                                            .map(prost_struct_to_hashmap)
+                                            .transpose()
+                                            .ok()
+                                            .flatten(),
+                                    }),
                                 })
                                 .collect(),
                         })

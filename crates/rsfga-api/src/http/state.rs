@@ -19,12 +19,23 @@ pub struct StoredAssertion {
     pub contextual_tuples: Option<ContextualTuplesWrapper>,
 }
 
-/// Tuple key for an assertion.
+/// Tuple key for an assertion, including optional condition.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AssertionTupleKey {
     pub user: String,
     pub relation: String,
     pub object: String,
+    /// Optional condition for conditional tuple assertions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<AssertionCondition>,
+}
+
+/// Condition attached to an assertion tuple key.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct AssertionCondition {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Wrapper for contextual tuples in assertions.

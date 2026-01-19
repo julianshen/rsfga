@@ -1567,6 +1567,17 @@ pub struct AssertionTupleKeyBody {
     pub user: String,
     pub relation: String,
     pub object: String,
+    /// Optional condition for conditional tuple assertions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<AssertionConditionBody>,
+}
+
+/// Condition attached to an assertion tuple key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssertionConditionBody {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Contextual tuples for assertions.
@@ -1597,7 +1608,15 @@ async fn write_assertions<S: DataStore>(
         .await?;
 
     // Convert assertions to stored format
-    use super::state::{AssertionTupleKey, ContextualTuplesWrapper, StoredAssertion};
+    use super::state::{
+        AssertionCondition, AssertionTupleKey, ContextualTuplesWrapper, StoredAssertion,
+    };
+
+    // Helper to convert HTTP condition to stored condition
+    let convert_condition = |c: AssertionConditionBody| AssertionCondition {
+        name: c.name,
+        context: c.context,
+    };
 
     let stored_assertions: Vec<StoredAssertion> = body
         .assertions
@@ -1607,6 +1626,7 @@ async fn write_assertions<S: DataStore>(
                 user: a.tuple_key.user,
                 relation: a.tuple_key.relation,
                 object: a.tuple_key.object,
+                condition: a.tuple_key.condition.map(&convert_condition),
             },
             expectation: a.expectation,
             contextual_tuples: a.contextual_tuples.map(|ct| ContextualTuplesWrapper {
@@ -1617,6 +1637,7 @@ async fn write_assertions<S: DataStore>(
                         user: tk.user,
                         relation: tk.relation,
                         object: tk.object,
+                        condition: tk.condition.map(&convert_condition),
                     })
                     .collect(),
             }),
@@ -1648,6 +1669,12 @@ async fn read_assertions<S: DataStore>(
     let key = (store_id, authorization_model_id);
     let stored_assertions = state.assertions.get(&key);
 
+    // Helper to convert stored condition to HTTP condition
+    let convert_condition = |c: &super::state::AssertionCondition| AssertionConditionBody {
+        name: c.name.clone(),
+        context: c.context.clone(),
+    };
+
     let assertions: Vec<AssertionBody> = stored_assertions
         .map(|sa| {
             sa.value()
@@ -1657,6 +1684,7 @@ async fn read_assertions<S: DataStore>(
                         user: a.tuple_key.user.clone(),
                         relation: a.tuple_key.relation.clone(),
                         object: a.tuple_key.object.clone(),
+                        condition: a.tuple_key.condition.as_ref().map(&convert_condition),
                     },
                     expectation: a.expectation,
                     contextual_tuples: a.contextual_tuples.as_ref().map(|ct| {
@@ -1668,6 +1696,7 @@ async fn read_assertions<S: DataStore>(
                                     user: tk.user.clone(),
                                     relation: tk.relation.clone(),
                                     object: tk.object.clone(),
+                                    condition: tk.condition.as_ref().map(&convert_condition),
                                 })
                                 .collect(),
                         }
