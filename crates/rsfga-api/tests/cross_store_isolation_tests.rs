@@ -55,6 +55,9 @@ const NUM_CONCURRENT_STORES: usize = 10;
 /// Number of operations per store in concurrent tests.
 const OPS_PER_STORE: usize = 20;
 
+/// Global timeout for concurrent test to prevent hangs.
+const CONCURRENT_TEST_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Simple authorization model JSON for gRPC tests.
 const SIMPLE_MODEL_JSON: &str = r#"{
     "type_definitions": [
@@ -69,8 +72,9 @@ const SIMPLE_MODEL_JSON: &str = r#"{
 
 /// Polls the cache until the specified key is invalidated (returns None) or timeout occurs.
 ///
-/// Uses assertion instead of panic for better test failure diagnostics.
-/// Checks timeout before sleep to ensure strict enforcement.
+/// The timeout is checked after each cache probe but before sleeping, ensuring we don't
+/// wait indefinitely. Note: actual elapsed time may slightly exceed the timeout by up to
+/// one poll interval plus cache operation latency.
 async fn wait_for_cache_invalidation(cache: &CheckCache, key: &CacheKey) {
     let start = std::time::Instant::now();
     loop {
@@ -78,7 +82,7 @@ async fn wait_for_cache_invalidation(cache: &CheckCache, key: &CacheKey) {
         if cache.get(key).await.is_none() {
             return;
         }
-        // Check timeout BEFORE sleeping to ensure strict enforcement
+        // Check timeout after cache probe, before sleeping
         if start.elapsed() > CACHE_INVALIDATION_TIMEOUT {
             panic!(
                 "Cache invalidation timeout: key {:?} still present after {:?}",
@@ -114,7 +118,7 @@ fn complete_model_json() -> &'static str {
     }"#
 }
 
-/// Sets up a complete authorization model for a store.
+/// Sets up a complete authorization model for a store and validates persistence.
 async fn setup_complete_model(storage: &MemoryDataStore, store_id: &str) -> String {
     let model = StoredAuthorizationModel::new(
         ulid::Ulid::new().to_string(),
@@ -124,6 +128,17 @@ async fn setup_complete_model(storage: &MemoryDataStore, store_id: &str) -> Stri
     );
     let model_id = model.id.clone();
     storage.write_authorization_model(model).await.unwrap();
+
+    // Validate model was persisted correctly
+    let retrieved = storage
+        .get_authorization_model(store_id, &model_id)
+        .await
+        .expect("Model should be retrievable after write");
+    assert_eq!(
+        retrieved.id, model_id,
+        "Retrieved model ID should match written model"
+    );
+
     model_id
 }
 
@@ -833,7 +848,10 @@ async fn test_concurrent_operations_different_stores_isolated() {
         })
         .collect();
 
-    let results = join_all(futures).await;
+    // Wrap concurrent operations with global timeout to prevent test hangs
+    let results = tokio::time::timeout(CONCURRENT_TEST_TIMEOUT, join_all(futures))
+        .await
+        .expect("Concurrent test timed out - possible deadlock or performance issue");
 
     // Verify all operations succeeded and returned true
     for (store_idx, op_idx, allowed) in results {
