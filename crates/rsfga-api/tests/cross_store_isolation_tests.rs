@@ -55,6 +55,14 @@ const NUM_CONCURRENT_STORES: usize = 10;
 /// Number of operations per store in concurrent tests.
 const OPS_PER_STORE: usize = 20;
 
+/// Simple authorization model JSON for gRPC tests.
+const SIMPLE_MODEL_JSON: &str = r#"{
+    "type_definitions": [
+        {"type": "user"},
+        {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
+    ]
+}"#;
+
 // =============================================================================
 // Test Helpers
 // =============================================================================
@@ -62,6 +70,7 @@ const OPS_PER_STORE: usize = 20;
 /// Polls the cache until the specified key is invalidated (returns None) or timeout occurs.
 ///
 /// Uses assertion instead of panic for better test failure diagnostics.
+/// Checks timeout before sleep to ensure strict enforcement.
 async fn wait_for_cache_invalidation(cache: &CheckCache, key: &CacheKey) {
     let start = std::time::Instant::now();
     loop {
@@ -69,12 +78,13 @@ async fn wait_for_cache_invalidation(cache: &CheckCache, key: &CacheKey) {
         if cache.get(key).await.is_none() {
             return;
         }
-        assert!(
-            start.elapsed() <= CACHE_INVALIDATION_TIMEOUT,
-            "Cache invalidation timeout: key {:?} still present after {:?}",
-            key,
-            CACHE_INVALIDATION_TIMEOUT
-        );
+        // Check timeout BEFORE sleeping to ensure strict enforcement
+        if start.elapsed() > CACHE_INVALIDATION_TIMEOUT {
+            panic!(
+                "Cache invalidation timeout: key {:?} still present after {:?}",
+                key, CACHE_INVALIDATION_TIMEOUT
+            );
+        }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
@@ -834,7 +844,7 @@ async fn test_concurrent_operations_different_stores_isolated() {
         );
     }
 
-    // Verify each store has exactly the expected tuples
+    // Verify each store has exactly the expected tuples AND they belong to the correct store
     for (store_idx, store_id) in store_ids.iter().enumerate() {
         let tuples = storage
             .read_tuples(store_id, &Default::default())
@@ -847,6 +857,18 @@ async fn test_concurrent_operations_different_stores_isolated() {
             store_idx,
             OPS_PER_STORE
         );
+
+        // Verify all tuples belong to this specific store (contain store index in object_id)
+        let expected_prefix = format!("doc{store_idx}-");
+        for tuple in &tuples {
+            assert!(
+                tuple.object_id.starts_with(&expected_prefix),
+                "ISOLATION: Store {} tuple has wrong object_id '{}', expected prefix '{}'",
+                store_idx,
+                tuple.object_id,
+                expected_prefix
+            );
+        }
     }
 }
 
@@ -1484,19 +1506,12 @@ async fn test_grpc_check_respects_store_boundaries() {
         .await
         .unwrap();
 
-    // Set up models
-    let simple_model_json = r#"{
-        "type_definitions": [
-            {"type": "user"},
-            {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
-        ]
-    }"#;
-
+    // Set up models using shared constant
     let model_a = StoredAuthorizationModel::new(
         ulid::Ulid::new().to_string(),
         "grpc-store-a",
         "1.1",
-        simple_model_json.to_string(),
+        SIMPLE_MODEL_JSON.to_string(),
     );
     storage.write_authorization_model(model_a).await.unwrap();
 
@@ -1504,7 +1519,7 @@ async fn test_grpc_check_respects_store_boundaries() {
         ulid::Ulid::new().to_string(),
         "grpc-store-b",
         "1.1",
-        simple_model_json.to_string(),
+        SIMPLE_MODEL_JSON.to_string(),
     );
     storage.write_authorization_model(model_b).await.unwrap();
 
@@ -1581,18 +1596,12 @@ async fn test_grpc_batch_check_respects_store_boundaries() {
         .await
         .unwrap();
 
-    let simple_model_json = r#"{
-        "type_definitions": [
-            {"type": "user"},
-            {"type": "document", "relations": {"viewer": {}}}
-        ]
-    }"#;
-
+    // Set up models using shared constant
     let model_a = StoredAuthorizationModel::new(
         ulid::Ulid::new().to_string(),
         "grpc-batch-a",
         "1.1",
-        simple_model_json.to_string(),
+        SIMPLE_MODEL_JSON.to_string(),
     );
     storage.write_authorization_model(model_a).await.unwrap();
 
@@ -1600,7 +1609,7 @@ async fn test_grpc_batch_check_respects_store_boundaries() {
         ulid::Ulid::new().to_string(),
         "grpc-batch-b",
         "1.1",
-        simple_model_json.to_string(),
+        SIMPLE_MODEL_JSON.to_string(),
     );
     storage.write_authorization_model(model_b).await.unwrap();
 
@@ -1811,20 +1820,13 @@ async fn test_http_grpc_behavioral_parity_for_isolation() {
         .await
         .unwrap();
 
-    let simple_model_json = r#"{
-        "type_definitions": [
-            {"type": "user"},
-            {"type": "document", "relations": {"viewer": {}}}
-        ]
-    }"#;
-
-    // Set up models for both stores
+    // Set up models for both stores using shared constant
     for store_id in ["parity-store-a", "parity-store-b"] {
         let model = StoredAuthorizationModel::new(
             ulid::Ulid::new().to_string(),
             store_id,
             "1.1",
-            simple_model_json.to_string(),
+            SIMPLE_MODEL_JSON.to_string(),
         );
         storage.write_authorization_model(model).await.unwrap();
     }
