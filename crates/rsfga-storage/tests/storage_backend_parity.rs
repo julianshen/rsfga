@@ -18,6 +18,19 @@
 //! Some backends may return `TupleNotFound` while others succeed silently.
 //! Both behaviors are acceptable per the DataStore trait contract.
 //!
+//! # Test Scope
+//!
+//! These tests focus on **storage layer parity** - ensuring all DataStore
+//! implementations behave consistently for the same operations. This includes:
+//! - CRUD operations on stores, tuples, and authorization models
+//! - Pagination and filtering behavior
+//! - Concurrent operation handling
+//! - Error conditions and edge cases
+//!
+//! **NOT in scope**: REST/gRPC protocol testing is handled separately in the
+//! `compatibility-tests` crate, which validates HTTP/gRPC API behavior against
+//! OpenFGA's specification.
+//!
 //! To run these tests:
 //!   # In-memory only (always runs)
 //!   cargo test -p rsfga-storage --test storage_backend_parity
@@ -558,6 +571,92 @@ async fn test_pagination_with_filter_integrity_mysql() {
 async fn test_pagination_with_filter_integrity_cockroachdb() {
     let store = create_cockroachdb_store().await;
     run_pagination_with_filter_integrity_test(&store, "parity-pag-filter-cockroachdb").await;
+}
+
+/// Generic helper: Test invalid continuation token handling
+async fn run_invalid_continuation_token_test<S: DataStore>(store: &S, store_id: &str) {
+    store
+        .create_store(store_id, "Invalid Token Test")
+        .await
+        .unwrap();
+
+    // Write some tuples to ensure store has data
+    let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
+    store.write_tuple(store_id, tuple).await.unwrap();
+
+    // Test 1: Completely invalid base64 token
+    let pagination = PaginationOptions {
+        page_size: Some(10),
+        continuation_token: Some("not-valid-base64!!!".to_string()),
+    };
+    let result = store
+        .read_tuples_paginated(store_id, &TupleFilter::default(), &pagination)
+        .await;
+    assert!(
+        matches!(result, Err(StorageError::InvalidInput { .. })),
+        "Invalid base64 token should return InvalidInput, got: {result:?}"
+    );
+
+    // Test 2: Valid base64 but invalid JSON content
+    let pagination = PaginationOptions {
+        page_size: Some(10),
+        continuation_token: Some(base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            "not-valid-json",
+        )),
+    };
+    let result = store
+        .read_tuples_paginated(store_id, &TupleFilter::default(), &pagination)
+        .await;
+    assert!(
+        matches!(result, Err(StorageError::InvalidInput { .. })),
+        "Invalid JSON in token should return InvalidInput, got: {result:?}"
+    );
+
+    // Test 3: Negative page size (if supported) - backends should handle gracefully
+    // Note: This tests backend-specific behavior, some may accept 0 or negative
+    let pagination = PaginationOptions {
+        page_size: Some(0),
+        continuation_token: None,
+    };
+    let result = store
+        .read_tuples_paginated(store_id, &TupleFilter::default(), &pagination)
+        .await;
+    // Either succeeds with empty result or returns error - both acceptable
+    assert!(
+        result.is_ok() || matches!(result, Err(StorageError::InvalidInput { .. })),
+        "Zero page size should either succeed or return InvalidInput, got: {result:?}"
+    );
+
+    // Cleanup
+    store.delete_store(store_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_invalid_continuation_token_memory() {
+    let store = create_memory_store();
+    run_invalid_continuation_token_test(&store, "parity-invalid-token-memory").await;
+}
+
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_invalid_continuation_token_postgres() {
+    let store = create_postgres_store().await;
+    run_invalid_continuation_token_test(&store, "parity-invalid-token-postgres").await;
+}
+
+#[tokio::test]
+#[ignore = "requires running MySQL"]
+async fn test_invalid_continuation_token_mysql() {
+    let store = create_mysql_store().await;
+    run_invalid_continuation_token_test(&store, "parity-invalid-token-mysql").await;
+}
+
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_invalid_continuation_token_cockroachdb() {
+    let store = create_cockroachdb_store().await;
+    run_invalid_continuation_token_test(&store, "parity-invalid-token-cockroachdb").await;
 }
 
 // ============================================================================
@@ -1846,8 +1945,17 @@ async fn run_store_cascade_delete_test<S: DataStore>(store: &S, store_id: &str) 
 
     store.write_tuples(store_id, tuples, vec![]).await.unwrap();
 
-    // Write authorization model
-    let model = StoredAuthorizationModel::new(ulid::Ulid::new().to_string(), store_id, "1.1", "{}");
+    // Write authorization model with valid schema
+    let model_json = serde_json::json!({
+        "schema_version": "1.1",
+        "type_definitions": [{"type": "user"}, {"type": "document"}]
+    });
+    let model = StoredAuthorizationModel::new(
+        ulid::Ulid::new().to_string(),
+        store_id,
+        "1.1",
+        serde_json::to_string(&model_json).unwrap(),
+    );
 
     store.write_authorization_model(model).await.unwrap();
 
