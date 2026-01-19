@@ -1044,9 +1044,14 @@ fn extract_user_ids(users: &[serde_json::Value]) -> std::collections::HashSet<St
 }
 
 /// Helper function to check if a JSON response has a non-empty continuation token
+/// Handles both snake_case (REST) and camelCase (gRPC/grpcurl) field naming
 fn has_continuation_token(response: &serde_json::Value) -> bool {
-    response
+    // Try snake_case first (standard REST), then camelCase (grpcurl output)
+    let token = response
         .get("continuation_token")
+        .or_else(|| response.get("continuationToken"));
+
+    token
         .and_then(|t| t.as_str())
         .map(|s| !s.is_empty())
         .unwrap_or(false)
@@ -1488,13 +1493,22 @@ async fn test_read_pagination_token_parity() -> Result<()> {
         "First page should respect page_size limit"
     );
 
-    // Both should have continuation tokens if more data exists
+    // Both should have continuation tokens since we have 10 tuples and page_size=3
     let grpc_has_token = has_continuation_token(&grpc_read);
     let rest_has_token = has_continuation_token(&rest_read);
 
+    // With 10 tuples and page_size=3, there should be more data, so tokens should exist
+    assert!(
+        grpc_has_token,
+        "gRPC should have continuation token when more data exists (10 tuples, page_size=3)"
+    );
+    assert!(
+        rest_has_token,
+        "REST should have continuation token when more data exists (10 tuples, page_size=3)"
+    );
     assert_eq!(
         grpc_has_token, rest_has_token,
-        "Both should have continuation token when more data exists"
+        "Both protocols should have matching continuation token presence"
     );
 
     Ok(())
@@ -1969,20 +1983,47 @@ async fn test_expand_computed_userset_parity() -> Result<()> {
         }
     }
 
-    // Additionally check for tupleToUserset node type
+    // Check for tupleToUserset node type at root level
     let grpc_has_tuple_to_userset = grpc_root.get("tupleToUserset").is_some();
     let rest_has_tuple_to_userset = rest_root.get("tupleToUserset").is_some();
     assert_eq!(
         grpc_has_tuple_to_userset, rest_has_tuple_to_userset,
-        "Both should have same tupleToUserset node presence"
+        "Both should have same tupleToUserset node presence at root"
     );
 
-    // Check for computed node type
+    // Check for computed node type at root level
     let grpc_has_computed = grpc_root.get("computed").is_some();
     let rest_has_computed = rest_root.get("computed").is_some();
     assert_eq!(
         grpc_has_computed, rest_has_computed,
-        "Both should have same computed node presence"
+        "Both should have same computed node presence at root"
+    );
+
+    // Also check nested structures - tupleToUserset/computed may be inside leaf nodes
+    let grpc_nested_computed = grpc_root
+        .get("leaf")
+        .and_then(|l| l.get("computed"))
+        .is_some();
+    let rest_nested_computed = rest_root
+        .get("leaf")
+        .and_then(|l| l.get("computed"))
+        .is_some();
+    assert_eq!(
+        grpc_nested_computed, rest_nested_computed,
+        "Both should have same nested computed node presence"
+    );
+
+    let grpc_nested_ttu = grpc_root
+        .get("leaf")
+        .and_then(|l| l.get("tupleToUserset"))
+        .is_some();
+    let rest_nested_ttu = rest_root
+        .get("leaf")
+        .and_then(|l| l.get("tupleToUserset"))
+        .is_some();
+    assert_eq!(
+        grpc_nested_ttu, rest_nested_ttu,
+        "Both should have same nested tupleToUserset node presence"
     );
 
     Ok(())
