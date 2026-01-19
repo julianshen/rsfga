@@ -17,7 +17,7 @@
 //! | `/stores/{store_id}` | GET | Get store |
 //! | `/stores/{store_id}` | DELETE | Delete store |
 
-mod routes;
+pub mod routes;
 mod state;
 
 pub use routes::{

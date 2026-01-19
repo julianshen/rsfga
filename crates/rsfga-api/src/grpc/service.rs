@@ -129,7 +129,25 @@ fn storage_error_to_status(err: StorageError) -> Status {
         }
         StorageError::TupleNotFound { .. } => Status::not_found(err.to_string()),
         StorageError::InvalidInput { message } => Status::invalid_argument(message),
+        // ALREADY_EXISTS (6): duplicate tuple or condition conflict
         StorageError::DuplicateTuple { .. } => Status::already_exists(err.to_string()),
+        StorageError::ConditionConflict(conflict) => {
+            Status::already_exists(format!("tuple exists with different condition: {conflict}"))
+        }
+        // UNAVAILABLE (14): connection errors, health check failures
+        StorageError::ConnectionError { message } => {
+            tracing::error!("Storage connection error: {}", message);
+            Status::unavailable("storage backend unavailable")
+        }
+        StorageError::HealthCheckFailed { message } => {
+            tracing::error!("Storage health check failed: {}", message);
+            Status::unavailable("storage backend unavailable")
+        }
+        // DEADLINE_EXCEEDED (4): query timeout
+        StorageError::QueryTimeout { .. } => {
+            tracing::error!("Storage query timeout: {}", err);
+            Status::deadline_exceeded("storage operation timed out")
+        }
         _ => Status::internal(err.to_string()),
     }
 }

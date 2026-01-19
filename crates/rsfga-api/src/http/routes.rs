@@ -218,6 +218,24 @@ impl ApiError {
     pub fn internal_error(message: impl Into<String>) -> Self {
         Self::new("internal_error", message)
     }
+
+    /// Creates a conflict error (409 Conflict).
+    /// Used for duplicate resources or condition conflicts.
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new("conflict", message)
+    }
+
+    /// Creates a timeout error (504 Gateway Timeout).
+    /// Used when an operation exceeds its time limit.
+    pub fn gateway_timeout(message: impl Into<String>) -> Self {
+        Self::new("timeout", message)
+    }
+
+    /// Creates a service unavailable error (503 Service Unavailable).
+    /// Used when the service is temporarily unavailable.
+    pub fn service_unavailable(message: impl Into<String>) -> Self {
+        Self::new("service_unavailable", message)
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -225,6 +243,10 @@ impl IntoResponse for ApiError {
         let status = match self.code.as_str() {
             "not_found" => StatusCode::NOT_FOUND,
             "validation_error" => StatusCode::BAD_REQUEST,
+            "conflict" => StatusCode::CONFLICT,
+            "timeout" => StatusCode::GATEWAY_TIMEOUT,
+            "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
+            "service_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(self)).into_response()
@@ -238,6 +260,23 @@ impl From<StorageError> for ApiError {
                 ApiError::not_found(format!("store not found: {store_id}"))
             }
             StorageError::InvalidInput { message } => ApiError::invalid_input(message),
+            // 409 Conflict: duplicate tuple or condition conflict
+            StorageError::DuplicateTuple { .. } => {
+                ApiError::conflict("cannot write a tuple which already exists")
+            }
+            StorageError::ConditionConflict(_) => {
+                ApiError::conflict("tuple exists with different condition")
+            }
+            // 503 Service Unavailable: connection errors, health check failures
+            StorageError::ConnectionError { .. } | StorageError::HealthCheckFailed { .. } => {
+                error!("Storage unavailable: {}", err);
+                ApiError::service_unavailable("storage backend unavailable")
+            }
+            // 504 Gateway Timeout: query timeout
+            StorageError::QueryTimeout { .. } => {
+                error!("Query timeout: {}", err);
+                ApiError::gateway_timeout("storage operation timed out")
+            }
             _ => {
                 error!("Storage error: {}", err);
                 ApiError::internal_error(err.to_string())
@@ -255,7 +294,8 @@ impl From<DomainError> for ApiError {
             DomainErrorKind::NotFound(msg) => ApiError::not_found(msg),
             DomainErrorKind::Timeout(msg) => {
                 error!("{}", msg);
-                ApiError::internal_error("authorization check timeout")
+                // 504 Gateway Timeout for timeout errors (matches gRPC DEADLINE_EXCEEDED)
+                ApiError::gateway_timeout("authorization check timeout")
             }
             DomainErrorKind::Internal(msg) => {
                 error!("Domain error: {}", msg);
