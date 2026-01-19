@@ -241,10 +241,7 @@ async fn cleanup_test_stores<S: DataStore>(store: &S, prefix: &str) {
         }
     };
 
-    let stores_to_delete: Vec<_> = stores
-        .iter()
-        .filter(|s| s.id.starts_with(prefix))
-        .collect();
+    let stores_to_delete: Vec<_> = stores.iter().filter(|s| s.id.starts_with(prefix)).collect();
 
     if stores_to_delete.is_empty() {
         return;
