@@ -1249,3 +1249,434 @@ async fn test_read_rpc_returns_conditions() {
         Some(prost_types::value::Kind::NumberValue(25.0))
     ));
 }
+
+// ============================================================================
+// Section: Consistency and Model Versioning Tests (gRPC)
+// ============================================================================
+//
+// These tests verify consistency preference handling and model version selection
+// via gRPC endpoints, complementing the HTTP integration tests.
+
+/// Test: gRPC Check accepts MINIMIZE_LATENCY consistency preference.
+#[tokio::test]
+async fn test_grpc_check_accepts_minimize_latency_consistency() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    setup_simple_model(&storage, "test-store").await;
+
+    storage
+        .write_tuple(
+            "test-store",
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+        )
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Check with MINIMIZE_LATENCY consistency (value = 1)
+    let request = Request::new(CheckRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: Some(TupleKey {
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            condition: None,
+        }),
+        contextual_tuples: None,
+        authorization_model_id: String::new(),
+        trace: false,
+        context: None,
+        consistency: 1, // MINIMIZE_LATENCY
+    });
+
+    let response = service.check(request).await;
+    assert!(
+        response.is_ok(),
+        "Check with MINIMIZE_LATENCY should succeed"
+    );
+    assert!(response.unwrap().into_inner().allowed);
+}
+
+/// Test: gRPC Check accepts HIGHER_CONSISTENCY preference.
+#[tokio::test]
+async fn test_grpc_check_accepts_higher_consistency() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    setup_simple_model(&storage, "test-store").await;
+
+    storage
+        .write_tuple(
+            "test-store",
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+        )
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Check with HIGHER_CONSISTENCY (value = 2)
+    let request = Request::new(CheckRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: Some(TupleKey {
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            condition: None,
+        }),
+        contextual_tuples: None,
+        authorization_model_id: String::new(),
+        trace: false,
+        context: None,
+        consistency: 2, // HIGHER_CONSISTENCY
+    });
+
+    let response = service.check(request).await;
+    assert!(
+        response.is_ok(),
+        "Check with HIGHER_CONSISTENCY should succeed"
+    );
+    assert!(response.unwrap().into_inner().allowed);
+}
+
+/// Test: gRPC Check with specific authorization_model_id.
+#[tokio::test]
+async fn test_grpc_check_with_specific_model_id() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let model_id = setup_simple_model(&storage, "test-store").await;
+
+    storage
+        .write_tuple(
+            "test-store",
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+        )
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Check with specific model ID
+    let request = Request::new(CheckRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: Some(TupleKey {
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:doc1".to_string(),
+            condition: None,
+        }),
+        contextual_tuples: None,
+        authorization_model_id: model_id,
+        trace: false,
+        context: None,
+        consistency: 0,
+    });
+
+    let response = service.check(request).await;
+    assert!(
+        response.is_ok(),
+        "Check with specific model_id should succeed"
+    );
+    assert!(response.unwrap().into_inner().allowed);
+}
+
+/// Test: gRPC Check without model_id uses latest model.
+#[tokio::test]
+async fn test_grpc_check_uses_latest_model_by_default() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Create first model (viewer only)
+    let _model_id_1 = setup_simple_model(&storage, "test-store").await;
+
+    // Create second model with additional relations
+    let model2 = StoredAuthorizationModel::new(
+        ulid::Ulid::new().to_string(),
+        "test-store",
+        "1.1",
+        r#"{
+            "type_definitions": [
+                {"type": "user"},
+                {"type": "document", "relations": {
+                    "viewer": {},
+                    "editor": {},
+                    "admin": {}
+                }}
+            ]
+        }"#,
+    );
+    storage.write_authorization_model(model2).await.unwrap();
+
+    // Write tuple for admin relation (only in latest model)
+    storage
+        .write_tuple(
+            "test-store",
+            StoredTuple::new("document", "doc1", "admin", "user", "alice", None),
+        )
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Check without model_id - should use latest model
+    let request = Request::new(CheckRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: Some(TupleKey {
+            user: "user:alice".to_string(),
+            relation: "admin".to_string(),
+            object: "document:doc1".to_string(),
+            condition: None,
+        }),
+        contextual_tuples: None,
+        authorization_model_id: String::new(), // Empty = use latest
+        trace: false,
+        context: None,
+        consistency: 0,
+    });
+
+    let response = service.check(request).await;
+    assert!(
+        response.is_ok(),
+        "Check without model_id should succeed using latest model"
+    );
+    assert!(response.unwrap().into_inner().allowed);
+}
+
+/// Test: gRPC BatchCheck with consistency and model_id.
+#[tokio::test]
+async fn test_grpc_batch_check_with_consistency_and_model_id() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let model_id = setup_simple_model(&storage, "test-store").await;
+
+    storage
+        .write_tuple(
+            "test-store",
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+        )
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(BatchCheckRequest {
+        store_id: "test-store".to_string(),
+        checks: vec![BatchCheckItem {
+            tuple_key: Some(TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+                condition: None,
+            }),
+            contextual_tuples: None,
+            context: None,
+            correlation_id: "check-1".to_string(),
+        }],
+        authorization_model_id: model_id,
+        consistency: 2, // HIGHER_CONSISTENCY
+    });
+
+    let response = service.batch_check(request).await;
+    assert!(
+        response.is_ok(),
+        "BatchCheck with consistency and model_id should succeed"
+    );
+
+    let result = response.unwrap().into_inner();
+    assert!(result.result.get("check-1").unwrap().allowed);
+}
+
+/// Test: gRPC Read with consistency parameter.
+#[tokio::test]
+async fn test_grpc_read_with_consistency() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    storage
+        .write_tuple(
+            "test-store",
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+        )
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Read with HIGHER_CONSISTENCY
+    let request = Request::new(ReadRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: None,
+        page_size: None,
+        continuation_token: String::new(),
+        consistency: 2, // HIGHER_CONSISTENCY
+    });
+
+    let response = service.read(request).await;
+    assert!(
+        response.is_ok(),
+        "Read with HIGHER_CONSISTENCY should succeed"
+    );
+
+    let result = response.unwrap().into_inner();
+    assert_eq!(result.tuples.len(), 1);
+}
+
+/// Test: gRPC Write with authorization_model_id.
+#[tokio::test]
+async fn test_grpc_write_with_model_id() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let model_id = setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Write with specific model_id
+    let request = Request::new(WriteRequest {
+        store_id: "test-store".to_string(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+                condition: None,
+            }],
+        }),
+        deletes: None,
+        authorization_model_id: model_id,
+    });
+
+    let response = service.write(request).await;
+    assert!(response.is_ok(), "Write with model_id should succeed");
+
+    // Verify tuple was written
+    let tuples = storage
+        .read_tuples("test-store", &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1);
+}
+
+/// Test: gRPC GetAuthorizationModel returns correct model.
+///
+/// NOTE: read_authorization_model is currently a stub that returns NOT_FOUND.
+/// This test documents expected behavior when implemented.
+#[tokio::test]
+#[ignore = "read_authorization_model is a stub - returns NOT_FOUND for all requests"]
+async fn test_grpc_get_authorization_model() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let model_id = setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(ReadAuthorizationModelRequest {
+        store_id: "test-store".to_string(),
+        id: model_id.clone(),
+    });
+
+    let response = service.read_authorization_model(request).await;
+    assert!(response.is_ok(), "GetAuthorizationModel should succeed");
+
+    let result = response.unwrap().into_inner();
+    let model = result.authorization_model.expect("Should have model");
+    assert_eq!(model.id, model_id);
+}
+
+/// Test: gRPC GetAuthorizationModel with non-existent ID returns NOT_FOUND.
+#[tokio::test]
+async fn test_grpc_get_nonexistent_model_returns_not_found() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(ReadAuthorizationModelRequest {
+        store_id: "test-store".to_string(),
+        id: "01H000000000000000000FAKE".to_string(), // Non-existent ID
+    });
+
+    let response = service.read_authorization_model(request).await;
+    assert!(response.is_err());
+    assert_eq!(response.unwrap_err().code(), tonic::Code::NotFound);
+}
+
+/// Test: gRPC ListAuthorizationModels returns all models.
+///
+/// NOTE: read_authorization_models is currently a stub that returns empty list.
+/// This test documents expected behavior when implemented.
+#[tokio::test]
+#[ignore = "read_authorization_models is a stub - returns empty list"]
+async fn test_grpc_list_authorization_models() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Create multiple models
+    let model_id_1 = setup_simple_model(&storage, "test-store").await;
+
+    let model2 = StoredAuthorizationModel::new(
+        ulid::Ulid::new().to_string(),
+        "test-store",
+        "1.1",
+        r#"{"type_definitions": [{"type": "user"}, {"type": "folder", "relations": {"viewer": {}}}]}"#,
+    );
+    let model_id_2 = model2.id.clone();
+    storage.write_authorization_model(model2).await.unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(ReadAuthorizationModelsRequest {
+        store_id: "test-store".to_string(),
+        page_size: None,
+        continuation_token: String::new(),
+    });
+
+    let response = service.read_authorization_models(request).await;
+    assert!(response.is_ok(), "ListAuthorizationModels should succeed");
+
+    let result = response.unwrap().into_inner();
+    assert_eq!(result.authorization_models.len(), 2);
+
+    let model_ids: std::collections::HashSet<String> = result
+        .authorization_models
+        .iter()
+        .map(|m| m.id.clone())
+        .collect();
+    assert!(model_ids.contains(&model_id_1));
+    assert!(model_ids.contains(&model_id_2));
+}

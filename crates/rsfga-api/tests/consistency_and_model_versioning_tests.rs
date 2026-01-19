@@ -1202,6 +1202,335 @@ async fn test_batch_check_with_consistency_and_model_id() {
 }
 
 // ============================================================================
+// Section 5: Write/Delete Operations with Model Versioning
+// ============================================================================
+
+/// Test: Write API accepts authorization_model_id parameter.
+///
+/// Verifies that the Write endpoint accepts the authorization_model_id parameter
+/// and the tuple is written successfully.
+#[tokio::test]
+async fn test_write_accepts_authorization_model_id() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = create_store(&storage).await;
+    let model_id = create_model_with_viewer_only(&storage, &store_id).await;
+
+    let (status, _response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [{
+                    "user": "user:alice",
+                    "relation": "viewer",
+                    "object": "document:doc1"
+                }]
+            },
+            "authorization_model_id": model_id
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Write with authorization_model_id should succeed"
+    );
+
+    // Verify tuple was written
+    let tuples = storage
+        .read_tuples(&store_id, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1, "Tuple should be written");
+}
+
+/// Test: Write without authorization_model_id uses latest model.
+///
+/// Verifies that the Write endpoint works without explicitly specifying a model ID.
+#[tokio::test]
+async fn test_write_without_model_id_uses_latest() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = create_store(&storage).await;
+
+    // Create two models - second one adds 'editor' relation
+    let _model_id_v1 = create_model_with_viewer_only(&storage, &store_id).await;
+    let _model_id_v2 = create_model_with_viewer_and_editor(&storage, &store_id).await;
+
+    // Write without specifying model_id - should use latest model
+    let (status, _response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [{
+                    "user": "user:alice",
+                    "relation": "editor",
+                    "object": "document:doc1"
+                }]
+            }
+        }),
+    )
+    .await;
+
+    // Should succeed because latest model (v2) has 'editor' relation
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Write without model_id should use latest model and succeed"
+    );
+
+    // Verify tuple was written
+    let tuples = storage
+        .read_tuples(&store_id, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1, "Tuple should be written");
+    assert_eq!(tuples[0].relation, "editor");
+}
+
+/// Test: Delete API accepts authorization_model_id parameter.
+///
+/// Verifies that the Write endpoint (with deletes) accepts the authorization_model_id
+/// parameter and the tuple is deleted successfully.
+#[tokio::test]
+async fn test_delete_accepts_authorization_model_id() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = create_store(&storage).await;
+    let model_id = create_model_with_viewer_only(&storage, &store_id).await;
+
+    // First write a tuple
+    storage
+        .write_tuples(
+            &store_id,
+            vec![create_tuple("viewer", "user:alice", "document", "doc1")],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    // Verify tuple exists
+    let tuples = storage
+        .read_tuples(&store_id, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1, "Tuple should exist before delete");
+
+    // Delete with authorization_model_id
+    let (status, _response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "deletes": {
+                "tuple_keys": [{
+                    "user": "user:alice",
+                    "relation": "viewer",
+                    "object": "document:doc1"
+                }]
+            },
+            "authorization_model_id": model_id
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Delete with authorization_model_id should succeed"
+    );
+
+    // Verify tuple was deleted
+    let tuples = storage
+        .read_tuples(&store_id, &Default::default())
+        .await
+        .unwrap();
+    assert!(tuples.is_empty(), "Tuple should be deleted");
+}
+
+/// Test: Write with non-existent authorization_model_id behavior.
+///
+/// Documents current behavior: Write with non-existent model_id may succeed
+/// using latest model as fallback, or may fail with 404.
+#[tokio::test]
+async fn test_write_with_nonexistent_model_id() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_test_store(&storage).await;
+
+    // Write with non-existent model ID
+    let (status, _response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [{
+                    "user": "user:alice",
+                    "relation": "viewer",
+                    "object": "document:doc1"
+                }]
+            },
+            "authorization_model_id": FAKE_MODEL_ID
+        }),
+    )
+    .await;
+
+    // Current behavior: May succeed (using latest model) or fail with 404
+    // Both are acceptable - document actual behavior
+    assert!(
+        status == StatusCode::OK || status == StatusCode::NOT_FOUND,
+        "Write with non-existent model_id should either succeed (fallback) or return 404, got: {}",
+        status
+    );
+}
+
+/// Test: Combined write and delete in single request with model_id.
+#[tokio::test]
+async fn test_write_and_delete_with_model_id() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = create_store(&storage).await;
+    let model_id = create_model_with_viewer_and_editor(&storage, &store_id).await;
+
+    // First write a tuple to be deleted
+    storage
+        .write_tuples(
+            &store_id,
+            vec![create_tuple("viewer", "user:bob", "document", "old_doc")],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    // Write new tuple and delete old one in same request
+    let (status, _response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [{
+                    "user": "user:alice",
+                    "relation": "editor",
+                    "object": "document:new_doc"
+                }]
+            },
+            "deletes": {
+                "tuple_keys": [{
+                    "user": "user:bob",
+                    "relation": "viewer",
+                    "object": "document:old_doc"
+                }]
+            },
+            "authorization_model_id": model_id
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Combined write/delete with model_id should succeed"
+    );
+
+    // Verify: old tuple deleted, new tuple written
+    let tuples = storage
+        .read_tuples(&store_id, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1, "Should have exactly one tuple");
+    assert_eq!(tuples[0].user_id, "alice");
+    assert_eq!(tuples[0].relation, "editor");
+}
+
+// ============================================================================
+// Section 6: Model Deletion Lifecycle Tests
+// ============================================================================
+//
+// NOTE: Model deletion functionality (delete_authorization_model) is NOT YET
+// IMPLEMENTED in the storage layer. These tests document the expected behavior
+// when that functionality is added. They are currently disabled with #[ignore].
+//
+// When delete_authorization_model is implemented, remove the #[ignore] attributes
+// and ensure these tests pass.
+
+/// Test: Deleting a model doesn't break existing tuples.
+///
+/// Tuples written using a model should remain accessible after the model is deleted.
+/// The latest remaining model should be used for authorization checks.
+///
+/// NOTE: This test requires delete_authorization_model to be implemented.
+#[tokio::test]
+#[ignore = "delete_authorization_model not yet implemented in storage layer"]
+async fn test_model_deletion_doesnt_break_existing_tuples() {
+    // This test will verify that:
+    // 1. Tuples remain accessible after a model is deleted
+    // 2. The latest remaining model is used for checks
+    //
+    // Implementation pending: storage.delete_authorization_model()
+    todo!("Implement when delete_authorization_model is added to DataStore trait");
+}
+
+/// Test: Check with deleted model_id behavior.
+///
+/// When a check requests a specific model_id that has been deleted,
+/// document the expected behavior (404 or fallback to latest).
+///
+/// NOTE: This test requires delete_authorization_model to be implemented.
+#[tokio::test]
+#[ignore = "delete_authorization_model not yet implemented in storage layer"]
+async fn test_check_with_deleted_model_id() {
+    // This test will verify the behavior when checking with a deleted model_id:
+    // - Could return 404 (model not found)
+    // - Could fall back to latest model and return result
+    //
+    // Implementation pending: storage.delete_authorization_model()
+    todo!("Implement when delete_authorization_model is added to DataStore trait");
+}
+
+/// Test: GET deleted model returns 404.
+///
+/// Verifies that requesting a deleted model by ID returns 404.
+///
+/// NOTE: This test requires delete_authorization_model to be implemented.
+#[tokio::test]
+#[ignore = "delete_authorization_model not yet implemented in storage layer"]
+async fn test_get_deleted_model_returns_404() {
+    // This test will verify that:
+    // - GET /stores/{store_id}/authorization-models/{deleted_model_id} returns 404
+    //
+    // Implementation pending: storage.delete_authorization_model()
+    todo!("Implement when delete_authorization_model is added to DataStore trait");
+}
+
+/// Test: List models excludes deleted models.
+///
+/// Verifies that deleted models do not appear in the list.
+///
+/// NOTE: This test requires delete_authorization_model to be implemented.
+#[tokio::test]
+#[ignore = "delete_authorization_model not yet implemented in storage layer"]
+async fn test_list_models_excludes_deleted() {
+    // This test will verify that:
+    // - Deleted models do not appear in list_authorization_models results
+    //
+    // Implementation pending: storage.delete_authorization_model()
+    todo!("Implement when delete_authorization_model is added to DataStore trait");
+}
+
+/// Test: Deleting last model behavior.
+///
+/// Documents what happens when the last/only model in a store is deleted.
+///
+/// NOTE: This test requires delete_authorization_model to be implemented.
+#[tokio::test]
+#[ignore = "delete_authorization_model not yet implemented in storage layer"]
+async fn test_deleting_last_model_behavior() {
+    // This test will verify the behavior when the last model is deleted:
+    // - Check should fail gracefully (400, 404, or 500)
+    // - Tuples should still exist but be inaccessible for authorization
+    //
+    // Implementation pending: storage.delete_authorization_model()
+    todo!("Implement when delete_authorization_model is added to DataStore trait");
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
