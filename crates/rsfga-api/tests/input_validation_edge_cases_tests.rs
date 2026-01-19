@@ -16,6 +16,15 @@
 //! - Error messages match OpenFGA format
 //! - No panics or crashes on malformed input
 //!
+//! **Design Notes**:
+//! - Tests use flexible assertions where exact behavior may vary between OpenFGA versions
+//! - Key invariant: no server errors (5xx) on any malformed input
+//! - HTTP-only tests; gRPC validation covered in grpc_cache_invalidation_tests.rs
+//!   and authorization_model_validation_tests.rs
+//!
+//! TODO: After verifying exact OpenFGA behavior for edge cases, tighten flexible
+//! assertions (marked with "handled safely") to match specific expected status codes.
+//!
 //! Related to GitHub issue #216.
 
 mod common;
@@ -1641,12 +1650,14 @@ async fn test_very_long_type_id_values_handled() {
 }
 
 /// Test: Concurrent requests with same invalid input don't cause race conditions.
+/// Uses 50 concurrent requests to stress test error handling under load.
 #[tokio::test]
 async fn test_concurrent_invalid_requests_safe() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    let tasks: Vec<_> = (0..10)
+    // Use 50 concurrent requests to stress test error handling
+    let tasks: Vec<_> = (0..50)
         .map(|_| {
             let storage = Arc::clone(&storage);
             let store_id = store_id.clone();
@@ -1682,4 +1693,37 @@ async fn test_concurrent_invalid_requests_safe() {
             "All concurrent invalid requests should return 400"
         );
     }
+}
+
+/// Test: Extreme nesting depth (50 levels) doesn't cause stack overflow.
+#[tokio::test]
+async fn test_extreme_nesting_depth_no_stack_overflow() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_store_with_conditions(&storage).await;
+
+    // Create extremely deeply nested context (50 levels)
+    let mut nested = serde_json::json!({"leaf": true});
+    for _ in 0..49 {
+        nested = serde_json::json!({"nested": nested});
+    }
+
+    let (status, _) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/check"),
+        serde_json::json!({
+            "tuple_key": {
+                "user": "user:alice",
+                "relation": "viewer",
+                "object": "document:doc1"
+            },
+            "context": nested
+        }),
+    )
+    .await;
+
+    // Key requirement: no stack overflow or server crash
+    assert!(
+        !status.is_server_error(),
+        "Extreme nesting (50 levels) should not cause server error or stack overflow, got {status}"
+    );
 }
