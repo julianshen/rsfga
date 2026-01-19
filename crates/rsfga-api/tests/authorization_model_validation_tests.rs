@@ -522,11 +522,7 @@ async fn test_list_models_returns_all_versions() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     let models = json["authorization_models"].as_array().unwrap();
-    assert_eq!(
-        models.len(),
-        2,
-        "List should return both model versions"
-    );
+    assert_eq!(models.len(), 2, "List should return both model versions");
 }
 
 // ============================================================
@@ -653,10 +649,7 @@ async fn test_deeply_nested_condition_context_returns_error() {
             .as_str()
             .unwrap_or("")
             .contains("nesting depth")
-            || response["message"]
-                .as_str()
-                .unwrap_or("")
-                .contains("depth"),
+            || response["message"].as_str().unwrap_or("").contains("depth"),
         "Message should mention nesting depth: {:?}",
         response["message"]
     );
@@ -743,14 +736,8 @@ async fn test_large_condition_context_returns_error() {
         "Large condition context should return 400 Bad Request"
     );
     assert!(
-        response["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("size")
-            || response["message"]
-                .as_str()
-                .unwrap_or("")
-                .contains("10KB"),
+        response["message"].as_str().unwrap_or("").contains("size")
+            || response["message"].as_str().unwrap_or("").contains("10KB"),
         "Message should mention size limit: {:?}",
         response["message"]
     );
@@ -865,15 +852,9 @@ async fn test_concurrent_model_writes_no_corruption() {
     );
 
     // Verify all models are unique
-    let model_ids: std::collections::HashSet<_> = models
-        .iter()
-        .filter_map(|m| m["id"].as_str())
-        .collect();
-    assert_eq!(
-        model_ids.len(),
-        10,
-        "All model IDs should be unique"
-    );
+    let model_ids: std::collections::HashSet<_> =
+        models.iter().filter_map(|m| m["id"].as_str()).collect();
+    assert_eq!(model_ids.len(), 10, "All model IDs should be unique");
 }
 
 /// Test: Concurrent tuple writes with validation don't corrupt state.
@@ -1026,11 +1007,7 @@ async fn test_extra_fields_ignored() {
     )
     .await;
 
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "Extra fields should be ignored"
-    );
+    assert_eq!(status, StatusCode::OK, "Extra fields should be ignored");
     assert!(
         response.get("allowed").is_some(),
         "Response should have 'allowed' field"
@@ -1065,10 +1042,7 @@ async fn test_error_messages_are_clear() {
 
     // Error message should be present and non-empty
     let message = response["message"].as_str().unwrap_or("");
-    assert!(
-        !message.is_empty(),
-        "Error message should not be empty"
-    );
+    assert!(!message.is_empty(), "Error message should not be empty");
 
     // Error code should be present
     assert!(
@@ -1111,10 +1085,7 @@ async fn test_not_found_errors_no_internal_details() {
         !message.contains("at src/"),
         "Error should not contain source paths"
     );
-    assert!(
-        !message.contains("panic"),
-        "Error should not mention panic"
-    );
+    assert!(!message.contains("panic"), "Error should not mention panic");
 }
 
 // ============================================================
