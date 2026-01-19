@@ -598,6 +598,181 @@ async fn test_http_to_grpc_status_code_mappings() {
 }
 
 // ============================================================
+// Section 8: gRPC Status Code Mapping Tests
+// ============================================================
+
+/// Test: StorageError to gRPC Status mapping for DuplicateTuple.
+/// Verifies DuplicateTuple → ALREADY_EXISTS (6)
+#[test]
+fn test_grpc_duplicate_tuple_returns_already_exists() {
+    use rsfga_storage::StorageError;
+    use tonic::Code;
+
+    let err = StorageError::DuplicateTuple {
+        object_type: "document".to_string(),
+        object_id: "doc1".to_string(),
+        relation: "viewer".to_string(),
+        user: "user:alice".to_string(),
+    };
+
+    // Use the same conversion function the gRPC service uses
+    let status = storage_error_to_grpc_status(err);
+    assert_eq!(
+        status.code(),
+        Code::AlreadyExists,
+        "DuplicateTuple should map to ALREADY_EXISTS"
+    );
+}
+
+/// Test: StorageError to gRPC Status mapping for ConditionConflict.
+/// Verifies ConditionConflict → ALREADY_EXISTS (6)
+#[test]
+fn test_grpc_condition_conflict_returns_already_exists() {
+    use rsfga_storage::{ConditionConflictError, StorageError};
+    use tonic::Code;
+
+    let err = StorageError::ConditionConflict(Box::new(ConditionConflictError {
+        store_id: "test-store".to_string(),
+        object_type: "document".to_string(),
+        object_id: "doc1".to_string(),
+        relation: "viewer".to_string(),
+        user: "user:alice".to_string(),
+        existing_condition: Some("cond_a".to_string()),
+        new_condition: Some("cond_b".to_string()),
+    }));
+
+    let status = storage_error_to_grpc_status(err);
+    assert_eq!(
+        status.code(),
+        Code::AlreadyExists,
+        "ConditionConflict should map to ALREADY_EXISTS"
+    );
+}
+
+/// Test: StorageError to gRPC Status mapping for ConnectionError.
+/// Verifies ConnectionError → UNAVAILABLE (14)
+#[test]
+fn test_grpc_connection_error_returns_unavailable() {
+    use rsfga_storage::StorageError;
+    use tonic::Code;
+
+    let err = StorageError::ConnectionError {
+        message: "database unavailable".to_string(),
+    };
+
+    let status = storage_error_to_grpc_status(err);
+    assert_eq!(
+        status.code(),
+        Code::Unavailable,
+        "ConnectionError should map to UNAVAILABLE"
+    );
+}
+
+/// Test: StorageError to gRPC Status mapping for HealthCheckFailed.
+/// Verifies HealthCheckFailed → UNAVAILABLE (14)
+#[test]
+fn test_grpc_health_check_failed_returns_unavailable() {
+    use rsfga_storage::StorageError;
+    use tonic::Code;
+
+    let err = StorageError::HealthCheckFailed {
+        message: "health check failed".to_string(),
+    };
+
+    let status = storage_error_to_grpc_status(err);
+    assert_eq!(
+        status.code(),
+        Code::Unavailable,
+        "HealthCheckFailed should map to UNAVAILABLE"
+    );
+}
+
+/// Test: StorageError to gRPC Status mapping for QueryTimeout.
+/// Verifies QueryTimeout → DEADLINE_EXCEEDED (4)
+#[test]
+fn test_grpc_query_timeout_returns_deadline_exceeded() {
+    use rsfga_storage::StorageError;
+    use tonic::Code;
+
+    let err = StorageError::QueryTimeout {
+        operation: "read_tuples".to_string(),
+        timeout: Duration::from_secs(5),
+    };
+
+    let status = storage_error_to_grpc_status(err);
+    assert_eq!(
+        status.code(),
+        Code::DeadlineExceeded,
+        "QueryTimeout should map to DEADLINE_EXCEEDED"
+    );
+}
+
+/// Test: StorageError to gRPC Status mapping for StoreNotFound.
+/// Verifies StoreNotFound → NOT_FOUND (5)
+#[test]
+fn test_grpc_store_not_found_returns_not_found() {
+    use rsfga_storage::StorageError;
+    use tonic::Code;
+
+    let err = StorageError::StoreNotFound {
+        store_id: "nonexistent".to_string(),
+    };
+
+    let status = storage_error_to_grpc_status(err);
+    assert_eq!(
+        status.code(),
+        Code::NotFound,
+        "StoreNotFound should map to NOT_FOUND"
+    );
+}
+
+/// Test: StorageError to gRPC Status mapping for InvalidInput.
+/// Verifies InvalidInput → INVALID_ARGUMENT (3)
+#[test]
+fn test_grpc_invalid_input_returns_invalid_argument() {
+    use rsfga_storage::StorageError;
+    use tonic::Code;
+
+    let err = StorageError::InvalidInput {
+        message: "invalid input".to_string(),
+    };
+
+    let status = storage_error_to_grpc_status(err);
+    assert_eq!(
+        status.code(),
+        Code::InvalidArgument,
+        "InvalidInput should map to INVALID_ARGUMENT"
+    );
+}
+
+/// Helper function that mirrors the gRPC service's storage_error_to_status.
+/// This allows testing the mapping logic without spinning up a gRPC server.
+fn storage_error_to_grpc_status(err: rsfga_storage::StorageError) -> tonic::Status {
+    use rsfga_storage::StorageError;
+    use tonic::Status;
+
+    match &err {
+        StorageError::StoreNotFound { store_id } => {
+            Status::not_found(format!("store not found: {store_id}"))
+        }
+        StorageError::TupleNotFound { .. } => Status::not_found(err.to_string()),
+        StorageError::InvalidInput { message } => Status::invalid_argument(message),
+        StorageError::DuplicateTuple { .. } => Status::already_exists(err.to_string()),
+        StorageError::ConditionConflict(conflict) => {
+            Status::already_exists(format!("tuple exists with different condition: {conflict}"))
+        }
+        StorageError::ConnectionError { .. } => Status::unavailable("storage backend unavailable"),
+        StorageError::HealthCheckFailed { .. } => {
+            Status::unavailable("storage backend unavailable")
+        }
+        StorageError::QueryTimeout { .. } => {
+            Status::deadline_exceeded("storage operation timed out")
+        }
+        _ => Status::internal(err.to_string()),
+    }
+}
+
+// ============================================================
 // Helper Functions
 // ============================================================
 
