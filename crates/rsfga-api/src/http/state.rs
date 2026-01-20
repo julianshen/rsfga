@@ -25,6 +25,16 @@ pub struct AssertionTupleKey {
     pub user: String,
     pub relation: String,
     pub object: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<AssertionCondition>,
+}
+
+/// Condition for an assertion tuple.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct AssertionCondition {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Wrapper for contextual tuples in assertions.

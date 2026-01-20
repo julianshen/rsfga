@@ -1607,6 +1607,7 @@ async fn write_assertions<S: DataStore>(
                 user: a.tuple_key.user,
                 relation: a.tuple_key.relation,
                 object: a.tuple_key.object,
+                condition: None, // HTTP API doesn't support conditions in assertions yet
             },
             expectation: a.expectation,
             contextual_tuples: a.contextual_tuples.map(|ct| ContextualTuplesWrapper {
@@ -1617,6 +1618,7 @@ async fn write_assertions<S: DataStore>(
                         user: tk.user,
                         relation: tk.relation,
                         object: tk.object,
+                        condition: None, // HTTP API doesn't support conditions in assertions yet
                     })
                     .collect(),
             }),

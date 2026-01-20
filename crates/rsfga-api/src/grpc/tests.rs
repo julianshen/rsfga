@@ -774,16 +774,24 @@ async fn test_write_authorization_model_invalidates_cel_cache() {
         cache.entry_count()
     );
 
-    // Call write_authorization_model
+    // Call write_authorization_model with a minimal valid model
     let request = Request::new(WriteAuthorizationModelRequest {
         store_id: "test-store".to_string(),
-        type_definitions: vec![],
-        schema_version: String::new(),
+        type_definitions: vec![TypeDefinition {
+            r#type: "user".to_string(),
+            relations: Default::default(),
+            metadata: None,
+        }],
+        schema_version: "1.1".to_string(),
         conditions: Default::default(),
     });
 
     let response = service.write_authorization_model(request).await;
-    assert!(response.is_ok(), "write_authorization_model should succeed");
+    assert!(
+        response.is_ok(),
+        "write_authorization_model should succeed: {:?}",
+        response.err()
+    );
 
     // Verify the CEL cache was invalidated
     cache.run_pending_tasks(); // Ensure invalidation is visible
