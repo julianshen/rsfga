@@ -236,6 +236,12 @@ impl ApiError {
     pub fn service_unavailable(message: impl Into<String>) -> Self {
         Self::new("service_unavailable", message)
     }
+
+    /// Creates a resource exhausted error (429 Too Many Requests).
+    /// Used when a resource limit has been reached.
+    pub fn resource_exhausted(message: impl Into<String>) -> Self {
+        Self::new("resource_exhausted", message)
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -247,6 +253,7 @@ impl IntoResponse for ApiError {
             "timeout" => StatusCode::GATEWAY_TIMEOUT,
             "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
             "service_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+            "resource_exhausted" => StatusCode::TOO_MANY_REQUESTS,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(self)).into_response()
@@ -547,6 +554,14 @@ pub struct ListAuthorizationModelsQuery {
 /// Maximum size for authorization model JSON (1MB, similar to OpenFGA's ~256KB but more lenient).
 /// This is validated at the HTTP layer before storage to prevent oversized payloads.
 const MAX_AUTHORIZATION_MODEL_SIZE: usize = 1024 * 1024; // 1MB
+
+/// Maximum number of (store_id, model_id) assertion entries to prevent unbounded memory growth.
+/// This limits the total number of unique store/model pairs that can have assertions.
+/// Typical production usage: < 100 models with assertions.
+const MAX_ASSERTION_ENTRIES: usize = 10_000;
+
+/// Warning threshold for assertion entries (80% of max).
+const ASSERTION_ENTRIES_WARNING_THRESHOLD: usize = MAX_ASSERTION_ENTRIES * 80 / 100;
 
 async fn write_authorization_model<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
@@ -1606,6 +1621,37 @@ async fn write_assertions<S: DataStore>(
         .storage
         .get_authorization_model(&store_id, &authorization_model_id)
         .await?;
+
+    // Check assertion entry capacity to prevent unbounded memory growth.
+    // Only check for NEW keys - updates to existing keys don't increase count.
+    let assertion_key = (store_id.clone(), authorization_model_id.clone());
+    let current_count = state.assertions.len();
+    let is_new_key = !state.assertions.contains_key(&assertion_key);
+
+    if is_new_key {
+        if current_count >= MAX_ASSERTION_ENTRIES {
+            tracing::error!(
+                current_count = current_count,
+                max = MAX_ASSERTION_ENTRIES,
+                store_id = %store_id,
+                model_id = %authorization_model_id,
+                "Assertion storage capacity exceeded"
+            );
+            return Err(ApiError::resource_exhausted(format!(
+                "assertion storage limit reached ({} entries), delete unused stores to free space",
+                MAX_ASSERTION_ENTRIES
+            )));
+        }
+
+        if current_count >= ASSERTION_ENTRIES_WARNING_THRESHOLD {
+            tracing::warn!(
+                current_count = current_count,
+                threshold = ASSERTION_ENTRIES_WARNING_THRESHOLD,
+                max = MAX_ASSERTION_ENTRIES,
+                "Assertion storage nearing capacity"
+            );
+        }
+    }
 
     // Convert assertions to stored format
     use super::state::{

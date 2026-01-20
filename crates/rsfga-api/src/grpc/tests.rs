@@ -2386,6 +2386,74 @@ async fn test_delete_store_cleans_up_assertions() {
     assert!(response.into_inner().assertions.is_empty());
 }
 
+/// Test: WriteAssertions allows updates to existing keys without capacity check
+#[tokio::test]
+async fn test_assertions_update_existing_key_allowed() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let model_id = setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    // Write initial assertions
+    let write_request = Request::new(WriteAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id.clone(),
+        assertions: vec![Assertion {
+            tuple_key: Some(TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:readme".to_string(),
+                condition: None,
+            }),
+            expectation: true,
+            contextual_tuples: vec![],
+        }],
+    });
+    service.write_assertions(write_request).await.unwrap();
+
+    // Update assertions for the same key (should succeed - not a new entry)
+    let update_request = Request::new(WriteAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id.clone(),
+        assertions: vec![
+            Assertion {
+                tuple_key: Some(TupleKey {
+                    user: "user:alice".to_string(),
+                    relation: "viewer".to_string(),
+                    object: "document:readme".to_string(),
+                    condition: None,
+                }),
+                expectation: true,
+                contextual_tuples: vec![],
+            },
+            Assertion {
+                tuple_key: Some(TupleKey {
+                    user: "user:bob".to_string(),
+                    relation: "viewer".to_string(),
+                    object: "document:readme".to_string(),
+                    condition: None,
+                }),
+                expectation: false,
+                contextual_tuples: vec![],
+            },
+        ],
+    });
+    service.write_assertions(update_request).await.unwrap();
+
+    // Verify updated assertions
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id,
+    });
+    let response = service.read_assertions(read_request).await.unwrap();
+    assert_eq!(response.into_inner().assertions.len(), 2);
+}
+
 // =============================================================================
 // Proto-JSON Conversion Roundtrip Tests
 // =============================================================================

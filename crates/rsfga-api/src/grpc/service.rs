@@ -46,6 +46,14 @@ use crate::proto::openfga::v1::{
 /// OpenFGA uses UUIDs (36 chars), so 256 provides generous headroom.
 const MAX_CORRELATION_ID_LENGTH: usize = 256;
 
+/// Maximum number of (store_id, model_id) assertion entries to prevent unbounded memory growth.
+/// This limits the total number of unique store/model pairs that can have assertions.
+/// Typical production usage: < 100 models with assertions.
+const MAX_ASSERTION_ENTRIES: usize = 10_000;
+
+/// Warning threshold for assertion entries (80% of max).
+const ASSERTION_ENTRIES_WARNING_THRESHOLD: usize = MAX_ASSERTION_ENTRIES * 80 / 100;
+
 /// gRPC service implementation for OpenFGA.
 ///
 /// This service implements the OpenFGA gRPC API with support for parallel
@@ -68,15 +76,20 @@ const MAX_CORRELATION_ID_LENGTH: usize = 256;
 /// - Fast read/write access for assertions
 /// - No database storage overhead
 ///
-/// **Production Considerations:**
-/// - Assertions are scoped per (store_id, model_id) pair
-/// - Memory grows with number of stores × models × assertions per model
+/// **Memory Limits:**
+/// - Maximum 10,000 unique (store_id, model_id) pairs with assertions
+/// - Warning logged at 80% capacity (8,000 entries)
+/// - New writes rejected with ResourceExhausted error when limit reached
+///
+/// **Cleanup Behavior:**
 /// - Assertions are cleaned up when stores are deleted
 /// - Memory is NOT recovered when individual models are deleted (only store deletion)
-/// - For high-volume production environments, consider:
-///   - Limiting number of assertions per model via API validation
-///   - Implementing periodic cleanup of old/unused model assertions
-///   - Monitoring memory usage via metrics
+/// - WriteAssertions replaces all assertions for a key (not append)
+///
+/// **Production Considerations:**
+/// - Monitor assertion entry count via logs
+/// - Plan store lifecycle to ensure cleanup
+/// - Typical usage: ~100-1000 models with assertions
 ///
 /// OpenFGA also stores assertions in-memory, so this matches their behavior.
 pub struct OpenFgaGrpcService<S: DataStore> {
@@ -2074,6 +2087,37 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .get_authorization_model(&req.store_id, &req.authorization_model_id)
             .await
             .map_err(storage_error_to_status)?;
+
+        // Check assertion entry capacity to prevent unbounded memory growth.
+        // Only check for NEW keys - updates to existing keys don't increase count.
+        let assertion_key = (req.store_id.clone(), req.authorization_model_id.clone());
+        let current_count = self.assertions.len();
+        let is_new_key = !self.assertions.contains_key(&assertion_key);
+
+        if is_new_key {
+            if current_count >= MAX_ASSERTION_ENTRIES {
+                tracing::error!(
+                    current_count = current_count,
+                    max = MAX_ASSERTION_ENTRIES,
+                    store_id = %req.store_id,
+                    model_id = %req.authorization_model_id,
+                    "Assertion storage capacity exceeded"
+                );
+                return Err(Status::resource_exhausted(format!(
+                    "assertion storage limit reached ({} entries), delete unused stores to free space",
+                    MAX_ASSERTION_ENTRIES
+                )));
+            }
+
+            if current_count >= ASSERTION_ENTRIES_WARNING_THRESHOLD {
+                tracing::warn!(
+                    current_count = current_count,
+                    threshold = ASSERTION_ENTRIES_WARNING_THRESHOLD,
+                    max = MAX_ASSERTION_ENTRIES,
+                    "Assertion storage nearing capacity"
+                );
+            }
+        }
 
         // Convert proto assertions to stored format (same format as HTTP layer)
         // Preserves conditions on tuple keys to avoid data loss.
