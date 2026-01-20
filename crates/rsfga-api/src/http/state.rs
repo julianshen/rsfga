@@ -19,12 +19,23 @@ pub struct StoredAssertion {
     pub contextual_tuples: Option<ContextualTuplesWrapper>,
 }
 
-/// Tuple key for an assertion.
+/// Tuple key for an assertion, including optional condition.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AssertionTupleKey {
     pub user: String,
     pub relation: String,
     pub object: String,
+    /// Optional condition for conditional tuple assertions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<AssertionCondition>,
+}
+
+/// Condition attached to an assertion tuple key.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct AssertionCondition {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Wrapper for contextual tuples in assertions.
@@ -61,6 +72,17 @@ pub struct ContextualTuplesWrapper {
 /// let cache_config = CheckCacheConfig::default().with_enabled(true);
 /// let state = AppState::with_cache_config(storage, cache_config);
 /// ```
+///
+/// # Memory Usage for Assertions
+///
+/// Assertions are stored in-memory using a `DashMap`. Memory grows with the
+/// number of stores × models × assertions. Assertions are cleaned up when
+/// stores are deleted. OpenFGA also stores assertions in-memory, so this
+/// matches their behavior. For production deployments, monitor memory usage
+/// and consider limiting assertions per model if needed.
+///
+/// # Assertions Key Type
+///
 /// Key for assertions storage: (store_id, authorization_model_id).
 pub type AssertionKey = (String, String);
 
@@ -74,7 +96,8 @@ pub struct AppState<S: DataStore> {
     pub resolver: Arc<GraphResolver<DataStoreTupleReader<S>, DataStoreModelReader<S>>>,
     /// The check result cache (always created, but only attached to resolver if enabled).
     pub cache: Arc<CheckCache>,
-    /// In-memory assertions storage (store_id, model_id) -> assertions.
+    /// In-memory assertions storage keyed by (store_id, model_id).
+    /// See struct-level documentation for memory usage characteristics.
     pub assertions: Arc<DashMap<AssertionKey, Vec<StoredAssertion>>>,
 }
 

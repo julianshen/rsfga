@@ -12,6 +12,7 @@
 //! gRPC Request → OpenFgaGrpcService → Storage → Response
 //! ```
 
+pub mod conversion;
 mod service;
 
 pub use service::OpenFgaGrpcService;

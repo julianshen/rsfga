@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use tonic::{Request, Response, Status};
 
 use rsfga_domain::cache::{CheckCache, CheckCacheConfig};
@@ -12,19 +13,30 @@ use rsfga_domain::resolver::{
     GraphResolver, ResolverConfig,
 };
 use rsfga_server::handlers::batch::BatchCheckHandler;
-use rsfga_storage::{DataStore, DateTime, StorageError, StoredTuple, TupleFilter, Utc};
+use rsfga_storage::{
+    DataStore, DateTime, PaginationOptions, StorageError, StoredAuthorizationModel, StoredTuple,
+    TupleFilter, Utc,
+};
 
 use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
+use crate::grpc::conversion::{
+    condition_to_json, hashmap_to_prost_struct, prost_struct_to_hashmap, stored_model_to_proto,
+    type_definition_to_json,
+};
+use crate::http::state::{
+    AssertionCondition, AssertionKey, AssertionTupleKey, ContextualTuplesWrapper, StoredAssertion,
+};
 use crate::utils::{format_user, parse_object, parse_user};
 
 use crate::proto::openfga::v1::{
-    open_fga_service_server::OpenFgaService, user, BatchCheckRequest, BatchCheckResponse,
-    BatchCheckSingleResult, CheckError, CheckRequest, CheckResponse, Computed, CreateStoreRequest,
-    CreateStoreResponse, DeleteStoreRequest, DeleteStoreResponse, ErrorCode, ExpandRequest,
-    ExpandResponse, FgaObject, GetStoreRequest, GetStoreResponse, Leaf, ListObjectsRequest,
-    ListObjectsResponse, ListStoresRequest, ListStoresResponse, ListUsersRequest,
-    ListUsersResponse, Node, Nodes, ObjectRelation, ReadAssertionsRequest, ReadAssertionsResponse,
-    ReadAuthorizationModelRequest, ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
+    open_fga_service_server::OpenFgaService, user, Assertion, AuthorizationModel,
+    BatchCheckRequest, BatchCheckResponse, BatchCheckSingleResult, CheckError, CheckRequest,
+    CheckResponse, Computed, CreateStoreRequest, CreateStoreResponse, DeleteStoreRequest,
+    DeleteStoreResponse, ErrorCode, ExpandRequest, ExpandResponse, FgaObject, GetStoreRequest,
+    GetStoreResponse, Leaf, ListObjectsRequest, ListObjectsResponse, ListStoresRequest,
+    ListStoresResponse, ListUsersRequest, ListUsersResponse, Node, Nodes, ObjectRelation,
+    ReadAssertionsRequest, ReadAssertionsResponse, ReadAuthorizationModelRequest,
+    ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
     ReadAuthorizationModelsResponse, ReadChangesRequest, ReadChangesResponse, ReadRequest,
     ReadResponse, RelationshipCondition, Store, Tuple, TupleKey, TupleToUserset, TypedWildcard,
     UpdateStoreRequest, UpdateStoreResponse, User, Users, UsersetTree, UsersetUser,
@@ -35,6 +47,14 @@ use crate::proto::openfga::v1::{
 /// Maximum allowed length for correlation IDs to prevent DoS attacks.
 /// OpenFGA uses UUIDs (36 chars), so 256 provides generous headroom.
 const MAX_CORRELATION_ID_LENGTH: usize = 256;
+
+/// Maximum number of (store_id, model_id) assertion entries to prevent unbounded memory growth.
+/// This limits the total number of unique store/model pairs that can have assertions.
+/// Typical production usage: < 100 models with assertions.
+const MAX_ASSERTION_ENTRIES: usize = 10_000;
+
+/// Warning threshold for assertion entries (80% of max).
+const ASSERTION_ENTRIES_WARNING_THRESHOLD: usize = MAX_ASSERTION_ENTRIES * 80 / 100;
 
 /// gRPC service implementation for OpenFGA.
 ///
@@ -51,6 +71,29 @@ const MAX_CORRELATION_ID_LENGTH: usize = 256;
 /// let cache_config = CheckCacheConfig::default().with_enabled(true);
 /// let service = OpenFgaGrpcService::with_cache_config(storage, cache_config);
 /// ```
+///
+/// # Memory Usage Characteristics
+///
+/// Assertions are stored in-memory using a `DashMap`. This design provides:
+/// - Fast read/write access for assertions
+/// - No database storage overhead
+///
+/// **Memory Limits:**
+/// - Maximum 10,000 unique (store_id, model_id) pairs with assertions
+/// - Warning logged at 80% capacity (8,000 entries)
+/// - New writes rejected with ResourceExhausted error when limit reached
+///
+/// **Cleanup Behavior:**
+/// - Assertions are cleaned up when stores are deleted
+/// - Memory is NOT recovered when individual models are deleted (only store deletion)
+/// - WriteAssertions replaces all assertions for a key (not append)
+///
+/// **Production Considerations:**
+/// - Monitor assertion entry count via logs
+/// - Plan store lifecycle to ensure cleanup
+/// - Typical usage: ~100-1000 models with assertions
+///
+/// OpenFGA also stores assertions in-memory, so this matches their behavior.
 pub struct OpenFgaGrpcService<S: DataStore> {
     storage: Arc<S>,
     /// The graph resolver for single checks.
@@ -59,6 +102,13 @@ pub struct OpenFgaGrpcService<S: DataStore> {
     batch_handler: Arc<BatchCheckHandler<DataStoreTupleReader<S>, DataStoreModelReader<S>>>,
     /// The check result cache, stored for future invalidation in write handlers.
     cache: Arc<CheckCache>,
+    /// In-memory assertions storage keyed by (store_id, model_id).
+    ///
+    /// # Memory Management
+    /// - Entries are removed when stores are deleted via `delete_store`
+    /// - WriteAssertions replaces all assertions for a key (not append)
+    /// - Typical usage: ~100-1000 assertions per model for testing scenarios
+    assertions: Arc<DashMap<AssertionKey, Vec<StoredAssertion>>>,
 }
 
 impl<S: DataStore> OpenFgaGrpcService<S> {
@@ -112,6 +162,7 @@ impl<S: DataStore> OpenFgaGrpcService<S> {
             resolver,
             batch_handler,
             cache,
+            assertions: Arc::new(DashMap::new()),
         }
     }
 
@@ -126,6 +177,9 @@ fn storage_error_to_status(err: StorageError) -> Status {
     match &err {
         StorageError::StoreNotFound { store_id } => {
             Status::not_found(format!("store not found: {store_id}"))
+        }
+        StorageError::ModelNotFound { model_id } => {
+            Status::not_found(format!("authorization model not found: {model_id}"))
         }
         StorageError::TupleNotFound { .. } => Status::not_found(err.to_string()),
         StorageError::InvalidInput { message } => Status::invalid_argument(message),
@@ -190,99 +244,6 @@ fn batch_check_error_to_status(err: rsfga_server::handlers::batch::BatchCheckErr
             // Return sanitized message to prevent information leakage
             Status::internal("internal error during authorization check")
         }
-    }
-}
-
-/// Converts a prost_types::Value to serde_json::Value (takes ownership to avoid clones).
-///
-/// Returns `Err` if the value contains NaN or Infinity (invalid JSON numbers).
-fn prost_value_to_json(value: prost_types::Value) -> Result<serde_json::Value, &'static str> {
-    use prost_types::value::Kind;
-
-    match value.kind {
-        Some(Kind::NullValue(_)) => Ok(serde_json::Value::Null),
-        Some(Kind::NumberValue(n)) => {
-            // Reject NaN and Infinity as they are not valid JSON values.
-            // Note: Protobuf NumberValue uses f64, which loses precision for
-            // integers > 2^53. This is a known limitation of the protocol.
-            if n.is_nan() || n.is_infinite() {
-                return Err("NaN and Infinity are not valid JSON numbers");
-            }
-            Ok(serde_json::json!(n))
-        }
-        Some(Kind::StringValue(s)) => Ok(serde_json::Value::String(s)),
-        Some(Kind::BoolValue(b)) => Ok(serde_json::Value::Bool(b)),
-        Some(Kind::StructValue(s)) => prost_struct_to_json(s),
-        Some(Kind::ListValue(l)) => {
-            let values: Result<Vec<_>, _> = l.values.into_iter().map(prost_value_to_json).collect();
-            Ok(serde_json::Value::Array(values?))
-        }
-        None => Ok(serde_json::Value::Null),
-    }
-}
-
-/// Converts a prost_types::Struct to serde_json::Value (takes ownership to avoid clones).
-///
-/// Returns `Err` if any value contains NaN or Infinity.
-fn prost_struct_to_json(s: prost_types::Struct) -> Result<serde_json::Value, &'static str> {
-    let mut map = serde_json::Map::new();
-    for (k, v) in s.fields {
-        map.insert(k, prost_value_to_json(v)?);
-    }
-    Ok(serde_json::Value::Object(map))
-}
-
-/// Converts a prost_types::Struct to HashMap<String, serde_json::Value> (takes ownership).
-///
-/// Returns `Err` if any value contains NaN or Infinity.
-fn prost_struct_to_hashmap(
-    s: prost_types::Struct,
-) -> Result<std::collections::HashMap<String, serde_json::Value>, &'static str> {
-    s.fields
-        .into_iter()
-        .map(|(k, v)| Ok((k, prost_value_to_json(v)?)))
-        .collect()
-}
-
-/// Converts a serde_json::Value to prost_types::Value (for Read response).
-fn json_to_prost_value(value: serde_json::Value) -> prost_types::Value {
-    use prost_types::value::Kind;
-
-    prost_types::Value {
-        kind: Some(match value {
-            serde_json::Value::Null => Kind::NullValue(0),
-            serde_json::Value::Bool(b) => Kind::BoolValue(b),
-            serde_json::Value::Number(n) => Kind::NumberValue(n.as_f64().unwrap_or(0.0)),
-            serde_json::Value::String(s) => Kind::StringValue(s),
-            serde_json::Value::Array(arr) => Kind::ListValue(prost_types::ListValue {
-                values: arr.into_iter().map(json_to_prost_value).collect(),
-            }),
-            serde_json::Value::Object(obj) => Kind::StructValue(json_map_to_prost_struct(obj)),
-        }),
-    }
-}
-
-/// Converts a serde_json Map to prost_types::Struct (for Read response).
-fn json_map_to_prost_struct(
-    map: serde_json::Map<String, serde_json::Value>,
-) -> prost_types::Struct {
-    prost_types::Struct {
-        fields: map
-            .into_iter()
-            .map(|(k, v)| (k, json_to_prost_value(v)))
-            .collect(),
-    }
-}
-
-/// Converts a HashMap<String, serde_json::Value> to prost_types::Struct (for Read response).
-fn hashmap_to_prost_struct(
-    map: std::collections::HashMap<String, serde_json::Value>,
-) -> prost_types::Struct {
-    prost_types::Struct {
-        fields: map
-            .into_iter()
-            .map(|(k, v)| (k, json_to_prost_value(v)))
-            .collect(),
     }
 }
 
@@ -475,6 +436,14 @@ fn expand_node_to_proto(node: rsfga_domain::resolver::ExpandNode) -> Node {
         }
     }
 }
+
+/// Maximum size for authorization model JSON (1MB).
+/// This matches the OpenFGA default limit for model size.
+const MAX_AUTHORIZATION_MODEL_SIZE: usize = 1024 * 1024;
+
+/// Default and maximum page size for listing authorization models.
+/// Matches OpenFGA's default behavior to limit memory usage and response size.
+const DEFAULT_PAGE_SIZE: i32 = 50;
 
 #[tonic::async_trait]
 impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
@@ -870,15 +839,30 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             validated_context_map = Some(context_map);
         }
 
-        // Convert contextual tuples if provided
+        // Convert contextual tuples if provided, logging any that are skipped due to invalid format
         let contextual_tuples = req
             .contextual_tuples
             .map(|ct| {
                 ct.tuple_keys
                     .into_iter()
                     .filter_map(|tk| {
-                        let (user_type, user_id, user_relation) = parse_user(&tk.user)?;
-                        let (object_type, object_id) = parse_object(&tk.object)?;
+                        let user = parse_user(&tk.user);
+                        if user.is_none() {
+                            tracing::warn!("Invalid user format in contextual tuple: {}", tk.user);
+                            return None;
+                        }
+                        let (user_type, user_id, user_relation) = user.unwrap();
+
+                        let object = parse_object(&tk.object);
+                        if object.is_none() {
+                            tracing::warn!(
+                                "Invalid object format in contextual tuple: {}",
+                                tk.object
+                            );
+                            return None;
+                        }
+                        let (object_type, object_id) = object.unwrap();
+
                         Some(rsfga_domain::resolver::ContextualTuple::new(
                             format_user(user_type, user_id, user_relation),
                             tk.relation,
@@ -1185,6 +1169,12 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
+        // Clean up assertions for this store to prevent memory leak.
+        // Assertions are keyed by (store_id, model_id), so we remove all entries
+        // where the store_id matches the deleted store.
+        self.assertions
+            .retain(|(store_id, _model_id), _| store_id != &req.store_id);
+
         Ok(Response::new(DeleteStoreResponse {}))
     }
 
@@ -1235,7 +1225,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         }))
     }
 
-    // Authorization model operations (stubs)
+    // Authorization model operations
     async fn read_authorization_models(
         &self,
         request: Request<ReadAuthorizationModelsRequest>,
@@ -1249,9 +1239,48 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
+        // Parse pagination from request, capping at DEFAULT_PAGE_SIZE
+        let page_size = req
+            .page_size
+            .map(|ps| ps.min(DEFAULT_PAGE_SIZE))
+            .unwrap_or(DEFAULT_PAGE_SIZE);
+        let pagination = PaginationOptions {
+            page_size: Some(page_size as u32),
+            continuation_token: if req.continuation_token.is_empty() {
+                None
+            } else {
+                Some(req.continuation_token)
+            },
+        };
+
+        // Fetch models from storage with pagination
+        let result = self
+            .storage
+            .list_authorization_models_paginated(&req.store_id, &pagination)
+            .await
+            .map_err(storage_error_to_status)?;
+
+        // Convert stored models to proto AuthorizationModel.
+        // Log warnings for malformed models instead of silently ignoring them.
+        let authorization_models: Vec<AuthorizationModel> = result
+            .items
+            .into_iter()
+            .filter_map(|stored| match stored_model_to_proto(&stored) {
+                Some(model) => Some(model),
+                None => {
+                    tracing::warn!(
+                        model_id = %stored.id,
+                        store_id = %stored.store_id,
+                        "Failed to parse stored authorization model - possible data corruption"
+                    );
+                    None
+                }
+            })
+            .collect();
+
         Ok(Response::new(ReadAuthorizationModelsResponse {
-            authorization_models: vec![],
-            continuation_token: String::new(),
+            authorization_models,
+            continuation_token: result.continuation_token.unwrap_or_default(),
         }))
     }
 
@@ -1268,7 +1297,20 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        Err(Status::not_found("authorization model not found"))
+        // Fetch the specific model from storage
+        let stored = self
+            .storage
+            .get_authorization_model(&req.store_id, &req.id)
+            .await
+            .map_err(storage_error_to_status)?;
+
+        // Convert to proto AuthorizationModel
+        let authorization_model = stored_model_to_proto(&stored)
+            .ok_or_else(|| Status::internal("failed to parse stored authorization model"))?;
+
+        Ok(Response::new(ReadAuthorizationModelResponse {
+            authorization_model: Some(authorization_model),
+        }))
     }
 
     async fn write_authorization_model(
@@ -1284,7 +1326,56 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // TODO: Persist the authorization model to storage when implemented
+        // Validate type_definitions is not empty (OpenFGA requirement)
+        if req.type_definitions.is_empty() {
+            return Err(Status::invalid_argument("type_definitions cannot be empty"));
+        }
+
+        // Generate a new ULID for the model
+        let model_id = ulid::Ulid::new().to_string();
+
+        // Convert proto TypeDefinitions to JSON for storage
+        let type_definitions_json: Vec<serde_json::Value> = req
+            .type_definitions
+            .iter()
+            .map(type_definition_to_json)
+            .collect();
+
+        // Build model JSON (same format as HTTP layer)
+        let mut model_json = serde_json::json!({
+            "type_definitions": type_definitions_json,
+        });
+
+        // Convert conditions if present
+        if !req.conditions.is_empty() {
+            let conditions_json: serde_json::Map<String, serde_json::Value> = req
+                .conditions
+                .iter()
+                .map(|(k, v)| (k.clone(), condition_to_json(v)))
+                .collect();
+            model_json["conditions"] = serde_json::Value::Object(conditions_json);
+        }
+
+        // Validate model size before storage
+        let model_json_str = model_json.to_string();
+        if model_json_str.len() > MAX_AUTHORIZATION_MODEL_SIZE {
+            return Err(Status::invalid_argument(format!(
+                "authorization model exceeds maximum size of {MAX_AUTHORIZATION_MODEL_SIZE} bytes"
+            )));
+        }
+
+        // Create stored model and persist
+        let stored_model = StoredAuthorizationModel::new(
+            &model_id,
+            &req.store_id,
+            &req.schema_version,
+            model_json_str,
+        );
+
+        self.storage
+            .write_authorization_model(stored_model)
+            .await
+            .map_err(storage_error_to_status)?;
 
         // Invalidate CEL expression cache to ensure stale expressions from
         // previous models are not reused. This is critical for security:
@@ -1292,11 +1383,11 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         global_cache().invalidate_all();
 
         Ok(Response::new(WriteAuthorizationModelResponse {
-            authorization_model_id: ulid::Ulid::new().to_string(),
+            authorization_model_id: model_id,
         }))
     }
 
-    // Assertions (stubs)
+    // Assertions operations
     async fn read_assertions(
         &self,
         request: Request<ReadAssertionsRequest>,
@@ -1310,9 +1401,72 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
+        // Validate model exists.
+        // Note: This fetches the full model to validate existence. A lightweight
+        // model_exists() method on DataStore could optimize this, but the current
+        // approach is correct and assertions are typically low-traffic operations.
+        let _ = self
+            .storage
+            .get_authorization_model(&req.store_id, &req.authorization_model_id)
+            .await
+            .map_err(storage_error_to_status)?;
+
+        // Read assertions from in-memory storage
+        // Preserves conditions on tuple keys to avoid data loss.
+        let key = (req.store_id.clone(), req.authorization_model_id.clone());
+        let assertions: Vec<Assertion> = self
+            .assertions
+            .get(&key)
+            .map(|stored| {
+                stored
+                    .value()
+                    .iter()
+                    .map(|sa| Assertion {
+                        tuple_key: Some(TupleKey {
+                            user: sa.tuple_key.user.clone(),
+                            relation: sa.tuple_key.relation.clone(),
+                            object: sa.tuple_key.object.clone(),
+                            condition: sa.tuple_key.condition.as_ref().map(|c| {
+                                RelationshipCondition {
+                                    name: c.name.clone(),
+                                    context: c
+                                        .context
+                                        .as_ref()
+                                        .map(|ctx| hashmap_to_prost_struct(ctx.clone())),
+                                }
+                            }),
+                        }),
+                        expectation: sa.expectation,
+                        contextual_tuples: sa
+                            .contextual_tuples
+                            .as_ref()
+                            .map(|ct| {
+                                ct.tuple_keys
+                                    .iter()
+                                    .map(|tk| TupleKey {
+                                        user: tk.user.clone(),
+                                        relation: tk.relation.clone(),
+                                        object: tk.object.clone(),
+                                        condition: tk.condition.as_ref().map(|c| {
+                                            RelationshipCondition {
+                                                name: c.name.clone(),
+                                                context: c.context.as_ref().map(|ctx| {
+                                                    hashmap_to_prost_struct(ctx.clone())
+                                                }),
+                                            }
+                                        }),
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Ok(Response::new(ReadAssertionsResponse {
             authorization_model_id: req.authorization_model_id,
-            assertions: vec![],
+            assertions,
         }))
     }
 
@@ -1328,6 +1482,130 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .get_store(&req.store_id)
             .await
             .map_err(storage_error_to_status)?;
+
+        // Validate model exists.
+        // Note: This fetches the full model to validate existence. A lightweight
+        // model_exists() method on DataStore could optimize this, but the current
+        // approach is correct and assertions are typically low-traffic operations.
+        let _ = self
+            .storage
+            .get_authorization_model(&req.store_id, &req.authorization_model_id)
+            .await
+            .map_err(storage_error_to_status)?;
+
+        // Check assertion entry capacity to prevent unbounded memory growth.
+        // Only check for NEW keys - updates to existing keys don't increase count.
+        let assertion_key = (req.store_id.clone(), req.authorization_model_id.clone());
+        let current_count = self.assertions.len();
+        let is_new_key = !self.assertions.contains_key(&assertion_key);
+
+        if is_new_key {
+            if current_count >= MAX_ASSERTION_ENTRIES {
+                tracing::error!(
+                    current_count = current_count,
+                    max = MAX_ASSERTION_ENTRIES,
+                    store_id = %req.store_id,
+                    model_id = %req.authorization_model_id,
+                    "Assertion storage capacity exceeded"
+                );
+                return Err(Status::resource_exhausted(format!(
+                    "assertion storage limit reached ({} entries), delete unused stores to free space",
+                    MAX_ASSERTION_ENTRIES
+                )));
+            }
+
+            if current_count >= ASSERTION_ENTRIES_WARNING_THRESHOLD {
+                tracing::warn!(
+                    current_count = current_count,
+                    threshold = ASSERTION_ENTRIES_WARNING_THRESHOLD,
+                    max = MAX_ASSERTION_ENTRIES,
+                    "Assertion storage nearing capacity"
+                );
+            }
+        }
+
+        // Convert proto assertions to stored format (same format as HTTP layer)
+        // Preserves conditions on tuple keys. Rejects requests with invalid context data
+        // (e.g., NaN/Infinity values) to prevent silent data loss.
+        let mut stored_assertions: Vec<StoredAssertion> = Vec::with_capacity(req.assertions.len());
+
+        for (assertion_idx, a) in req.assertions.into_iter().enumerate() {
+            let tuple_key = match a.tuple_key {
+                Some(tk) => tk,
+                None => continue, // Skip assertions without tuple_key
+            };
+
+            // Convert condition, failing on invalid context
+            let condition = match tuple_key.condition {
+                Some(c) => {
+                    let context = match c.context {
+                        Some(ctx) => Some(prost_struct_to_hashmap(ctx).map_err(|e| {
+                            Status::invalid_argument(format!(
+                                "assertion at index {}: condition '{}' has invalid context: {}",
+                                assertion_idx, c.name, e
+                            ))
+                        })?),
+                        None => None,
+                    };
+                    Some(AssertionCondition {
+                        name: c.name,
+                        context,
+                    })
+                }
+                None => None,
+            };
+
+            // Convert contextual tuples, failing on invalid context
+            let contextual_tuples = if a.contextual_tuples.is_empty() {
+                None
+            } else {
+                let mut tuple_keys = Vec::with_capacity(a.contextual_tuples.len());
+                for (ct_idx, tk) in a.contextual_tuples.into_iter().enumerate() {
+                    let ct_condition = match tk.condition {
+                        Some(c) => {
+                            let context = match c.context {
+                                Some(ctx) => {
+                                    Some(prost_struct_to_hashmap(ctx).map_err(|e| {
+                                        Status::invalid_argument(format!(
+                                            "assertion at index {}: contextual tuple at index {}: condition '{}' has invalid context: {}",
+                                            assertion_idx, ct_idx, c.name, e
+                                        ))
+                                    })?)
+                                }
+                                None => None,
+                            };
+                            Some(AssertionCondition {
+                                name: c.name,
+                                context,
+                            })
+                        }
+                        None => None,
+                    };
+                    tuple_keys.push(AssertionTupleKey {
+                        user: tk.user,
+                        relation: tk.relation,
+                        object: tk.object,
+                        condition: ct_condition,
+                    });
+                }
+                Some(ContextualTuplesWrapper { tuple_keys })
+            };
+
+            stored_assertions.push(StoredAssertion {
+                tuple_key: AssertionTupleKey {
+                    user: tuple_key.user,
+                    relation: tuple_key.relation,
+                    object: tuple_key.object,
+                    condition,
+                },
+                expectation: a.expectation,
+                contextual_tuples,
+            });
+        }
+
+        // Store assertions (replaces existing)
+        let key = (req.store_id, req.authorization_model_id);
+        self.assertions.insert(key, stored_assertions);
 
         Ok(Response::new(WriteAssertionsResponse {}))
     }
