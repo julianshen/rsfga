@@ -1401,7 +1401,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // Validate model exists
+        // Validate model exists.
+        // Note: This fetches the full model to validate existence. A lightweight
+        // model_exists() method on DataStore could optimize this, but the current
+        // approach is correct and assertions are typically low-traffic operations.
         let _ = self
             .storage
             .get_authorization_model(&req.store_id, &req.authorization_model_id)
@@ -1480,7 +1483,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // Validate model exists
+        // Validate model exists.
+        // Note: This fetches the full model to validate existence. A lightweight
+        // model_exists() method on DataStore could optimize this, but the current
+        // approach is correct and assertions are typically low-traffic operations.
         let _ = self
             .storage
             .get_authorization_model(&req.store_id, &req.authorization_model_id)
