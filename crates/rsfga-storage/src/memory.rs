@@ -534,6 +534,42 @@ impl DataStore for MemoryDataStore {
         Ok(models.into_iter().next().unwrap())
     }
 
+    async fn delete_authorization_model(
+        &self,
+        store_id: &str,
+        model_id: &str,
+    ) -> StorageResult<()> {
+        // Validate input bounds
+        validate_store_id(store_id)?;
+
+        // Verify store exists
+        if !self.stores.contains_key(store_id) {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Get the models for the store and remove the specified one
+        let mut models = self.authorization_models.get_mut(store_id).ok_or_else(|| {
+            StorageError::ModelNotFound {
+                model_id: model_id.to_string(),
+            }
+        })?;
+
+        // Find and remove the model by ID
+        let original_len = models.len();
+        models.retain(|m| m.id != model_id);
+
+        if models.len() == original_len {
+            // No model was removed, so it didn't exist
+            return Err(StorageError::ModelNotFound {
+                model_id: model_id.to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
     async fn health_check(&self) -> StorageResult<HealthStatus> {
         // In-memory storage is always healthy - no external dependencies
         Ok(HealthStatus {
@@ -1894,5 +1930,209 @@ mod tests {
             .list_objects_by_type("non-existent", "document", 100)
             .await
             .is_err()); // bad store
+    }
+
+    // ==========================================================================
+    // Section 5: Authorization Model Deletion Tests
+    // ==========================================================================
+
+    // Test: delete_authorization_model removes the model
+    #[tokio::test]
+    async fn test_delete_authorization_model_removes_model() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Create a model
+        let model = StoredAuthorizationModel::new(
+            "model-1".to_string(),
+            "test-store".to_string(),
+            "1.1".to_string(),
+            r#"{"type_definitions": [{"type": "user"}]}"#.to_string(),
+        );
+        store.write_authorization_model(model).await.unwrap();
+
+        // Verify model exists
+        let retrieved = store
+            .get_authorization_model("test-store", "model-1")
+            .await
+            .unwrap();
+        assert_eq!(retrieved.id, "model-1");
+
+        // Delete the model
+        store
+            .delete_authorization_model("test-store", "model-1")
+            .await
+            .unwrap();
+
+        // Verify model is gone
+        let result = store.get_authorization_model("test-store", "model-1").await;
+        assert!(matches!(result, Err(StorageError::ModelNotFound { .. })));
+    }
+
+    // Test: delete_authorization_model returns ModelNotFound for non-existent model
+    #[tokio::test]
+    async fn test_delete_authorization_model_not_found() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let result = store
+            .delete_authorization_model("test-store", "non-existent")
+            .await;
+        assert!(matches!(result, Err(StorageError::ModelNotFound { .. })));
+    }
+
+    // Test: delete_authorization_model returns StoreNotFound for non-existent store
+    #[tokio::test]
+    async fn test_delete_authorization_model_store_not_found() {
+        let store = MemoryDataStore::new();
+
+        let result = store
+            .delete_authorization_model("non-existent", "model-1")
+            .await;
+        assert!(matches!(result, Err(StorageError::StoreNotFound { .. })));
+    }
+
+    // Test: delete_authorization_model updates get_latest
+    #[tokio::test]
+    async fn test_delete_authorization_model_updates_latest() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Create two models
+        let model1 = StoredAuthorizationModel::new(
+            "model-1".to_string(),
+            "test-store".to_string(),
+            "1.1".to_string(),
+            r#"{"type_definitions": [{"type": "user"}]}"#.to_string(),
+        );
+        store.write_authorization_model(model1).await.unwrap();
+
+        // Small delay to ensure different timestamps
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let model2 = StoredAuthorizationModel::new(
+            "model-2".to_string(),
+            "test-store".to_string(),
+            "1.1".to_string(),
+            r#"{"type_definitions": [{"type": "user"}, {"type": "document"}]}"#.to_string(),
+        );
+        store.write_authorization_model(model2).await.unwrap();
+
+        // Latest should be model-2
+        let latest = store
+            .get_latest_authorization_model("test-store")
+            .await
+            .unwrap();
+        assert_eq!(latest.id, "model-2");
+
+        // Delete model-2
+        store
+            .delete_authorization_model("test-store", "model-2")
+            .await
+            .unwrap();
+
+        // Latest should now be model-1
+        let latest = store
+            .get_latest_authorization_model("test-store")
+            .await
+            .unwrap();
+        assert_eq!(latest.id, "model-1");
+    }
+
+    // Test: delete_authorization_model does not affect tuples
+    #[tokio::test]
+    async fn test_delete_authorization_model_preserves_tuples() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Create a model
+        let model = StoredAuthorizationModel::new(
+            "model-1".to_string(),
+            "test-store".to_string(),
+            "1.1".to_string(),
+            r#"{"type_definitions": [{"type": "user"}, {"type": "document"}]}"#.to_string(),
+        );
+        store.write_authorization_model(model).await.unwrap();
+
+        // Write a tuple
+        let tuple = StoredTuple::new("document", "doc1", "viewer", "user", "alice", None);
+        store.write_tuple("test-store", tuple).await.unwrap();
+
+        // Delete the model
+        store
+            .delete_authorization_model("test-store", "model-1")
+            .await
+            .unwrap();
+
+        // Tuple should still exist
+        let tuples = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(tuples.len(), 1);
+        assert_eq!(tuples[0].user_id, "alice");
+    }
+
+    // Test: delete_authorization_model excludes from list
+    #[tokio::test]
+    async fn test_delete_authorization_model_excludes_from_list() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Create three models
+        for i in 1..=3 {
+            let model = StoredAuthorizationModel::new(
+                format!("model-{i}"),
+                "test-store".to_string(),
+                "1.1".to_string(),
+                r#"{"type_definitions": [{"type": "user"}]}"#.to_string(),
+            );
+            store.write_authorization_model(model).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // List should have 3 models
+        let models = store.list_authorization_models("test-store").await.unwrap();
+        assert_eq!(models.len(), 3);
+
+        // Delete model-2
+        store
+            .delete_authorization_model("test-store", "model-2")
+            .await
+            .unwrap();
+
+        // List should now have 2 models
+        let models = store.list_authorization_models("test-store").await.unwrap();
+        assert_eq!(models.len(), 2);
+        let model_ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
+        assert!(!model_ids.contains(&"model-2"));
+        assert!(model_ids.contains(&"model-1"));
+        assert!(model_ids.contains(&"model-3"));
+    }
+
+    // Test: deleting last model makes get_latest return error
+    #[tokio::test]
+    async fn test_delete_last_model_get_latest_returns_error() {
+        let store = MemoryDataStore::new();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Create a single model
+        let model = StoredAuthorizationModel::new(
+            "model-1".to_string(),
+            "test-store".to_string(),
+            "1.1".to_string(),
+            r#"{"type_definitions": [{"type": "user"}]}"#.to_string(),
+        );
+        store.write_authorization_model(model).await.unwrap();
+
+        // Delete the only model
+        store
+            .delete_authorization_model("test-store", "model-1")
+            .await
+            .unwrap();
+
+        // get_latest should now return error
+        let result = store.get_latest_authorization_model("test-store").await;
+        assert!(matches!(result, Err(StorageError::ModelNotFound { .. })));
     }
 }

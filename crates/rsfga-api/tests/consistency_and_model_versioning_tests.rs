@@ -547,18 +547,16 @@ async fn test_check_with_specific_model_version() {
     );
 }
 
-/// Test: Non-existent model ID behavior.
-/// When no matching model is found for an authorization_model_id, the system uses
-/// the latest model as a fallback. If no tuple matches, returns allowed=false.
-/// This tests the behavior when checking a tuple that doesn't exist.
+/// Test: Non-existent model ID returns 400 Bad Request.
+/// When a specific authorization_model_id is requested but doesn't exist,
+/// the API returns 400 Bad Request (matching OpenFGA behavior).
 #[tokio::test]
-async fn test_check_with_nonexistent_model_id_no_matching_tuple() {
+async fn test_check_with_nonexistent_model_id_returns_error() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    // Don't write any tuples - check for a non-existent permission
     // Check with non-existent model ID
-    let (status, response) = post_json(
+    let (status, _response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/check"),
         serde_json::json!({
@@ -572,25 +570,20 @@ async fn test_check_with_nonexistent_model_id_no_matching_tuple() {
     )
     .await;
 
-    // System returns 200 OK with allowed=false when tuple doesn't exist
+    // System returns 400 Bad Request for non-existent model IDs
     assert_eq!(
         status,
-        StatusCode::OK,
-        "Check with non-existent model_id should return 200 OK"
-    );
-    assert_eq!(
-        response["allowed"].as_bool(),
-        Some(false),
-        "Check with non-existent tuple should return allowed=false"
+        StatusCode::BAD_REQUEST,
+        "Check with non-existent model_id should return 400 Bad Request"
     );
 }
 
-/// Test: Non-existent model ID with existing tuple uses latest model.
-/// Current behavior: When an invalid authorization_model_id is provided,
-/// the system falls back to the latest model. If a matching tuple exists,
-/// the check returns allowed=true.
+/// Test: Non-existent model ID returns 400 even when tuple exists.
+/// When a specific authorization_model_id is requested but doesn't exist,
+/// the API validates the model exists before proceeding, returning 400 Bad Request.
+/// This matches OpenFGA behavior - explicitly requesting a non-existent resource is an error.
 #[tokio::test]
-async fn test_check_with_nonexistent_model_id_uses_latest_model() {
+async fn test_check_with_nonexistent_model_id_returns_error_even_with_tuple() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
@@ -604,8 +597,8 @@ async fn test_check_with_nonexistent_model_id_uses_latest_model() {
         .await
         .unwrap();
 
-    // Check with non-existent model ID - uses latest model as fallback
-    let (status, response) = post_json(
+    // Check with non-existent model ID - should fail validation
+    let (status, _response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/check"),
         serde_json::json!({
@@ -619,16 +612,11 @@ async fn test_check_with_nonexistent_model_id_uses_latest_model() {
     )
     .await;
 
-    // Current behavior: Falls back to latest model, so check succeeds
+    // System returns 400 Bad Request for non-existent model IDs
     assert_eq!(
         status,
-        StatusCode::OK,
-        "Check with non-existent model_id should return 200 OK"
-    );
-    assert_eq!(
-        response["allowed"].as_bool(),
-        Some(true),
-        "Check with existing tuple should return allowed=true (uses latest model)"
+        StatusCode::BAD_REQUEST,
+        "Check with non-existent model_id should return 400 Bad Request"
     );
 }
 
@@ -1443,91 +1431,328 @@ async fn test_write_and_delete_with_model_id() {
 // Section 6: Model Deletion Lifecycle Tests
 // ============================================================================
 //
-// NOTE: Model deletion functionality (delete_authorization_model) is NOT YET
-// IMPLEMENTED in the storage layer. These tests document the expected behavior
-// when that functionality is added. They are currently disabled with #[ignore].
-//
-// When delete_authorization_model is implemented, remove the #[ignore] attributes
-// and ensure these tests pass.
+// These tests verify that delete_authorization_model works correctly:
+// - Tuples remain accessible after model deletion
+// - Deleted models return 404 on retrieval
+// - Deleted models are excluded from list results
+// - Check operations use the latest remaining model
 
 /// Test: Deleting a model doesn't break existing tuples.
 ///
 /// Tuples written using a model should remain accessible after the model is deleted.
 /// The latest remaining model should be used for authorization checks.
-///
-/// NOTE: This test requires delete_authorization_model to be implemented.
 #[tokio::test]
-#[ignore = "delete_authorization_model not yet implemented in storage layer"]
 async fn test_model_deletion_doesnt_break_existing_tuples() {
-    // This test will verify that:
-    // 1. Tuples remain accessible after a model is deleted
-    // 2. The latest remaining model is used for checks
-    //
-    // Implementation pending: storage.delete_authorization_model()
-    todo!("Implement when delete_authorization_model is added to DataStore trait");
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = create_store(&storage).await;
+
+    // Create two models
+    let model1_id = create_model_with_viewer_only(&storage, &store_id).await;
+    // Small delay to ensure different timestamps
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let model2_id = create_model_with_viewer_and_editor(&storage, &store_id).await;
+
+    // Write a tuple using the viewer relation (supported by both models)
+    storage
+        .write_tuples(
+            &store_id,
+            vec![create_tuple("viewer", "user:alice", "document", "doc1")],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    // Verify tuple is accessible before deletion
+    let tuples = storage
+        .read_tuples(
+            &store_id,
+            &rsfga_storage::TupleFilter {
+                object_type: Some("document".to_string()),
+                object_id: Some("doc1".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1, "Tuple should exist before deletion");
+
+    // Delete the older model (model1)
+    storage
+        .delete_authorization_model(&store_id, &model1_id)
+        .await
+        .unwrap();
+
+    // Verify tuple is still accessible after deletion
+    let tuples = storage
+        .read_tuples(
+            &store_id,
+            &rsfga_storage::TupleFilter {
+                object_type: Some("document".to_string()),
+                object_id: Some("doc1".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(tuples.len(), 1, "Tuple should remain after model deletion");
+
+    // Verify the latest model is still accessible
+    let latest = storage
+        .get_latest_authorization_model(&store_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        latest.id, model2_id,
+        "Latest model should be model2 after model1 deletion"
+    );
+
+    // Check operation should work with remaining model
+    let (status, _) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/check"),
+        serde_json::json!({
+            "tuple_key": {
+                "user": "user:alice",
+                "relation": "viewer",
+                "object": "document:doc1"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Check should succeed with remaining model"
+    );
 }
 
 /// Test: Check with deleted model_id behavior.
 ///
 /// When a check requests a specific model_id that has been deleted,
-/// document the expected behavior (404 or fallback to latest).
-///
-/// NOTE: This test requires delete_authorization_model to be implemented.
+/// the operation should fail with 400 Bad Request (model not found).
 #[tokio::test]
-#[ignore = "delete_authorization_model not yet implemented in storage layer"]
 async fn test_check_with_deleted_model_id() {
-    // This test will verify the behavior when checking with a deleted model_id:
-    // - Could return 404 (model not found)
-    // - Could fall back to latest model and return result
-    //
-    // Implementation pending: storage.delete_authorization_model()
-    todo!("Implement when delete_authorization_model is added to DataStore trait");
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = create_store(&storage).await;
+
+    // Create two models
+    let model1_id = create_model_with_viewer_only(&storage, &store_id).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _model2_id = create_model_with_viewer_and_editor(&storage, &store_id).await;
+
+    // Write a tuple
+    storage
+        .write_tuples(
+            &store_id,
+            vec![create_tuple("viewer", "user:alice", "document", "doc1")],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    // Delete model1
+    storage
+        .delete_authorization_model(&store_id, &model1_id)
+        .await
+        .unwrap();
+
+    // Check with deleted model_id should fail
+    let (status, _response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/check"),
+        serde_json::json!({
+            "tuple_key": {
+                "user": "user:alice",
+                "relation": "viewer",
+                "object": "document:doc1"
+            },
+            "authorization_model_id": model1_id
+        }),
+    )
+    .await;
+
+    // Should return 400 Bad Request since the model doesn't exist
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "Check with deleted model_id should fail with 400"
+    );
 }
 
 /// Test: GET deleted model returns 404.
 ///
 /// Verifies that requesting a deleted model by ID returns 404.
-///
-/// NOTE: This test requires delete_authorization_model to be implemented.
 #[tokio::test]
-#[ignore = "delete_authorization_model not yet implemented in storage layer"]
 async fn test_get_deleted_model_returns_404() {
-    // This test will verify that:
-    // - GET /stores/{store_id}/authorization-models/{deleted_model_id} returns 404
-    //
-    // Implementation pending: storage.delete_authorization_model()
-    todo!("Implement when delete_authorization_model is added to DataStore trait");
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = create_store(&storage).await;
+
+    // Create a model
+    let model_id = create_model_with_viewer_only(&storage, &store_id).await;
+
+    // Verify model exists
+    let model = storage
+        .get_authorization_model(&store_id, &model_id)
+        .await
+        .unwrap();
+    assert_eq!(model.id, model_id);
+
+    // Delete the model
+    storage
+        .delete_authorization_model(&store_id, &model_id)
+        .await
+        .unwrap();
+
+    // GET should now return ModelNotFound error
+    let result = storage.get_authorization_model(&store_id, &model_id).await;
+    assert!(result.is_err(), "GET deleted model should return error");
+    assert!(
+        matches!(
+            result.unwrap_err(),
+            rsfga_storage::StorageError::ModelNotFound { .. }
+        ),
+        "Should return ModelNotFound error"
+    );
+
+    // HTTP API should return 404
+    let app = create_test_app(&storage);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/stores/{store_id}/authorization-models/{model_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "GET deleted model via HTTP should return 404"
+    );
 }
 
 /// Test: List models excludes deleted models.
 ///
 /// Verifies that deleted models do not appear in the list.
-///
-/// NOTE: This test requires delete_authorization_model to be implemented.
 #[tokio::test]
-#[ignore = "delete_authorization_model not yet implemented in storage layer"]
 async fn test_list_models_excludes_deleted() {
-    // This test will verify that:
-    // - Deleted models do not appear in list_authorization_models results
-    //
-    // Implementation pending: storage.delete_authorization_model()
-    todo!("Implement when delete_authorization_model is added to DataStore trait");
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = create_store(&storage).await;
+
+    // Create three models
+    let model1_id = create_model_with_viewer_only(&storage, &store_id).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let model2_id = create_model_with_viewer_and_editor(&storage, &store_id).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let model3_id = create_model_with_all_relations(&storage, &store_id).await;
+
+    // Verify all 3 models are listed
+    let models = storage.list_authorization_models(&store_id).await.unwrap();
+    assert_eq!(models.len(), 3, "Should have 3 models initially");
+
+    // Delete the middle model (model2)
+    storage
+        .delete_authorization_model(&store_id, &model2_id)
+        .await
+        .unwrap();
+
+    // List should now have only 2 models
+    let models = storage.list_authorization_models(&store_id).await.unwrap();
+    assert_eq!(models.len(), 2, "Should have 2 models after deletion");
+
+    // Verify model2 is not in the list
+    let model_ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
+    assert!(
+        !model_ids.contains(&model2_id.as_str()),
+        "Deleted model should not appear in list"
+    );
+    assert!(
+        model_ids.contains(&model1_id.as_str()),
+        "model1 should still be in list"
+    );
+    assert!(
+        model_ids.contains(&model3_id.as_str()),
+        "model3 should still be in list"
+    );
 }
 
 /// Test: Deleting last model behavior.
 ///
 /// Documents what happens when the last/only model in a store is deleted.
-///
-/// NOTE: This test requires delete_authorization_model to be implemented.
+/// Check operations should fail gracefully since there's no model to use.
 #[tokio::test]
-#[ignore = "delete_authorization_model not yet implemented in storage layer"]
 async fn test_deleting_last_model_behavior() {
-    // This test will verify the behavior when the last model is deleted:
-    // - Check should fail gracefully (400, 404, or 500)
-    // - Tuples should still exist but be inaccessible for authorization
-    //
-    // Implementation pending: storage.delete_authorization_model()
-    todo!("Implement when delete_authorization_model is added to DataStore trait");
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = create_store(&storage).await;
+
+    // Create a single model
+    let model_id = create_model_with_viewer_only(&storage, &store_id).await;
+
+    // Write a tuple
+    storage
+        .write_tuples(
+            &store_id,
+            vec![create_tuple("viewer", "user:alice", "document", "doc1")],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    // Delete the only model
+    storage
+        .delete_authorization_model(&store_id, &model_id)
+        .await
+        .unwrap();
+
+    // Tuples should still exist (deletion only removes model, not tuples)
+    let tuples = storage
+        .read_tuples(
+            &store_id,
+            &rsfga_storage::TupleFilter {
+                object_type: Some("document".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        tuples.len(),
+        1,
+        "Tuple should still exist after model deletion"
+    );
+
+    // get_latest_authorization_model should return error
+    let result = storage.get_latest_authorization_model(&store_id).await;
+    assert!(
+        result.is_err(),
+        "get_latest should fail when no models exist"
+    );
+
+    // Check operation should fail since there's no model
+    let (status, _response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/check"),
+        serde_json::json!({
+            "tuple_key": {
+                "user": "user:alice",
+                "relation": "viewer",
+                "object": "document:doc1"
+            }
+        }),
+    )
+    .await;
+
+    // Should return 400 Bad Request since there's no authorization model
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "Check should fail when no models exist (400)"
+    );
 }
 
 // ============================================================================

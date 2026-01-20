@@ -1024,6 +1024,17 @@ impl DataStore for MockStorage {
         })
     }
 
+    async fn delete_authorization_model(
+        &self,
+        _store_id: &str,
+        _model_id: &str,
+    ) -> StorageResult<()> {
+        if self.fail_all {
+            return Err(Self::connection_error());
+        }
+        Ok(())
+    }
+
     async fn write_tuples(
         &self,
         store_id: &str,

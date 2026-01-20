@@ -18,7 +18,7 @@
 //! | `/stores/{store_id}` | DELETE | Delete store |
 
 pub mod routes;
-mod state;
+pub mod state;
 
 pub use routes::{
     create_router, create_router_with_body_limit, create_router_with_observability,

@@ -18,8 +18,8 @@
 //! creates and deletes its own store, but concurrent runs could interfere.
 
 use rsfga_storage::{
-    DataStore, PaginationOptions, PostgresConfig, PostgresDataStore, StorageError, StoredTuple,
-    TupleFilter,
+    DataStore, PaginationOptions, PostgresConfig, PostgresDataStore, StorageError,
+    StoredAuthorizationModel, StoredTuple, TupleFilter,
 };
 use std::sync::Arc;
 
@@ -1057,6 +1057,209 @@ async fn test_concurrent_migrations_on_cockroachdb() {
         .delete_store("test-crdb-concurrent-migrations")
         .await
         .unwrap();
+}
+
+// ==========================================================================
+// Section 4.11: Authorization Model Deletion Tests
+// ==========================================================================
+
+/// Test: delete_authorization_model removes the model successfully
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_crdb_delete_authorization_model_removes_model() {
+    let store = create_store().await;
+    let store_id = "test-crdb-delete-model";
+
+    // Create a store
+    store.create_store(store_id, "Test Store").await.unwrap();
+
+    // Create an authorization model
+    let model = StoredAuthorizationModel::new(
+        "model-1",
+        store_id,
+        "1.1",
+        r#"{"schema_version":"1.1","type_definitions":[]}"#,
+    );
+    store.write_authorization_model(model).await.unwrap();
+
+    // Verify model exists
+    let result = store.get_authorization_model(store_id, "model-1").await;
+    assert!(result.is_ok());
+
+    // Delete the model
+    store
+        .delete_authorization_model(store_id, "model-1")
+        .await
+        .unwrap();
+
+    // Verify model is gone
+    let result = store.get_authorization_model(store_id, "model-1").await;
+    assert!(matches!(result, Err(StorageError::ModelNotFound { .. })));
+
+    // Cleanup
+    store.delete_store(store_id).await.unwrap();
+}
+
+/// Test: delete_authorization_model returns ModelNotFound for non-existent model
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_crdb_delete_authorization_model_not_found() {
+    let store = create_store().await;
+    let store_id = "test-crdb-delete-model-notfound";
+
+    // Create a store
+    store.create_store(store_id, "Test Store").await.unwrap();
+
+    // Try to delete a non-existent model
+    let result = store
+        .delete_authorization_model(store_id, "non-existent")
+        .await;
+    assert!(matches!(result, Err(StorageError::ModelNotFound { .. })));
+
+    // Cleanup
+    store.delete_store(store_id).await.unwrap();
+}
+
+/// Test: delete_authorization_model returns StoreNotFound for non-existent store
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_crdb_delete_authorization_model_store_not_found() {
+    let store = create_store().await;
+
+    // Try to delete a model from a non-existent store
+    let result = store
+        .delete_authorization_model("non-existent-store", "model-1")
+        .await;
+    assert!(matches!(result, Err(StorageError::StoreNotFound { .. })));
+}
+
+/// Test: delete_authorization_model updates get_latest_authorization_model
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_crdb_delete_authorization_model_updates_latest() {
+    let store = create_store().await;
+    let store_id = "test-crdb-delete-model-latest";
+
+    // Create a store
+    store.create_store(store_id, "Test Store").await.unwrap();
+
+    // Create two models with small delay to ensure ordering
+    let model1 = StoredAuthorizationModel::new(
+        "model-1",
+        store_id,
+        "1.1",
+        r#"{"schema_version":"1.1","type_definitions":[]}"#,
+    );
+    store.write_authorization_model(model1).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let model2 = StoredAuthorizationModel::new(
+        "model-2",
+        store_id,
+        "1.1",
+        r#"{"schema_version":"1.1","type_definitions":[]}"#,
+    );
+    store.write_authorization_model(model2).await.unwrap();
+
+    // Latest should be model-2
+    let latest = store
+        .get_latest_authorization_model(store_id)
+        .await
+        .unwrap();
+    assert_eq!(latest.id, "model-2");
+
+    // Delete model-2
+    store
+        .delete_authorization_model(store_id, "model-2")
+        .await
+        .unwrap();
+
+    // Latest should now be model-1
+    let latest = store
+        .get_latest_authorization_model(store_id)
+        .await
+        .unwrap();
+    assert_eq!(latest.id, "model-1");
+
+    // Cleanup
+    store.delete_store(store_id).await.unwrap();
+}
+
+/// Test: delete_authorization_model excludes model from list
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_crdb_delete_authorization_model_excludes_from_list() {
+    let store = create_store().await;
+    let store_id = "test-crdb-delete-model-list";
+
+    // Create a store
+    store.create_store(store_id, "Test Store").await.unwrap();
+
+    // Create three models
+    for i in 1..=3 {
+        let model = StoredAuthorizationModel::new(
+            format!("model-{i}"),
+            store_id,
+            "1.1",
+            r#"{"schema_version":"1.1","type_definitions":[]}"#,
+        );
+        store.write_authorization_model(model).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    // Verify all three models exist
+    let models = store.list_authorization_models(store_id).await.unwrap();
+    assert_eq!(models.len(), 3);
+
+    // Delete model-2
+    store
+        .delete_authorization_model(store_id, "model-2")
+        .await
+        .unwrap();
+
+    // List should now have 2 models and not include model-2
+    let models = store.list_authorization_models(store_id).await.unwrap();
+    assert_eq!(models.len(), 2);
+    assert!(models.iter().any(|m| m.id == "model-1"));
+    assert!(models.iter().all(|m| m.id != "model-2"));
+    assert!(models.iter().any(|m| m.id == "model-3"));
+
+    // Cleanup
+    store.delete_store(store_id).await.unwrap();
+}
+
+/// Test: deleting last model returns ModelNotFound from get_latest
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_crdb_delete_last_model_behavior() {
+    let store = create_store().await;
+    let store_id = "test-crdb-delete-last-model";
+
+    // Create a store
+    store.create_store(store_id, "Test Store").await.unwrap();
+
+    // Create one model
+    let model = StoredAuthorizationModel::new(
+        "model-1",
+        store_id,
+        "1.1",
+        r#"{"schema_version":"1.1","type_definitions":[]}"#,
+    );
+    store.write_authorization_model(model).await.unwrap();
+
+    // Delete it
+    store
+        .delete_authorization_model(store_id, "model-1")
+        .await
+        .unwrap();
+
+    // get_latest should now return ModelNotFound
+    let result = store.get_latest_authorization_model(store_id).await;
+    assert!(matches!(result, Err(StorageError::ModelNotFound { .. })));
+
+    // Cleanup
+    store.delete_store(store_id).await.unwrap();
 }
 
 // ==========================================================================
