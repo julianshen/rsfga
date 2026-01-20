@@ -602,13 +602,13 @@ async fn test_check_accepts_authorization_model_id_parameter() {
 
 /// Test: Check with non-existent authorization_model_id returns allowed=false.
 /// The system gracefully handles missing model IDs by returning allowed=false
-/// rather than erroring, following a "fail-safe" security pattern.
+/// returning 400 Bad Request, matching OpenFGA's behavior.
 #[tokio::test]
-async fn test_check_with_nonexistent_authorization_model_id_returns_allowed_false() {
+async fn test_check_with_nonexistent_authorization_model_id_returns_error() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    let (status, response) = post_json(
+    let (status, _response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/check"),
         serde_json::json!({
@@ -622,17 +622,13 @@ async fn test_check_with_nonexistent_authorization_model_id_returns_allowed_fals
     )
     .await;
 
-    // System returns 200 OK with allowed=false for non-existent model IDs
-    // This is a fail-safe pattern: when in doubt, deny access
+    // System returns 400 Bad Request for non-existent model IDs
+    // This matches OpenFGA's behavior - explicitly requesting a non-existent
+    // resource should return an error, not silently proceed with unexpected behavior
     assert_eq!(
         status,
-        StatusCode::OK,
-        "Check with non-existent model ID should return 200 OK"
-    );
-    assert_eq!(
-        response["allowed"].as_bool(),
-        Some(false),
-        "Check with non-existent model ID should return allowed=false"
+        StatusCode::BAD_REQUEST,
+        "Check with non-existent model ID should return 400 Bad Request"
     );
 }
 

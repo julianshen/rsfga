@@ -184,6 +184,9 @@ fn classify_domain_error_detailed(err: &DomainError) -> DomainErrorKind {
             // Check if this is a "store not found" error from the resolver
             if message.starts_with("store not found:") {
                 DomainErrorKind::NotFound(message.clone())
+            } else if message.contains("model not found:") {
+                // No authorization model exists - client needs to create one
+                DomainErrorKind::InvalidInput(format!("no authorization model found: {}", message))
             } else if message.contains("No such key:") {
                 // Missing context parameter - this is a client error
                 DomainErrorKind::InvalidInput(format!(
@@ -245,6 +248,8 @@ fn classify_domain_error_generic(err: &DomainError) -> DomainErrorKind {
             // and internal errors, but we hide specific details
             if message.starts_with("store not found:") {
                 DomainErrorKind::NotFound("store not found".to_string())
+            } else if message.contains("model not found:") {
+                DomainErrorKind::InvalidInput("no authorization model found".to_string())
             } else if message.contains("No such key:") {
                 DomainErrorKind::InvalidInput("missing required context parameter".to_string())
             } else if message.starts_with("condition not found:") {

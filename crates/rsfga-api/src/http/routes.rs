@@ -732,6 +732,23 @@ async fn check<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<CheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
+    // If a specific authorization_model_id is provided, validate it exists
+    if let Some(ref model_id) = body.authorization_model_id {
+        state
+            .storage
+            .get_authorization_model(&store_id, model_id)
+            .await
+            .map_err(|e| match e {
+                rsfga_storage::StorageError::ModelNotFound { .. } => {
+                    ApiError::invalid_input(format!("Authorization model '{model_id}' not found"))
+                }
+                rsfga_storage::StorageError::StoreNotFound { .. } => {
+                    ApiError::invalid_input(format!("Store '{store_id}' not found"))
+                }
+                other => ApiError::internal_error(format!("Storage error: {other}")),
+            })?;
+    }
+
     // Convert contextual tuples from HTTP format to domain format
     let contextual_tuples: Vec<ContextualTuple> = body
         .contextual_tuples

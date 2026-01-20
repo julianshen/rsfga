@@ -547,18 +547,16 @@ async fn test_check_with_specific_model_version() {
     );
 }
 
-/// Test: Non-existent model ID behavior.
-/// When no matching model is found for an authorization_model_id, the system uses
-/// the latest model as a fallback. If no tuple matches, returns allowed=false.
-/// This tests the behavior when checking a tuple that doesn't exist.
+/// Test: Non-existent model ID returns 400 Bad Request.
+/// When a specific authorization_model_id is requested but doesn't exist,
+/// the API returns 400 Bad Request (matching OpenFGA behavior).
 #[tokio::test]
-async fn test_check_with_nonexistent_model_id_no_matching_tuple() {
+async fn test_check_with_nonexistent_model_id_returns_error() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    // Don't write any tuples - check for a non-existent permission
     // Check with non-existent model ID
-    let (status, response) = post_json(
+    let (status, _response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/check"),
         serde_json::json!({
@@ -572,25 +570,20 @@ async fn test_check_with_nonexistent_model_id_no_matching_tuple() {
     )
     .await;
 
-    // System returns 200 OK with allowed=false when tuple doesn't exist
+    // System returns 400 Bad Request for non-existent model IDs
     assert_eq!(
         status,
-        StatusCode::OK,
-        "Check with non-existent model_id should return 200 OK"
-    );
-    assert_eq!(
-        response["allowed"].as_bool(),
-        Some(false),
-        "Check with non-existent tuple should return allowed=false"
+        StatusCode::BAD_REQUEST,
+        "Check with non-existent model_id should return 400 Bad Request"
     );
 }
 
-/// Test: Non-existent model ID with existing tuple uses latest model.
-/// Current behavior: When an invalid authorization_model_id is provided,
-/// the system falls back to the latest model. If a matching tuple exists,
-/// the check returns allowed=true.
+/// Test: Non-existent model ID returns 400 even when tuple exists.
+/// When a specific authorization_model_id is requested but doesn't exist,
+/// the API validates the model exists before proceeding, returning 400 Bad Request.
+/// This matches OpenFGA behavior - explicitly requesting a non-existent resource is an error.
 #[tokio::test]
-async fn test_check_with_nonexistent_model_id_uses_latest_model() {
+async fn test_check_with_nonexistent_model_id_returns_error_even_with_tuple() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
@@ -604,8 +597,8 @@ async fn test_check_with_nonexistent_model_id_uses_latest_model() {
         .await
         .unwrap();
 
-    // Check with non-existent model ID - uses latest model as fallback
-    let (status, response) = post_json(
+    // Check with non-existent model ID - should fail validation
+    let (status, _response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/check"),
         serde_json::json!({
@@ -619,16 +612,11 @@ async fn test_check_with_nonexistent_model_id_uses_latest_model() {
     )
     .await;
 
-    // Current behavior: Falls back to latest model, so check succeeds
+    // System returns 400 Bad Request for non-existent model IDs
     assert_eq!(
         status,
-        StatusCode::OK,
-        "Check with non-existent model_id should return 200 OK"
-    );
-    assert_eq!(
-        response["allowed"].as_bool(),
-        Some(true),
-        "Check with existing tuple should return allowed=true (uses latest model)"
+        StatusCode::BAD_REQUEST,
+        "Check with non-existent model_id should return 400 Bad Request"
     );
 }
 
