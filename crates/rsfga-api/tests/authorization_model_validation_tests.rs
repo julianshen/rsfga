@@ -600,9 +600,10 @@ async fn test_check_accepts_authorization_model_id_parameter() {
     );
 }
 
-/// Test: Check with non-existent authorization_model_id returns allowed=false.
-/// The system gracefully handles missing model IDs by returning allowed=false
-/// returning 400 Bad Request, matching OpenFGA's behavior.
+/// Test: Check with non-existent authorization_model_id returns 400 Bad Request.
+/// When a specific authorization_model_id is requested but doesn't exist,
+/// the API validates the model exists before proceeding and returns 400 Bad Request,
+/// matching OpenFGA's behavior - explicitly requesting a non-existent resource is an error.
 #[tokio::test]
 async fn test_check_with_nonexistent_authorization_model_id_returns_error() {
     let storage = Arc::new(MemoryDataStore::new());

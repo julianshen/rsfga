@@ -1449,7 +1449,7 @@ async fn test_model_deletion_doesnt_break_existing_tuples() {
     // Create two models
     let model1_id = create_model_with_viewer_only(&storage, &store_id).await;
     // Small delay to ensure different timestamps
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let model2_id = create_model_with_viewer_and_editor(&storage, &store_id).await;
 
     // Write a tuple using the viewer relation (supported by both models)
@@ -1537,7 +1537,7 @@ async fn test_check_with_deleted_model_id() {
 
     // Create two models
     let model1_id = create_model_with_viewer_only(&storage, &store_id).await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let _model2_id = create_model_with_viewer_and_editor(&storage, &store_id).await;
 
     // Write a tuple
@@ -1646,9 +1646,9 @@ async fn test_list_models_excludes_deleted() {
 
     // Create three models
     let model1_id = create_model_with_viewer_only(&storage, &store_id).await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let model2_id = create_model_with_viewer_and_editor(&storage, &store_id).await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let model3_id = create_model_with_all_relations(&storage, &store_id).await;
 
     // Verify all 3 models are listed

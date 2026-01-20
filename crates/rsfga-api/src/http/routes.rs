@@ -743,7 +743,7 @@ async fn check<S: DataStore>(
                     ApiError::invalid_input(format!("Authorization model '{model_id}' not found"))
                 }
                 rsfga_storage::StorageError::StoreNotFound { .. } => {
-                    ApiError::invalid_input(format!("Store '{store_id}' not found"))
+                    ApiError::not_found(format!("Store '{store_id}' not found"))
                 }
                 other => ApiError::internal_error(format!("Storage error: {other}")),
             })?;
