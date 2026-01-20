@@ -2454,6 +2454,58 @@ async fn test_assertions_update_existing_key_allowed() {
     assert_eq!(response.into_inner().assertions.len(), 2);
 }
 
+/// Test: WriteAssertions rejects invalid condition context (NaN values)
+#[tokio::test]
+async fn test_assertions_reject_invalid_condition_context() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let model_id = setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    // Build condition with NaN value (invalid)
+    let mut context_fields = std::collections::BTreeMap::new();
+    context_fields.insert(
+        "invalid_number".to_string(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::NumberValue(f64::NAN)),
+        },
+    );
+
+    let condition = RelationshipCondition {
+        name: "test_condition".to_string(),
+        context: Some(prost_types::Struct {
+            fields: context_fields,
+        }),
+    };
+
+    // Write assertion with invalid condition context
+    let write_request = Request::new(WriteAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: model_id,
+        assertions: vec![Assertion {
+            tuple_key: Some(TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:readme".to_string(),
+                condition: Some(condition),
+            }),
+            expectation: true,
+            contextual_tuples: vec![],
+        }],
+    });
+
+    let response = service.write_assertions(write_request).await;
+    assert!(response.is_err());
+    let err = response.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    assert!(err.message().contains("invalid context"));
+}
+
 // =============================================================================
 // Proto-JSON Conversion Roundtrip Tests
 // =============================================================================

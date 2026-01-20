@@ -2120,77 +2120,83 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         }
 
         // Convert proto assertions to stored format (same format as HTTP layer)
-        // Preserves conditions on tuple keys to avoid data loss.
-        let stored_assertions: Vec<StoredAssertion> = req
-            .assertions
-            .into_iter()
-            .filter_map(|a| {
-                let tuple_key = a.tuple_key?;
-                Some(StoredAssertion {
-                    tuple_key: AssertionTupleKey {
-                        user: tuple_key.user,
-                        relation: tuple_key.relation,
-                        object: tuple_key.object,
-                        condition: tuple_key.condition.map(|c| {
-                            let condition_name = c.name;
-                            let context = c
-                                .context
-                                .map(prost_struct_to_hashmap)
-                                .transpose()
-                                .map_err(|e| {
-                                    tracing::warn!(
-                                        condition_name = %condition_name,
-                                        error = %e,
-                                        "Failed to convert assertion condition context"
-                                    );
-                                })
-                                .ok()
-                                .flatten();
-                            AssertionCondition {
-                                name: condition_name,
+        // Preserves conditions on tuple keys. Rejects requests with invalid context data
+        // (e.g., NaN/Infinity values) to prevent silent data loss.
+        let mut stored_assertions: Vec<StoredAssertion> = Vec::with_capacity(req.assertions.len());
+
+        for (assertion_idx, a) in req.assertions.into_iter().enumerate() {
+            let tuple_key = match a.tuple_key {
+                Some(tk) => tk,
+                None => continue, // Skip assertions without tuple_key
+            };
+
+            // Convert condition, failing on invalid context
+            let condition = match tuple_key.condition {
+                Some(c) => {
+                    let context = match c.context {
+                        Some(ctx) => Some(prost_struct_to_hashmap(ctx).map_err(|e| {
+                            Status::invalid_argument(format!(
+                                "assertion at index {}: condition '{}' has invalid context: {}",
+                                assertion_idx, c.name, e
+                            ))
+                        })?),
+                        None => None,
+                    };
+                    Some(AssertionCondition {
+                        name: c.name,
+                        context,
+                    })
+                }
+                None => None,
+            };
+
+            // Convert contextual tuples, failing on invalid context
+            let contextual_tuples = if a.contextual_tuples.is_empty() {
+                None
+            } else {
+                let mut tuple_keys = Vec::with_capacity(a.contextual_tuples.len());
+                for (ct_idx, tk) in a.contextual_tuples.into_iter().enumerate() {
+                    let ct_condition = match tk.condition {
+                        Some(c) => {
+                            let context = match c.context {
+                                Some(ctx) => {
+                                    Some(prost_struct_to_hashmap(ctx).map_err(|e| {
+                                        Status::invalid_argument(format!(
+                                            "assertion at index {}: contextual tuple at index {}: condition '{}' has invalid context: {}",
+                                            assertion_idx, ct_idx, c.name, e
+                                        ))
+                                    })?)
+                                }
+                                None => None,
+                            };
+                            Some(AssertionCondition {
+                                name: c.name,
                                 context,
-                            }
-                        }),
-                    },
-                    expectation: a.expectation,
-                    contextual_tuples: if a.contextual_tuples.is_empty() {
-                        None
-                    } else {
-                        Some(ContextualTuplesWrapper {
-                            tuple_keys: a
-                                .contextual_tuples
-                                .into_iter()
-                                .map(|tk| AssertionTupleKey {
-                                    user: tk.user,
-                                    relation: tk.relation,
-                                    object: tk.object,
-                                    condition: tk.condition.map(|c| {
-                                        let condition_name = c.name;
-                                        let context = c
-                                            .context
-                                            .map(prost_struct_to_hashmap)
-                                            .transpose()
-                                            .map_err(|e| {
-                                                tracing::warn!(
-                                                    condition_name = %condition_name,
-                                                    error = %e,
-                                                    "Failed to convert contextual tuple condition context"
-                                                );
-                                            })
-                                            .ok()
-                                            .flatten();
-                                        AssertionCondition {
-                                            name: condition_name,
-                                            context,
-                                        }
-                                    }),
-                                })
-                                .collect(),
-                        })
-                    },
-                })
-            })
-            .collect();
+                            })
+                        }
+                        None => None,
+                    };
+                    tuple_keys.push(AssertionTupleKey {
+                        user: tk.user,
+                        relation: tk.relation,
+                        object: tk.object,
+                        condition: ct_condition,
+                    });
+                }
+                Some(ContextualTuplesWrapper { tuple_keys })
+            };
+
+            stored_assertions.push(StoredAssertion {
+                tuple_key: AssertionTupleKey {
+                    user: tuple_key.user,
+                    relation: tuple_key.relation,
+                    object: tuple_key.object,
+                    condition,
+                },
+                expectation: a.expectation,
+                contextual_tuples,
+            });
+        }
 
         // Store assertions (replaces existing)
         let key = (req.store_id, req.authorization_model_id);
