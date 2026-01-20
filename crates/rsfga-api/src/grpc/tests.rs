@@ -2507,6 +2507,179 @@ async fn test_assertions_reject_invalid_condition_context() {
 }
 
 // =============================================================================
+// Assertion Capacity Limit Tests
+// =============================================================================
+
+/// Test: Assertions count grows with new (store, model) pairs
+#[tokio::test]
+async fn test_assertions_count_grows_with_new_pairs() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage.create_store("store-1", "Store 1").await.unwrap();
+    storage.create_store("store-2", "Store 2").await.unwrap();
+
+    let model_id_1 = setup_simple_model(&storage, "store-1").await;
+    let model_id_2 = setup_simple_model(&storage, "store-2").await;
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Write assertions for store-1, model-1
+    let write_request = Request::new(WriteAssertionsRequest {
+        store_id: "store-1".to_string(),
+        authorization_model_id: model_id_1.clone(),
+        assertions: vec![Assertion {
+            tuple_key: Some(TupleKey {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+                condition: None,
+            }),
+            expectation: true,
+            contextual_tuples: vec![],
+        }],
+    });
+    service.write_assertions(write_request).await.unwrap();
+
+    // Write assertions for store-2, model-2 (different pair)
+    let write_request = Request::new(WriteAssertionsRequest {
+        store_id: "store-2".to_string(),
+        authorization_model_id: model_id_2.clone(),
+        assertions: vec![Assertion {
+            tuple_key: Some(TupleKey {
+                user: "user:bob".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc2".to_string(),
+                condition: None,
+            }),
+            expectation: true,
+            contextual_tuples: vec![],
+        }],
+    });
+    service.write_assertions(write_request).await.unwrap();
+
+    // Verify both assertions exist
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "store-1".to_string(),
+        authorization_model_id: model_id_1,
+    });
+    let response = service.read_assertions(read_request).await.unwrap();
+    assert_eq!(response.into_inner().assertions.len(), 1);
+
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "store-2".to_string(),
+        authorization_model_id: model_id_2,
+    });
+    let response = service.read_assertions(read_request).await.unwrap();
+    assert_eq!(response.into_inner().assertions.len(), 1);
+}
+
+/// Test: Store deletion cleans up all assertions for that store
+#[tokio::test]
+async fn test_store_deletion_cleans_all_model_assertions() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Create two models in the same store
+    let model_id_1 = setup_simple_model(&storage, "test-store").await;
+    let model_id_2 = setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Write assertions for both models
+    for model_id in [&model_id_1, &model_id_2] {
+        let write_request = Request::new(WriteAssertionsRequest {
+            store_id: "test-store".to_string(),
+            authorization_model_id: model_id.clone(),
+            assertions: vec![Assertion {
+                tuple_key: Some(TupleKey {
+                    user: "user:alice".to_string(),
+                    relation: "viewer".to_string(),
+                    object: "document:readme".to_string(),
+                    condition: None,
+                }),
+                expectation: true,
+                contextual_tuples: vec![],
+            }],
+        });
+        service.write_assertions(write_request).await.unwrap();
+    }
+
+    // Delete the store
+    let delete_request = Request::new(DeleteStoreRequest {
+        store_id: "test-store".to_string(),
+    });
+    service.delete_store(delete_request).await.unwrap();
+
+    // Recreate store and new model
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+    let new_model_id = setup_simple_model(&storage, "test-store").await;
+
+    // Verify no assertions exist for the new model (old ones were cleaned up)
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: new_model_id,
+    });
+    let response = service.read_assertions(read_request).await.unwrap();
+    assert!(response.into_inner().assertions.is_empty());
+}
+
+/// Test: Multiple model assertions in same store are all cleaned on delete
+#[tokio::test]
+async fn test_cleanup_removes_all_model_assertions_for_store() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage.create_store("store-a", "Store A").await.unwrap();
+    storage.create_store("store-b", "Store B").await.unwrap();
+
+    let model_a1 = setup_simple_model(&storage, "store-a").await;
+    let model_a2 = setup_simple_model(&storage, "store-a").await;
+    let model_b = setup_simple_model(&storage, "store-b").await;
+
+    let service = test_service_with_storage(Arc::clone(&storage));
+
+    // Write assertions for all models
+    for (store_id, model_id) in [
+        ("store-a", &model_a1),
+        ("store-a", &model_a2),
+        ("store-b", &model_b),
+    ] {
+        let write_request = Request::new(WriteAssertionsRequest {
+            store_id: store_id.to_string(),
+            authorization_model_id: model_id.clone(),
+            assertions: vec![Assertion {
+                tuple_key: Some(TupleKey {
+                    user: "user:alice".to_string(),
+                    relation: "viewer".to_string(),
+                    object: "document:readme".to_string(),
+                    condition: None,
+                }),
+                expectation: true,
+                contextual_tuples: vec![],
+            }],
+        });
+        service.write_assertions(write_request).await.unwrap();
+    }
+
+    // Delete store-a
+    let delete_request = Request::new(DeleteStoreRequest {
+        store_id: "store-a".to_string(),
+    });
+    service.delete_store(delete_request).await.unwrap();
+
+    // Verify store-b assertions still exist
+    let read_request = Request::new(ReadAssertionsRequest {
+        store_id: "store-b".to_string(),
+        authorization_model_id: model_b,
+    });
+    let response = service.read_assertions(read_request).await.unwrap();
+    assert_eq!(response.into_inner().assertions.len(), 1);
+}
+
+// =============================================================================
 // Proto-JSON Conversion Roundtrip Tests
 // =============================================================================
 
