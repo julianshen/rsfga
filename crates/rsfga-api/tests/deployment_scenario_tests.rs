@@ -1,17 +1,28 @@
 //! Deployment scenario integration tests.
 //!
 //! These tests verify deployment-related behaviors including:
-//! - Graceful shutdown (in-flight requests complete)
+//! - Concurrent request completion under load
 //! - Horizontal scaling (multiple instances sharing storage)
-//! - Storage failure recovery (timeout handling, error responses)
+//! - Operation timeout bounds (no hanging)
 //! - Configuration and protocol coverage
 //!
 //! **Test Categories**:
-//! - Graceful shutdown behavior
-//! - Multi-instance coordination
-//! - Storage failure handling
-//! - Configuration reload
-//! - REST/gRPC protocol parity
+//! - Section 1: Concurrent request completion tests
+//! - Section 2: Multi-instance coordination with shared storage
+//! - Section 3: Operation timeout and health check tests
+//! - Section 4: API consistency and protocol tests
+//! - Section 5: Database failure simulation (requires external infrastructure)
+//!
+//! **Limitations**:
+//! - Graceful shutdown tests validate concurrent completion, not actual signal handling
+//! - Cache invalidation tests use in-process cache, not distributed cache
+//! - Storage timeout tests verify completion bounds, not actual timeout errors
+//!
+//! For production deployment validation, consider:
+//! - Integration tests with actual server processes and signal handling
+//! - Distributed cache solutions (Redis) for multi-instance cache invalidation
+//! - Mock DataStore implementations for timeout error testing
+//! - Testcontainers for database failure scenarios
 //!
 //! **Running Deployment Tests**:
 //! - Basic tests: `cargo test -p rsfga-api --test deployment_scenario_tests`
@@ -26,27 +37,33 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use futures::future::join_all;
 use rsfga_storage::{DataStore, MemoryDataStore};
 use tokio::time::{sleep, timeout};
 
 use common::{create_test_app, create_test_app_with_shared_cache, post_json, setup_test_store};
 
 // =============================================================================
-// Section 1: Graceful Shutdown Tests
+// Section 1: Concurrent Request Completion Tests
+//
+// Note: These tests verify that concurrent requests complete successfully
+// under high load conditions. They use local flags to simulate shutdown
+// conditions but do NOT wire into actual server shutdown mechanisms.
+//
+// For true graceful shutdown testing, integration tests with actual
+// server processes and signal handling would be required.
 // =============================================================================
 
-/// Test: In-flight check completes successfully during shutdown signal.
+/// Test: Concurrent check requests complete successfully under load.
 ///
-/// Verifies that when a shutdown signal is received, in-flight requests
-/// are allowed to complete successfully rather than being aborted.
+/// Verifies that multiple concurrent check requests all complete successfully
+/// when fired in rapid succession with staggered timing.
 ///
-/// This test simulates the scenario by:
-/// 1. Starting a long-running check operation
-/// 2. Simulating shutdown conditions (via a flag)
-/// 3. Verifying the operation completes successfully
+/// **Note**: This test validates concurrent request handling, not actual
+/// graceful shutdown behavior. The `shutdown_signal` flag demonstrates
+/// that requests complete regardless of external state changes, but does
+/// not trigger real server shutdown logic.
 #[tokio::test]
-async fn test_inflight_check_completes_during_shutdown() {
+async fn test_concurrent_check_requests_complete_successfully() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
@@ -128,12 +145,16 @@ async fn test_inflight_check_completes_during_shutdown() {
     );
 }
 
-/// Test: Operations complete before shutdown without data loss.
+/// Test: Concurrent write operations complete without data loss.
 ///
-/// Verifies that write operations that started before shutdown
-/// are persisted correctly and no data is lost.
+/// Verifies that concurrent write operations all persist correctly
+/// and no data is lost under high concurrent load.
+///
+/// **Note**: This test validates concurrent write handling, not actual
+/// graceful shutdown behavior. The `shutdown_initiated` flag is used
+/// to demonstrate requests complete regardless of external state.
 #[tokio::test]
-async fn test_operations_complete_without_data_loss_during_shutdown() {
+async fn test_concurrent_writes_complete_without_data_loss() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
@@ -211,12 +232,14 @@ async fn test_operations_complete_without_data_loss_during_shutdown() {
     }
 }
 
-/// Test: Concurrent operations complete during simulated shutdown.
+/// Test: Mixed concurrent operations complete successfully.
 ///
 /// Tests that a mix of read and write operations all complete
-/// when shutdown is initiated.
+/// successfully when fired concurrently.
+///
+/// **Note**: This test validates concurrent mixed operation handling.
 #[tokio::test]
-async fn test_concurrent_operations_complete_during_shutdown() {
+async fn test_mixed_concurrent_operations_complete_successfully() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
@@ -357,7 +380,7 @@ async fn test_multiple_instances_read_same_database() {
     let successful_reads = Arc::new(AtomicU64::new(0));
 
     let handles: Vec<_> = (0..instance_count)
-        .map(|instance_id| {
+        .map(|_| {
             let storage = Arc::clone(&shared_storage);
             let store_id = store_id.clone();
             let successful_reads = Arc::clone(&successful_reads);
@@ -400,20 +423,14 @@ async fn test_multiple_instances_read_same_database() {
                         successful_reads.fetch_add(1, Ordering::SeqCst);
                     }
                 }
-
-                instance_id
             })
         })
         .collect();
 
-    let results: Vec<_> = join_all(handles)
-        .await
-        .into_iter()
-        .map(|r| r.unwrap())
-        .collect();
-
-    // Verify all instances completed
-    assert_eq!(results.len(), instance_count);
+    // Wait for all handles to complete
+    for handle in handles {
+        handle.await.unwrap();
+    }
 
     // All instances should have successfully read the data
     let successful = successful_reads.load(Ordering::SeqCst);
@@ -586,12 +603,23 @@ async fn test_concurrent_writes_from_multiple_instances() {
     }
 }
 
-/// Test: Cache invalidation works correctly across instances with shared cache.
+/// Test: In-process cache invalidation with shared cache reference.
 ///
-/// Verifies that when one instance writes data, the shared cache is invalidated
-/// and other instances see the updated data.
+/// Verifies that when data is written, the in-process cache is invalidated
+/// and subsequent reads see the updated data.
+///
+/// **Important**: This test uses multiple `Router` instances sharing the same
+/// in-memory cache reference. It validates in-process cache invalidation only.
+/// For true multi-instance scenarios (e.g., distributed deployment), a
+/// distributed cache solution like Redis would be needed, and cache
+/// invalidation would need to propagate across network boundaries.
+///
+/// This test demonstrates:
+/// - Cache population on first read
+/// - Cache invalidation on write/delete
+/// - Subsequent reads reflect the updated state
 #[tokio::test]
-async fn test_cache_invalidation_across_instances() {
+async fn test_inprocess_cache_invalidation_with_shared_cache() {
     use common::create_shared_cache;
 
     let shared_storage = Arc::new(MemoryDataStore::new());
@@ -668,15 +696,18 @@ async fn test_cache_invalidation_across_instances() {
 // Section 3: Storage Failure Recovery Tests
 // =============================================================================
 
-/// Test: Check operation with storage timeout returns appropriate error (not hung).
+/// Test: Check operation completes within timeout bounds.
 ///
-/// Verifies that operations don't hang indefinitely when storage is slow
-/// and return appropriate timeout errors.
+/// Verifies that check operations complete within a reasonable time
+/// and don't hang indefinitely.
 ///
-/// Note: This test uses a mock storage that simulates slow responses.
-/// For real database timeout tests, use testcontainers.
+/// **Note**: This test uses in-memory storage which completes quickly.
+/// It validates that operations don't hang, but does not test actual
+/// timeout error handling. For storage timeout error tests, implement
+/// a mock DataStore that simulates slow responses or use testcontainers
+/// with database-level delays.
 #[tokio::test]
-async fn test_check_operation_returns_timeout_error_not_hung() {
+async fn test_check_operation_completes_within_timeout() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
