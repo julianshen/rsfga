@@ -347,9 +347,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         for (index, item) in req.checks.into_iter().enumerate() {
             let tuple_key = item.tuple_key.ok_or_else(|| {
-                Status::invalid_argument(format!(
-                    "tuple_key required for check at index {index}"
-                ))
+                Status::invalid_argument(format!("tuple_key required for check at index {index}"))
             })?;
 
             // Validate correlation_id length to prevent DoS via excessive memory allocation
