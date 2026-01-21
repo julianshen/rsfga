@@ -93,7 +93,7 @@ fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
         )
         .route(
             "/stores/:store_id/authorization-models/:authorization_model_id",
-            get(get_authorization_model::<S>),
+            get(get_authorization_model::<S>).delete(delete_authorization_model::<S>),
         )
         // Authorization operations
         .route("/stores/:store_id/check", post(check::<S>))
@@ -457,11 +457,38 @@ async fn update_store<S: DataStore>(
     Ok(Json(StoreResponse::from(store)))
 }
 
+/// Delete a store and all associated data (DELETE).
+///
+/// # Cleanup Behavior
+///
+/// When a store is deleted, this handler also cleans up all in-memory assertions
+/// associated with any authorization model in that store. The cleanup is performed
+/// atomically using `retain` to avoid race conditions.
+///
+/// # Cleanup Order
+///
+/// Assertions are cleaned up *before* storage deletion. This ensures that if
+/// storage deletion fails, we haven't leaked assertion data. The reverse order
+/// (storage first) could leave orphaned assertions if the request fails partway.
+///
+/// # Performance
+///
+/// The assertion cleanup iterates all entries in the assertions map (O(n) where
+/// n is the total number of assertion entries across all stores/models). For
+/// production deployments with many assertion entries, consider the performance
+/// implications.
 async fn delete_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
+    // Clean up assertions FIRST, before storage deletion.
+    // This ensures we don't leak assertions if storage deletion fails.
+    // Using retain for atomic cleanup - no race condition window.
+    state.assertions.retain(|key, _| key.0 != store_id);
+
+    // Now delete from storage
     state.storage.delete_store(&store_id).await?;
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -638,6 +665,45 @@ async fn get_authorization_model<S: DataStore>(
     Ok(Json(serde_json::json!({
         "authorization_model": response
     })))
+}
+
+/// Delete an authorization model (DELETE).
+///
+/// Deletes the specified authorization model from the store.
+///
+/// # Cleanup Behavior
+///
+/// When an authorization model is deleted, this handler also cleans up any
+/// in-memory assertions associated with that specific model. The cleanup uses
+/// DashMap's atomic `remove` operation (O(1)).
+///
+/// # Cleanup Order
+///
+/// Assertions are cleaned up *before* storage deletion. This ensures consistent
+/// behavior with `delete_store` and prevents assertion leaks if storage deletion
+/// fails.
+async fn delete_authorization_model<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(path): Path<AuthorizationModelPath>,
+) -> ApiResult<impl IntoResponse> {
+    // Clean up assertions FIRST, before storage deletion.
+    // Using atomic remove - O(1) operation on DashMap.
+    let key = (path.store_id.clone(), path.authorization_model_id.clone());
+    state.assertions.remove(&key);
+
+    // Now delete from storage
+    state
+        .storage
+        .delete_authorization_model(&path.store_id, &path.authorization_model_id)
+        .await
+        .map_err(|e| match e {
+            StorageError::ModelNotFound { model_id } => {
+                ApiError::not_found(format!("authorization model not found: {model_id}"))
+            }
+            other => ApiError::from(other),
+        })?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Default and maximum page size for listing authorization models (OpenFGA limit).
