@@ -755,12 +755,12 @@ async fn check<S: DataStore>(
             .await
             .map_err(|e| match e {
                 rsfga_storage::StorageError::ModelNotFound { .. } => {
-                    ApiError::invalid_input(format!("Authorization model '{model_id}' not found"))
+                    ApiError::invalid_input(format!("authorization model not found: {model_id}"))
                 }
                 rsfga_storage::StorageError::StoreNotFound { .. } => {
-                    ApiError::not_found(format!("Store '{store_id}' not found"))
+                    ApiError::not_found(format!("store not found: {store_id}"))
                 }
-                other => ApiError::internal_error(format!("Storage error: {other}")),
+                other => ApiError::internal_error(format!("storage error: {other}")),
             })?;
     }
 
@@ -1181,7 +1181,7 @@ async fn write_tuples<S: DataStore>(
                 .map(|(i, tk)| {
                     parse_tuple_key(tk).map_err(|e| {
                         ApiError::invalid_input(format!(
-                            "invalid tuple_key at writes index {i}: user='{}', object='{}': {}",
+                            "invalid tuple at index {i}: user={}, object={}, reason={}",
                             e.user, e.object, e.reason
                         ))
                     })
@@ -1202,8 +1202,8 @@ async fn write_tuples<S: DataStore>(
                     // Use parse_tuple_fields directly to avoid cloning
                     parse_tuple_fields(&tk.user, &tk.relation, &tk.object).ok_or_else(|| {
                         ApiError::invalid_input(format!(
-                            "invalid tuple_key at deletes index {}: user='{}', object='{}'",
-                            i, tk.user, tk.object
+                            "invalid tuple at index {i}: user={}, object={}, reason=invalid format",
+                            tk.user, tk.object
                         ))
                     })
                 })
@@ -1976,7 +1976,10 @@ async fn list_users<S: DataStore>(
     // Validate full object reference format (not just empty ID)
     let object_str = format!("{}:{}", body.object.r#type, body.object.id);
     if parse_object(&object_str).is_none() {
-        return Err(ApiError::invalid_input("object has invalid format"));
+        return Err(ApiError::invalid_input(format!(
+            "object has invalid format: {}",
+            object_str
+        )));
     }
 
     // Validate relation format
