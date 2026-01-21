@@ -93,7 +93,7 @@ fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
         )
         .route(
             "/stores/:store_id/authorization-models/:authorization_model_id",
-            get(get_authorization_model::<S>),
+            get(get_authorization_model::<S>).delete(delete_authorization_model::<S>),
         )
         // Authorization operations
         .route("/stores/:store_id/check", post(check::<S>))
@@ -462,6 +462,20 @@ async fn delete_store<S: DataStore>(
     Path(store_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     state.storage.delete_store(&store_id).await?;
+
+    // Clean up assertions for the deleted store.
+    // This removes all assertions for any model in this store.
+    let keys_to_remove: Vec<_> = state
+        .assertions
+        .iter()
+        .filter(|entry| entry.key().0 == store_id)
+        .map(|entry| entry.key().clone())
+        .collect();
+
+    for key in keys_to_remove {
+        state.assertions.remove(&key);
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -638,6 +652,33 @@ async fn get_authorization_model<S: DataStore>(
     Ok(Json(serde_json::json!({
         "authorization_model": response
     })))
+}
+
+/// Delete an authorization model (DELETE).
+///
+/// Deletes the specified authorization model from the store.
+/// Also cleans up any assertions associated with this model.
+async fn delete_authorization_model<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(path): Path<AuthorizationModelPath>,
+) -> ApiResult<impl IntoResponse> {
+    // Delete the model from storage
+    state
+        .storage
+        .delete_authorization_model(&path.store_id, &path.authorization_model_id)
+        .await
+        .map_err(|e| match e {
+            StorageError::ModelNotFound { model_id } => {
+                ApiError::not_found(format!("authorization model not found: {model_id}"))
+            }
+            other => ApiError::from(other),
+        })?;
+
+    // Clean up assertions for the deleted model
+    let key = (path.store_id.clone(), path.authorization_model_id.clone());
+    state.assertions.remove(&key);
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Default and maximum page size for listing authorization models (OpenFGA limit).
