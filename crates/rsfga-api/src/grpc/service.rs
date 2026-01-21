@@ -264,7 +264,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         let tuple_key = req
             .tuple_key
-            .ok_or_else(|| Status::invalid_argument("tuple_key is required"))?;
+            .ok_or_else(|| Status::invalid_argument("tuple_key required for check request"))?;
 
         // Convert contextual tuples from gRPC format to domain format
         let contextual_tuples: Vec<ContextualTuple> = req
@@ -280,8 +280,8 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                                 .transpose()
                                 .map_err(|e| {
                                     Status::invalid_argument(format!(
-                                        "invalid condition context for tuple '{}#{}@{}': {}",
-                                        tk.object, tk.relation, tk.user, e
+                                        "condition context invalid: tuple={}#{}@{}, error={}",
+                                        tk.user, tk.relation, tk.object, e
                                     ))
                                 })?;
 
@@ -347,9 +347,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         for (index, item) in req.checks.into_iter().enumerate() {
             let tuple_key = item.tuple_key.ok_or_else(|| {
-                Status::invalid_argument(format!(
-                    "tuple_key is required for check at index {index}"
-                ))
+                Status::invalid_argument(format!("tuple_key required for check at index {index}"))
             })?;
 
             // Validate correlation_id length to prevent DoS via excessive memory allocation
@@ -447,7 +445,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                     .map(|(i, tk)| {
                         tuple_key_to_stored(tk).map_err(|e| {
                             Status::invalid_argument(format!(
-                                "invalid tuple_key at writes index {i}: user='{}', object='{}': {}",
+                                "invalid tuple at index {i}: user={}, object={}, reason={}",
                                 e.user, e.object, e.reason
                             ))
                         })
@@ -474,7 +472,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                         })
                         .map_err(|e| {
                             Status::invalid_argument(format!(
-                                "invalid tuple_key at deletes index {i}: user='{}', object='{}': {}",
+                                "invalid tuple at index {i}: user={}, object={}, reason={}",
                                 e.user, e.object, e.reason
                             ))
                         })
@@ -573,7 +571,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         let tuple_key = req
             .tuple_key
-            .ok_or_else(|| Status::invalid_argument("tuple_key is required"))?;
+            .ok_or_else(|| Status::invalid_argument("tuple_key required for expand request"))?;
 
         // Create domain expand request
         let expand_request =
@@ -732,7 +730,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         // Extract object from request
         let object = req
             .object
-            .ok_or_else(|| Status::invalid_argument("object is required"))?;
+            .ok_or_else(|| Status::invalid_argument("object required for list_users request"))?;
 
         if object.r#type.is_empty() {
             return Err(Status::invalid_argument("object.type cannot be empty"));
