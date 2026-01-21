@@ -24,7 +24,10 @@ pub use routes::{
     create_router, create_router_with_body_limit, create_router_with_observability,
     create_router_with_observability_and_limit, DEFAULT_BODY_LIMIT,
 };
-pub use state::AppState;
+pub use state::{
+    AppState, AssertionCondition, AssertionKey, AssertionTupleKey, ContextualTuplesWrapper,
+    StoredAssertion,
+};
 
 #[cfg(test)]
 mod tests;

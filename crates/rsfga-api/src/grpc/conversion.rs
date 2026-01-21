@@ -16,15 +16,25 @@
 //! - `userset_to_json` / `json_to_userset`
 //! - `condition_to_json` / `json_to_condition`
 //! - `stored_model_to_proto`
+//!
+//! ## Tuple and Node Conversions
+//! - `tuple_key_to_stored` - TupleKey proto to StoredTuple
+//! - `datetime_to_timestamp` - DateTime to prost Timestamp
+//! - `expand_node_to_proto` - Domain ExpandNode to proto Node
 
 use std::collections::HashMap;
 
 use crate::proto::openfga::v1::{
-    AuthorizationModel, Condition, ConditionMetadata, ConditionParamTypeRef, Difference,
-    DirectUserset, Metadata, ObjectRelation, RelationMetadata, RelationReference, TupleToUserset,
-    TypeDefinition, TypeName, Userset, Usersets, Wildcard,
+    AuthorizationModel, Computed, Condition, ConditionMetadata, ConditionParamTypeRef, Difference,
+    DirectUserset, Leaf, Metadata, Node, Nodes, ObjectRelation, RelationMetadata,
+    RelationReference, TupleKey, TupleToUserset, TypeDefinition, TypeName, Users, Userset,
+    Usersets, Wildcard,
 };
-use rsfga_storage::StoredAuthorizationModel;
+use crate::validation::{is_valid_condition_name, prost_value_exceeds_max_depth};
+use rsfga_storage::{DateTime, StoredAuthorizationModel, StoredTuple, Utc};
+
+/// Maximum size for condition context in bytes (10KB).
+pub const MAX_CONDITION_CONTEXT_SIZE: usize = 10 * 1024;
 
 // ============================================================
 // Prost ↔ JSON Value Conversions
@@ -660,6 +670,209 @@ pub fn stored_model_to_proto(stored: &StoredAuthorizationModel) -> Option<Author
 }
 
 // ============================================================
+// Tuple Key Conversion
+// ============================================================
+
+/// Error returned when tuple key parsing fails.
+///
+/// Contains the original user/object strings for error messages (avoids cloning in happy path).
+#[derive(Debug)]
+pub struct TupleKeyParseError {
+    pub user: String,
+    pub object: String,
+    pub reason: &'static str,
+}
+
+/// Converts a `TupleKey` proto to `StoredTuple` (takes ownership to avoid clones).
+///
+/// Uses `parse_user` and `parse_object` for consistent validation across all handlers.
+/// Parses the optional condition field including name and context.
+///
+/// # Errors
+///
+/// Returns `Err` with the original user/object for error messages (avoids cloning in happy path).
+pub fn tuple_key_to_stored(tk: TupleKey) -> Result<StoredTuple, TupleKeyParseError> {
+    use crate::utils::{parse_object, parse_user};
+
+    let (user_type, user_id, user_relation) =
+        parse_user(&tk.user).ok_or_else(|| TupleKeyParseError {
+            user: tk.user.clone(),
+            object: tk.object.clone(),
+            reason: "invalid user format",
+        })?;
+
+    let (object_type, object_id) = parse_object(&tk.object).ok_or_else(|| TupleKeyParseError {
+        user: tk.user.clone(),
+        object: tk.object.clone(),
+        reason: "invalid object format",
+    })?;
+
+    // Parse and validate condition if present
+    let (condition_name, condition_context) = if let Some(cond) = tk.condition {
+        if cond.name.is_empty() {
+            (None, None)
+        } else {
+            // Validate condition name format (security constraint I4)
+            if !is_valid_condition_name(&cond.name) {
+                return Err(TupleKeyParseError {
+                    user: tk.user,
+                    object: tk.object,
+                    reason: "invalid condition name: must be alphanumeric/underscore/hyphen, max 256 chars",
+                });
+            }
+
+            // Convert and validate context (constraint C11)
+            let context = if let Some(ctx) = cond.context {
+                // Check depth limit to prevent stack overflow
+                if ctx
+                    .fields
+                    .values()
+                    .any(|v| prost_value_exceeds_max_depth(v, 1))
+                {
+                    return Err(TupleKeyParseError {
+                        user: tk.user,
+                        object: tk.object,
+                        reason: "condition context exceeds maximum nesting depth (10 levels)",
+                    });
+                }
+
+                // Convert prost Struct to HashMap, rejecting NaN/Infinity values
+                let hashmap = prost_struct_to_hashmap(ctx).map_err(|_| TupleKeyParseError {
+                    user: tk.user.clone(),
+                    object: tk.object.clone(),
+                    reason: "condition context contains invalid number (NaN or Infinity)",
+                })?;
+
+                // Estimate serialized size to enforce bounds
+                let estimated_size: usize = hashmap
+                    .iter()
+                    .map(|(k, v)| k.len() + v.to_string().len())
+                    .sum();
+                if estimated_size > MAX_CONDITION_CONTEXT_SIZE {
+                    return Err(TupleKeyParseError {
+                        user: tk.user,
+                        object: tk.object,
+                        reason: "condition context exceeds maximum size (10KB)",
+                    });
+                }
+                Some(hashmap)
+            } else {
+                None
+            };
+
+            (Some(cond.name), context)
+        }
+    } else {
+        (None, None)
+    };
+
+    Ok(StoredTuple {
+        object_type: object_type.to_string(),
+        object_id: object_id.to_string(),
+        relation: tk.relation,
+        user_type: user_type.to_string(),
+        user_id: user_id.to_string(),
+        user_relation: user_relation.map(|s| s.to_string()),
+        condition_name,
+        condition_context,
+        created_at: None,
+    })
+}
+
+// ============================================================
+// Timestamp Conversion
+// ============================================================
+
+/// Converts a chrono `DateTime<Utc>` to a `prost_types::Timestamp`.
+pub fn datetime_to_timestamp(dt: DateTime<Utc>) -> prost_types::Timestamp {
+    prost_types::Timestamp {
+        seconds: dt.timestamp(),
+        nanos: dt.timestamp_subsec_nanos() as i32,
+    }
+}
+
+// ============================================================
+// Expand Node Conversion
+// ============================================================
+
+/// Converts a domain `ExpandNode` to a proto `Node`.
+pub fn expand_node_to_proto(node: rsfga_domain::resolver::ExpandNode) -> Node {
+    use rsfga_domain::resolver::{ExpandLeafValue, ExpandNode as DomainExpandNode};
+
+    match node {
+        DomainExpandNode::Leaf(leaf) => {
+            // Extract object from leaf.name (format: "type:id#relation") before moving name
+            // The tupleset relation is on the same object being expanded
+            let object_for_tupleset = leaf.name.split('#').next().unwrap_or("").to_string();
+            Node {
+                name: leaf.name,
+                value: Some(crate::proto::openfga::v1::node::Value::Leaf(
+                    match leaf.value {
+                        ExpandLeafValue::Users(users) => Leaf {
+                            value: Some(crate::proto::openfga::v1::leaf::Value::Users(Users {
+                                users,
+                            })),
+                        },
+                        ExpandLeafValue::Computed { userset } => Leaf {
+                            value: Some(crate::proto::openfga::v1::leaf::Value::Computed(
+                                Computed { userset },
+                            )),
+                        },
+                        ExpandLeafValue::TupleToUserset {
+                            tupleset,
+                            computed_userset,
+                        } => Leaf {
+                            value: Some(crate::proto::openfga::v1::leaf::Value::TupleToUserset(
+                                TupleToUserset {
+                                    tupleset: Some(ObjectRelation {
+                                        object: object_for_tupleset,
+                                        relation: tupleset,
+                                    }),
+                                    // computed_userset object is unknown without further resolution
+                                    computed_userset: Some(ObjectRelation {
+                                        object: String::new(),
+                                        relation: computed_userset,
+                                    }),
+                                },
+                            )),
+                        },
+                    },
+                )),
+            }
+        }
+        DomainExpandNode::Union { name, nodes } => Node {
+            name,
+            value: Some(crate::proto::openfga::v1::node::Value::Union(Nodes {
+                nodes: nodes.into_iter().map(expand_node_to_proto).collect(),
+            })),
+        },
+        DomainExpandNode::Intersection { name, nodes } => Node {
+            name,
+            value: Some(crate::proto::openfga::v1::node::Value::Intersection(
+                Nodes {
+                    nodes: nodes.into_iter().map(expand_node_to_proto).collect(),
+                },
+            )),
+        },
+        DomainExpandNode::Difference {
+            name,
+            base,
+            subtract,
+        } => {
+            // Note: OpenFGA proto uses Nodes for difference (with 2 nodes: base, subtract)
+            // This matches OpenFGA's representation where difference.nodes[0] is base
+            // and difference.nodes[1] is subtract
+            Node {
+                name,
+                value: Some(crate::proto::openfga::v1::node::Value::Difference(Nodes {
+                    nodes: vec![expand_node_to_proto(*base), expand_node_to_proto(*subtract)],
+                })),
+            }
+        }
+    }
+}
+
+// ============================================================
 // Unit Tests
 // ============================================================
 
@@ -842,5 +1055,316 @@ mod tests {
 
         assert_eq!(back.get("key1"), Some(&serde_json::json!("value1")));
         assert_eq!(back.get("key2"), Some(&serde_json::json!(123.0))); // f64 precision
+    }
+
+    // -------------------------------------------------------------------------
+    // tuple_key_to_stored tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_tuple_key_to_stored_simple() {
+        let tk = TupleKey {
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:readme".to_string(),
+            condition: None,
+        };
+        let result = tuple_key_to_stored(tk).unwrap();
+        assert_eq!(result.user_type, "user");
+        assert_eq!(result.user_id, "alice");
+        assert_eq!(result.relation, "viewer");
+        assert_eq!(result.object_type, "document");
+        assert_eq!(result.object_id, "readme");
+        assert!(result.user_relation.is_none());
+        assert!(result.condition_name.is_none());
+        assert!(result.condition_context.is_none());
+    }
+
+    #[test]
+    fn test_tuple_key_to_stored_with_userset() {
+        let tk = TupleKey {
+            user: "team:engineering#member".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:readme".to_string(),
+            condition: None,
+        };
+        let result = tuple_key_to_stored(tk).unwrap();
+        assert_eq!(result.user_type, "team");
+        assert_eq!(result.user_id, "engineering");
+        assert_eq!(result.user_relation, Some("member".to_string()));
+    }
+
+    #[test]
+    fn test_tuple_key_to_stored_invalid_user() {
+        let tk = TupleKey {
+            user: "invalid".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:readme".to_string(),
+            condition: None,
+        };
+        let result = tuple_key_to_stored(tk);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.reason, "invalid user format");
+        assert_eq!(err.user, "invalid");
+    }
+
+    #[test]
+    fn test_tuple_key_to_stored_invalid_object() {
+        let tk = TupleKey {
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "invalid".to_string(),
+            condition: None,
+        };
+        let result = tuple_key_to_stored(tk);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.reason, "invalid object format");
+    }
+
+    #[test]
+    fn test_tuple_key_to_stored_with_condition() {
+        use crate::proto::openfga::v1::RelationshipCondition;
+        use prost_types::value::Kind;
+
+        let mut context_fields = std::collections::BTreeMap::new();
+        context_fields.insert(
+            "ip_address".to_string(),
+            prost_types::Value {
+                kind: Some(Kind::StringValue("192.168.1.1".to_string())),
+            },
+        );
+
+        let tk = TupleKey {
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:readme".to_string(),
+            condition: Some(RelationshipCondition {
+                name: "ip_allowlist".to_string(),
+                context: Some(prost_types::Struct {
+                    fields: context_fields,
+                }),
+            }),
+        };
+        let result = tuple_key_to_stored(tk).unwrap();
+        assert_eq!(result.condition_name, Some("ip_allowlist".to_string()));
+        assert!(result.condition_context.is_some());
+        let ctx = result.condition_context.unwrap();
+        assert_eq!(
+            ctx.get("ip_address"),
+            Some(&serde_json::json!("192.168.1.1"))
+        );
+    }
+
+    #[test]
+    fn test_tuple_key_to_stored_empty_condition_name() {
+        use crate::proto::openfga::v1::RelationshipCondition;
+
+        let tk = TupleKey {
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:readme".to_string(),
+            condition: Some(RelationshipCondition {
+                name: String::new(),
+                context: None,
+            }),
+        };
+        let result = tuple_key_to_stored(tk).unwrap();
+        // Empty name is treated as no condition
+        assert!(result.condition_name.is_none());
+        assert!(result.condition_context.is_none());
+    }
+
+    #[test]
+    fn test_tuple_key_to_stored_invalid_condition_name() {
+        use crate::proto::openfga::v1::RelationshipCondition;
+
+        let tk = TupleKey {
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:readme".to_string(),
+            condition: Some(RelationshipCondition {
+                name: "invalid name with spaces!".to_string(),
+                context: None,
+            }),
+        };
+        let result = tuple_key_to_stored(tk);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.reason.contains("invalid condition name"));
+    }
+
+    // -------------------------------------------------------------------------
+    // datetime_to_timestamp tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_datetime_to_timestamp_now() {
+        // Test with current time - verifies basic functionality
+        let dt = Utc::now();
+        let ts = datetime_to_timestamp(dt);
+        // Timestamp should be recent (within last hour to be safe)
+        assert!(ts.seconds > 0);
+        assert!(ts.nanos >= 0);
+        assert!(ts.nanos < 1_000_000_000); // nanos must be < 1 second
+    }
+
+    #[test]
+    fn test_datetime_to_timestamp_roundtrip() {
+        // Test that timestamp conversion preserves precision
+        let dt = Utc::now();
+        let ts = datetime_to_timestamp(dt);
+
+        // Verify the conversion matches chrono's timestamp methods
+        assert_eq!(ts.seconds, dt.timestamp());
+        assert_eq!(ts.nanos, dt.timestamp_subsec_nanos() as i32);
+    }
+
+    #[test]
+    fn test_datetime_to_timestamp_consistent() {
+        // Test that multiple calls with the same DateTime produce same result
+        let dt = Utc::now();
+        let ts1 = datetime_to_timestamp(dt);
+        let ts2 = datetime_to_timestamp(dt);
+        assert_eq!(ts1.seconds, ts2.seconds);
+        assert_eq!(ts1.nanos, ts2.nanos);
+    }
+
+    // -------------------------------------------------------------------------
+    // expand_node_to_proto tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_expand_node_to_proto_leaf_users() {
+        use rsfga_domain::resolver::{ExpandLeaf, ExpandLeafValue, ExpandNode};
+
+        let node = ExpandNode::Leaf(ExpandLeaf {
+            name: "document:1#viewer".to_string(),
+            value: ExpandLeafValue::Users(vec!["user:alice".to_string(), "user:bob".to_string()]),
+        });
+
+        let proto_node = expand_node_to_proto(node);
+        assert_eq!(proto_node.name, "document:1#viewer");
+
+        if let Some(crate::proto::openfga::v1::node::Value::Leaf(leaf)) = proto_node.value {
+            if let Some(crate::proto::openfga::v1::leaf::Value::Users(users)) = leaf.value {
+                assert_eq!(users.users.len(), 2);
+                assert!(users.users.contains(&"user:alice".to_string()));
+                assert!(users.users.contains(&"user:bob".to_string()));
+            } else {
+                panic!("Expected Users leaf");
+            }
+        } else {
+            panic!("Expected Leaf node");
+        }
+    }
+
+    #[test]
+    fn test_expand_node_to_proto_leaf_computed() {
+        use rsfga_domain::resolver::{ExpandLeaf, ExpandLeafValue, ExpandNode};
+
+        let node = ExpandNode::Leaf(ExpandLeaf {
+            name: "document:1#editor".to_string(),
+            value: ExpandLeafValue::Computed {
+                userset: "owner".to_string(),
+            },
+        });
+
+        let proto_node = expand_node_to_proto(node);
+
+        if let Some(crate::proto::openfga::v1::node::Value::Leaf(leaf)) = proto_node.value {
+            if let Some(crate::proto::openfga::v1::leaf::Value::Computed(computed)) = leaf.value {
+                assert_eq!(computed.userset, "owner");
+            } else {
+                panic!("Expected Computed leaf");
+            }
+        } else {
+            panic!("Expected Leaf node");
+        }
+    }
+
+    #[test]
+    fn test_expand_node_to_proto_union() {
+        use rsfga_domain::resolver::{ExpandLeaf, ExpandLeafValue, ExpandNode};
+
+        let node = ExpandNode::Union {
+            name: "document:1#can_view".to_string(),
+            nodes: vec![
+                ExpandNode::Leaf(ExpandLeaf {
+                    name: "document:1#viewer".to_string(),
+                    value: ExpandLeafValue::Users(vec!["user:alice".to_string()]),
+                }),
+                ExpandNode::Leaf(ExpandLeaf {
+                    name: "document:1#editor".to_string(),
+                    value: ExpandLeafValue::Users(vec!["user:bob".to_string()]),
+                }),
+            ],
+        };
+
+        let proto_node = expand_node_to_proto(node);
+        assert_eq!(proto_node.name, "document:1#can_view");
+
+        if let Some(crate::proto::openfga::v1::node::Value::Union(nodes)) = proto_node.value {
+            assert_eq!(nodes.nodes.len(), 2);
+        } else {
+            panic!("Expected Union node");
+        }
+    }
+
+    #[test]
+    fn test_expand_node_to_proto_intersection() {
+        use rsfga_domain::resolver::{ExpandLeaf, ExpandLeafValue, ExpandNode};
+
+        let node = ExpandNode::Intersection {
+            name: "document:1#can_edit".to_string(),
+            nodes: vec![
+                ExpandNode::Leaf(ExpandLeaf {
+                    name: "document:1#editor".to_string(),
+                    value: ExpandLeafValue::Users(vec!["user:alice".to_string()]),
+                }),
+                ExpandNode::Leaf(ExpandLeaf {
+                    name: "document:1#approved".to_string(),
+                    value: ExpandLeafValue::Users(vec!["user:alice".to_string()]),
+                }),
+            ],
+        };
+
+        let proto_node = expand_node_to_proto(node);
+
+        if let Some(crate::proto::openfga::v1::node::Value::Intersection(nodes)) = proto_node.value
+        {
+            assert_eq!(nodes.nodes.len(), 2);
+        } else {
+            panic!("Expected Intersection node");
+        }
+    }
+
+    #[test]
+    fn test_expand_node_to_proto_difference() {
+        use rsfga_domain::resolver::{ExpandLeaf, ExpandLeafValue, ExpandNode};
+
+        let node = ExpandNode::Difference {
+            name: "document:1#can_view_except_blocked".to_string(),
+            base: Box::new(ExpandNode::Leaf(ExpandLeaf {
+                name: "document:1#viewer".to_string(),
+                value: ExpandLeafValue::Users(vec![
+                    "user:alice".to_string(),
+                    "user:bob".to_string(),
+                ]),
+            })),
+            subtract: Box::new(ExpandNode::Leaf(ExpandLeaf {
+                name: "document:1#blocked".to_string(),
+                value: ExpandLeafValue::Users(vec!["user:bob".to_string()]),
+            })),
+        };
+
+        let proto_node = expand_node_to_proto(node);
+
+        if let Some(crate::proto::openfga::v1::node::Value::Difference(nodes)) = proto_node.value {
+            assert_eq!(nodes.nodes.len(), 2);
+        } else {
+            panic!("Expected Difference node");
+        }
     }
 }

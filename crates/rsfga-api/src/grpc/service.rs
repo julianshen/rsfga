@@ -14,16 +14,15 @@ use rsfga_domain::resolver::{
 };
 use rsfga_server::handlers::batch::BatchCheckHandler;
 use rsfga_storage::{
-    DataStore, DateTime, PaginationOptions, StorageError, StoredAuthorizationModel, StoredTuple,
-    TupleFilter, Utc,
+    DataStore, PaginationOptions, StorageError, StoredAuthorizationModel, StoredTuple, TupleFilter,
 };
 
 use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
 use crate::grpc::conversion::{
-    condition_to_json, hashmap_to_prost_struct, prost_struct_to_hashmap, stored_model_to_proto,
-    type_definition_to_json,
+    condition_to_json, datetime_to_timestamp, expand_node_to_proto, hashmap_to_prost_struct,
+    prost_struct_to_hashmap, stored_model_to_proto, tuple_key_to_stored, type_definition_to_json,
 };
-use crate::http::state::{
+use crate::http::{
     AssertionCondition, AssertionKey, AssertionTupleKey, ContextualTuplesWrapper, StoredAssertion,
 };
 use crate::utils::{format_user, parse_object, parse_user};
@@ -31,15 +30,14 @@ use crate::utils::{format_user, parse_object, parse_user};
 use crate::proto::openfga::v1::{
     open_fga_service_server::OpenFgaService, user, Assertion, AuthorizationModel,
     BatchCheckRequest, BatchCheckResponse, BatchCheckSingleResult, CheckError, CheckRequest,
-    CheckResponse, Computed, CreateStoreRequest, CreateStoreResponse, DeleteStoreRequest,
+    CheckResponse, CreateStoreRequest, CreateStoreResponse, DeleteStoreRequest,
     DeleteStoreResponse, ErrorCode, ExpandRequest, ExpandResponse, FgaObject, GetStoreRequest,
-    GetStoreResponse, Leaf, ListObjectsRequest, ListObjectsResponse, ListStoresRequest,
-    ListStoresResponse, ListUsersRequest, ListUsersResponse, Node, Nodes, ObjectRelation,
-    ReadAssertionsRequest, ReadAssertionsResponse, ReadAuthorizationModelRequest,
-    ReadAuthorizationModelResponse, ReadAuthorizationModelsRequest,
-    ReadAuthorizationModelsResponse, ReadChangesRequest, ReadChangesResponse, ReadRequest,
-    ReadResponse, RelationshipCondition, Store, Tuple, TupleKey, TupleToUserset, TypedWildcard,
-    UpdateStoreRequest, UpdateStoreResponse, User, Users, UsersetTree, UsersetUser,
+    GetStoreResponse, ListObjectsRequest, ListObjectsResponse, ListStoresRequest,
+    ListStoresResponse, ListUsersRequest, ListUsersResponse, ReadAssertionsRequest,
+    ReadAssertionsResponse, ReadAuthorizationModelRequest, ReadAuthorizationModelResponse,
+    ReadAuthorizationModelsRequest, ReadAuthorizationModelsResponse, ReadChangesRequest,
+    ReadChangesResponse, ReadRequest, ReadResponse, RelationshipCondition, Store, Tuple, TupleKey,
+    TypedWildcard, UpdateStoreRequest, UpdateStoreResponse, User, UsersetTree, UsersetUser,
     WriteAssertionsRequest, WriteAssertionsResponse, WriteAuthorizationModelRequest,
     WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
@@ -243,196 +241,6 @@ fn batch_check_error_to_status(err: rsfga_server::handlers::batch::BatchCheckErr
             tracing::error!(error = %msg, "Domain error in gRPC batch check");
             // Return sanitized message to prevent information leakage
             Status::internal("internal error during authorization check")
-        }
-    }
-}
-
-// Use shared validation functions from the validation module
-use crate::validation::{
-    is_valid_condition_name, prost_value_exceeds_max_depth, MAX_CONDITION_CONTEXT_SIZE,
-};
-
-/// Error returned when tuple key parsing fails.
-/// Contains the original user/object strings for error messages (avoids cloning in happy path).
-struct TupleKeyParseError {
-    user: String,
-    object: String,
-    reason: &'static str,
-}
-
-/// Converts a TupleKey proto to StoredTuple (takes ownership to avoid clones).
-///
-/// Uses `parse_user` and `parse_object` for consistent validation across all handlers.
-/// Parses the optional condition field including name and context.
-///
-/// Returns `Err` with the original user/object for error messages (avoids cloning in happy path).
-fn tuple_key_to_stored(tk: TupleKey) -> Result<StoredTuple, TupleKeyParseError> {
-    let (user_type, user_id, user_relation) =
-        parse_user(&tk.user).ok_or_else(|| TupleKeyParseError {
-            user: tk.user.clone(),
-            object: tk.object.clone(),
-            reason: "invalid user format",
-        })?;
-
-    let (object_type, object_id) = parse_object(&tk.object).ok_or_else(|| TupleKeyParseError {
-        user: tk.user.clone(),
-        object: tk.object.clone(),
-        reason: "invalid object format",
-    })?;
-
-    // Parse and validate condition if present
-    let (condition_name, condition_context) = if let Some(cond) = tk.condition {
-        if cond.name.is_empty() {
-            (None, None)
-        } else {
-            // Validate condition name format (security constraint I4)
-            if !is_valid_condition_name(&cond.name) {
-                return Err(TupleKeyParseError {
-                    user: tk.user,
-                    object: tk.object,
-                    reason: "invalid condition name: must be alphanumeric/underscore/hyphen, max 256 chars",
-                });
-            }
-
-            // Convert and validate context (constraint C11)
-            let context = if let Some(ctx) = cond.context {
-                // Check depth limit to prevent stack overflow
-                if ctx
-                    .fields
-                    .values()
-                    .any(|v| prost_value_exceeds_max_depth(v, 1))
-                {
-                    return Err(TupleKeyParseError {
-                        user: tk.user,
-                        object: tk.object,
-                        reason: "condition context exceeds maximum nesting depth (10 levels)",
-                    });
-                }
-
-                // Convert prost Struct to HashMap, rejecting NaN/Infinity values
-                let hashmap = prost_struct_to_hashmap(ctx).map_err(|_| TupleKeyParseError {
-                    user: tk.user.clone(),
-                    object: tk.object.clone(),
-                    reason: "condition context contains invalid number (NaN or Infinity)",
-                })?;
-
-                // Estimate serialized size to enforce bounds
-                let estimated_size: usize = hashmap
-                    .iter()
-                    .map(|(k, v)| k.len() + v.to_string().len())
-                    .sum();
-                if estimated_size > MAX_CONDITION_CONTEXT_SIZE {
-                    return Err(TupleKeyParseError {
-                        user: tk.user,
-                        object: tk.object,
-                        reason: "condition context exceeds maximum size (10KB)",
-                    });
-                }
-                Some(hashmap)
-            } else {
-                None
-            };
-
-            (Some(cond.name), context)
-        }
-    } else {
-        (None, None)
-    };
-
-    Ok(StoredTuple {
-        object_type: object_type.to_string(),
-        object_id: object_id.to_string(),
-        relation: tk.relation,
-        user_type: user_type.to_string(),
-        user_id: user_id.to_string(),
-        user_relation: user_relation.map(|s| s.to_string()),
-        condition_name,
-        condition_context,
-        created_at: None,
-    })
-}
-
-/// Converts a chrono DateTime<Utc> to a prost_types::Timestamp.
-fn datetime_to_timestamp(dt: DateTime<Utc>) -> prost_types::Timestamp {
-    prost_types::Timestamp {
-        seconds: dt.timestamp(),
-        nanos: dt.timestamp_subsec_nanos() as i32,
-    }
-}
-
-/// Converts a domain ExpandNode to a proto Node.
-fn expand_node_to_proto(node: rsfga_domain::resolver::ExpandNode) -> Node {
-    use rsfga_domain::resolver::{ExpandLeafValue, ExpandNode as DomainExpandNode};
-
-    match node {
-        DomainExpandNode::Leaf(leaf) => {
-            // Extract object from leaf.name (format: "type:id#relation") before moving name
-            // The tupleset relation is on the same object being expanded
-            let object_for_tupleset = leaf.name.split('#').next().unwrap_or("").to_string();
-            Node {
-                name: leaf.name,
-                value: Some(crate::proto::openfga::v1::node::Value::Leaf(
-                    match leaf.value {
-                        ExpandLeafValue::Users(users) => Leaf {
-                            value: Some(crate::proto::openfga::v1::leaf::Value::Users(Users {
-                                users,
-                            })),
-                        },
-                        ExpandLeafValue::Computed { userset } => Leaf {
-                            value: Some(crate::proto::openfga::v1::leaf::Value::Computed(
-                                Computed { userset },
-                            )),
-                        },
-                        ExpandLeafValue::TupleToUserset {
-                            tupleset,
-                            computed_userset,
-                        } => Leaf {
-                            value: Some(crate::proto::openfga::v1::leaf::Value::TupleToUserset(
-                                TupleToUserset {
-                                    tupleset: Some(ObjectRelation {
-                                        object: object_for_tupleset,
-                                        relation: tupleset,
-                                    }),
-                                    // computed_userset object is unknown without further resolution
-                                    computed_userset: Some(ObjectRelation {
-                                        object: String::new(),
-                                        relation: computed_userset,
-                                    }),
-                                },
-                            )),
-                        },
-                    },
-                )),
-            }
-        }
-        DomainExpandNode::Union { name, nodes } => Node {
-            name,
-            value: Some(crate::proto::openfga::v1::node::Value::Union(Nodes {
-                nodes: nodes.into_iter().map(expand_node_to_proto).collect(),
-            })),
-        },
-        DomainExpandNode::Intersection { name, nodes } => Node {
-            name,
-            value: Some(crate::proto::openfga::v1::node::Value::Intersection(
-                Nodes {
-                    nodes: nodes.into_iter().map(expand_node_to_proto).collect(),
-                },
-            )),
-        },
-        DomainExpandNode::Difference {
-            name,
-            base,
-            subtract,
-        } => {
-            // Note: OpenFGA proto uses Nodes for difference (with 2 nodes: base, subtract)
-            // This matches OpenFGA's representation where difference.nodes[0] is base
-            // and difference.nodes[1] is subtract
-            Node {
-                name,
-                value: Some(crate::proto::openfga::v1::node::Value::Difference(Nodes {
-                    nodes: vec![expand_node_to_proto(*base), expand_node_to_proto(*subtract)],
-                })),
-            }
         }
     }
 }
