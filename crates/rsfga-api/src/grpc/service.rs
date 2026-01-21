@@ -281,7 +281,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                                 .map_err(|e| {
                                     Status::invalid_argument(format!(
                                         "condition context invalid: tuple={}#{}@{}, error={}",
-                                        tk.object, tk.relation, tk.user, e
+                                        tk.user, tk.relation, tk.object, e
                                     ))
                                 })?;
 

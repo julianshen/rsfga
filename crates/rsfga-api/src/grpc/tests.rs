@@ -253,7 +253,7 @@ async fn test_batch_check_rpc_rejects_missing_tuple_key() {
 
     let status = response.unwrap_err();
     assert_eq!(status.code(), tonic::Code::InvalidArgument);
-    assert!(status.message().contains("tuple_key is required"));
+    assert!(status.message().contains("tuple_key required"));
     assert!(status.message().contains("index 1"));
 }
 
