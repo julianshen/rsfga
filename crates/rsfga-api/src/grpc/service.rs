@@ -15,6 +15,7 @@ use rsfga_domain::resolver::{
 use rsfga_server::handlers::batch::BatchCheckHandler;
 use rsfga_storage::{
     DataStore, PaginationOptions, StorageError, StoredAuthorizationModel, StoredTuple, TupleFilter,
+    Utc,
 };
 
 use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
@@ -36,10 +37,10 @@ use crate::proto::openfga::v1::{
     ListStoresResponse, ListUsersRequest, ListUsersResponse, ReadAssertionsRequest,
     ReadAssertionsResponse, ReadAuthorizationModelRequest, ReadAuthorizationModelResponse,
     ReadAuthorizationModelsRequest, ReadAuthorizationModelsResponse, ReadChangesRequest,
-    ReadChangesResponse, ReadRequest, ReadResponse, RelationshipCondition, Store, Tuple, TupleKey,
-    TypedWildcard, UpdateStoreRequest, UpdateStoreResponse, User, UsersetTree, UsersetUser,
-    WriteAssertionsRequest, WriteAssertionsResponse, WriteAuthorizationModelRequest,
-    WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
+    ReadChangesResponse, ReadRequest, ReadResponse, RelationshipCondition, Store, Tuple,
+    TupleChange, TupleKey, TupleOperation, TypedWildcard, UpdateStoreRequest, UpdateStoreResponse,
+    User, UsersetTree, UsersetUser, WriteAssertionsRequest, WriteAssertionsResponse,
+    WriteAuthorizationModelRequest, WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
 
 /// Maximum allowed length for correlation IDs to prevent DoS attacks.
@@ -1418,7 +1419,12 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         Ok(Response::new(WriteAssertionsResponse {}))
     }
 
-    // Read changes (stub)
+    // Read changes
+    //
+    // Returns tuple changes (writes) from the store. This simplified implementation
+    // returns current tuples as "writes" but does not track actual change history
+    // or delete operations. For full OpenFGA compatibility, a changelog table would
+    // be needed in the storage layer.
     async fn read_changes(
         &self,
         request: Request<ReadChangesRequest>,
@@ -1432,9 +1438,81 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
+        // Build filter - optionally filter by object type
+        let filter = TupleFilter {
+            object_type: if req.r#type.is_empty() {
+                None
+            } else {
+                Some(req.r#type.clone())
+            },
+            ..Default::default()
+        };
+
+        // Validate and parse page_size:
+        // - Reject negative values (invalid input)
+        // - Treat zero as "use server default" (OpenFGA compatibility)
+        // - Cap positive values at DEFAULT_PAGE_SIZE to prevent DoS
+        let page_size = match req.page_size {
+            Some(ps) if ps < 0 => {
+                return Err(Status::invalid_argument("page_size cannot be negative"));
+            }
+            Some(0) => None, // Zero means use server default
+            Some(ps) => Some(ps.min(DEFAULT_PAGE_SIZE) as u32),
+            None => None,
+        };
+
+        let pagination = PaginationOptions {
+            page_size,
+            continuation_token: if req.continuation_token.is_empty() {
+                None
+            } else {
+                Some(req.continuation_token.clone())
+            },
+        };
+
+        // Read tuples from storage
+        let result = self
+            .storage
+            .read_tuples_paginated(&req.store_id, &filter, &pagination)
+            .await
+            .map_err(storage_error_to_status)?;
+
+        // Pre-calculate fallback timestamp once for legacy tuples without created_at
+        let fallback_timestamp = Utc::now();
+
+        // Convert tuples to changes (all as writes)
+        let changes: Vec<TupleChange> = result
+            .items
+            .into_iter()
+            .map(|t| {
+                let user = format_user(&t.user_type, &t.user_id, t.user_relation.as_deref());
+                let object = format!("{}:{}", t.object_type, t.object_id);
+
+                // Build condition if present
+                let condition = t.condition_name.map(|name| RelationshipCondition {
+                    name,
+                    context: t.condition_context.map(hashmap_to_prost_struct),
+                });
+
+                TupleChange {
+                    tuple_key: Some(TupleKey {
+                        user,
+                        relation: t.relation,
+                        object,
+                        condition,
+                    }),
+                    operation: TupleOperation::Write as i32,
+                    // Use tuple's created_at timestamp, or fallback for legacy data
+                    timestamp: Some(datetime_to_timestamp(
+                        t.created_at.unwrap_or(fallback_timestamp),
+                    )),
+                }
+            })
+            .collect();
+
         Ok(Response::new(ReadChangesResponse {
-            changes: vec![],
-            continuation_token: String::new(),
+            changes,
+            continuation_token: result.continuation_token.unwrap_or_default(),
         }))
     }
 }
