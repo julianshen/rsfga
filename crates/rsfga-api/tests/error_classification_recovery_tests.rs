@@ -26,10 +26,10 @@ mod common;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use rsfga_storage::{DataStore, MemoryDataStore, StoredAuthorizationModel};
+use rsfga_storage::MemoryDataStore;
 use tonic::Request;
 
-use common::{create_test_app, post_json, post_raw};
+use common::{create_test_app, post_json, post_raw, setup_test_store};
 
 // ============================================================================
 // Section 1: Input Validation Error Classification (400 VALIDATION_ERROR)
@@ -1345,29 +1345,290 @@ async fn test_http_grpc_error_classification_equivalence() {
 }
 
 // ============================================================================
-// Helper Functions
+// Section 8: Additional Security Tests (Connection Strings)
 // ============================================================================
 
-/// Set up a test store with a simple authorization model
-async fn setup_test_store(storage: &MemoryDataStore) -> String {
-    let store_id = ulid::Ulid::new().to_string();
+/// Test: Error messages do not contain connection strings
+#[tokio::test]
+async fn test_error_messages_no_connection_strings() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_test_store(&storage).await;
 
-    // Create store
-    storage.create_store(&store_id, "Test Store").await.unwrap();
+    let (_, response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/check"),
+        serde_json::json!({
+            "tuple_key": {
+                "user": "user:alice",
+                "relation": "nonexistent_relation",
+                "object": "document:readme"
+            }
+        }),
+    )
+    .await;
 
-    // Create authorization model with document and user types
-    let model_json = r#"{
-        "type_definitions": [
-            {"type": "user"},
-            {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
-        ]
-    }"#;
-    let model =
-        StoredAuthorizationModel::new(ulid::Ulid::new().to_string(), &store_id, "1.1", model_json);
-    storage.write_authorization_model(model).await.unwrap();
+    let message = response["message"].as_str().unwrap_or("").to_lowercase();
 
-    store_id
+    // Check for connection string patterns
+    assert!(
+        !message.contains("postgres://"),
+        "Error message should not contain postgres connection strings: {message}"
+    );
+    assert!(
+        !message.contains("mysql://"),
+        "Error message should not contain mysql connection strings: {message}"
+    );
+    assert!(
+        !message.contains("mongodb://"),
+        "Error message should not contain mongodb connection strings: {message}"
+    );
+    assert!(
+        !message.contains("redis://"),
+        "Error message should not contain redis connection strings: {message}"
+    );
+    assert!(
+        !message.contains("@localhost"),
+        "Error message should not contain host credentials: {message}"
+    );
+    assert!(
+        !message.contains("password="),
+        "Error message should not contain password parameters: {message}"
+    );
+    assert!(
+        !message.contains("user="),
+        "Error message should not contain user parameters: {message}"
+    );
 }
+
+/// Test: Batch check error messages do not contain connection strings
+#[tokio::test]
+async fn test_batch_check_error_messages_no_connection_strings() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_test_store(&storage).await;
+
+    let (_, response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/batch-check"),
+        serde_json::json!({
+            "checks": [
+                {
+                    "tuple_key": {
+                        "user": "user:alice",
+                        "relation": "nonexistent",
+                        "object": "document:readme"
+                    },
+                    "correlation_id": "check-1"
+                }
+            ]
+        }),
+    )
+    .await;
+
+    let results = response["result"].as_object().unwrap();
+    let error = &results["check-1"]["error"];
+    let message = error["message"].as_str().unwrap_or("").to_lowercase();
+
+    // Check for connection string patterns in batch error messages
+    assert!(
+        !message.contains("postgres://"),
+        "Batch error should not contain postgres connection strings"
+    );
+    assert!(
+        !message.contains("mysql://"),
+        "Batch error should not contain mysql connection strings"
+    );
+    assert!(
+        !message.contains("password="),
+        "Batch error should not contain password parameters"
+    );
+}
+
+// ============================================================================
+// Section 9: Error Code Verification Tests
+// ============================================================================
+
+/// Test: Verify the error code structure matches expected format
+#[tokio::test]
+async fn test_error_response_has_code_and_message() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_test_store(&storage).await;
+
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/check"),
+        serde_json::json!({
+            "tuple_key": {
+                "user": "invalid-format",
+                "relation": "viewer",
+                "object": "document:readme"
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Error response should have both 'code' and 'message' fields
+    assert!(
+        response.get("code").is_some(),
+        "Error response should have 'code' field: {response}"
+    );
+    assert!(
+        response.get("message").is_some(),
+        "Error response should have 'message' field: {response}"
+    );
+
+    // Code should be a string
+    assert!(
+        response["code"].is_string(),
+        "Error code should be a string: {response}"
+    );
+}
+
+/// Test: gRPC error does not contain connection strings
+#[tokio::test]
+async fn test_grpc_error_no_connection_strings() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_test_store(&storage).await;
+    let service = create_grpc_service(&storage);
+
+    let request = Request::new(CheckRequest {
+        store_id: store_id.clone(),
+        tuple_key: Some(TupleKey {
+            user: "user:alice".to_string(),
+            relation: "nonexistent_relation".to_string(),
+            object: "document:readme".to_string(),
+            condition: None,
+        }),
+        contextual_tuples: None,
+        authorization_model_id: String::new(),
+        trace: false,
+        context: None,
+        consistency: 0,
+    });
+
+    let result = service.check(request).await;
+    let status = result.unwrap_err();
+    let message = status.message().to_lowercase();
+
+    // gRPC errors should also not contain connection strings
+    assert!(
+        !message.contains("postgres://"),
+        "gRPC error should not contain postgres connection strings: {message}"
+    );
+    assert!(
+        !message.contains("mysql://"),
+        "gRPC error should not contain mysql connection strings: {message}"
+    );
+    assert!(
+        !message.contains("password="),
+        "gRPC error should not contain password parameters: {message}"
+    );
+}
+
+/// Test: Write operation with invalid data returns proper error
+#[tokio::test]
+async fn test_write_invalid_tuple_returns_400() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_test_store(&storage).await;
+
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [
+                    {
+                        "user": "invalid-user-format",
+                        "relation": "viewer",
+                        "object": "document:readme"
+                    }
+                ]
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "Write with invalid tuple should return 400"
+    );
+    assert_eq!(response["code"], "validation_error");
+}
+
+/// Test: Write to unknown type returns 200
+///
+/// Note: Write operations accept tuples for unknown types without strict
+/// validation at write time. This is consistent with OpenFGA behavior
+/// where tuple storage is permissive.
+#[tokio::test]
+async fn test_write_unknown_type_accepted() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_test_store(&storage).await;
+
+    let (status, _response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [
+                    {
+                        "user": "user:alice",
+                        "relation": "viewer",
+                        "object": "unknown_type:something"
+                    }
+                ]
+            }
+        }),
+    )
+    .await;
+
+    // Write accepts tuples even for unknown types
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Write to unknown type is accepted (returns 200)"
+    );
+}
+
+/// Test: Write with unknown relation returns 200
+///
+/// Note: Write operations accept tuples with unknown relations without
+/// strict validation at write time. This is consistent with OpenFGA behavior.
+#[tokio::test]
+async fn test_write_unknown_relation_accepted() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = setup_test_store(&storage).await;
+
+    let (status, _response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [
+                    {
+                        "user": "user:alice",
+                        "relation": "unknown_relation",
+                        "object": "document:readme"
+                    }
+                ]
+            }
+        }),
+    )
+    .await;
+
+    // Write accepts tuples even for unknown relations
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Write with unknown relation is accepted (returns 200)"
+    );
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
 /// Create a gRPC service for testing
 fn create_grpc_service(storage: &Arc<MemoryDataStore>) -> OpenFgaGrpcService<MemoryDataStore> {
