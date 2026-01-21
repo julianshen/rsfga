@@ -32,36 +32,32 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
 use rsfga_storage::{DataStore, MemoryDataStore};
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 
 use common::{create_test_app, create_test_app_with_shared_cache, post_json, setup_test_store};
 
 // =============================================================================
 // Section 1: Concurrent Request Completion Tests
 //
-// Note: These tests verify that concurrent requests complete successfully
-// under high load conditions. They use local flags to simulate shutdown
-// conditions but do NOT wire into actual server shutdown mechanisms.
-//
-// For true graceful shutdown testing, integration tests with actual
-// server processes and signal handling would be required.
+// These tests verify that the server handles concurrent requests correctly
+// without race conditions, deadlocks, or data corruption.
 // =============================================================================
 
-/// Test: Concurrent check requests complete successfully under load.
+// Number of concurrent requests for load tests
+const CONCURRENT_CHECK_REQUESTS: usize = 10;
+const CONCURRENT_WRITE_REQUESTS: usize = 20;
+const CONCURRENT_MIXED_OPERATIONS: usize = 30;
+
+/// Test: Concurrent check requests complete successfully.
 ///
 /// Verifies that multiple concurrent check requests all complete successfully
-/// when fired in rapid succession with staggered timing.
-///
-/// **Note**: This test validates concurrent request handling, not actual
-/// graceful shutdown behavior. The `shutdown_signal` flag demonstrates
-/// that requests complete regardless of external state changes, but does
-/// not trigger real server shutdown logic.
+/// without race conditions or errors.
 #[tokio::test]
 async fn test_concurrent_check_requests_complete_successfully() {
     let storage = Arc::new(MemoryDataStore::new());
@@ -80,31 +76,19 @@ async fn test_concurrent_check_requests_complete_successfully() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "Setup: write tuple should succeed");
 
-    // Simulate multiple concurrent requests that should complete during shutdown
-    let shutdown_signal = Arc::new(AtomicBool::new(false));
-    let completed_count = Arc::new(AtomicU64::new(0));
+    // Fire concurrent check requests
+    let success_count = Arc::new(AtomicU64::new(0));
 
-    let handles: Vec<_> = (0..10)
-        .map(|i| {
+    let handles: Vec<_> = (0..CONCURRENT_CHECK_REQUESTS)
+        .map(|_| {
             let storage = Arc::clone(&storage);
             let store_id = store_id.clone();
-            let shutdown_signal = Arc::clone(&shutdown_signal);
-            let completed_count = Arc::clone(&completed_count);
+            let success_count = Arc::clone(&success_count);
 
             tokio::spawn(async move {
-                // Start the request
                 let app = create_test_app(&storage);
-
-                // Small delay to simulate staggered requests
-                sleep(Duration::from_millis(i * 10)).await;
-
-                // If shutdown signal is set midway, the request should still complete
-                if i == 5 {
-                    shutdown_signal.store(true, Ordering::SeqCst);
-                }
-
                 let (status, response) = post_json(
                     app,
                     &format!("/stores/{store_id}/check"),
@@ -118,63 +102,42 @@ async fn test_concurrent_check_requests_complete_successfully() {
                 )
                 .await;
 
-                // All requests should complete successfully regardless of shutdown signal
                 if status == StatusCode::OK && response["allowed"] == true {
-                    completed_count.fetch_add(1, Ordering::SeqCst);
+                    success_count.fetch_add(1, Ordering::SeqCst);
                 }
             })
         })
         .collect();
 
-    // Wait for all requests to complete
     for handle in handles {
-        handle.await.unwrap();
+        handle.await.expect("Task should not panic");
     }
 
-    // All 10 requests should have completed successfully
-    let completed = completed_count.load(Ordering::SeqCst);
+    let completed = success_count.load(Ordering::SeqCst);
     assert_eq!(
-        completed, 10,
-        "All in-flight requests should complete successfully, got {completed}/10"
-    );
-
-    // Verify shutdown signal was triggered
-    assert!(
-        shutdown_signal.load(Ordering::SeqCst),
-        "Shutdown signal should have been set"
+        completed, CONCURRENT_CHECK_REQUESTS as u64,
+        "All {CONCURRENT_CHECK_REQUESTS} concurrent check requests should succeed, got {completed}"
     );
 }
 
 /// Test: Concurrent write operations complete without data loss.
 ///
 /// Verifies that concurrent write operations all persist correctly
-/// and no data is lost under high concurrent load.
-///
-/// **Note**: This test validates concurrent write handling, not actual
-/// graceful shutdown behavior. The `shutdown_initiated` flag is used
-/// to demonstrate requests complete regardless of external state.
+/// and no data is lost due to race conditions.
 #[tokio::test]
 async fn test_concurrent_writes_complete_without_data_loss() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    // Simulate shutdown occurring during a batch of writes
-    let write_count = Arc::new(AtomicU64::new(0));
-    let shutdown_initiated = Arc::new(AtomicBool::new(false));
+    let success_count = Arc::new(AtomicU64::new(0));
 
-    let handles: Vec<_> = (0..20)
+    let handles: Vec<_> = (0..CONCURRENT_WRITE_REQUESTS)
         .map(|i| {
             let storage = Arc::clone(&storage);
             let store_id = store_id.clone();
-            let write_count = Arc::clone(&write_count);
-            let shutdown_initiated = Arc::clone(&shutdown_initiated);
+            let success_count = Arc::clone(&success_count);
 
             tokio::spawn(async move {
-                // Simulate shutdown being initiated mid-batch
-                if i == 10 {
-                    shutdown_initiated.store(true, Ordering::SeqCst);
-                }
-
                 let app = create_test_app(&storage);
                 let (status, _) = post_json(
                     app,
@@ -194,22 +157,24 @@ async fn test_concurrent_writes_complete_without_data_loss() {
                 .await;
 
                 if status == StatusCode::OK {
-                    write_count.fetch_add(1, Ordering::SeqCst);
+                    success_count.fetch_add(1, Ordering::SeqCst);
                 }
             })
         })
         .collect();
 
     for handle in handles {
-        handle.await.unwrap();
+        handle.await.expect("Task should not panic");
     }
 
-    // All writes should have completed
-    let writes = write_count.load(Ordering::SeqCst);
-    assert_eq!(writes, 20, "All writes should complete: got {writes}/20");
+    let writes = success_count.load(Ordering::SeqCst);
+    assert_eq!(
+        writes, CONCURRENT_WRITE_REQUESTS as u64,
+        "All {CONCURRENT_WRITE_REQUESTS} concurrent writes should succeed, got {writes}"
+    );
 
-    // Verify data persisted by reading back
-    for i in 0..20 {
+    // Verify all data persisted by reading back
+    for i in 0..CONCURRENT_WRITE_REQUESTS {
         let app = create_test_app(&storage);
         let (status, response) = post_json(
             app,
@@ -224,26 +189,28 @@ async fn test_concurrent_writes_complete_without_data_loss() {
         )
         .await;
 
-        assert_eq!(status, StatusCode::OK, "Check for user{i} should succeed");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "Check for user{i} should return OK status"
+        );
         assert_eq!(
             response["allowed"], true,
-            "user{i} should have viewer on doc{i} (no data loss)"
+            "user{i} should have viewer permission on doc{i} (no data loss)"
         );
     }
 }
 
-/// Test: Mixed concurrent operations complete successfully.
+/// Test: Mixed concurrent operations (check, write, read) complete successfully.
 ///
-/// Tests that a mix of read and write operations all complete
-/// successfully when fired concurrently.
-///
-/// **Note**: This test validates concurrent mixed operation handling.
+/// Verifies that a mix of different operation types can be executed
+/// concurrently without race conditions or errors.
 #[tokio::test]
 async fn test_mixed_concurrent_operations_complete_successfully() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    // Pre-populate some data
+    // Pre-populate data for check/read operations
     let (status, _) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/write"),
@@ -256,21 +223,24 @@ async fn test_mixed_concurrent_operations_complete_successfully() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Setup: write initial tuple should succeed"
+    );
 
-    let operations_completed = Arc::new(AtomicU64::new(0));
-    let total_operations = 30;
+    let success_count = Arc::new(AtomicU64::new(0));
 
-    let handles: Vec<_> = (0..total_operations)
+    let handles: Vec<_> = (0..CONCURRENT_MIXED_OPERATIONS)
         .map(|i| {
             let storage = Arc::clone(&storage);
             let store_id = store_id.clone();
-            let operations_completed = Arc::clone(&operations_completed);
+            let success_count = Arc::clone(&success_count);
 
             tokio::spawn(async move {
                 let app = create_test_app(&storage);
 
-                // Mix of operations: reads (check), writes, and list
+                // Distribute operations: check (33%), write (33%), read (34%)
                 let success = match i % 3 {
                     0 => {
                         // Check operation
@@ -289,7 +259,7 @@ async fn test_mixed_concurrent_operations_complete_successfully() {
                         status == StatusCode::OK
                     }
                     1 => {
-                        // Write operation
+                        // Write operation (each writes unique tuple to avoid conflicts)
                         let (status, _) = post_json(
                             app,
                             &format!("/stores/{store_id}/write"),
@@ -327,26 +297,33 @@ async fn test_mixed_concurrent_operations_complete_successfully() {
                 };
 
                 if success {
-                    operations_completed.fetch_add(1, Ordering::SeqCst);
+                    success_count.fetch_add(1, Ordering::SeqCst);
                 }
             })
         })
         .collect();
 
     for handle in handles {
-        handle.await.unwrap();
+        handle.await.expect("Task should not panic");
     }
 
-    let completed = operations_completed.load(Ordering::SeqCst);
+    let completed = success_count.load(Ordering::SeqCst);
     assert_eq!(
-        completed, total_operations as u64,
-        "All {total_operations} operations should complete: got {completed}"
+        completed, CONCURRENT_MIXED_OPERATIONS as u64,
+        "All {CONCURRENT_MIXED_OPERATIONS} mixed operations should succeed, got {completed}"
     );
 }
 
 // =============================================================================
 // Section 2: Horizontal Scaling Tests
+//
+// These tests verify behavior when multiple server instances share
+// the same storage backend, simulating horizontal scaling scenarios.
 // =============================================================================
+
+// Number of simulated instances for scaling tests
+const SIMULATED_INSTANCE_COUNT: usize = 5;
+const WRITES_PER_INSTANCE: usize = 10;
 
 /// Test: Multiple instances can read from the same database safely.
 ///
@@ -354,12 +331,10 @@ async fn test_mixed_concurrent_operations_complete_successfully() {
 /// and verifies they can all read the same data correctly.
 #[tokio::test]
 async fn test_multiple_instances_read_same_database() {
-    // Shared storage simulating a shared database
     let shared_storage = Arc::new(MemoryDataStore::new());
-
-    // Create store and write data using "instance 1"
     let store_id = setup_test_store(&shared_storage).await;
 
+    // Write data using first "instance"
     let (status, _) = post_json(
         create_test_app(&shared_storage),
         &format!("/stores/{store_id}/write"),
@@ -373,20 +348,19 @@ async fn test_multiple_instances_read_same_database() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "Setup: write tuples should succeed");
 
-    // Simulate 5 different "instances" reading the same data
-    let instance_count = 5;
-    let successful_reads = Arc::new(AtomicU64::new(0));
+    // Simulate multiple instances reading the same data
+    let success_count = Arc::new(AtomicU64::new(0));
 
-    let handles: Vec<_> = (0..instance_count)
+    let handles: Vec<_> = (0..SIMULATED_INSTANCE_COUNT)
         .map(|_| {
             let storage = Arc::clone(&shared_storage);
             let store_id = store_id.clone();
-            let successful_reads = Arc::clone(&successful_reads);
+            let success_count = Arc::clone(&success_count);
 
             tokio::spawn(async move {
-                // Each "instance" creates its own app state but shares storage
+                // Each "instance" creates its own Router but shares storage
                 let app = create_test_app(&storage);
 
                 // Check alice is owner
@@ -420,30 +394,28 @@ async fn test_multiple_instances_read_same_database() {
                     .await;
 
                     if status2 == StatusCode::OK && response2["allowed"] == true {
-                        successful_reads.fetch_add(1, Ordering::SeqCst);
+                        success_count.fetch_add(1, Ordering::SeqCst);
                     }
                 }
             })
         })
         .collect();
 
-    // Wait for all handles to complete
     for handle in handles {
-        handle.await.unwrap();
+        handle.await.expect("Task should not panic");
     }
 
-    // All instances should have successfully read the data
-    let successful = successful_reads.load(Ordering::SeqCst);
+    let successful = success_count.load(Ordering::SeqCst);
     assert_eq!(
-        successful, instance_count as u64,
-        "All {instance_count} instances should successfully read data: got {successful}"
+        successful, SIMULATED_INSTANCE_COUNT as u64,
+        "All {SIMULATED_INSTANCE_COUNT} instances should read data successfully, got {successful}"
     );
 }
 
-/// Test: Model updates are visible across instances.
+/// Test: Data written by one instance is visible to other instances.
 ///
-/// Verifies that when one instance writes data, other instances
-/// can eventually see the updated data (eventual consistency).
+/// Verifies that with shared storage, writes from one instance are
+/// immediately visible to other instances (strong consistency).
 #[tokio::test]
 async fn test_model_update_visibility_across_instances() {
     let shared_storage = Arc::new(MemoryDataStore::new());
@@ -462,9 +434,9 @@ async fn test_model_update_visibility_across_instances() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "Instance 1: write should succeed");
 
-    // Instance 2 reads the data
+    // Instance 2 should immediately see the data
     let (status, response) = post_json(
         create_test_app(&shared_storage),
         &format!("/stores/{store_id}/check"),
@@ -477,13 +449,13 @@ async fn test_model_update_visibility_across_instances() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "Instance 2: check should return OK");
     assert_eq!(
         response["allowed"], true,
         "Instance 2 should see data from Instance 1"
     );
 
-    // Instance 1 updates the model with new data
+    // Instance 1 writes additional data
     let (status, _) = post_json(
         create_test_app(&shared_storage),
         &format!("/stores/{store_id}/write"),
@@ -496,9 +468,13 @@ async fn test_model_update_visibility_across_instances() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Instance 1: second write should succeed"
+    );
 
-    // Instance 3 (newly joined) should see all data
+    // Instance 3 (new instance) should see all data
     let (status, response) = post_json(
         create_test_app(&shared_storage),
         &format!("/stores/{store_id}/check"),
@@ -511,33 +487,32 @@ async fn test_model_update_visibility_across_instances() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "Instance 3: check should return OK");
     assert_eq!(
         response["allowed"], true,
-        "Instance 3 should see updated data"
+        "Instance 3 should see data written by Instance 1"
     );
 }
 
-/// Test: Concurrent writes from multiple instances are safe.
+/// Test: Concurrent writes from multiple instances don't lose data.
 ///
-/// Verifies that concurrent writes from different "instances" don't
-/// cause data corruption or lost writes.
+/// Verifies that concurrent writes from different "instances" all
+/// persist correctly without data corruption or lost writes.
 #[tokio::test]
 async fn test_concurrent_writes_from_multiple_instances() {
     let shared_storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&shared_storage).await;
 
-    let instance_count = 5;
-    let writes_per_instance = 10;
-    let successful_writes = Arc::new(AtomicU64::new(0));
+    let success_count = Arc::new(AtomicU64::new(0));
+    let expected_total = SIMULATED_INSTANCE_COUNT * WRITES_PER_INSTANCE;
 
-    // Build handles using a nested loop instead of flat_map to avoid closure ownership issues
+    // Each simulated instance writes multiple tuples concurrently
     let mut handles = Vec::new();
-    for instance_id in 0..instance_count {
-        for write_id in 0..writes_per_instance {
+    for instance_id in 0..SIMULATED_INSTANCE_COUNT {
+        for write_id in 0..WRITES_PER_INSTANCE {
             let storage = Arc::clone(&shared_storage);
             let store_id = store_id.clone();
-            let successful_writes = Arc::clone(&successful_writes);
+            let success_count = Arc::clone(&success_count);
 
             handles.push(tokio::spawn(async move {
                 let app = create_test_app(&storage);
@@ -548,9 +523,10 @@ async fn test_concurrent_writes_from_multiple_instances() {
                         "writes": {
                             "tuple_keys": [
                                 {
-                                    "user": format!("user:instance{instance_id}_user{write_id}"),
+                                    // Unique tuple per instance+write to avoid conflicts
+                                    "user": format!("user:inst{instance_id}_user{write_id}"),
                                     "relation": "viewer",
-                                    "object": format!("document:instance{instance_id}_doc{write_id}")
+                                    "object": format!("document:inst{instance_id}_doc{write_id}")
                                 }
                             ]
                         }
@@ -559,45 +535,47 @@ async fn test_concurrent_writes_from_multiple_instances() {
                 .await;
 
                 if status == StatusCode::OK {
-                    successful_writes.fetch_add(1, Ordering::SeqCst);
+                    success_count.fetch_add(1, Ordering::SeqCst);
                 }
             }));
         }
     }
 
     for handle in handles {
-        handle.await.unwrap();
+        handle.await.expect("Task should not panic");
     }
 
-    let expected_writes = (instance_count * writes_per_instance) as u64;
-    let actual_writes = successful_writes.load(Ordering::SeqCst);
-
+    let actual_count = success_count.load(Ordering::SeqCst);
     assert_eq!(
-        actual_writes, expected_writes,
-        "All {expected_writes} writes should succeed: got {actual_writes}"
+        actual_count, expected_total as u64,
+        "All {expected_total} writes from {SIMULATED_INSTANCE_COUNT} instances should succeed, got {actual_count}"
     );
 
-    // Verify all data is accessible
-    for instance_id in 0..instance_count {
-        for write_id in 0..writes_per_instance {
+    // Verify all data is accessible (no data loss)
+    for instance_id in 0..SIMULATED_INSTANCE_COUNT {
+        for write_id in 0..WRITES_PER_INSTANCE {
             let app = create_test_app(&shared_storage);
             let (status, response) = post_json(
                 app,
                 &format!("/stores/{store_id}/check"),
                 serde_json::json!({
                     "tuple_key": {
-                        "user": format!("user:instance{instance_id}_user{write_id}"),
+                        "user": format!("user:inst{instance_id}_user{write_id}"),
                         "relation": "viewer",
-                        "object": format!("document:instance{instance_id}_doc{write_id}")
+                        "object": format!("document:inst{instance_id}_doc{write_id}")
                     }
                 }),
             )
             .await;
 
-            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "Check for inst{instance_id}_user{write_id} should return OK"
+            );
             assert_eq!(
                 response["allowed"], true,
-                "Data from instance{instance_id} write{write_id} should be accessible"
+                "inst{instance_id}_user{write_id} should have viewer permission (no data loss)"
             );
         }
     }
@@ -626,7 +604,7 @@ async fn test_inprocess_cache_invalidation_with_shared_cache() {
     let shared_cache = create_shared_cache();
     let store_id = setup_test_store(&shared_storage).await;
 
-    // Instance 1: Write initial tuple
+    // Step 1: Write initial tuple
     let (status, _) = post_json(
         create_test_app_with_shared_cache(&shared_storage, &shared_cache),
         &format!("/stores/{store_id}/write"),
@@ -639,9 +617,13 @@ async fn test_inprocess_cache_invalidation_with_shared_cache() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Step 1: write initial tuple should succeed"
+    );
 
-    // Instance 2: Check and cache the result
+    // Step 2: Check (this populates the cache)
     let (status, response) = post_json(
         create_test_app_with_shared_cache(&shared_storage, &shared_cache),
         &format!("/stores/{store_id}/check"),
@@ -654,10 +636,13 @@ async fn test_inprocess_cache_invalidation_with_shared_cache() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(response["allowed"], true);
+    assert_eq!(status, StatusCode::OK, "Step 2: check should return OK");
+    assert_eq!(
+        response["allowed"], true,
+        "Step 2: alice should have viewer permission (cache populated)"
+    );
 
-    // Instance 1: Delete the tuple (triggers cache invalidation)
+    // Step 3: Delete the tuple (should invalidate cache)
     let (status, _) = post_json(
         create_test_app_with_shared_cache(&shared_storage, &shared_cache),
         &format!("/stores/{store_id}/write"),
@@ -670,9 +655,13 @@ async fn test_inprocess_cache_invalidation_with_shared_cache() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Step 3: delete tuple should succeed"
+    );
 
-    // Instance 3: Should see the updated state (not the stale cached value)
+    // Step 4: Check again (should see updated state, not stale cache)
     let (status, response) = post_json(
         create_test_app_with_shared_cache(&shared_storage, &shared_cache),
         &format!("/stores/{store_id}/check"),
@@ -685,16 +674,25 @@ async fn test_inprocess_cache_invalidation_with_shared_cache() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "Step 4: check should return OK");
     assert_eq!(
         response["allowed"], false,
-        "Cache should be invalidated after delete"
+        "Step 4: alice should NOT have viewer permission (cache invalidated after delete)"
     );
 }
 
 // =============================================================================
-// Section 3: Storage Failure Recovery Tests
+// Section 3: Operation Timeout and Health Check Tests
+//
+// These tests verify that operations complete within reasonable time bounds
+// and that health/readiness endpoints work correctly.
 // =============================================================================
+
+// Timeout bounds for operations (generous for CI environments)
+const CHECK_TIMEOUT_SECS: u64 = 5;
+const BATCH_TIMEOUT_SECS: u64 = 10;
+const BATCH_CHECK_SIZE: usize = 50;
+const RAPID_REQUEST_COUNT: usize = 100;
 
 /// Test: Check operation completes within timeout bounds.
 ///
@@ -704,14 +702,13 @@ async fn test_inprocess_cache_invalidation_with_shared_cache() {
 /// **Note**: This test uses in-memory storage which completes quickly.
 /// It validates that operations don't hang, but does not test actual
 /// timeout error handling. For storage timeout error tests, implement
-/// a mock DataStore that simulates slow responses or use testcontainers
-/// with database-level delays.
+/// a mock DataStore that simulates slow responses.
 #[tokio::test]
 async fn test_check_operation_completes_within_timeout() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    // Write test data
+    // Setup: write test data
     let (status, _) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/write"),
@@ -724,11 +721,14 @@ async fn test_check_operation_completes_within_timeout() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Setup: write test tuple should succeed"
+    );
 
-    // Verify the operation completes within reasonable time
-    // This tests that the system doesn't hang indefinitely
-    let result = timeout(Duration::from_secs(5), async {
+    // Test: operation should complete within timeout
+    let result = timeout(Duration::from_secs(CHECK_TIMEOUT_SECS), async {
         let app = create_test_app(&storage);
         post_json(
             app,
@@ -747,21 +747,22 @@ async fn test_check_operation_completes_within_timeout() {
 
     assert!(
         result.is_ok(),
-        "Check operation should complete within timeout, not hang"
+        "Check operation should complete within {CHECK_TIMEOUT_SECS}s timeout"
     );
-    let (status, _) = result.unwrap();
-    assert_eq!(status, StatusCode::OK);
+    let (status, _) = result.expect("Timeout should not occur");
+    assert_eq!(status, StatusCode::OK, "Check should return OK status");
 }
 
-/// Test: Batch operations complete within timeout bounds.
+/// Test: Batch check operations complete within timeout bounds.
 ///
-/// Verifies that batch operations don't hang and complete within reasonable time.
+/// Verifies that batch operations with multiple checks don't hang
+/// and complete within reasonable time.
 #[tokio::test]
 async fn test_batch_operations_complete_within_timeout() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    // Write test data
+    // Setup: write test data
     let (status, _) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/write"),
@@ -774,16 +775,20 @@ async fn test_batch_operations_complete_within_timeout() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Setup: write test tuple should succeed"
+    );
 
-    // Batch check should complete within timeout
-    let result = timeout(Duration::from_secs(10), async {
+    // Test: batch check with BATCH_CHECK_SIZE items should complete within timeout
+    let result = timeout(Duration::from_secs(BATCH_TIMEOUT_SECS), async {
         let app = create_test_app(&storage);
         post_json(
             app,
             &format!("/stores/{store_id}/batch-check"),
             serde_json::json!({
-                "checks": (0..50).map(|i| {
+                "checks": (0..BATCH_CHECK_SIZE).map(|i| {
                     serde_json::json!({
                         "tuple_key": {
                             "user": "user:alice",
@@ -799,14 +804,21 @@ async fn test_batch_operations_complete_within_timeout() {
     })
     .await;
 
-    assert!(result.is_ok(), "Batch check should complete within timeout");
-    let (status, _) = result.unwrap();
-    assert_eq!(status, StatusCode::OK);
+    assert!(
+        result.is_ok(),
+        "Batch check with {BATCH_CHECK_SIZE} items should complete within {BATCH_TIMEOUT_SECS}s"
+    );
+    let (status, _) = result.expect("Timeout should not occur");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Batch check should return OK status"
+    );
 }
 
-/// Test: Health check returns correct status.
+/// Test: Health endpoint returns OK status.
 ///
-/// Verifies the health endpoint responds correctly.
+/// Verifies the /health liveness probe endpoint works correctly.
 #[tokio::test]
 async fn test_health_check_returns_ok() {
     use axum::{body::Body, http::Request};
@@ -821,23 +833,31 @@ async fn test_health_check_returns_ok() {
                 .method("GET")
                 .uri("/health")
                 .body(Body::empty())
-                .unwrap(),
+                .expect("Request builder should succeed"),
         )
         .await
-        .unwrap();
+        .expect("Request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Health endpoint should return 200 OK"
+    );
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["status"], "ok");
+        .expect("Body should be readable");
+    let json: serde_json::Value =
+        serde_json::from_slice(&body).expect("Response should be valid JSON");
+    assert_eq!(
+        json["status"], "ok",
+        "Health response should have status 'ok'"
+    );
 }
 
-/// Test: Readiness check validates storage connectivity.
+/// Test: Readiness endpoint validates storage connectivity.
 ///
-/// Verifies that the readiness endpoint checks storage health.
+/// Verifies the /ready readiness probe endpoint checks storage health.
 #[tokio::test]
 async fn test_readiness_check_validates_storage() {
     use axum::{body::Body, http::Request};
@@ -852,31 +872,42 @@ async fn test_readiness_check_validates_storage() {
                 .method("GET")
                 .uri("/ready")
                 .body(Body::empty())
-                .unwrap(),
+                .expect("Request builder should succeed"),
         )
         .await
-        .unwrap();
+        .expect("Request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Readiness endpoint should return 200 OK when storage is healthy"
+    );
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["status"], "ready");
-    assert_eq!(json["checks"]["storage"], "ok");
+        .expect("Body should be readable");
+    let json: serde_json::Value =
+        serde_json::from_slice(&body).expect("Response should be valid JSON");
+    assert_eq!(
+        json["status"], "ready",
+        "Readiness response should have status 'ready'"
+    );
+    assert_eq!(
+        json["checks"]["storage"], "ok",
+        "Storage check should be 'ok'"
+    );
 }
 
-/// Test: Rapid successive requests don't cause issues.
+/// Test: Rapid successive requests are handled without errors.
 ///
-/// Verifies the system handles rapid successive requests correctly
-/// (simulates potential issues during scaling events).
+/// Verifies the system handles a burst of rapid concurrent requests
+/// without failures (simulates traffic spikes during scaling events).
 #[tokio::test]
 async fn test_rapid_successive_requests_handled() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    // Write test data
+    // Setup: write test data
     let (status, _) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/write"),
@@ -889,12 +920,16 @@ async fn test_rapid_successive_requests_handled() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Setup: write test tuple should succeed"
+    );
 
-    // Fire 100 rapid successive requests
+    // Test: fire RAPID_REQUEST_COUNT concurrent requests
     let success_count = Arc::new(AtomicU64::new(0));
 
-    let handles: Vec<_> = (0..100)
+    let handles: Vec<_> = (0..RAPID_REQUEST_COUNT)
         .map(|_| {
             let storage = Arc::clone(&storage);
             let store_id = store_id.clone();
@@ -923,13 +958,13 @@ async fn test_rapid_successive_requests_handled() {
         .collect();
 
     for handle in handles {
-        handle.await.unwrap();
+        handle.await.expect("Task should not panic");
     }
 
     let successes = success_count.load(Ordering::SeqCst);
     assert_eq!(
-        successes, 100,
-        "All 100 rapid requests should succeed: got {successes}"
+        successes, RAPID_REQUEST_COUNT as u64,
+        "All {RAPID_REQUEST_COUNT} rapid requests should succeed, got {successes}"
     );
 }
 
