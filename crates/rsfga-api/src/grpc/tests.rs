@@ -1801,18 +1801,17 @@ async fn test_grpc_read_changes_with_type_filter() {
     );
 }
 
-/// Test: ReadChanges rejects non-positive page_size (consistency with HTTP).
+/// Test: ReadChanges rejects negative page_size.
 #[tokio::test]
-async fn test_grpc_read_changes_rejects_non_positive_page_size() {
+async fn test_grpc_read_changes_rejects_negative_page_size() {
     let storage = Arc::new(MemoryDataStore::new());
     storage
         .create_store("test-store", "Test Store")
         .await
         .unwrap();
 
-    let service = test_service_with_storage(storage.clone());
+    let service = test_service_with_storage(storage);
 
-    // Test negative page_size
     let request = Request::new(ReadChangesRequest {
         store_id: "test-store".to_string(),
         r#type: String::new(),
@@ -1827,9 +1826,38 @@ async fn test_grpc_read_changes_rejects_non_positive_page_size() {
         tonic::Code::InvalidArgument,
         "Should return InvalidArgument for negative"
     );
+}
 
-    // Test zero page_size (consistency with HTTP layer)
+/// Test: ReadChanges treats zero page_size as server default (OpenFGA compatibility).
+#[tokio::test]
+async fn test_grpc_read_changes_zero_page_size_uses_default() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write some tuples
+    for i in 0..5 {
+        storage
+            .write_tuple(
+                "test-store",
+                StoredTuple::new(
+                    "document",
+                    format!("doc{i}"),
+                    "viewer",
+                    "user",
+                    "alice",
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+    }
+
     let service = test_service_with_storage(storage);
+
+    // Zero page_size should be treated as "use server default", not rejected
     let request = Request::new(ReadChangesRequest {
         store_id: "test-store".to_string(),
         r#type: String::new(),
@@ -1838,11 +1866,16 @@ async fn test_grpc_read_changes_rejects_non_positive_page_size() {
     });
 
     let response = service.read_changes(request).await;
-    assert!(response.is_err(), "Should reject zero page_size");
+    assert!(
+        response.is_ok(),
+        "Zero page_size should succeed (use default)"
+    );
+
+    let result = response.unwrap().into_inner();
     assert_eq!(
-        response.unwrap_err().code(),
-        tonic::Code::InvalidArgument,
-        "Should return InvalidArgument for zero"
+        result.changes.len(),
+        5,
+        "Should return all tuples with default page size"
     );
 }
 
@@ -1890,6 +1923,55 @@ async fn test_grpc_read_changes_pagination() {
     assert!(
         result.changes.len() <= 3,
         "Should return at most page_size changes"
+    );
+}
+
+/// Test: ReadChanges caps page_size at DEFAULT_PAGE_SIZE (50) for DoS protection.
+#[tokio::test]
+async fn test_grpc_read_changes_caps_page_size_at_default() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write more tuples than DEFAULT_PAGE_SIZE (50)
+    for i in 0..60 {
+        storage
+            .write_tuple(
+                "test-store",
+                StoredTuple::new(
+                    "document",
+                    format!("doc{i}"),
+                    "viewer",
+                    "user",
+                    "alice",
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+    }
+
+    let service = test_service_with_storage(storage);
+
+    // Request with page_size > DEFAULT_PAGE_SIZE (50)
+    let request = Request::new(ReadChangesRequest {
+        store_id: "test-store".to_string(),
+        r#type: String::new(),
+        page_size: Some(1000), // Much larger than DEFAULT_PAGE_SIZE
+        continuation_token: String::new(),
+    });
+
+    let response = service.read_changes(request).await;
+    assert!(response.is_ok());
+
+    let result = response.unwrap().into_inner();
+    // Should be capped at DEFAULT_PAGE_SIZE (50)
+    assert!(
+        result.changes.len() <= 50,
+        "Should cap page_size at DEFAULT_PAGE_SIZE (50), got {}",
+        result.changes.len()
     );
 }
 

@@ -1448,11 +1448,15 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             ..Default::default()
         };
 
-        // Validate and parse page_size - reject non-positive values and cap at DEFAULT_PAGE_SIZE
+        // Validate and parse page_size:
+        // - Reject negative values (invalid input)
+        // - Treat zero as "use server default" (OpenFGA compatibility)
+        // - Cap positive values at DEFAULT_PAGE_SIZE to prevent DoS
         let page_size = match req.page_size {
-            Some(ps) if ps <= 0 => {
-                return Err(Status::invalid_argument("page_size must be positive"));
+            Some(ps) if ps < 0 => {
+                return Err(Status::invalid_argument("page_size cannot be negative"));
             }
+            Some(0) => None, // Zero means use server default
             Some(ps) => Some(ps.min(DEFAULT_PAGE_SIZE) as u32),
             None => None,
         };
@@ -1472,6 +1476,9 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .read_tuples_paginated(&req.store_id, &filter, &pagination)
             .await
             .map_err(storage_error_to_status)?;
+
+        // Pre-calculate fallback timestamp once for legacy tuples without created_at
+        let fallback_timestamp = Utc::now();
 
         // Convert tuples to changes (all as writes)
         let changes: Vec<TupleChange> = result
@@ -1495,9 +1502,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                         condition,
                     }),
                     operation: TupleOperation::Write as i32,
-                    // Use tuple's created_at timestamp. Fallback to current time for tuples
-                    // that were created before timestamp tracking was added (legacy data).
-                    timestamp: Some(datetime_to_timestamp(t.created_at.unwrap_or_else(Utc::now))),
+                    // Use tuple's created_at timestamp, or fallback for legacy data
+                    timestamp: Some(datetime_to_timestamp(
+                        t.created_at.unwrap_or(fallback_timestamp),
+                    )),
                 }
             })
             .collect();
