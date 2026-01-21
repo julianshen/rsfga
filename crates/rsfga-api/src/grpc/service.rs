@@ -1448,8 +1448,14 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             ..Default::default()
         };
 
-        // Validate and parse page_size
-        let page_size = req.page_size.map(|v| v as u32);
+        // Validate and parse page_size - reject non-positive values and cap at DEFAULT_PAGE_SIZE
+        let page_size = match req.page_size {
+            Some(ps) if ps <= 0 => {
+                return Err(Status::invalid_argument("page_size must be positive"));
+            }
+            Some(ps) => Some(ps.min(DEFAULT_PAGE_SIZE) as u32),
+            None => None,
+        };
 
         let pagination = PaginationOptions {
             page_size,
@@ -1489,7 +1495,8 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                         condition,
                     }),
                     operation: TupleOperation::Write as i32,
-                    // Use tuple's created_at timestamp or current time as fallback
+                    // Use tuple's created_at timestamp. Fallback to current time for tuples
+                    // that were created before timestamp tracking was added (legacy data).
                     timestamp: Some(datetime_to_timestamp(t.created_at.unwrap_or_else(Utc::now))),
                 }
             })

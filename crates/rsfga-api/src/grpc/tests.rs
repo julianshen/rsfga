@@ -1688,3 +1688,314 @@ async fn test_grpc_list_authorization_models() {
     assert!(model_ids.contains(&model_id_1));
     assert!(model_ids.contains(&model_id_2));
 }
+
+// ============================================================================
+// ReadChanges API Tests
+// ============================================================================
+
+/// Test: ReadChanges returns tuple writes for a store.
+#[tokio::test]
+async fn test_grpc_read_changes_returns_tuples() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write some tuples
+    storage
+        .write_tuple(
+            "test-store",
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+        )
+        .await
+        .unwrap();
+    storage
+        .write_tuple(
+            "test-store",
+            StoredTuple::new("document", "doc2", "editor", "user", "bob", None),
+        )
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(ReadChangesRequest {
+        store_id: "test-store".to_string(),
+        r#type: String::new(),
+        page_size: None,
+        continuation_token: String::new(),
+    });
+
+    let response = service.read_changes(request).await;
+    assert!(response.is_ok(), "ReadChanges should succeed");
+
+    let result = response.unwrap().into_inner();
+    assert_eq!(result.changes.len(), 2, "Should return 2 changes");
+
+    // Verify change format
+    for change in &result.changes {
+        assert!(
+            change.tuple_key.is_some(),
+            "Each change should have tuple_key"
+        );
+        assert!(
+            change.timestamp.is_some(),
+            "Each change should have timestamp"
+        );
+        // All changes are WRITE operations (0)
+        assert_eq!(change.operation, 0, "Operation should be WRITE (0)");
+    }
+}
+
+/// Test: ReadChanges with type filter only returns matching types.
+#[tokio::test]
+async fn test_grpc_read_changes_with_type_filter() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write tuples of different types
+    storage
+        .write_tuple(
+            "test-store",
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+        )
+        .await
+        .unwrap();
+    storage
+        .write_tuple(
+            "test-store",
+            StoredTuple::new("folder", "folder1", "viewer", "user", "bob", None),
+        )
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    // Request only document type changes
+    let request = Request::new(ReadChangesRequest {
+        store_id: "test-store".to_string(),
+        r#type: "document".to_string(),
+        page_size: None,
+        continuation_token: String::new(),
+    });
+
+    let response = service.read_changes(request).await;
+    assert!(response.is_ok());
+
+    let result = response.unwrap().into_inner();
+    assert_eq!(
+        result.changes.len(),
+        1,
+        "Should return only document changes"
+    );
+
+    let change = &result.changes[0];
+    let tuple_key = change.tuple_key.as_ref().unwrap();
+    assert!(
+        tuple_key.object.starts_with("document:"),
+        "Filtered change should be document type"
+    );
+}
+
+/// Test: ReadChanges rejects non-positive page_size (consistency with HTTP).
+#[tokio::test]
+async fn test_grpc_read_changes_rejects_non_positive_page_size() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage.clone());
+
+    // Test negative page_size
+    let request = Request::new(ReadChangesRequest {
+        store_id: "test-store".to_string(),
+        r#type: String::new(),
+        page_size: Some(-1),
+        continuation_token: String::new(),
+    });
+
+    let response = service.read_changes(request).await;
+    assert!(response.is_err(), "Should reject negative page_size");
+    assert_eq!(
+        response.unwrap_err().code(),
+        tonic::Code::InvalidArgument,
+        "Should return InvalidArgument for negative"
+    );
+
+    // Test zero page_size (consistency with HTTP layer)
+    let service = test_service_with_storage(storage);
+    let request = Request::new(ReadChangesRequest {
+        store_id: "test-store".to_string(),
+        r#type: String::new(),
+        page_size: Some(0),
+        continuation_token: String::new(),
+    });
+
+    let response = service.read_changes(request).await;
+    assert!(response.is_err(), "Should reject zero page_size");
+    assert_eq!(
+        response.unwrap_err().code(),
+        tonic::Code::InvalidArgument,
+        "Should return InvalidArgument for zero"
+    );
+}
+
+/// Test: ReadChanges respects page_size limit.
+#[tokio::test]
+async fn test_grpc_read_changes_pagination() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write multiple tuples
+    for i in 0..10 {
+        storage
+            .write_tuple(
+                "test-store",
+                StoredTuple::new(
+                    "document",
+                    format!("doc{i}"),
+                    "viewer",
+                    "user",
+                    "alice",
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+    }
+
+    let service = test_service_with_storage(storage);
+
+    // Request with small page size
+    let request = Request::new(ReadChangesRequest {
+        store_id: "test-store".to_string(),
+        r#type: String::new(),
+        page_size: Some(3),
+        continuation_token: String::new(),
+    });
+
+    let response = service.read_changes(request).await;
+    assert!(response.is_ok());
+
+    let result = response.unwrap().into_inner();
+    assert!(
+        result.changes.len() <= 3,
+        "Should return at most page_size changes"
+    );
+}
+
+/// Test: ReadChanges returns empty for store with no tuples.
+#[tokio::test]
+async fn test_grpc_read_changes_empty_store() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(ReadChangesRequest {
+        store_id: "test-store".to_string(),
+        r#type: String::new(),
+        page_size: None,
+        continuation_token: String::new(),
+    });
+
+    let response = service.read_changes(request).await;
+    assert!(response.is_ok());
+
+    let result = response.unwrap().into_inner();
+    assert_eq!(
+        result.changes.len(),
+        0,
+        "Empty store should have no changes"
+    );
+}
+
+/// Test: ReadChanges returns error for non-existent store.
+#[tokio::test]
+async fn test_grpc_read_changes_nonexistent_store() {
+    let service = test_service();
+
+    let request = Request::new(ReadChangesRequest {
+        store_id: "nonexistent-store".to_string(),
+        r#type: String::new(),
+        page_size: None,
+        continuation_token: String::new(),
+    });
+
+    let response = service.read_changes(request).await;
+    assert!(response.is_err(), "Should fail for non-existent store");
+    assert_eq!(
+        response.unwrap_err().code(),
+        tonic::Code::NotFound,
+        "Should return NotFound"
+    );
+}
+
+/// Test: ReadChanges includes condition information.
+#[tokio::test]
+async fn test_grpc_read_changes_includes_conditions() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write a tuple with condition
+    let mut context = std::collections::HashMap::new();
+    context.insert("ip_address".to_string(), serde_json::json!("192.168.1.1"));
+
+    storage
+        .write_tuple(
+            "test-store",
+            StoredTuple::with_condition(
+                "document",
+                "doc1",
+                "viewer",
+                "user",
+                "alice",
+                None,
+                "ip_allowlist",
+                Some(context),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(ReadChangesRequest {
+        store_id: "test-store".to_string(),
+        r#type: String::new(),
+        page_size: None,
+        continuation_token: String::new(),
+    });
+
+    let response = service.read_changes(request).await;
+    assert!(response.is_ok());
+
+    let result = response.unwrap().into_inner();
+    assert_eq!(result.changes.len(), 1);
+
+    let change = &result.changes[0];
+    let tuple_key = change.tuple_key.as_ref().unwrap();
+    assert!(
+        tuple_key.condition.is_some(),
+        "Change should include condition"
+    );
+
+    let condition = tuple_key.condition.as_ref().unwrap();
+    assert_eq!(condition.name, "ip_allowlist");
+    assert!(condition.context.is_some(), "Condition should have context");
+}
