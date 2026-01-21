@@ -70,6 +70,30 @@ pub async fn setup_simple_model(storage: &MemoryDataStore, store_id: &str) {
     storage.write_authorization_model(model).await.unwrap();
 }
 
+/// Set up a test store with a simple authorization model.
+///
+/// Creates a new store with a unique ID and writes an authorization model
+/// with user and document types. Returns the store ID.
+pub async fn setup_test_store(storage: &MemoryDataStore) -> String {
+    let store_id = ulid::Ulid::new().to_string();
+
+    // Create store
+    storage.create_store(&store_id, "Test Store").await.unwrap();
+
+    // Create authorization model with document and user types
+    let model_json = r#"{
+        "type_definitions": [
+            {"type": "user"},
+            {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
+        ]
+    }"#;
+    let model =
+        StoredAuthorizationModel::new(ulid::Ulid::new().to_string(), &store_id, "1.1", model_json);
+    storage.write_authorization_model(model).await.unwrap();
+
+    store_id
+}
+
 /// Create a test app with in-memory storage.
 ///
 /// Each call creates a fresh `AppState` wrapping the shared storage,
