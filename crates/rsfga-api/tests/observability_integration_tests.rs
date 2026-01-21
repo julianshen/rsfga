@@ -16,6 +16,7 @@ use axum::{
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 use rsfga_api::http::{create_router, create_router_with_observability, AppState};
 use rsfga_api::middleware::{
@@ -158,7 +159,7 @@ async fn test_response_headers_include_request_id() {
     assert!(!id_str.is_empty(), "Request ID should not be empty");
     // Generated IDs should be valid UUIDs
     assert!(
-        uuid::Uuid::parse_str(id_str).is_ok(),
+        Uuid::parse_str(id_str).is_ok(),
         "Generated request ID should be a valid UUID"
     );
 }
