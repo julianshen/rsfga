@@ -58,6 +58,38 @@ const SUSTAINED_LOAD_WORKERS: usize = 10;
 /// Polling interval for cache sync.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// Number of samples for latency measurement tests.
+const LATENCY_SAMPLE_COUNT: usize = 100;
+
+/// Number of warmup iterations for throughput tests.
+const WARMUP_ITERATIONS: usize = 10;
+
+/// Number of requests for throughput measurement.
+const THROUGHPUT_REQUEST_COUNT: usize = 1000;
+
+/// Number of cache entries for population tests.
+const CACHE_POPULATION_SIZE: usize = 100;
+
+/// Number of writes for invalidation performance tests.
+const INVALIDATION_WRITE_COUNT: usize = 50;
+
+/// Maximum p99 latency for in-memory operations (10ms).
+/// Tighter than database backends to detect regressions quickly.
+const MAX_P99_LATENCY_IN_MEMORY: Duration = Duration::from_millis(10);
+
+// Test user identifiers (extracted from magic strings)
+const TEST_USER_BURST: &str = "user:burst";
+const TEST_USER_UNKNOWN: &str = "user:unknown";
+const TEST_USER_SUSTAINED: &str = "user:sustained";
+const TEST_USER_LATENCY: &str = "user:latency";
+const TEST_USER_REST: &str = "user:rest";
+
+// Test object identifiers
+const TEST_DOC_BURST: &str = "document:burst";
+const TEST_DOC_SUSTAINED: &str = "document:sustained";
+const TEST_DOC_LATENCY: &str = "document:latency";
+const TEST_DOC_REST: &str = "document:rest";
+
 // =============================================================================
 // Section 1: Cache Performance Tests
 // =============================================================================
@@ -137,17 +169,27 @@ async fn test_cache_hit_is_faster_than_storage_query() {
     let hit_duration = start_hit.elapsed();
     assert_eq!(status, StatusCode::OK);
 
-    // Log timing for visibility
+    // Log timing for visibility with safe division
+    let improvement = if hit_duration.as_nanos() > 0 {
+        miss_duration.as_secs_f64() / hit_duration.as_secs_f64()
+    } else {
+        // hit_duration is zero (extremely fast), report as infinite improvement
+        f64::INFINITY
+    };
     println!(
         "Cache performance: miss={:?}, hit={:?}, improvement={:.1}x",
-        miss_duration,
-        hit_duration,
-        miss_duration.as_secs_f64() / hit_duration.as_secs_f64().max(0.0001)
+        miss_duration, hit_duration, improvement
     );
 
-    // Note: In-memory storage is already fast, so improvement may be modest.
-    // The key verification is that cache hits don't degrade performance.
-    // With database backends, the improvement would be more significant.
+    // Assert that cache hits are not slower than misses.
+    // For in-memory storage, the improvement may be modest, but hits
+    // should never be slower than misses.
+    assert!(
+        hit_duration <= miss_duration.saturating_add(Duration::from_millis(5)),
+        "Cache hit should not be slower than miss: hit={:?}, miss={:?}",
+        hit_duration,
+        miss_duration
+    );
 }
 
 /// Test: Cache hit rate is measurable through repeated checks.
@@ -861,9 +903,9 @@ async fn test_burst_load_1000_requests_stability() {
         serde_json::json!({
             "writes": {
                 "tuple_keys": [{
-                    "user": "user:burst",
+                    "user": TEST_USER_BURST,
                     "relation": "viewer",
-                    "object": "document:burst"
+                    "object": TEST_DOC_BURST
                 }]
             }
         }),
@@ -891,23 +933,31 @@ async fn test_burst_load_1000_requests_stability() {
 
             tokio::spawn(async move {
                 let req_start = Instant::now();
+                // Alternate between known and unknown users for variety
+                let user = if i % 2 == 0 {
+                    TEST_USER_BURST
+                } else {
+                    TEST_USER_UNKNOWN
+                };
                 let (status, _) = post_json(
                     create_test_app_with_shared_cache(&storage, &cache),
                     &format!("/stores/{store_id}/check"),
                     serde_json::json!({
                         "tuple_key": {
-                            "user": if i % 2 == 0 { "user:burst" } else { "user:unknown" },
+                            "user": user,
                             "relation": "viewer",
-                            "object": "document:burst"
+                            "object": TEST_DOC_BURST
                         }
                     }),
                 )
                 .await;
                 let latency = req_start.elapsed();
 
-                if let Ok(mut lats) = latencies.lock() {
-                    lats.push(latency);
-                }
+                // Use .expect() to surface mutex poisoning issues in tests
+                latencies
+                    .lock()
+                    .expect("latencies mutex should not be poisoned")
+                    .push(latency);
 
                 if status == StatusCode::OK {
                     success_count.fetch_add(1, Ordering::Relaxed);
@@ -980,9 +1030,9 @@ async fn test_sustained_load_100_rps_for_1_minute() {
         serde_json::json!({
             "writes": {
                 "tuple_keys": [{
-                    "user": "user:sustained",
+                    "user": TEST_USER_SUSTAINED,
                     "relation": "viewer",
-                    "object": "document:sustained"
+                    "object": TEST_DOC_SUSTAINED
                 }]
             }
         }),
@@ -1016,9 +1066,9 @@ async fn test_sustained_load_100_rps_for_1_minute() {
                         &format!("/stores/{store_id}/check"),
                         serde_json::json!({
                             "tuple_key": {
-                                "user": "user:sustained",
+                                "user": TEST_USER_SUSTAINED,
                                 "relation": "viewer",
-                                "object": "document:sustained"
+                                "object": TEST_DOC_SUSTAINED
                             }
                         }),
                     )
@@ -1031,10 +1081,14 @@ async fn test_sustained_load_100_rps_for_1_minute() {
                         error_count.fetch_add(1, Ordering::Relaxed);
                     }
 
-                    // Rate limiting: distribute target rate across workers
-                    let per_worker_interval = Duration::from_millis(
-                        request_interval.as_millis() as u64 * SUSTAINED_LOAD_WORKERS as u64,
-                    );
+                    // Rate limiting: each worker sleeps for (workers * base_interval)
+                    // so that total rate across all workers = target_rate.
+                    // Example: 10 workers, 100 req/s target -> each worker does 10 req/s
+                    //          so each worker sleeps 100ms between requests (10ms * 10 workers)
+                    let per_worker_interval_ms = (request_interval.as_millis() as u64)
+                        .checked_mul(SUSTAINED_LOAD_WORKERS as u64)
+                        .expect("per-worker interval calculation should not overflow");
+                    let per_worker_interval = Duration::from_millis(per_worker_interval_ms);
                     tokio::time::sleep(per_worker_interval).await;
                 }
             })
@@ -1095,9 +1149,9 @@ async fn test_latency_percentiles_under_moderate_load() {
         serde_json::json!({
             "writes": {
                 "tuple_keys": [{
-                    "user": "user:latency",
+                    "user": TEST_USER_LATENCY,
                     "relation": "viewer",
-                    "object": "document:latency"
+                    "object": TEST_DOC_LATENCY
                 }]
             }
         }),
@@ -1111,9 +1165,9 @@ async fn test_latency_percentiles_under_moderate_load() {
         &format!("/stores/{store_id}/check"),
         serde_json::json!({
             "tuple_key": {
-                "user": "user:latency",
+                "user": TEST_USER_LATENCY,
                 "relation": "viewer",
-                "object": "document:latency"
+                "object": TEST_DOC_LATENCY
             }
         }),
     )
@@ -1121,19 +1175,18 @@ async fn test_latency_percentiles_under_moderate_load() {
     assert_eq!(status, StatusCode::OK);
 
     // Measure latencies for sequential requests
-    let num_samples = 100;
-    let mut latencies = Vec::with_capacity(num_samples);
+    let mut latencies = Vec::with_capacity(LATENCY_SAMPLE_COUNT);
 
-    for _ in 0..num_samples {
+    for _ in 0..LATENCY_SAMPLE_COUNT {
         let start = Instant::now();
         let (status, _) = post_json(
             create_test_app_with_shared_cache(&storage, &cache),
             &format!("/stores/{store_id}/check"),
             serde_json::json!({
                 "tuple_key": {
-                    "user": "user:latency",
+                    "user": TEST_USER_LATENCY,
                     "relation": "viewer",
-                    "object": "document:latency"
+                    "object": TEST_DOC_LATENCY
                 }
             }),
         )
@@ -1152,18 +1205,18 @@ async fn test_latency_percentiles_under_moderate_load() {
         (latencies.iter().map(|d| d.as_nanos()).sum::<u128>() / latencies.len() as u128) as u64,
     );
 
-    println!("Latency percentiles ({} samples):", num_samples);
+    println!("Latency percentiles ({} samples):", LATENCY_SAMPLE_COUNT);
     println!("  Average: {:?}", avg);
     println!("  p50: {:?}", p50);
     println!("  p95: {:?}", p95);
     println!("  p99: {:?}", p99);
 
-    // These thresholds are for in-memory storage
-    // Real database backends would have different targets
-    // For now, we just verify the measurements are reasonable
+    // For in-memory storage, we use a tight threshold (10ms) to catch regressions.
+    // Database backends would have higher thresholds.
     assert!(
-        p99 < Duration::from_millis(100),
-        "p99 latency should be under 100ms for in-memory storage, got {:?}",
+        p99 < MAX_P99_LATENCY_IN_MEMORY,
+        "p99 latency should be under {:?} for in-memory storage, got {:?}",
+        MAX_P99_LATENCY_IN_MEMORY,
         p99
     );
 }
@@ -1198,9 +1251,9 @@ async fn test_rest_api_performance_baseline() {
         serde_json::json!({
             "writes": {
                 "tuple_keys": [{
-                    "user": "user:rest",
+                    "user": TEST_USER_REST,
                     "relation": "viewer",
-                    "object": "document:rest"
+                    "object": TEST_DOC_REST
                 }]
             }
         }),
@@ -1209,15 +1262,15 @@ async fn test_rest_api_performance_baseline() {
     assert_eq!(status, StatusCode::OK);
 
     // Warm up
-    for _ in 0..10 {
+    for _ in 0..WARMUP_ITERATIONS {
         let (status, _) = post_json(
             create_test_app_with_shared_cache(&storage, &cache),
             &format!("/stores/{store_id}/check"),
             serde_json::json!({
                 "tuple_key": {
-                    "user": "user:rest",
+                    "user": TEST_USER_REST,
                     "relation": "viewer",
-                    "object": "document:rest"
+                    "object": TEST_DOC_REST
                 }
             }),
         )
@@ -1226,18 +1279,17 @@ async fn test_rest_api_performance_baseline() {
     }
 
     // Measure throughput
-    let num_requests = 1000;
     let start = Instant::now();
 
-    for _ in 0..num_requests {
+    for _ in 0..THROUGHPUT_REQUEST_COUNT {
         let (status, _) = post_json(
             create_test_app_with_shared_cache(&storage, &cache),
             &format!("/stores/{store_id}/check"),
             serde_json::json!({
                 "tuple_key": {
-                    "user": "user:rest",
+                    "user": TEST_USER_REST,
                     "relation": "viewer",
-                    "object": "document:rest"
+                    "object": TEST_DOC_REST
                 }
             }),
         )
@@ -1246,11 +1298,11 @@ async fn test_rest_api_performance_baseline() {
     }
 
     let elapsed = start.elapsed();
-    let throughput = num_requests as f64 / elapsed.as_secs_f64();
+    let throughput = THROUGHPUT_REQUEST_COUNT as f64 / elapsed.as_secs_f64();
 
     println!(
         "REST API baseline: {} requests in {:?} ({:.0} req/s)",
-        num_requests, elapsed, throughput
+        THROUGHPUT_REQUEST_COUNT, elapsed, throughput
     );
 
     // Target: > 100 req/s for sequential requests (conservative for CI)
@@ -1287,7 +1339,7 @@ async fn test_cache_invalidation_performance() {
     setup_simple_model(&storage, &store_id).await;
 
     // Populate cache with many entries
-    for i in 0..100 {
+    for i in 0..CACHE_POPULATION_SIZE {
         let (status, _) = post_json(
             create_test_app(&storage),
             &format!("/stores/{store_id}/write"),
@@ -1306,7 +1358,7 @@ async fn test_cache_invalidation_performance() {
     }
 
     // Fill cache by checking each entry
-    for i in 0..100 {
+    for i in 0..CACHE_POPULATION_SIZE {
         let (status, _) = post_json(
             create_test_app_with_shared_cache(&storage, &cache),
             &format!("/stores/{store_id}/check"),
@@ -1327,10 +1379,9 @@ async fn test_cache_invalidation_performance() {
     assert!(cache_size_before > 0, "Cache should have entries");
 
     // Measure write performance (triggers invalidation)
-    let num_writes = 50;
     let start = Instant::now();
 
-    for i in 0..num_writes {
+    for i in 0..INVALIDATION_WRITE_COUNT {
         let (status, _) = post_json(
             create_test_app_with_shared_cache(&storage, &cache),
             &format!("/stores/{store_id}/write"),
@@ -1339,7 +1390,7 @@ async fn test_cache_invalidation_performance() {
                     "tuple_keys": [{
                         "user": format!("user:new{i}"),
                         "relation": "editor",
-                        "object": format!("document:inv{}", i % 100)
+                        "object": format!("document:inv{}", i % CACHE_POPULATION_SIZE)
                     }]
                 }
             }),
@@ -1349,11 +1400,11 @@ async fn test_cache_invalidation_performance() {
     }
 
     let elapsed = start.elapsed();
-    let write_throughput = num_writes as f64 / elapsed.as_secs_f64();
+    let write_throughput = INVALIDATION_WRITE_COUNT as f64 / elapsed.as_secs_f64();
 
     println!(
         "Cache invalidation performance: {} writes in {:?} ({:.0} writes/s)",
-        num_writes, elapsed, write_throughput
+        INVALIDATION_WRITE_COUNT, elapsed, write_throughput
     );
 
     // Target: > 50 writes/s with cache invalidation (conservative for CI)
