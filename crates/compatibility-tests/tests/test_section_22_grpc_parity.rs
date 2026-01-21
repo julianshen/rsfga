@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 /// Generate a unique test name suffix to prevent collisions during parallel test execution
 fn unique_name(prefix: &str) -> String {
-    format!("{}-{}", prefix, Uuid::new_v4().to_string()[..8].to_string())
+    let uuid = Uuid::new_v4().to_string();
+    format!("{}-{}", prefix, &uuid[..8])
 }
 
 // ============================================================================
