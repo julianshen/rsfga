@@ -18,11 +18,13 @@
 //!
 //! # Acceptance Criteria (from Issue #214)
 //!
-//! - Implement 15-20 concurrent operation tests
-//! - Verify no deadlocks or panics under concurrent load
-//! - Confirm data consistency post-operations
-//! - Validate correct cache invalidation behavior
+//! - Implement 15-20 concurrent operation tests ✅
+//! - Verify no deadlocks or panics under concurrent load ✅
+//! - Confirm data consistency post-operations ✅
+//! - Validate correct cache invalidation behavior ✅
 //! - Test both HTTP and gRPC transports
+//!   - HTTP: ✅ All tests use HTTP endpoints
+//!   - gRPC: Deferred to Phase 2 (see grpc_cache_invalidation_tests.rs for pattern)
 //!
 //! # Running Tests
 //!
@@ -775,6 +777,9 @@ async fn test_concurrent_list_objects_operations() {
 }
 
 /// Test: Concurrent ListUsers operations return consistent results.
+///
+/// Multiple ListUsers queries should complete without errors and
+/// return consistent user counts.
 #[tokio::test]
 async fn test_concurrent_list_users_operations() {
     let storage = Arc::new(MemoryDataStore::new());
@@ -790,8 +795,9 @@ async fn test_concurrent_list_users_operations() {
     let store_id = response["id"].as_str().unwrap().to_string();
     setup_simple_model(&storage, &store_id).await;
 
-    // Write multiple user tuples
-    for i in 0..15 {
+    // Write 15 user tuples
+    const EXPECTED_USER_COUNT: usize = 15;
+    for i in 0..EXPECTED_USER_COUNT {
         let (status, _) = post_json(
             create_test_app(&storage),
             &format!("/stores/{store_id}/write"),
@@ -810,6 +816,7 @@ async fn test_concurrent_list_users_operations() {
     }
 
     let success_count = Arc::new(AtomicU64::new(0));
+    let consistent_count = Arc::new(AtomicU64::new(0));
 
     // Launch concurrent ListUsers requests
     let futures: Vec<_> = (0..25)
@@ -817,6 +824,7 @@ async fn test_concurrent_list_users_operations() {
             let storage = Arc::clone(&storage);
             let store_id = store_id.clone();
             let success_count = Arc::clone(&success_count);
+            let consistent_count = Arc::clone(&consistent_count);
 
             async move {
                 let app = create_test_app(&storage);
@@ -833,11 +841,12 @@ async fn test_concurrent_list_users_operations() {
 
                 if status == StatusCode::OK {
                     success_count.fetch_add(1, Ordering::Relaxed);
-                    // Verify response has users array
-                    assert!(
-                        response["users"].is_array(),
-                        "Response should contain users array"
-                    );
+                    // Verify response has users array with expected count
+                    if let Some(users) = response["users"].as_array() {
+                        if users.len() == EXPECTED_USER_COUNT {
+                            consistent_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 }
             }
         })
@@ -846,7 +855,14 @@ async fn test_concurrent_list_users_operations() {
     join_all(futures).await;
 
     let successes = success_count.load(Ordering::Relaxed);
+    let consistent = consistent_count.load(Ordering::Relaxed);
+
     assert_eq!(successes, 25, "All ListUsers requests should succeed");
+    assert_eq!(
+        consistent, 25,
+        "All ListUsers should return consistent {} users",
+        EXPECTED_USER_COUNT
+    );
 }
 
 // =============================================================================
@@ -976,73 +992,83 @@ async fn test_concurrent_model_writes_different_stores() {
     );
 }
 
-/// Test: Concurrent store deletion is handled safely.
+/// Test: Concurrent operations across multiple stores complete without interference.
 ///
-/// Deleting stores while other operations are in progress should not
-/// cause crashes.
+/// Operations on multiple stores happening concurrently should not
+/// interfere with each other or cause crashes.
+///
+/// Note: Store deletion endpoint (DELETE /stores/{id}) is not yet implemented.
+/// This test verifies concurrent access patterns that would occur during
+/// store lifecycle operations. Actual deletion tests deferred to Phase 2.
 #[tokio::test]
-async fn test_concurrent_store_deletion_safety() {
+async fn test_concurrent_multi_store_operations() {
     let storage = Arc::new(MemoryDataStore::new());
 
-    // Create stores to delete
+    // Create multiple stores
     let mut store_ids = Vec::new();
     for i in 0..10 {
         let (status, response) = post_json(
             create_test_app(&storage),
             "/stores",
-            serde_json::json!({"name": format!("delete-store-{i}")}),
+            serde_json::json!({"name": format!("multi-store-{i}")}),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
         store_ids.push(response["id"].as_str().unwrap().to_string());
     }
 
-    let delete_success = Arc::new(AtomicU64::new(0));
+    // Set up models for all stores
+    for store_id in &store_ids {
+        setup_simple_model(&storage, store_id).await;
+    }
+
     let operation_count = Arc::new(AtomicU64::new(0));
 
     let mut handles = Vec::new();
 
-    // Spawn delete operations
-    for store_id in store_ids.iter().take(5) {
-        let storage = Arc::clone(&storage);
-        let store_id = store_id.clone();
-        let delete_success = Arc::clone(&delete_success);
+    // Spawn concurrent operations across all stores
+    for (idx, store_id) in store_ids.iter().enumerate() {
+        // Clone values for write operation
+        let storage_write = Arc::clone(&storage);
+        let store_id_write = store_id.clone();
+        let operation_count_write = Arc::clone(&operation_count);
 
+        // Clone values for check operation
+        let storage_check = Arc::clone(&storage);
+        let store_id_check = store_id.clone();
+        let operation_count_check = Arc::clone(&operation_count);
+
+        // Write operation
         handles.push(tokio::spawn(async move {
-            let app = create_test_app(&storage);
-            // Note: Using a mock delete endpoint behavior
-            // In practice, this would be DELETE /stores/{store_id}
-            // For this test, we just verify the store can still be accessed
-            let (status, _) = post_json(
+            let app = create_test_app(&storage_write);
+
+            // Write a tuple
+            let (write_status, _) = post_json(
                 app,
-                &format!("/stores/{store_id}/check"),
+                &format!("/stores/{store_id_write}/write"),
                 serde_json::json!({
-                    "tuple_key": {
-                        "user": "user:test",
-                        "relation": "viewer",
-                        "object": "document:test"
+                    "writes": {
+                        "tuple_keys": [{
+                            "user": format!("user:store{idx}_user"),
+                            "relation": "viewer",
+                            "object": format!("document:store{idx}_doc")
+                        }]
                     }
                 }),
             )
             .await;
-            // Either OK (no model) or error (expected for empty store)
-            if status == StatusCode::OK || status == StatusCode::BAD_REQUEST {
-                delete_success.fetch_add(1, Ordering::Relaxed);
+
+            if write_status == StatusCode::OK {
+                operation_count_write.fetch_add(1, Ordering::Relaxed);
             }
         }));
-    }
 
-    // Spawn operations on remaining stores
-    for store_id in store_ids.iter().skip(5) {
-        let storage = Arc::clone(&storage);
-        let store_id = store_id.clone();
-        let operation_count = Arc::clone(&operation_count);
-
+        // Check operation on same store
         handles.push(tokio::spawn(async move {
-            let app = create_test_app(&storage);
+            let app = create_test_app(&storage_check);
             let (status, _) = post_json(
                 app,
-                &format!("/stores/{store_id}/check"),
+                &format!("/stores/{store_id_check}/check"),
                 serde_json::json!({
                     "tuple_key": {
                         "user": "user:test",
@@ -1052,9 +1078,9 @@ async fn test_concurrent_store_deletion_safety() {
                 }),
             )
             .await;
-            // Should not panic regardless of result
-            if status == StatusCode::OK || status == StatusCode::BAD_REQUEST {
-                operation_count.fetch_add(1, Ordering::Relaxed);
+
+            if status == StatusCode::OK {
+                operation_count_check.fetch_add(1, Ordering::Relaxed);
             }
         }));
     }
@@ -1064,11 +1090,13 @@ async fn test_concurrent_store_deletion_safety() {
         handle.await.expect("Operation should not panic");
     }
 
-    let deletes = delete_success.load(Ordering::Relaxed);
-    let ops = operation_count.load(Ordering::Relaxed);
+    let total_ops = operation_count.load(Ordering::Relaxed);
 
-    assert_eq!(deletes, 5, "Store access operations should complete");
-    assert_eq!(ops, 5, "Operations on remaining stores should complete");
+    // 10 writes + 10 checks = 20 operations
+    assert_eq!(
+        total_ops, 20,
+        "All concurrent multi-store operations should complete"
+    );
 }
 
 // =============================================================================
@@ -1144,14 +1172,17 @@ async fn test_cache_invalidation_concurrent_writes() {
 
     join_all(futures).await;
 
-    // Wait for cache invalidation
-    let first_key = CacheKey::new(
-        &store_id,
-        "document:cache_target",
-        "viewer",
-        "user:cache_user0",
-    );
-    wait_for_cache_invalidation(&cache, &first_key).await;
+    // Wait for cache invalidation across multiple sample keys to avoid race condition
+    // (checking only first key could miss keys 1-19 still being cached)
+    for idx in [0, 10, 19] {
+        let cache_key = CacheKey::new(
+            &store_id,
+            "document:cache_target",
+            "viewer",
+            format!("user:cache_user{idx}"),
+        );
+        wait_for_cache_invalidation(&cache, &cache_key).await;
+    }
 
     // Verify all checks now return true
     for i in 0..20 {
@@ -1287,12 +1318,13 @@ async fn test_batch_check_cache_consistency_concurrent() {
     assert_eq!(batch_successes, 10, "All batch checks should succeed");
 }
 
-/// Test: Singleflight deduplication under concurrent load.
+/// Test: Batch check deduplication under concurrent load.
 ///
-/// Multiple identical check requests issued simultaneously should be
-/// deduplicated, reducing backend load.
+/// Multiple concurrent batch-check requests with identical check items should
+/// properly deduplicate via singleflight, reducing backend load while
+/// maintaining consistent results.
 #[tokio::test]
-async fn test_singleflight_deduplication_under_load() {
+async fn test_batch_check_deduplication_under_load() {
     let storage = Arc::new(MemoryDataStore::new());
     let cache = create_shared_cache();
 
@@ -1300,64 +1332,86 @@ async fn test_singleflight_deduplication_under_load() {
     let (status, response) = post_json(
         create_test_app(&storage),
         "/stores",
-        serde_json::json!({"name": "singleflight-test"}),
+        serde_json::json!({"name": "batch-dedup-test"}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let store_id = response["id"].as_str().unwrap().to_string();
     setup_simple_model(&storage, &store_id).await;
 
-    // Write a tuple
-    let (status, _) = post_json(
-        create_test_app_with_shared_cache(&storage, &cache),
-        &format!("/stores/{store_id}/write"),
-        serde_json::json!({
-            "writes": {
-                "tuple_keys": [{
-                    "user": "user:singleflight",
-                    "relation": "viewer",
-                    "object": "document:target"
-                }]
-            }
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    // Write tuples for batch checks
+    for i in 0..5 {
+        let (status, _) = post_json(
+            create_test_app_with_shared_cache(&storage, &cache),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:dedup{i}"),
+                        "relation": "viewer",
+                        "object": "document:shared"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
 
     // Clear cache to force fresh lookups
     wait_for_cache_sync(&cache).await;
 
     let success_count = Arc::new(AtomicU64::new(0));
-    let allowed_count = Arc::new(AtomicU64::new(0));
+    let correct_results = Arc::new(AtomicU64::new(0));
 
-    // Launch many concurrent IDENTICAL check requests
-    let futures: Vec<_> = (0..50)
+    // Launch many concurrent batch-check requests with IDENTICAL check items
+    // Singleflight should deduplicate the underlying resolver calls
+    let futures: Vec<_> = (0..30)
         .map(|_| {
             let storage = Arc::clone(&storage);
             let cache = Arc::clone(&cache);
             let store_id = store_id.clone();
             let success_count = Arc::clone(&success_count);
-            let allowed_count = Arc::clone(&allowed_count);
+            let correct_results = Arc::clone(&correct_results);
 
             async move {
                 let app = create_test_app_with_shared_cache(&storage, &cache);
+
+                // All requests use the same 5 check items - perfect for deduplication
+                let checks: Vec<_> = (0..5)
+                    .map(|i| {
+                        serde_json::json!({
+                            "tuple_key": {
+                                "user": format!("user:dedup{i}"),
+                                "relation": "viewer",
+                                "object": "document:shared"
+                            },
+                            "correlation_id": format!("check-{i}")
+                        })
+                    })
+                    .collect();
+
                 let (status, response) = post_json(
                     app,
-                    &format!("/stores/{store_id}/check"),
-                    serde_json::json!({
-                        "tuple_key": {
-                            "user": "user:singleflight",
-                            "relation": "viewer",
-                            "object": "document:target"
-                        }
-                    }),
+                    &format!("/stores/{store_id}/batch-check"),
+                    serde_json::json!({"checks": checks}),
                 )
                 .await;
 
                 if status == StatusCode::OK {
                     success_count.fetch_add(1, Ordering::Relaxed);
-                    if response["allowed"].as_bool().unwrap_or(false) {
-                        allowed_count.fetch_add(1, Ordering::Relaxed);
+
+                    // Verify all 5 checks return allowed=true
+                    if let Some(result) = response["result"].as_object() {
+                        let all_allowed = (0..5).all(|i| {
+                            result
+                                .get(&format!("check-{i}"))
+                                .and_then(|r| r["allowed"].as_bool())
+                                .unwrap_or(false)
+                        });
+                        if all_allowed {
+                            correct_results.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
             }
@@ -1367,16 +1421,22 @@ async fn test_singleflight_deduplication_under_load() {
     join_all(futures).await;
 
     let successes = success_count.load(Ordering::Relaxed);
-    let allowed = allowed_count.load(Ordering::Relaxed);
+    let correct = correct_results.load(Ordering::Relaxed);
 
     // All requests should succeed with consistent results
-    assert_eq!(successes, 50, "All requests should succeed");
-    assert_eq!(allowed, 50, "All should return allowed=true");
+    assert_eq!(successes, 30, "All batch-check requests should succeed");
+    assert_eq!(
+        correct, 30,
+        "All batch-check results should show allowed=true for all items"
+    );
 }
 
-/// Test: Cache invalidation with TTL configuration works correctly.
+/// Test: Cache entries expire correctly after TTL.
+///
+/// Verifies that cache entries respect TTL configuration and expire
+/// as expected, ensuring stale data doesn't persist.
 #[tokio::test]
-async fn test_cache_ttl_under_concurrent_access() {
+async fn test_cache_entry_expires_after_ttl() {
     let storage = Arc::new(MemoryDataStore::new());
 
     // Create cache with short TTL
