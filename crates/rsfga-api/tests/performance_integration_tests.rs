@@ -2540,16 +2540,8 @@ const DEEP_TRAVERSAL_DEPTH: usize = 10;
 /// Helper to set up authorization model with union relation.
 ///
 /// Creates a document type with a `can_view` relation that is a union of
-/// multiple direct relations (viewer1, viewer2, ..., viewerN).
+/// multiple direct relations (viewer0, viewer1, ..., viewerN-1).
 async fn setup_union_model(storage: &Arc<MemoryDataStore>, store_id: &str, branch_count: usize) {
-    // Build relation definitions for union branches
-    let mut relations_json = Vec::new();
-    for i in 0..branch_count {
-        relations_json.push(serde_json::json!({
-            format!("viewer{i}"): {}
-        }));
-    }
-
     // Build union children
     let union_children: Vec<serde_json::Value> = (0..branch_count)
         .map(|i| {
@@ -2559,29 +2551,27 @@ async fn setup_union_model(storage: &Arc<MemoryDataStore>, store_id: &str, branc
         })
         .collect();
 
+    // Build relations dynamically based on branch_count
+    let mut relations = serde_json::Map::new();
+    for i in 0..branch_count {
+        relations.insert(format!("viewer{i}"), serde_json::json!({}));
+    }
+    relations.insert(
+        "can_view".to_string(),
+        serde_json::json!({
+            "union": {
+                "child": union_children
+            }
+        }),
+    );
+
     let model_json = serde_json::json!({
         "schema_version": "1.1",
         "type_definitions": [
             {"type": "user"},
             {
                 "type": "document",
-                "relations": {
-                    "viewer0": {},
-                    "viewer1": {},
-                    "viewer2": {},
-                    "viewer3": {},
-                    "viewer4": {},
-                    "viewer5": {},
-                    "viewer6": {},
-                    "viewer7": {},
-                    "viewer8": {},
-                    "viewer9": {},
-                    "can_view": {
-                        "union": {
-                            "child": union_children
-                        }
-                    }
-                }
+                "relations": relations
             }
         ]
     });
@@ -2598,7 +2588,7 @@ async fn setup_union_model(storage: &Arc<MemoryDataStore>, store_id: &str, branc
 /// Helper to set up authorization model with intersection relation.
 ///
 /// Creates a document type with a `can_edit` relation that requires
-/// membership in multiple relations simultaneously (req0 AND req1 AND ... AND reqN).
+/// membership in multiple relations simultaneously (req0 AND req1 AND ... AND reqN-1).
 async fn setup_intersection_model(
     storage: &Arc<MemoryDataStore>,
     store_id: &str,
@@ -2613,24 +2603,27 @@ async fn setup_intersection_model(
         })
         .collect();
 
+    // Build relations dynamically based on branch_count
+    let mut relations = serde_json::Map::new();
+    for i in 0..branch_count {
+        relations.insert(format!("req{i}"), serde_json::json!({}));
+    }
+    relations.insert(
+        "can_edit".to_string(),
+        serde_json::json!({
+            "intersection": {
+                "child": intersection_children
+            }
+        }),
+    );
+
     let model_json = serde_json::json!({
         "schema_version": "1.1",
         "type_definitions": [
             {"type": "user"},
             {
                 "type": "document",
-                "relations": {
-                    "req0": {},
-                    "req1": {},
-                    "req2": {},
-                    "req3": {},
-                    "req4": {},
-                    "can_edit": {
-                        "intersection": {
-                            "child": intersection_children
-                        }
-                    }
-                }
+                "relations": relations
             }
         ]
     });
@@ -2936,10 +2929,17 @@ async fn test_parallel_intersection_traversal_maintains_correctness() {
 
                 if status == StatusCode::OK {
                     let allowed = response["allowed"].as_bool() == Some(true);
-                    if user == "alice" && allowed {
-                        alice_allowed.fetch_add(1, Ordering::Relaxed);
-                    } else if user == "bob" && !allowed {
-                        bob_denied.fetch_add(1, Ordering::Relaxed);
+                    match user {
+                        "alice" if allowed => {
+                            alice_allowed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        "bob" if !allowed => {
+                            bob_denied.fetch_add(1, Ordering::Relaxed);
+                        }
+                        _ => {
+                            // Incorrect result: Alice denied or Bob allowed
+                            error_count.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 } else {
                     error_count.fetch_add(1, Ordering::Relaxed);
@@ -2958,7 +2958,7 @@ async fn test_parallel_intersection_traversal_maintains_correctness() {
 
     assert_eq!(
         errors, 0,
-        "Should have no errors with concurrent intersection traversal"
+        "Should have no errors or incorrect results with concurrent intersection traversal"
     );
 
     // Half the requests are for alice (should all be allowed)
@@ -3156,7 +3156,7 @@ async fn test_concurrent_exclusion_evaluation_thread_safe() {
     );
 }
 
-/// Test: Deep parallel traversal (depth 20+) doesn't cause race conditions.
+/// Test: Deep parallel traversal (depth 10+) doesn't cause race conditions.
 ///
 /// Verifies that concurrent checks on deeply nested hierarchies
 /// (folder parent chains) don't cause race conditions or incorrect results.
