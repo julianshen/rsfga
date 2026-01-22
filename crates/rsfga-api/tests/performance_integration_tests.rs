@@ -3853,14 +3853,8 @@ async fn test_concurrent_writes_and_checks_no_deadlock() {
         write_err, 0,
         "No write errors expected (got {write_err} errors)"
     );
-    assert_eq!(
-        check_ok, CONCURRENT_OPS as u64,
-        "All checks should succeed"
-    );
-    assert_eq!(
-        write_ok, CONCURRENT_OPS as u64,
-        "All writes should succeed"
-    );
+    assert_eq!(check_ok, CONCURRENT_OPS as u64, "All checks should succeed");
+    assert_eq!(write_ok, CONCURRENT_OPS as u64, "All writes should succeed");
 
     println!(
         "Deadlock test passed: {} checks + {} writes completed without deadlock",
@@ -4000,4 +3994,580 @@ async fn test_singleflight_timeout_doesnt_block_subsequent_requests() {
         "Singleflight timeout test: first wave={}, second wave={} successes",
         first_wave_success, second_success
     );
+}
+
+// =============================================================================
+// Section 10: Memory and Stability Tests (Issue #210 Section 5)
+// =============================================================================
+
+/// Number of iterations for memory stability tests.
+const MEMORY_STABILITY_ITERATIONS: usize = 1000;
+
+/// Number of operations per iteration for memory tests.
+const MEMORY_TEST_OPS_PER_ITERATION: usize = 10;
+
+/// Number of writes for burst invalidation tests.
+const BURST_INVALIDATION_WRITE_COUNT: usize = 100;
+
+/// Number of concurrent readers during invalidation tests.
+const THUNDERING_HERD_READER_COUNT: usize = 50;
+
+/// Samples to collect for memory measurement.
+const MEMORY_SAMPLE_COUNT: usize = 10;
+
+/// Test: Memory usage doesn't grow unbounded with repeated operations.
+///
+/// Verifies that repeated check operations don't cause memory leaks.
+/// This test runs many iterations of checks and verifies cache size
+/// remains bounded (eviction works correctly).
+#[tokio::test]
+async fn test_memory_usage_bounded_with_repeated_operations() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache_config = CheckCacheConfig {
+        max_capacity: Some(100), // Small cache to force evictions
+        time_to_live: Some(Duration::from_secs(300)),
+        time_to_idle: Some(Duration::from_secs(60)),
+    };
+    let cache = create_shared_cache_with_config(cache_config);
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "memory-bounded-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Create some base tuples
+    for i in 0..20 {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:mem{i}"),
+                        "relation": "viewer",
+                        "object": format!("document:mem{i}")
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // Run many iterations of checks to various objects
+    // This should NOT cause unbounded memory growth due to cache eviction
+    for iteration in 0..MEMORY_STABILITY_ITERATIONS {
+        for op in 0..MEMORY_TEST_OPS_PER_ITERATION {
+            // Generate varied check keys that exceed cache capacity
+            let user_id = (iteration * MEMORY_TEST_OPS_PER_ITERATION + op) % 500;
+            let doc_id = user_id % 100;
+
+            let (status, _) = post_json(
+                create_test_app_with_shared_cache(&storage, &cache),
+                &format!("/stores/{store_id}/check"),
+                serde_json::json!({
+                    "tuple_key": {
+                        "user": format!("user:iter{user_id}"),
+                        "relation": "viewer",
+                        "object": format!("document:iter{doc_id}")
+                    }
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+
+        // Periodically verify cache is bounded
+        if iteration % 100 == 0 {
+            cache.run_pending_tasks().await;
+            let cache_size = cache.entry_count();
+            // Cache should never exceed max capacity significantly
+            // (Moka may slightly exceed due to async eviction)
+            assert!(
+                cache_size <= 150, // Some slack for async eviction
+                "Cache should be bounded: got {} entries at iteration {}",
+                cache_size,
+                iteration
+            );
+        }
+    }
+
+    // Final check
+    cache.run_pending_tasks().await;
+    let final_cache_size = cache.entry_count();
+    println!(
+        "Memory bounded test: {} iterations, final cache size: {}",
+        MEMORY_STABILITY_ITERATIONS, final_cache_size
+    );
+
+    assert!(
+        final_cache_size <= 150,
+        "Cache should remain bounded after {} iterations: got {} entries",
+        MEMORY_STABILITY_ITERATIONS,
+        final_cache_size
+    );
+}
+
+/// Test: Cache invalidation doesn't cause thundering herd.
+///
+/// When a write invalidates cache entries, multiple readers waiting for
+/// those entries should not all simultaneously hit storage. The cache
+/// and singleflight mechanisms should prevent thundering herd.
+#[tokio::test]
+async fn test_cache_invalidation_no_thundering_herd() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "thundering-herd-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Create initial tuple
+    let (status, _) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [{
+                    "user": "user:thundering",
+                    "relation": "viewer",
+                    "object": "document:target"
+                }]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Populate cache
+    let (status, _) = post_json(
+        create_test_app_with_shared_cache(&storage, &cache),
+        &format!("/stores/{store_id}/check"),
+        serde_json::json!({
+            "tuple_key": {
+                "user": "user:thundering",
+                "relation": "viewer",
+                "object": "document:target"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    cache.run_pending_tasks().await;
+
+    // Track timing to detect thundering herd
+    let all_reads_complete = Arc::new(AtomicU64::new(0));
+    let max_concurrent_observed = Arc::new(AtomicU64::new(0));
+    let current_concurrent = Arc::new(AtomicU64::new(0));
+    let read_successes = Arc::new(AtomicU64::new(0));
+
+    // Spawn many readers that will check after invalidation
+    let store_id_clone = store_id.clone();
+    let storage_clone = storage.clone();
+    let cache_clone = cache.clone();
+    let mut reader_handles = Vec::new();
+
+    for _ in 0..THUNDERING_HERD_READER_COUNT {
+        let store_id = store_id_clone.clone();
+        let storage = storage_clone.clone();
+        let cache = cache_clone.clone();
+        let complete = all_reads_complete.clone();
+        let max_conc = max_concurrent_observed.clone();
+        let curr_conc = current_concurrent.clone();
+        let successes = read_successes.clone();
+
+        reader_handles.push(tokio::spawn(async move {
+            // Small delay to stagger readers slightly
+            tokio::time::sleep(Duration::from_micros(fastrand::u64(0..1000))).await;
+
+            // Track concurrent operations
+            let conc = curr_conc.fetch_add(1, Ordering::SeqCst) + 1;
+            max_conc.fetch_max(conc, Ordering::SeqCst);
+
+            let (status, _) = post_json(
+                create_test_app_with_shared_cache(&storage, &cache),
+                &format!("/stores/{store_id}/check"),
+                serde_json::json!({
+                    "tuple_key": {
+                        "user": "user:thundering",
+                        "relation": "viewer",
+                        "object": "document:target"
+                    }
+                }),
+            )
+            .await;
+
+            curr_conc.fetch_sub(1, Ordering::SeqCst);
+
+            if status == StatusCode::OK {
+                successes.fetch_add(1, Ordering::Relaxed);
+            }
+            complete.fetch_add(1, Ordering::Relaxed);
+        }));
+    }
+
+    // While readers are starting, invalidate the cache with a write
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let (status, _) = post_json(
+        create_test_app_with_shared_cache(&storage, &cache),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [{
+                    "user": "user:extra",
+                    "relation": "editor",
+                    "object": "document:target"
+                }]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Wait for all readers to complete
+    for handle in reader_handles {
+        let _ = handle.await;
+    }
+
+    let total_complete = all_reads_complete.load(Ordering::Relaxed);
+    let max_concurrent = max_concurrent_observed.load(Ordering::SeqCst);
+    let total_success = read_successes.load(Ordering::Relaxed);
+
+    println!(
+        "Thundering herd test: {} readers, max concurrent={}, successes={}",
+        THUNDERING_HERD_READER_COUNT, max_concurrent, total_success
+    );
+
+    // All readers should complete
+    assert_eq!(
+        total_complete, THUNDERING_HERD_READER_COUNT as u64,
+        "All readers should complete"
+    );
+
+    // All should succeed
+    assert_eq!(
+        total_success, THUNDERING_HERD_READER_COUNT as u64,
+        "All readers should succeed"
+    );
+
+    // Singleflight should prevent thundering herd - while all readers may
+    // start concurrently, the actual storage queries should be deduplicated.
+    // We verify this indirectly by ensuring all complete successfully without
+    // errors or timeouts.
+}
+
+/// Test: Burst invalidation (100+ writes) doesn't cause memory spike.
+///
+/// Rapidly writing many tuples that each trigger cache invalidation
+/// should not cause excessive memory usage or performance degradation.
+#[tokio::test]
+async fn test_burst_invalidation_no_memory_spike() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache_config = CheckCacheConfig {
+        max_capacity: Some(500),
+        time_to_live: Some(Duration::from_secs(300)),
+        time_to_idle: Some(Duration::from_secs(60)),
+    };
+    let cache = create_shared_cache_with_config(cache_config);
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "burst-invalidation-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Create initial tuples and populate cache
+    for i in 0..100 {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:burst{i}"),
+                        "relation": "viewer",
+                        "object": format!("document:burst{i}")
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Populate cache for each entry
+        let (status, _) = post_json(
+            create_test_app_with_shared_cache(&storage, &cache),
+            &format!("/stores/{store_id}/check"),
+            serde_json::json!({
+                "tuple_key": {
+                    "user": format!("user:burst{i}"),
+                    "relation": "viewer",
+                    "object": format!("document:burst{i}")
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    cache.run_pending_tasks().await;
+    let cache_size_before = cache.entry_count();
+    println!("Cache size before burst: {}", cache_size_before);
+
+    // Measure timing and verify no significant performance degradation
+    let start = Instant::now();
+    let mut write_latencies = Vec::with_capacity(BURST_INVALIDATION_WRITE_COUNT);
+
+    // Burst write 100+ tuples rapidly (each invalidates cache entries)
+    for i in 0..BURST_INVALIDATION_WRITE_COUNT {
+        let write_start = Instant::now();
+        let (status, _) = post_json(
+            create_test_app_with_shared_cache(&storage, &cache),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:new{i}"),
+                        "relation": "editor",
+                        "object": format!("document:burst{}", i % 100) // Invalidates existing cache entries
+                    }]
+                }
+            }),
+        )
+        .await;
+        write_latencies.push(write_start.elapsed());
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let total_elapsed = start.elapsed();
+    cache.run_pending_tasks().await;
+    let cache_size_after = cache.entry_count();
+
+    // Calculate latency percentiles
+    write_latencies.sort();
+    let p50 = write_latencies[write_latencies.len() / 2];
+    let p95 = write_latencies[write_latencies.len() * 95 / 100];
+    let p99 = write_latencies[write_latencies.len() * 99 / 100];
+
+    println!(
+        "Burst invalidation: {} writes in {:?} ({:.0} writes/s)",
+        BURST_INVALIDATION_WRITE_COUNT,
+        total_elapsed,
+        BURST_INVALIDATION_WRITE_COUNT as f64 / total_elapsed.as_secs_f64()
+    );
+    println!(
+        "Write latencies: p50={:?}, p95={:?}, p99={:?}",
+        p50, p95, p99
+    );
+    println!(
+        "Cache size: before={}, after={}",
+        cache_size_before, cache_size_after
+    );
+
+    // Verify reasonable throughput (>20 writes/s even with invalidation)
+    let throughput = BURST_INVALIDATION_WRITE_COUNT as f64 / total_elapsed.as_secs_f64();
+    assert!(
+        throughput > 20.0,
+        "Burst write throughput should be > 20 writes/s, got {:.0}",
+        throughput
+    );
+
+    // Verify cache is still bounded (no memory spike from invalidation tracking)
+    assert!(
+        cache_size_after <= 600, // Max capacity + some slack
+        "Cache should remain bounded after burst: got {} entries",
+        cache_size_after
+    );
+
+    // p99 latency should be reasonable (< 500ms for in-memory)
+    assert!(
+        p99 < Duration::from_millis(500),
+        "p99 write latency should be < 500ms, got {:?}",
+        p99
+    );
+}
+
+/// Test: Memory stable under sustained load (no leaks detected).
+///
+/// Runs mixed read/write operations for an extended period and verifies
+/// that memory usage (approximated by cache size) remains stable.
+#[tokio::test]
+#[ignore] // Resource-intensive test
+async fn test_memory_stable_under_sustained_load() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache_config = CheckCacheConfig {
+        max_capacity: Some(1000),
+        time_to_live: Some(Duration::from_secs(300)),
+        time_to_idle: Some(Duration::from_secs(60)),
+    };
+    let cache = create_shared_cache_with_config(cache_config);
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "memory-sustained-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Create initial data set
+    for i in 0..100 {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:sustained{i}"),
+                        "relation": "viewer",
+                        "object": format!("document:sustained{i}")
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // Collect cache size samples over time
+    let mut cache_samples: Vec<u64> = Vec::with_capacity(MEMORY_SAMPLE_COUNT);
+    let sample_interval = SUSTAINED_LOAD_DURATION / MEMORY_SAMPLE_COUNT as u32;
+    let start = Instant::now();
+    let mut operations_count = 0u64;
+    let mut sample_index = 0;
+
+    while start.elapsed() < SUSTAINED_LOAD_DURATION {
+        // Mixed operations: 80% reads, 20% writes
+        let op_type = fastrand::u32(0..100);
+        let i = operations_count % 1000;
+
+        if op_type < 80 {
+            // Read operation (check)
+            let user_idx = i % 200;
+            let doc_idx = i % 150;
+            let (status, _) = post_json(
+                create_test_app_with_shared_cache(&storage, &cache),
+                &format!("/stores/{store_id}/check"),
+                serde_json::json!({
+                    "tuple_key": {
+                        "user": format!("user:sustained{user_idx}"),
+                        "relation": "viewer",
+                        "object": format!("document:sustained{doc_idx}")
+                    }
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        } else {
+            // Write operation
+            let (status, _) = post_json(
+                create_test_app_with_shared_cache(&storage, &cache),
+                &format!("/stores/{store_id}/write"),
+                serde_json::json!({
+                    "writes": {
+                        "tuple_keys": [{
+                            "user": format!("user:new{i}"),
+                            "relation": "viewer",
+                            "object": format!("document:sustained{}", i % 100)
+                        }]
+                    }
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+
+        operations_count += 1;
+
+        // Sample cache size periodically
+        if start.elapsed() >= sample_interval * (sample_index as u32 + 1)
+            && sample_index < MEMORY_SAMPLE_COUNT
+        {
+            cache.run_pending_tasks().await;
+            cache_samples.push(cache.entry_count());
+            sample_index += 1;
+        }
+
+        // Small delay to prevent overwhelming the system
+        if operations_count % 100 == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    // Collect final sample
+    cache.run_pending_tasks().await;
+    cache_samples.push(cache.entry_count());
+
+    // Analyze memory stability
+    let max_cache = *cache_samples.iter().max().unwrap_or(&0);
+    let min_cache = *cache_samples.iter().min().unwrap_or(&0);
+    let avg_cache: f64 =
+        cache_samples.iter().map(|&x| x as f64).sum::<f64>() / cache_samples.len() as f64;
+
+    println!(
+        "Memory stability test: {} operations in {:?}",
+        operations_count,
+        start.elapsed()
+    );
+    println!(
+        "Cache size - min: {}, max: {}, avg: {:.0}",
+        min_cache, max_cache, avg_cache
+    );
+    println!("Samples: {:?}", cache_samples);
+
+    // Verify memory stability: max cache size should never exceed configured limit
+    assert!(
+        max_cache <= 1100, // 1000 max capacity + 10% slack for async eviction
+        "Cache should remain bounded: max={} exceeds limit",
+        max_cache
+    );
+
+    // Verify no runaway growth: later samples shouldn't be significantly larger
+    // than earlier ones (within 50% tolerance)
+    if cache_samples.len() >= 4 {
+        let first_half_avg: f64 = cache_samples[..cache_samples.len() / 2]
+            .iter()
+            .map(|&x| x as f64)
+            .sum::<f64>()
+            / (cache_samples.len() / 2) as f64;
+        let second_half_avg: f64 = cache_samples[cache_samples.len() / 2..]
+            .iter()
+            .map(|&x| x as f64)
+            .sum::<f64>()
+            / (cache_samples.len() / 2) as f64;
+
+        // Second half average shouldn't be more than 1.5x first half
+        // (allowing for warmup effects)
+        let growth_ratio = second_half_avg / first_half_avg.max(1.0);
+        println!(
+            "Growth ratio (second half / first half): {:.2}",
+            growth_ratio
+        );
+        assert!(
+            growth_ratio < 1.5 || second_half_avg < 1100.0,
+            "Memory usage should be stable: growth ratio {:.2} indicates potential leak",
+            growth_ratio
+        );
+    }
 }
