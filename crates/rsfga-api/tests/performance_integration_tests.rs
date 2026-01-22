@@ -1866,9 +1866,9 @@ async fn test_listobjects_results_consistent_across_concurrent_reads() {
         assert_eq!(status, StatusCode::OK);
     }
 
-    let results = Arc::new(tokio::sync::Mutex::new(
-        Vec::<std::collections::HashSet<String>>::new(),
-    ));
+    let results = Arc::new(tokio::sync::Mutex::new(Vec::<
+        std::collections::HashSet<String>,
+    >::new()));
     let success_count = Arc::new(AtomicU64::new(0));
 
     // Launch concurrent reads
@@ -2063,9 +2063,8 @@ async fn test_listusers_concurrent_same_params_deduplicate() {
     setup_simple_model(&storage, &store_id).await;
 
     // Create users
-    let expected_users: std::collections::HashSet<String> = (0..20)
-        .map(|i| format!("user:dedup_user{i}"))
-        .collect();
+    let expected_users: std::collections::HashSet<String> =
+        (0..20).map(|i| format!("user:dedup_user{i}")).collect();
 
     for user in &expected_users {
         let (status, _) = post_json(
@@ -2085,9 +2084,9 @@ async fn test_listusers_concurrent_same_params_deduplicate() {
         assert_eq!(status, StatusCode::OK);
     }
 
-    let results = Arc::new(tokio::sync::Mutex::new(
-        Vec::<std::collections::HashSet<String>>::new(),
-    ));
+    let results = Arc::new(tokio::sync::Mutex::new(Vec::<
+        std::collections::HashSet<String>,
+    >::new()));
     let success_count = Arc::new(AtomicU64::new(0));
 
     // Launch many concurrent identical requests
@@ -2461,9 +2460,9 @@ async fn test_listusers_sequential_vs_concurrent_results_match() {
         .collect();
 
     // Now run concurrent requests
-    let concurrent_results = Arc::new(tokio::sync::Mutex::new(
-        Vec::<std::collections::HashSet<String>>::new(),
-    ));
+    let concurrent_results = Arc::new(tokio::sync::Mutex::new(Vec::<
+        std::collections::HashSet<String>,
+    >::new()));
 
     let handles: Vec<_> = (0..30)
         .map(|_| {
