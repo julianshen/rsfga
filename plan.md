@@ -1707,12 +1707,12 @@ Implemented full OpenFGA relation definition parsing in `adapters.rs`:
 - [x] Test: Deep parallel traversal (depth 10+) doesn't cause race conditions
 - [x] Test: Concurrent resolver operations with shared cache are consistent
 
-#### Section 4: Singleflight Non-Blocking Tests (High Priority)
+#### Section 4: Singleflight Non-Blocking Tests (High Priority) ✅ COMPLETE
 
-- [ ] Test: Singleflight doesn't block writes during pending check
-- [ ] Test: Write operations complete while check is in-flight
-- [ ] Test: Concurrent writes and checks don't deadlock
-- [ ] Test: Singleflight timeout doesn't block subsequent requests
+- [x] Test: Singleflight doesn't block writes during pending check
+- [x] Test: Write operations complete while check is in-flight
+- [x] Test: Concurrent writes and checks don't deadlock
+- [x] Test: Singleflight timeout doesn't block subsequent requests
 
 #### Section 5: Memory and Stability Tests (Medium Priority)
 
