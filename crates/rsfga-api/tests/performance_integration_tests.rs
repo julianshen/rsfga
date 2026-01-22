@@ -3317,7 +3317,7 @@ async fn test_concurrent_resolver_with_shared_cache_consistent() {
     let store_id = response["id"].as_str().unwrap().to_string();
 
     // Set up a simple model with union
-    setup_simple_model(&storage, &store_id).await;
+    setup_simple_model(&*storage, &store_id).await;
 
     // Create multiple users with viewer access
     for i in 0..20 {
