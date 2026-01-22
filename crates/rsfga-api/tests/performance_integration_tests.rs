@@ -2820,15 +2820,25 @@ async fn test_parallel_union_traversal_no_shared_state_corruption() {
         "All concurrent requests should succeed"
     );
 
-    // Verify correctness: users 0-9 should be allowed, users 10-14 denied
-    // Based on distribution: ~67 allowed (indices 0-9), ~33 denied (indices 10-14)
-    assert!(
-        allowed > 0,
-        "Some users should be allowed via union branches"
+    // Verify correctness based on deterministic distribution:
+    // - 100 requests with user_idx = i % 15 (10 allowed users + 5 denied users)
+    // - Users 0-9 have access (via viewer0-viewer9 relations)
+    // - Users 10-14 don't have access
+    // Distribution: floor(100/15)=6 base + 10 extra for users 0-9
+    // - Users 0-9: 7 requests each = 70 allowed
+    // - Users 10-14: 6 requests each = 30 denied
+    let expected_allowed = 70u64;
+    let expected_denied = 30u64;
+
+    assert_eq!(
+        allowed, expected_allowed,
+        "Expected {} allowed (users 0-9 with 7 requests each), got {}",
+        expected_allowed, allowed
     );
-    assert!(
-        denied > 0,
-        "Some users should be denied (not in any branch)"
+    assert_eq!(
+        denied, expected_denied,
+        "Expected {} denied (users 10-14 with 6 requests each), got {}",
+        expected_denied, denied
     );
 
     println!(
