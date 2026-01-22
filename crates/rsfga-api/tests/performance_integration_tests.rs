@@ -4180,7 +4180,7 @@ async fn test_cache_invalidation_no_thundering_herd() {
     let cache_clone = cache.clone();
     let mut reader_handles = Vec::new();
 
-    for _ in 0..THUNDERING_HERD_READER_COUNT {
+    for i in 0..THUNDERING_HERD_READER_COUNT {
         let store_id = store_id_clone.clone();
         let storage = storage_clone.clone();
         let cache = cache_clone.clone();
@@ -4188,10 +4188,11 @@ async fn test_cache_invalidation_no_thundering_herd() {
         let max_conc = max_concurrent_observed.clone();
         let curr_conc = current_concurrent.clone();
         let successes = read_successes.clone();
+        let stagger_micros = (i * 20) as u64; // Stagger by 20μs per reader
 
         reader_handles.push(tokio::spawn(async move {
-            // Small delay to stagger readers slightly
-            tokio::time::sleep(Duration::from_micros(fastrand::u64(0..1000))).await;
+            // Small delay to stagger readers slightly (deterministic based on index)
+            tokio::time::sleep(Duration::from_micros(stagger_micros)).await;
 
             // Track concurrent operations
             let conc = curr_conc.fetch_add(1, Ordering::SeqCst) + 1;
@@ -4458,11 +4459,11 @@ async fn test_memory_stable_under_sustained_load() {
     let mut sample_index = 0;
 
     while start.elapsed() < SUSTAINED_LOAD_DURATION {
-        // Mixed operations: 80% reads, 20% writes
-        let op_type = fastrand::u32(0..100);
+        // Mixed operations: 80% reads, 20% writes (deterministic pattern)
+        let is_read = operations_count % 5 != 0; // 4 out of 5 = 80% reads
         let i = operations_count % 1000;
 
-        if op_type < 80 {
+        if is_read {
             // Read operation (check)
             let user_idx = i % 200;
             let doc_idx = i % 150;
