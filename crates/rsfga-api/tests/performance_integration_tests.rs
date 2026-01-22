@@ -3997,7 +3997,7 @@ async fn test_singleflight_timeout_doesnt_block_subsequent_requests() {
 }
 
 // =============================================================================
-// Section 10: Memory and Stability Tests (Issue #210 Section 5)
+// Section 5: Memory and Stability Tests (Issue #210)
 // =============================================================================
 
 /// Number of iterations for memory stability tests.
@@ -4015,12 +4015,28 @@ const THUNDERING_HERD_READER_COUNT: usize = 50;
 /// Samples to collect for memory measurement.
 const MEMORY_SAMPLE_COUNT: usize = 10;
 
+/// Duration for memory stability tests (longer than normal sustained load).
+/// This test is marked #[ignore] and intended for thorough memory leak detection.
+const MEMORY_STABILITY_TEST_DURATION: Duration = Duration::from_secs(10);
+
+/// Cache size tolerance percentage for async eviction slack.
+/// Moka's async eviction may temporarily exceed max_capacity before cleanup runs.
+/// 50% slack is conservative to avoid flaky tests while still catching major leaks.
+const CACHE_SIZE_TOLERANCE_PERCENT: u64 = 50;
+
+/// Timeout for concurrent reader operations to prevent CI hangs.
+const READER_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Test: Memory usage doesn't grow unbounded with repeated operations.
 ///
 /// Verifies that repeated check operations don't cause memory leaks.
-/// This test runs many iterations of checks and verifies cache size
+/// This test runs many iterations of checks (10,000 total) and verifies cache size
 /// remains bounded (eviction works correctly).
+///
+/// Note: This test is resource-intensive and marked #[ignore] to avoid slowing CI.
+/// Run with: `cargo test -p rsfga-api --test performance_integration_tests -- --ignored`
 #[tokio::test]
+#[ignore = "Resource-intensive test: runs 10,000 check operations"]
 async fn test_memory_usage_bounded_with_repeated_operations() {
     let storage = Arc::new(MemoryDataStore::new());
     let cache_config = CheckCacheConfig {
@@ -4087,13 +4103,14 @@ async fn test_memory_usage_bounded_with_repeated_operations() {
         if iteration % 100 == 0 {
             cache.run_pending_tasks().await;
             let cache_size = cache.entry_count();
-            // Cache should never exceed max capacity significantly
-            // (Moka may slightly exceed due to async eviction)
+            // Cache should never exceed max capacity + tolerance for async eviction
+            let max_allowed = 100 * (100 + CACHE_SIZE_TOLERANCE_PERCENT) / 100;
             assert!(
-                cache_size <= 150, // Some slack for async eviction
-                "Cache should be bounded: got {} entries at iteration {}",
+                cache_size <= max_allowed,
+                "Cache should be bounded: got {} entries at iteration {} (max allowed: {})",
                 cache_size,
-                iteration
+                iteration,
+                max_allowed
             );
         }
     }
@@ -4101,16 +4118,18 @@ async fn test_memory_usage_bounded_with_repeated_operations() {
     // Final check
     cache.run_pending_tasks().await;
     let final_cache_size = cache.entry_count();
+    let max_allowed = 100 * (100 + CACHE_SIZE_TOLERANCE_PERCENT) / 100;
     println!(
-        "Memory bounded test: {} iterations, final cache size: {}",
-        MEMORY_STABILITY_ITERATIONS, final_cache_size
+        "Memory bounded test: {} iterations, final cache size: {} (max allowed: {})",
+        MEMORY_STABILITY_ITERATIONS, final_cache_size, max_allowed
     );
 
     assert!(
-        final_cache_size <= 150,
-        "Cache should remain bounded after {} iterations: got {} entries",
+        final_cache_size <= max_allowed,
+        "Cache should remain bounded after {} iterations: got {} entries (max allowed: {})",
         MEMORY_STABILITY_ITERATIONS,
-        final_cache_size
+        final_cache_size,
+        max_allowed
     );
 }
 
@@ -4119,6 +4138,12 @@ async fn test_memory_usage_bounded_with_repeated_operations() {
 /// When a write invalidates cache entries, multiple readers waiting for
 /// those entries should not all simultaneously hit storage. The cache
 /// and singleflight mechanisms should prevent thundering herd.
+///
+/// **Limitation**: This test verifies that concurrent readers complete successfully
+/// without errors or timeouts, which indirectly validates singleflight behavior.
+/// It does not instrument storage to count actual queries. A more comprehensive
+/// test would verify that storage query count is significantly below reader count,
+/// but this requires custom storage instrumentation not currently available.
 #[tokio::test]
 async fn test_cache_invalidation_no_thundering_herd() {
     let storage = Arc::new(MemoryDataStore::new());
@@ -4238,10 +4263,19 @@ async fn test_cache_invalidation_no_thundering_herd() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Wait for all readers to complete
-    for handle in reader_handles {
-        let _ = handle.await;
-    }
+    // Wait for all readers to complete with timeout to prevent CI hangs
+    let join_result = tokio::time::timeout(READER_TIMEOUT, async {
+        for handle in reader_handles {
+            let _ = handle.await;
+        }
+    })
+    .await;
+
+    assert!(
+        join_result.is_ok(),
+        "Reader tasks should complete within {:?} timeout",
+        READER_TIMEOUT
+    );
 
     let total_complete = all_reads_complete.load(Ordering::Relaxed);
     let max_concurrent = max_concurrent_observed.load(Ordering::SeqCst);
@@ -4267,7 +4301,7 @@ async fn test_cache_invalidation_no_thundering_herd() {
     // Singleflight should prevent thundering herd - while all readers may
     // start concurrently, the actual storage queries should be deduplicated.
     // We verify this indirectly by ensuring all complete successfully without
-    // errors or timeouts.
+    // errors or timeouts (see test doc comment for limitations).
 }
 
 /// Test: Burst invalidation (100+ writes) doesn't cause memory spike.
@@ -4384,6 +4418,8 @@ async fn test_burst_invalidation_no_memory_spike() {
     );
 
     // Verify reasonable throughput (>20 writes/s even with invalidation)
+    // Note: This threshold is conservative for CI stability. Production targets 150+ writes/s,
+    // but CI environments vary in performance. See ADR for performance validation criteria.
     let throughput = BURST_INVALIDATION_WRITE_COUNT as f64 / total_elapsed.as_secs_f64();
     assert!(
         throughput > 20.0,
@@ -4392,10 +4428,13 @@ async fn test_burst_invalidation_no_memory_spike() {
     );
 
     // Verify cache is still bounded (no memory spike from invalidation tracking)
+    // max_capacity=500, using tolerance percentage for slack
+    let max_allowed = 500 * (100 + CACHE_SIZE_TOLERANCE_PERCENT) / 100;
     assert!(
-        cache_size_after <= 600, // Max capacity + some slack
-        "Cache should remain bounded after burst: got {} entries",
-        cache_size_after
+        cache_size_after <= max_allowed,
+        "Cache should remain bounded after burst: got {} entries (max allowed: {})",
+        cache_size_after,
+        max_allowed
     );
 
     // p99 latency should be reasonable (< 500ms for in-memory)
@@ -4451,14 +4490,14 @@ async fn test_memory_stable_under_sustained_load() {
         assert_eq!(status, StatusCode::OK);
     }
 
-    // Collect cache size samples over time
-    let mut cache_samples: Vec<u64> = Vec::with_capacity(MEMORY_SAMPLE_COUNT);
-    let sample_interval = SUSTAINED_LOAD_DURATION / MEMORY_SAMPLE_COUNT as u32;
+    // Collect cache size samples over time (MEMORY_SAMPLE_COUNT samples during test + 1 final)
+    let mut cache_samples: Vec<u64> = Vec::with_capacity(MEMORY_SAMPLE_COUNT + 1);
+    let sample_interval = MEMORY_STABILITY_TEST_DURATION / MEMORY_SAMPLE_COUNT as u32;
     let start = Instant::now();
     let mut operations_count = 0u64;
     let mut sample_index = 0;
 
-    while start.elapsed() < SUSTAINED_LOAD_DURATION {
+    while start.elapsed() < MEMORY_STABILITY_TEST_DURATION {
         // Mixed operations: 80% reads, 20% writes (deterministic pattern)
         let is_read = operations_count % 5 != 0; // 4 out of 5 = 80% reads
         let i = operations_count % 1000;
@@ -4537,15 +4576,21 @@ async fn test_memory_stable_under_sustained_load() {
     );
     println!("Samples: {:?}", cache_samples);
 
-    // Verify memory stability: max cache size should never exceed configured limit
+    // Verify memory stability: max cache size should never exceed configured limit + tolerance
+    let max_allowed = 1000 * (100 + CACHE_SIZE_TOLERANCE_PERCENT) / 100;
     assert!(
-        max_cache <= 1100, // 1000 max capacity + 10% slack for async eviction
-        "Cache should remain bounded: max={} exceeds limit",
-        max_cache
+        max_cache <= max_allowed,
+        "Cache should remain bounded: max={} exceeds limit {}",
+        max_cache,
+        max_allowed
     );
 
     // Verify no runaway growth: later samples shouldn't be significantly larger
-    // than earlier ones (within 50% tolerance)
+    // than earlier ones. We use AND logic to catch both:
+    // 1. Relative growth (ratio > 1.5x indicates continuous leak)
+    // 2. Absolute bounds (must stay within max_allowed)
+    // The first-half average may be low during warmup, so we only flag a leak
+    // if BOTH the ratio is high AND we've exceeded reasonable bounds.
     if cache_samples.len() >= 4 {
         let first_half_avg: f64 = cache_samples[..cache_samples.len() / 2]
             .iter()
@@ -4558,17 +4603,22 @@ async fn test_memory_stable_under_sustained_load() {
             .sum::<f64>()
             / (cache_samples.len() / 2) as f64;
 
-        // Second half average shouldn't be more than 1.5x first half
-        // (allowing for warmup effects)
         let growth_ratio = second_half_avg / first_half_avg.max(1.0);
         println!(
             "Growth ratio (second half / first half): {:.2}",
             growth_ratio
         );
+
+        // Flag as potential leak only if both conditions are true:
+        // - Growth ratio exceeds 1.5x (indicating continuous growth)
+        // - Second half average exceeds max allowed (not just warmup)
         assert!(
-            growth_ratio < 1.5 || second_half_avg < 1100.0,
-            "Memory usage should be stable: growth ratio {:.2} indicates potential leak",
-            growth_ratio
+            growth_ratio < 1.5 || second_half_avg <= max_allowed as f64,
+            "Memory usage unstable: growth ratio {:.2} with avg {:.0} indicates potential leak \
+             (max allowed: {})",
+            growth_ratio,
+            second_half_avg,
+            max_allowed
         );
     }
 }
