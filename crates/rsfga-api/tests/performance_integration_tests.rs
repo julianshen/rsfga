@@ -3452,3 +3452,552 @@ async fn test_concurrent_resolver_with_shared_cache_consistent() {
         all_results.len()
     );
 }
+
+// =============================================================================
+// Section 9: Singleflight Non-Blocking Tests (Issue #210)
+// =============================================================================
+
+/// Test: Singleflight doesn't block writes during pending check.
+///
+/// Verifies that while a check operation is in-flight (being deduplicated
+/// via singleflight), write operations can still complete without being blocked.
+/// This ensures that the singleflight mechanism doesn't create a global lock
+/// that would prevent other operations.
+#[tokio::test]
+async fn test_singleflight_doesnt_block_writes_during_pending_check() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "singleflight-nonblock-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Write initial tuple for check operation
+    let (status, _) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [{
+                    "user": "user:alice",
+                    "relation": "viewer",
+                    "object": "document:initial"
+                }]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let check_started = Arc::new(tokio::sync::Notify::new());
+    let write_completed = Arc::new(AtomicU64::new(0));
+
+    let mut handles = Vec::new();
+
+    // Launch multiple concurrent check operations (will use singleflight)
+    for _ in 0..10 {
+        let storage = Arc::clone(&storage);
+        let cache = Arc::clone(&cache);
+        let store_id = store_id.clone();
+        let check_started = Arc::clone(&check_started);
+
+        handles.push(tokio::spawn(async move {
+            check_started.notify_one();
+            let (status, response) = post_json(
+                create_test_app_with_shared_cache(&storage, &cache),
+                &format!("/stores/{store_id}/check"),
+                serde_json::json!({
+                    "tuple_key": {
+                        "user": "user:alice",
+                        "relation": "viewer",
+                        "object": "document:initial"
+                    }
+                }),
+            )
+            .await;
+            (status, response["allowed"].as_bool())
+        }));
+    }
+
+    // Wait for at least one check to start
+    check_started.notified().await;
+
+    // Launch write operations while checks are in-flight
+    for i in 0..5 {
+        let storage = Arc::clone(&storage);
+        let cache = Arc::clone(&cache);
+        let store_id = store_id.clone();
+        let write_completed = Arc::clone(&write_completed);
+
+        handles.push(tokio::spawn(async move {
+            let (status, _) = post_json(
+                create_test_app_with_shared_cache(&storage, &cache),
+                &format!("/stores/{store_id}/write"),
+                serde_json::json!({
+                    "writes": {
+                        "tuple_keys": [{
+                            "user": format!("user:writer{i}"),
+                            "relation": "editor",
+                            "object": format!("document:concurrent{i}")
+                        }]
+                    }
+                }),
+            )
+            .await;
+            if status == StatusCode::OK {
+                write_completed.fetch_add(1, Ordering::Relaxed);
+            }
+            (status, None)
+        }));
+    }
+
+    // Wait for all operations to complete (with timeout to detect blocking)
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        for handle in handles {
+            handle.await.expect("Task should complete");
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "Operations should complete without timeout - singleflight should not block writes"
+    );
+
+    let writes = write_completed.load(Ordering::Relaxed);
+    assert_eq!(
+        writes, 5,
+        "All write operations should complete while checks are in-flight"
+    );
+
+    println!(
+        "Singleflight non-blocking test: {} writes completed during concurrent checks",
+        writes
+    );
+}
+
+/// Test: Write operations complete while check is in-flight.
+///
+/// Specifically tests that write operations targeting different tuples
+/// than the ones being checked can complete independently of singleflight.
+#[tokio::test]
+async fn test_write_operations_complete_while_check_in_flight() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "write-during-check-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Write initial tuples
+    for i in 0..10 {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:user{i}"),
+                        "relation": "viewer",
+                        "object": "document:shared"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let check_count = Arc::new(AtomicU64::new(0));
+    let write_count = Arc::new(AtomicU64::new(0));
+    let check_first_completed = Arc::new(AtomicU64::new(0));
+    let write_first_completed = Arc::new(AtomicU64::new(0));
+    let completion_order = Arc::new(AtomicU64::new(0));
+
+    let mut handles = Vec::new();
+
+    // Launch interleaved check and write operations
+    for i in 0..20 {
+        if i % 2 == 0 {
+            // Check operation
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let check_count = Arc::clone(&check_count);
+            let check_first_completed = Arc::clone(&check_first_completed);
+            let completion_order = Arc::clone(&completion_order);
+
+            handles.push(tokio::spawn(async move {
+                let user_idx = (i / 2) % 10;
+                let (status, _) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/check"),
+                    serde_json::json!({
+                        "tuple_key": {
+                            "user": format!("user:user{user_idx}"),
+                            "relation": "viewer",
+                            "object": "document:shared"
+                        }
+                    }),
+                )
+                .await;
+                if status == StatusCode::OK {
+                    check_count.fetch_add(1, Ordering::Relaxed);
+                    // Record if this was the first completion
+                    let order = completion_order.fetch_add(1, Ordering::SeqCst);
+                    if order == 0 {
+                        check_first_completed.store(1, Ordering::SeqCst);
+                    }
+                }
+            }));
+        } else {
+            // Write operation
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let write_count = Arc::clone(&write_count);
+            let write_first_completed = Arc::clone(&write_first_completed);
+            let completion_order = Arc::clone(&completion_order);
+
+            handles.push(tokio::spawn(async move {
+                let (status, _) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/write"),
+                    serde_json::json!({
+                        "writes": {
+                            "tuple_keys": [{
+                                "user": format!("user:newuser{i}"),
+                                "relation": "editor",
+                                "object": format!("document:newdoc{i}")
+                            }]
+                        }
+                    }),
+                )
+                .await;
+                if status == StatusCode::OK {
+                    write_count.fetch_add(1, Ordering::Relaxed);
+                    // Record if this was the first completion
+                    let order = completion_order.fetch_add(1, Ordering::SeqCst);
+                    if order == 0 {
+                        write_first_completed.store(1, Ordering::SeqCst);
+                    }
+                }
+            }));
+        }
+    }
+
+    // Wait for all operations
+    for handle in handles {
+        handle.await.expect("Task should complete");
+    }
+
+    let checks = check_count.load(Ordering::Relaxed);
+    let writes = write_count.load(Ordering::Relaxed);
+
+    assert_eq!(checks, 10, "All check operations should succeed");
+    assert_eq!(writes, 10, "All write operations should succeed");
+
+    // Both checks and writes should be able to complete - the order doesn't matter,
+    // but both types should complete successfully
+    println!(
+        "Write during check test: {} checks, {} writes completed",
+        checks, writes
+    );
+}
+
+/// Test: Concurrent writes and checks don't deadlock.
+///
+/// Stress test to ensure that heavy concurrent load of both reads (checks)
+/// and writes doesn't cause deadlocks in the singleflight mechanism.
+#[tokio::test]
+async fn test_concurrent_writes_and_checks_no_deadlock() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "deadlock-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Pre-populate some data
+    for i in 0..20 {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:preload{i}"),
+                        "relation": "viewer",
+                        "object": "document:deadlock_test"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let check_success = Arc::new(AtomicU64::new(0));
+    let write_success = Arc::new(AtomicU64::new(0));
+    let check_error = Arc::new(AtomicU64::new(0));
+    let write_error = Arc::new(AtomicU64::new(0));
+
+    let mut handles = Vec::new();
+
+    // Launch heavy concurrent load
+    const CONCURRENT_OPS: usize = 100;
+
+    for i in 0..CONCURRENT_OPS {
+        // Check operation
+        let storage_c = Arc::clone(&storage);
+        let cache_c = Arc::clone(&cache);
+        let store_id_c = store_id.clone();
+        let check_success_c = Arc::clone(&check_success);
+        let check_error_c = Arc::clone(&check_error);
+
+        handles.push(tokio::spawn(async move {
+            let user_idx = i % 20;
+            let (status, _) = post_json(
+                create_test_app_with_shared_cache(&storage_c, &cache_c),
+                &format!("/stores/{store_id_c}/check"),
+                serde_json::json!({
+                    "tuple_key": {
+                        "user": format!("user:preload{user_idx}"),
+                        "relation": "viewer",
+                        "object": "document:deadlock_test"
+                    }
+                }),
+            )
+            .await;
+            if status == StatusCode::OK {
+                check_success_c.fetch_add(1, Ordering::Relaxed);
+            } else {
+                check_error_c.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+
+        // Write operation
+        let storage_w = Arc::clone(&storage);
+        let cache_w = Arc::clone(&cache);
+        let store_id_w = store_id.clone();
+        let write_success_w = Arc::clone(&write_success);
+        let write_error_w = Arc::clone(&write_error);
+
+        handles.push(tokio::spawn(async move {
+            let (status, _) = post_json(
+                create_test_app_with_shared_cache(&storage_w, &cache_w),
+                &format!("/stores/{store_id_w}/write"),
+                serde_json::json!({
+                    "writes": {
+                        "tuple_keys": [{
+                            "user": format!("user:concurrent{i}"),
+                            "relation": "editor",
+                            "object": format!("document:concurrent{i}")
+                        }]
+                    }
+                }),
+            )
+            .await;
+            if status == StatusCode::OK {
+                write_success_w.fetch_add(1, Ordering::Relaxed);
+            } else {
+                write_error_w.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+
+    // Use timeout to detect deadlocks
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        for handle in handles {
+            handle.await.expect("Task should complete without panic");
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "All operations should complete without deadlock (30s timeout)"
+    );
+
+    let check_ok = check_success.load(Ordering::Relaxed);
+    let write_ok = write_success.load(Ordering::Relaxed);
+    let check_err = check_error.load(Ordering::Relaxed);
+    let write_err = write_error.load(Ordering::Relaxed);
+
+    assert_eq!(
+        check_err, 0,
+        "No check errors expected (got {check_err} errors)"
+    );
+    assert_eq!(
+        write_err, 0,
+        "No write errors expected (got {write_err} errors)"
+    );
+    assert_eq!(
+        check_ok, CONCURRENT_OPS as u64,
+        "All checks should succeed"
+    );
+    assert_eq!(
+        write_ok, CONCURRENT_OPS as u64,
+        "All writes should succeed"
+    );
+
+    println!(
+        "Deadlock test passed: {} checks + {} writes completed without deadlock",
+        check_ok, write_ok
+    );
+}
+
+/// Test: Singleflight timeout doesn't block subsequent requests.
+///
+/// Verifies that if a singleflight operation times out, subsequent requests
+/// for the same key can still proceed (the singleflight entry is properly
+/// cleaned up after timeout/failure).
+#[tokio::test]
+async fn test_singleflight_timeout_doesnt_block_subsequent_requests() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "singleflight-timeout-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Write tuple
+    let (status, _) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [{
+                    "user": "user:timeout_test",
+                    "relation": "viewer",
+                    "object": "document:timeout_doc"
+                }]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Launch a batch of concurrent identical check requests
+    // Some may time out if the system is slow, but subsequent requests
+    // should not be blocked forever
+    let success_count = Arc::new(AtomicU64::new(0));
+
+    // First wave: concurrent requests
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let storage = Arc::clone(&storage);
+        let cache = Arc::clone(&cache);
+        let store_id = store_id.clone();
+        let success_count = Arc::clone(&success_count);
+
+        handles.push(tokio::spawn(async move {
+            let (status, response) = post_json(
+                create_test_app_with_shared_cache(&storage, &cache),
+                &format!("/stores/{store_id}/check"),
+                serde_json::json!({
+                    "tuple_key": {
+                        "user": "user:timeout_test",
+                        "relation": "viewer",
+                        "object": "document:timeout_doc"
+                    }
+                }),
+            )
+            .await;
+            if status == StatusCode::OK && response["allowed"].as_bool() == Some(true) {
+                success_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+
+    // Wait for first wave with a short timeout
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        for handle in handles {
+            let _ = handle.await;
+        }
+    })
+    .await;
+
+    let first_wave_success = success_count.load(Ordering::Relaxed);
+
+    // Second wave: subsequent requests should not be blocked
+    let second_wave_success = Arc::new(AtomicU64::new(0));
+    let mut handles = Vec::new();
+
+    for _ in 0..5 {
+        let storage = Arc::clone(&storage);
+        let cache = Arc::clone(&cache);
+        let store_id = store_id.clone();
+        let success_count = Arc::clone(&second_wave_success);
+
+        handles.push(tokio::spawn(async move {
+            let (status, response) = post_json(
+                create_test_app_with_shared_cache(&storage, &cache),
+                &format!("/stores/{store_id}/check"),
+                serde_json::json!({
+                    "tuple_key": {
+                        "user": "user:timeout_test",
+                        "relation": "viewer",
+                        "object": "document:timeout_doc"
+                    }
+                }),
+            )
+            .await;
+            if status == StatusCode::OK && response["allowed"].as_bool() == Some(true) {
+                success_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+
+    // Second wave should complete quickly (within 5 seconds)
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        for handle in handles {
+            handle.await.expect("Second wave task should complete");
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "Second wave should complete without being blocked by first wave's singleflight state"
+    );
+
+    let second_success = second_wave_success.load(Ordering::Relaxed);
+    assert_eq!(
+        second_success, 5,
+        "All second wave requests should succeed (singleflight cleanup worked)"
+    );
+
+    println!(
+        "Singleflight timeout test: first wave={}, second wave={} successes",
+        first_wave_success, second_success
+    );
+}
