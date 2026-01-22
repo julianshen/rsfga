@@ -4024,9 +4024,9 @@ const MEMORY_SAMPLE_COUNT: usize = 10;
 async fn test_memory_usage_bounded_with_repeated_operations() {
     let storage = Arc::new(MemoryDataStore::new());
     let cache_config = CheckCacheConfig {
-        max_capacity: Some(100), // Small cache to force evictions
-        time_to_live: Some(Duration::from_secs(300)),
-        time_to_idle: Some(Duration::from_secs(60)),
+        enabled: true,
+        max_capacity: 100, // Small cache to force evictions
+        default_ttl: Duration::from_secs(300),
     };
     let cache = create_shared_cache_with_config(cache_config);
 
@@ -4278,9 +4278,9 @@ async fn test_cache_invalidation_no_thundering_herd() {
 async fn test_burst_invalidation_no_memory_spike() {
     let storage = Arc::new(MemoryDataStore::new());
     let cache_config = CheckCacheConfig {
-        max_capacity: Some(500),
-        time_to_live: Some(Duration::from_secs(300)),
-        time_to_idle: Some(Duration::from_secs(60)),
+        enabled: true,
+        max_capacity: 500,
+        default_ttl: Duration::from_secs(300),
     };
     let cache = create_shared_cache_with_config(cache_config);
 
@@ -4415,9 +4415,9 @@ async fn test_burst_invalidation_no_memory_spike() {
 async fn test_memory_stable_under_sustained_load() {
     let storage = Arc::new(MemoryDataStore::new());
     let cache_config = CheckCacheConfig {
-        max_capacity: Some(1000),
-        time_to_live: Some(Duration::from_secs(300)),
-        time_to_idle: Some(Duration::from_secs(60)),
+        enabled: true,
+        max_capacity: 1000,
+        default_ttl: Duration::from_secs(300),
     };
     let cache = create_shared_cache_with_config(cache_config);
 
