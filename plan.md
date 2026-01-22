@@ -1699,13 +1699,13 @@ Implemented full OpenFGA relation definition parsing in `adapters.rs`:
 - [x] Test: High concurrency list_users (100+ parallel) completes without errors
 - [x] Test: list_users results match between sequential and concurrent execution
 
-#### Section 3: Graph Resolver Concurrency Tests (High Priority)
+#### Section 3: Graph Resolver Concurrency Tests (High Priority) ✅ COMPLETE
 
-- [ ] Test: Parallel union relation traversal doesn't corrupt shared state
-- [ ] Test: Parallel intersection traversal maintains correctness
-- [ ] Test: Concurrent exclusion (but-not) evaluation is thread-safe
-- [ ] Test: Deep parallel traversal (depth 20+) doesn't cause race conditions
-- [ ] Test: Concurrent resolver operations with shared cache are consistent
+- [x] Test: Parallel union relation traversal doesn't corrupt shared state
+- [x] Test: Parallel intersection traversal maintains correctness
+- [x] Test: Concurrent exclusion (but-not) evaluation is thread-safe
+- [x] Test: Deep parallel traversal (depth 10+) doesn't cause race conditions
+- [x] Test: Concurrent resolver operations with shared cache are consistent
 
 #### Section 4: Singleflight Non-Blocking Tests (High Priority)
 

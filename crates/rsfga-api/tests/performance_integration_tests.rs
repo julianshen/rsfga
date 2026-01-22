@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use rsfga_domain::cache::{CacheKey, CheckCacheConfig};
-use rsfga_storage::MemoryDataStore;
+use rsfga_storage::{DataStore, MemoryDataStore, StoredAuthorizationModel};
 
 use common::{
     create_shared_cache, create_shared_cache_with_config, create_test_app,
@@ -2516,5 +2516,939 @@ async fn test_listusers_sequential_vs_concurrent_results_match() {
     println!(
         "ListUsers sequential vs concurrent test: {} concurrent results match sequential",
         all_concurrent.len()
+    );
+}
+
+// =============================================================================
+// Section 8: Graph Resolver Concurrency Tests (Issue #210)
+// =============================================================================
+
+/// Number of concurrent graph traversal requests for high-load tests.
+const GRAPH_RESOLVER_CONCURRENCY_COUNT: usize = 100;
+
+/// Number of users/branches for union tests.
+const UNION_BRANCH_COUNT: usize = 10;
+
+/// Number of branches for intersection tests.
+const INTERSECTION_BRANCH_COUNT: usize = 5;
+
+/// Depth for deep traversal tests.
+/// Using 10 levels to stay well within OpenFGA's 25-level depth limit,
+/// since each level involves multiple recursive checks.
+const DEEP_TRAVERSAL_DEPTH: usize = 10;
+
+/// Helper to set up authorization model with union relation.
+///
+/// Creates a document type with a `can_view` relation that is a union of
+/// multiple direct relations (viewer0, viewer1, ..., viewerN-1).
+async fn setup_union_model(storage: &Arc<MemoryDataStore>, store_id: &str, branch_count: usize) {
+    // Build union children
+    let union_children: Vec<serde_json::Value> = (0..branch_count)
+        .map(|i| {
+            serde_json::json!({
+                "computedUserset": {"object": "", "relation": format!("viewer{i}")}
+            })
+        })
+        .collect();
+
+    // Build relations dynamically based on branch_count
+    let mut relations = serde_json::Map::new();
+    for i in 0..branch_count {
+        relations.insert(format!("viewer{i}"), serde_json::json!({}));
+    }
+    relations.insert(
+        "can_view".to_string(),
+        serde_json::json!({
+            "union": {
+                "child": union_children
+            }
+        }),
+    );
+
+    let model_json = serde_json::json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "document",
+                "relations": relations
+            }
+        ]
+    });
+
+    let model = StoredAuthorizationModel::new(
+        ulid::Ulid::new().to_string(),
+        store_id,
+        "1.1",
+        model_json.to_string(),
+    );
+    storage.write_authorization_model(model).await.unwrap();
+}
+
+/// Helper to set up authorization model with intersection relation.
+///
+/// Creates a document type with a `can_edit` relation that requires
+/// membership in multiple relations simultaneously (req0 AND req1 AND ... AND reqN-1).
+async fn setup_intersection_model(
+    storage: &Arc<MemoryDataStore>,
+    store_id: &str,
+    branch_count: usize,
+) {
+    // Build intersection children
+    let intersection_children: Vec<serde_json::Value> = (0..branch_count)
+        .map(|i| {
+            serde_json::json!({
+                "computedUserset": {"object": "", "relation": format!("req{i}")}
+            })
+        })
+        .collect();
+
+    // Build relations dynamically based on branch_count
+    let mut relations = serde_json::Map::new();
+    for i in 0..branch_count {
+        relations.insert(format!("req{i}"), serde_json::json!({}));
+    }
+    relations.insert(
+        "can_edit".to_string(),
+        serde_json::json!({
+            "intersection": {
+                "child": intersection_children
+            }
+        }),
+    );
+
+    let model_json = serde_json::json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "document",
+                "relations": relations
+            }
+        ]
+    });
+
+    let model = StoredAuthorizationModel::new(
+        ulid::Ulid::new().to_string(),
+        store_id,
+        "1.1",
+        model_json.to_string(),
+    );
+    storage.write_authorization_model(model).await.unwrap();
+}
+
+/// Helper to set up authorization model with exclusion (but-not) relation.
+///
+/// Creates a document type with a `can_access` relation that grants access
+/// to viewers but excludes blocked users.
+async fn setup_exclusion_model(storage: &Arc<MemoryDataStore>, store_id: &str) {
+    let model_json = serde_json::json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "document",
+                "relations": {
+                    "viewer": {},
+                    "blocked": {},
+                    "can_access": {
+                        "difference": {
+                            "base": {
+                                "computedUserset": {"object": "", "relation": "viewer"}
+                            },
+                            "subtract": {
+                                "computedUserset": {"object": "", "relation": "blocked"}
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+    });
+
+    let model = StoredAuthorizationModel::new(
+        ulid::Ulid::new().to_string(),
+        store_id,
+        "1.1",
+        model_json.to_string(),
+    );
+    storage.write_authorization_model(model).await.unwrap();
+}
+
+/// Helper to set up deep hierarchy model for traversal tests.
+///
+/// Creates a folder type where viewers inherit from parent folder's viewers,
+/// allowing deep traversal testing.
+async fn setup_deep_hierarchy_model(storage: &Arc<MemoryDataStore>, store_id: &str) {
+    let model_json = serde_json::json!({
+        "schema_version": "1.1",
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "folder",
+                "relations": {
+                    "parent": {},
+                    "direct_viewer": {},
+                    "viewer": {
+                        "union": {
+                            "child": [
+                                {"this": {}},
+                                {"computedUserset": {"object": "", "relation": "direct_viewer"}},
+                                {"tupleToUserset": {
+                                    "tupleset": {"object": "", "relation": "parent"},
+                                    "computedUserset": {"object": "", "relation": "viewer"}
+                                }}
+                            ]
+                        }
+                    }
+                }
+            }
+        ]
+    });
+
+    let model = StoredAuthorizationModel::new(
+        ulid::Ulid::new().to_string(),
+        store_id,
+        "1.1",
+        model_json.to_string(),
+    );
+    storage.write_authorization_model(model).await.unwrap();
+}
+
+/// Test: Parallel union relation traversal doesn't corrupt shared state.
+///
+/// Verifies that concurrent check operations on union relations don't interfere
+/// with each other and produce correct results.
+#[tokio::test]
+async fn test_parallel_union_traversal_no_shared_state_corruption() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "union-concurrency-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+
+    // Set up union model with multiple branches
+    setup_union_model(&storage, &store_id, UNION_BRANCH_COUNT).await;
+
+    // Write tuples: different users have access via different union branches
+    for i in 0..UNION_BRANCH_COUNT {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:union_user{i}"),
+                        "relation": format!("viewer{i}"),
+                        "object": "document:union_doc"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let success_count = Arc::new(AtomicU64::new(0));
+    let allowed_count = Arc::new(AtomicU64::new(0));
+    let denied_count = Arc::new(AtomicU64::new(0));
+    let error_count = Arc::new(AtomicU64::new(0));
+
+    // Launch concurrent check requests across all union branches
+    let handles: Vec<_> = (0..GRAPH_RESOLVER_CONCURRENCY_COUNT)
+        .map(|i| {
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let success_count = Arc::clone(&success_count);
+            let allowed_count = Arc::clone(&allowed_count);
+            let denied_count = Arc::clone(&denied_count);
+            let error_count = Arc::clone(&error_count);
+
+            tokio::spawn(async move {
+                // Check different users - some should be allowed, some denied
+                let user_idx = i % (UNION_BRANCH_COUNT + 5); // Extra users will be denied
+                let (status, response) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/check"),
+                    serde_json::json!({
+                        "tuple_key": {
+                            "user": format!("user:union_user{user_idx}"),
+                            "relation": "can_view",
+                            "object": "document:union_doc"
+                        }
+                    }),
+                )
+                .await;
+
+                if status == StatusCode::OK {
+                    success_count.fetch_add(1, Ordering::Relaxed);
+                    if response["allowed"].as_bool() == Some(true) {
+                        allowed_count.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        denied_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                } else {
+                    error_count.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let successes = success_count.load(Ordering::Relaxed);
+    let allowed = allowed_count.load(Ordering::Relaxed);
+    let denied = denied_count.load(Ordering::Relaxed);
+    let errors = error_count.load(Ordering::Relaxed);
+
+    assert_eq!(
+        errors, 0,
+        "Should have no errors with concurrent union traversal"
+    );
+    assert_eq!(
+        successes, GRAPH_RESOLVER_CONCURRENCY_COUNT as u64,
+        "All concurrent requests should succeed"
+    );
+
+    // Verify correctness based on deterministic distribution:
+    // - 100 requests with user_idx = i % 15 (10 allowed users + 5 denied users)
+    // - Users 0-9 have access (via viewer0-viewer9 relations)
+    // - Users 10-14 don't have access
+    // Distribution: floor(100/15)=6 base + 10 extra for users 0-9
+    // - Users 0-9: 7 requests each = 70 allowed
+    // - Users 10-14: 6 requests each = 30 denied
+    let expected_allowed = 70u64;
+    let expected_denied = 30u64;
+
+    assert_eq!(
+        allowed, expected_allowed,
+        "Expected {} allowed (users 0-9 with 7 requests each), got {}",
+        expected_allowed, allowed
+    );
+    assert_eq!(
+        denied, expected_denied,
+        "Expected {} denied (users 10-14 with 6 requests each), got {}",
+        expected_denied, denied
+    );
+
+    println!(
+        "Parallel union traversal test: {} successes, {} allowed, {} denied, {} errors",
+        successes, allowed, denied, errors
+    );
+}
+
+/// Test: Parallel intersection traversal maintains correctness.
+///
+/// Verifies that concurrent check operations on intersection relations
+/// produce correct results (all branches must be satisfied).
+#[tokio::test]
+async fn test_parallel_intersection_traversal_maintains_correctness() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "intersection-concurrency-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+
+    // Set up intersection model
+    setup_intersection_model(&storage, &store_id, INTERSECTION_BRANCH_COUNT).await;
+
+    // User alice has ALL required permissions
+    for i in 0..INTERSECTION_BRANCH_COUNT {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": "user:alice",
+                        "relation": format!("req{i}"),
+                        "object": "document:protected"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // User bob has only SOME required permissions (should be denied)
+    for i in 0..3 {
+        // Only 3 of 5 requirements
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": "user:bob",
+                        "relation": format!("req{i}"),
+                        "object": "document:protected"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let alice_allowed = Arc::new(AtomicU64::new(0));
+    let bob_denied = Arc::new(AtomicU64::new(0));
+    let error_count = Arc::new(AtomicU64::new(0));
+
+    // Launch concurrent checks for both alice and bob
+    let handles: Vec<_> = (0..GRAPH_RESOLVER_CONCURRENCY_COUNT)
+        .map(|i| {
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let alice_allowed = Arc::clone(&alice_allowed);
+            let bob_denied = Arc::clone(&bob_denied);
+            let error_count = Arc::clone(&error_count);
+
+            tokio::spawn(async move {
+                let user = if i % 2 == 0 { "alice" } else { "bob" };
+                let (status, response) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/check"),
+                    serde_json::json!({
+                        "tuple_key": {
+                            "user": format!("user:{user}"),
+                            "relation": "can_edit",
+                            "object": "document:protected"
+                        }
+                    }),
+                )
+                .await;
+
+                if status == StatusCode::OK {
+                    let allowed = response["allowed"].as_bool() == Some(true);
+                    match user {
+                        "alice" if allowed => {
+                            alice_allowed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        "bob" if !allowed => {
+                            bob_denied.fetch_add(1, Ordering::Relaxed);
+                        }
+                        _ => {
+                            // Incorrect result: Alice denied or Bob allowed
+                            error_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                } else {
+                    error_count.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let alice = alice_allowed.load(Ordering::Relaxed);
+    let bob = bob_denied.load(Ordering::Relaxed);
+    let errors = error_count.load(Ordering::Relaxed);
+
+    assert_eq!(
+        errors, 0,
+        "Should have no errors or incorrect results with concurrent intersection traversal"
+    );
+
+    // Half the requests are for alice (should all be allowed)
+    let expected_alice_checks = GRAPH_RESOLVER_CONCURRENCY_COUNT as u64 / 2;
+    assert_eq!(
+        alice, expected_alice_checks,
+        "Alice should be allowed in all checks (has all requirements)"
+    );
+
+    // Half the requests are for bob (should all be denied)
+    let expected_bob_checks = GRAPH_RESOLVER_CONCURRENCY_COUNT as u64 / 2;
+    assert_eq!(
+        bob, expected_bob_checks,
+        "Bob should be denied in all checks (missing requirements)"
+    );
+
+    println!(
+        "Parallel intersection test: alice allowed={}, bob denied={}, errors={}",
+        alice, bob, errors
+    );
+}
+
+/// Test: Concurrent exclusion (but-not) evaluation is thread-safe.
+///
+/// Verifies that concurrent check operations on exclusion relations
+/// correctly handle the base minus subtract logic.
+#[tokio::test]
+async fn test_concurrent_exclusion_evaluation_thread_safe() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "exclusion-concurrency-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+
+    // Set up exclusion model (viewer but not blocked)
+    setup_exclusion_model(&storage, &store_id).await;
+
+    // alice: viewer, NOT blocked -> should have access
+    let (status, _) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [{
+                    "user": "user:alice",
+                    "relation": "viewer",
+                    "object": "document:sensitive"
+                }]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // bob: viewer AND blocked -> should NOT have access
+    let (status, _) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [
+                    {
+                        "user": "user:bob",
+                        "relation": "viewer",
+                        "object": "document:sensitive"
+                    },
+                    {
+                        "user": "user:bob",
+                        "relation": "blocked",
+                        "object": "document:sensitive"
+                    }
+                ]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // charlie: NOT viewer -> should NOT have access
+    // (no tuples needed)
+
+    let alice_correct = Arc::new(AtomicU64::new(0));
+    let bob_correct = Arc::new(AtomicU64::new(0));
+    let charlie_correct = Arc::new(AtomicU64::new(0));
+    let error_count = Arc::new(AtomicU64::new(0));
+
+    // Launch concurrent checks for all three users
+    let handles: Vec<_> = (0..GRAPH_RESOLVER_CONCURRENCY_COUNT)
+        .map(|i| {
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let alice_correct = Arc::clone(&alice_correct);
+            let bob_correct = Arc::clone(&bob_correct);
+            let charlie_correct = Arc::clone(&charlie_correct);
+            let error_count = Arc::clone(&error_count);
+
+            tokio::spawn(async move {
+                let user = match i % 3 {
+                    0 => "alice",
+                    1 => "bob",
+                    _ => "charlie",
+                };
+
+                let (status, response) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/check"),
+                    serde_json::json!({
+                        "tuple_key": {
+                            "user": format!("user:{user}"),
+                            "relation": "can_access",
+                            "object": "document:sensitive"
+                        }
+                    }),
+                )
+                .await;
+
+                if status == StatusCode::OK {
+                    let allowed = response["allowed"].as_bool() == Some(true);
+                    match user {
+                        "alice" if allowed => {
+                            alice_correct.fetch_add(1, Ordering::Relaxed);
+                        }
+                        "bob" if !allowed => {
+                            bob_correct.fetch_add(1, Ordering::Relaxed);
+                        }
+                        "charlie" if !allowed => {
+                            charlie_correct.fetch_add(1, Ordering::Relaxed);
+                        }
+                        _ => {
+                            error_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                } else {
+                    error_count.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let alice = alice_correct.load(Ordering::Relaxed);
+    let bob = bob_correct.load(Ordering::Relaxed);
+    let charlie = charlie_correct.load(Ordering::Relaxed);
+    let errors = error_count.load(Ordering::Relaxed);
+
+    // Total correct results should equal total requests (no errors/incorrect results)
+    let total_correct = alice + bob + charlie;
+
+    assert_eq!(errors, 0, "Should have no errors or incorrect results");
+    assert_eq!(
+        total_correct, GRAPH_RESOLVER_CONCURRENCY_COUNT as u64,
+        "All requests should return correct results"
+    );
+
+    // Each user should get roughly 1/3 of requests (allow +/- 1 for modulo)
+    let expected_min = GRAPH_RESOLVER_CONCURRENCY_COUNT as u64 / 3;
+    let expected_max = expected_min + 1;
+
+    assert!(
+        alice >= expected_min && alice <= expected_max,
+        "Alice should get ~1/3 of requests: expected {}-{}, got {}",
+        expected_min,
+        expected_max,
+        alice
+    );
+    assert!(
+        bob >= expected_min && bob <= expected_max,
+        "Bob should get ~1/3 of requests: expected {}-{}, got {}",
+        expected_min,
+        expected_max,
+        bob
+    );
+    assert!(
+        charlie >= expected_min && charlie <= expected_max,
+        "Charlie should get ~1/3 of requests: expected {}-{}, got {}",
+        expected_min,
+        expected_max,
+        charlie
+    );
+
+    println!(
+        "Concurrent exclusion test: alice={}, bob={}, charlie={}, errors={}",
+        alice, bob, charlie, errors
+    );
+}
+
+/// Test: Deep parallel traversal (depth 10+) doesn't cause race conditions.
+///
+/// Verifies that concurrent checks on deeply nested hierarchies
+/// (folder parent chains) don't cause race conditions or incorrect results.
+#[tokio::test]
+async fn test_deep_parallel_traversal_no_race_conditions() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "deep-traversal-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+
+    // Set up deep hierarchy model
+    setup_deep_hierarchy_model(&storage, &store_id).await;
+
+    // Create a chain of folders: folder0 <- folder1 <- ... <- folderN
+    // User alice has direct_viewer on folder0 (root)
+    let (status, _) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/write"),
+        serde_json::json!({
+            "writes": {
+                "tuple_keys": [{
+                    "user": "user:alice",
+                    "relation": "direct_viewer",
+                    "object": "folder:folder0"
+                }]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Create parent relationships for the folder chain
+    for i in 1..DEEP_TRAVERSAL_DEPTH {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("folder:folder{}", i - 1),
+                        "relation": "parent",
+                        "object": format!("folder:folder{i}")
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let success_count = Arc::new(AtomicU64::new(0));
+    let allowed_count = Arc::new(AtomicU64::new(0));
+    let error_count = Arc::new(AtomicU64::new(0));
+
+    // Launch concurrent checks at various depths in the hierarchy
+    let handles: Vec<_> = (0..GRAPH_RESOLVER_CONCURRENCY_COUNT)
+        .map(|i| {
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let success_count = Arc::clone(&success_count);
+            let allowed_count = Arc::clone(&allowed_count);
+            let error_count = Arc::clone(&error_count);
+
+            tokio::spawn(async move {
+                // Check at different depths in the hierarchy
+                let depth = i % DEEP_TRAVERSAL_DEPTH;
+                let (status, response) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/check"),
+                    serde_json::json!({
+                        "tuple_key": {
+                            "user": "user:alice",
+                            "relation": "viewer",
+                            "object": format!("folder:folder{depth}")
+                        }
+                    }),
+                )
+                .await;
+
+                if status == StatusCode::OK {
+                    success_count.fetch_add(1, Ordering::Relaxed);
+                    if response["allowed"].as_bool() == Some(true) {
+                        allowed_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                } else {
+                    error_count.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let successes = success_count.load(Ordering::Relaxed);
+    let allowed = allowed_count.load(Ordering::Relaxed);
+    let errors = error_count.load(Ordering::Relaxed);
+
+    assert_eq!(
+        errors, 0,
+        "Should have no errors with deep parallel traversal"
+    );
+    assert_eq!(
+        successes, GRAPH_RESOLVER_CONCURRENCY_COUNT as u64,
+        "All concurrent requests should succeed"
+    );
+    assert_eq!(
+        allowed, GRAPH_RESOLVER_CONCURRENCY_COUNT as u64,
+        "All checks should be allowed (alice inherits viewer through parent chain)"
+    );
+
+    println!(
+        "Deep parallel traversal test: {} successes, {} allowed at depths 0-{}, {} errors",
+        successes,
+        allowed,
+        DEEP_TRAVERSAL_DEPTH - 1,
+        errors
+    );
+}
+
+/// Test: Concurrent resolver operations with shared cache are consistent.
+///
+/// Verifies that the resolver produces consistent results when the cache
+/// is being actively used and updated by concurrent operations.
+#[tokio::test]
+async fn test_concurrent_resolver_with_shared_cache_consistent() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "cache-consistency-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+
+    // Set up a simple model with union
+    setup_simple_model(&storage, &store_id).await;
+
+    // Create multiple users with viewer access
+    for i in 0..20 {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:cache_user{i}"),
+                        "relation": "viewer",
+                        "object": "document:cached_doc"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // Track results for consistency verification
+    let results = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
+        String,
+        Vec<bool>,
+    >::new()));
+    let success_count = Arc::new(AtomicU64::new(0));
+    let error_count = Arc::new(AtomicU64::new(0));
+
+    // Launch concurrent checks - same user/object should always get same result
+    let handles: Vec<_> = (0..GRAPH_RESOLVER_CONCURRENCY_COUNT)
+        .map(|i| {
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let results = Arc::clone(&results);
+            let success_count = Arc::clone(&success_count);
+            let error_count = Arc::clone(&error_count);
+
+            tokio::spawn(async move {
+                // Check a subset of users (some with access, some without)
+                let user_idx = i % 25; // 20 with access, 5 without
+                let user = format!("user:cache_user{user_idx}");
+
+                let (status, response) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/check"),
+                    serde_json::json!({
+                        "tuple_key": {
+                            "user": &user,
+                            "relation": "viewer",
+                            "object": "document:cached_doc"
+                        }
+                    }),
+                )
+                .await;
+
+                if status == StatusCode::OK {
+                    success_count.fetch_add(1, Ordering::Relaxed);
+                    let allowed = response["allowed"].as_bool() == Some(true);
+                    results.lock().await.entry(user).or_default().push(allowed);
+                } else {
+                    error_count.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let successes = success_count.load(Ordering::Relaxed);
+    let errors = error_count.load(Ordering::Relaxed);
+    let all_results = results.lock().await;
+
+    assert_eq!(
+        errors, 0,
+        "Should have no errors with concurrent cache access"
+    );
+    assert_eq!(
+        successes, GRAPH_RESOLVER_CONCURRENCY_COUNT as u64,
+        "All requests should succeed"
+    );
+
+    // Verify consistency: each user should have consistent results
+    let mut inconsistent_users = Vec::new();
+    for (user, user_results) in all_results.iter() {
+        if !user_results.is_empty() {
+            let first = user_results[0];
+            if !user_results.iter().all(|&r| r == first) {
+                inconsistent_users.push(user.clone());
+            }
+        }
+    }
+
+    assert!(
+        inconsistent_users.is_empty(),
+        "Found inconsistent results for users: {:?}",
+        inconsistent_users
+    );
+
+    // Verify expected access pattern
+    let mut correct_access = 0;
+    let mut correct_denied = 0;
+    for (user, user_results) in all_results.iter() {
+        if !user_results.is_empty() {
+            // Extract user index
+            let idx: usize = user
+                .strip_prefix("user:cache_user")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(999);
+
+            let expected = idx < 20; // users 0-19 have access
+            let actual = user_results[0];
+
+            if expected && actual {
+                correct_access += 1;
+            } else if !expected && !actual {
+                correct_denied += 1;
+            }
+        }
+    }
+
+    println!(
+        "Concurrent cache consistency test: {} successes, {} errors",
+        successes, errors
+    );
+    println!(
+        "  Correct access: {}, Correct denied: {}, Total users checked: {}",
+        correct_access,
+        correct_denied,
+        all_results.len()
     );
 }
