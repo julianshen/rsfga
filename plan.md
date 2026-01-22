@@ -1662,6 +1662,95 @@ Implemented full OpenFGA relation definition parsing in `adapters.rs`:
 
 ---
 
+### Issue #210: Performance Integration Tests - Remaining Tasks 🏗️ IN PROGRESS
+
+**PR**: #244 (partial implementation complete)
+
+**Background**: Issue #210 requested comprehensive performance integration tests for cache effectiveness and batch deduplication. PR #244 implemented the core tests, but several tasks remain incomplete per the original issue checklist.
+
+**Completed in PR #244**:
+- ✅ Cache hit vs miss performance comparison
+- ✅ Cache hit rate measurement via entry counts
+- ✅ Cache TTL eviction functionality
+- ✅ Concurrent cache access safety
+- ✅ Batch deduplication storage query reduction
+- ✅ Batch result correctness despite deduplication
+- ✅ Cross-request batch deduplication
+- ✅ Parallel operations maintain correctness
+- ✅ Burst load stability (1000 requests)
+- ✅ Sustained load stability (100 req/s for 1 minute)
+- ✅ Latency percentiles (p50, p95, p99)
+- ✅ REST API performance baseline
+- ✅ Cache invalidation performance
+
+#### Section 1: ListObjects Concurrency Tests (High Priority) ✅ COMPLETE
+
+- [x] Test: Concurrent list_objects operations don't interfere with each other
+- [x] Test: Concurrent list_objects with overlapping filters return consistent results
+- [x] Test: Concurrent list_objects during write operations maintain correctness
+- [x] Test: High concurrency list_objects (100+ parallel) completes without errors
+- [x] Test: list_objects results are consistent across concurrent reads
+
+#### Section 2: ListUsers Concurrency Tests (High Priority) ✅ COMPLETE
+
+- [x] Test: Concurrent list_users operations return consistent results
+- [x] Test: Concurrent list_users with same parameters deduplicate correctly
+- [x] Test: Concurrent list_users during tuple writes maintain correctness
+- [x] Test: High concurrency list_users (100+ parallel) completes without errors
+- [x] Test: list_users results match between sequential and concurrent execution
+
+#### Section 3: Graph Resolver Concurrency Tests (High Priority)
+
+- [ ] Test: Parallel union relation traversal doesn't corrupt shared state
+- [ ] Test: Parallel intersection traversal maintains correctness
+- [ ] Test: Concurrent exclusion (but-not) evaluation is thread-safe
+- [ ] Test: Deep parallel traversal (depth 20+) doesn't cause race conditions
+- [ ] Test: Concurrent resolver operations with shared cache are consistent
+
+#### Section 4: Singleflight Non-Blocking Tests (High Priority)
+
+- [ ] Test: Singleflight doesn't block writes during pending check
+- [ ] Test: Write operations complete while check is in-flight
+- [ ] Test: Concurrent writes and checks don't deadlock
+- [ ] Test: Singleflight timeout doesn't block subsequent requests
+
+#### Section 5: Memory and Stability Tests (Medium Priority)
+
+- [ ] Test: Memory stable under sustained load (no leaks detected)
+- [ ] Test: Memory usage doesn't grow unbounded with repeated operations
+- [ ] Test: Cache invalidation doesn't cause thundering herd
+- [ ] Test: Burst invalidation (100+ writes) doesn't cause memory spike
+
+#### Section 6: gRPC Protocol Coverage (Medium Priority)
+
+- [ ] Test: gRPC Check performance comparable to REST
+- [ ] Test: gRPC BatchCheck performance comparable to REST
+- [ ] Test: gRPC ListObjects performance comparable to REST
+- [ ] Test: gRPC ListUsers performance comparable to REST
+- [ ] Test: No protocol-specific bottlenecks between REST and gRPC
+
+#### Section 7: Metrics Integration (Lower Priority)
+
+- [ ] Test: Cache hit rate observable via metrics endpoint
+- [ ] Test: Deduplication metrics show eliminated duplicates
+- [ ] Test: Deduplication timeout/TTL metrics are exposed
+- [ ] Test: Cache effectiveness metrics vary with model sizes
+
+**Validation Criteria**:
+- [ ] All concurrency tests pass without race conditions
+- [ ] No deadlocks detected under high load
+- [ ] Memory remains stable during sustained operations
+- [ ] gRPC and REST performance within 10% of each other
+
+**Deliverables**:
+- Additional tests in `crates/rsfga-api/tests/performance_integration_tests.rs`
+- ListObjects/ListUsers concurrency tests
+- Graph resolver thread-safety tests
+- Memory stability tests
+- gRPC performance tests
+
+---
+
 **Phase 1 Status**: ✅ COMPLETE
 
 **Milestone 1.9 Summary**:

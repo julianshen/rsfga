@@ -1414,3 +1414,1108 @@ async fn test_cache_invalidation_performance() {
         write_throughput
     );
 }
+
+// =============================================================================
+// Section 6: ListObjects Concurrency Tests (Issue #210)
+// =============================================================================
+
+/// Number of concurrent ListObjects requests for high-load tests.
+const HIGH_CONCURRENCY_LISTOBJECTS_COUNT: usize = 100;
+
+/// Number of objects to create for ListObjects tests.
+const LISTOBJECTS_TEST_OBJECT_COUNT: usize = 50;
+
+/// Test: Concurrent ListObjects with overlapping filters return consistent results.
+///
+/// Multiple ListObjects requests with overlapping user/relation filters should
+/// not interfere and return correct results.
+#[tokio::test]
+async fn test_listobjects_concurrent_overlapping_filters_consistent() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "listobjects-overlap-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Create documents accessible by multiple users with overlapping permissions
+    // user:alice -> viewer on doc0-29
+    // user:bob -> viewer on doc20-49
+    // Overlap: doc20-29 (both can view)
+    for i in 0..30 {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": "user:alice",
+                        "relation": "viewer",
+                        "object": format!("document:doc{i}")
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    for i in 20..50 {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": "user:bob",
+                        "relation": "viewer",
+                        "object": format!("document:doc{i}")
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let alice_success = Arc::new(AtomicU64::new(0));
+    let bob_success = Arc::new(AtomicU64::new(0));
+    let alice_correct_count = Arc::new(AtomicU64::new(0));
+    let bob_correct_count = Arc::new(AtomicU64::new(0));
+
+    // Launch concurrent ListObjects for both users
+    let mut handles = Vec::new();
+
+    for _ in 0..25 {
+        // Alice requests
+        let storage_clone = Arc::clone(&storage);
+        let cache_clone = Arc::clone(&cache);
+        let store_id_clone = store_id.clone();
+        let alice_success_clone = Arc::clone(&alice_success);
+        let alice_correct_clone = Arc::clone(&alice_correct_count);
+
+        handles.push(tokio::spawn(async move {
+            let (status, response) = post_json(
+                create_test_app_with_shared_cache(&storage_clone, &cache_clone),
+                &format!("/stores/{store_id_clone}/list-objects"),
+                serde_json::json!({
+                    "user": "user:alice",
+                    "relation": "viewer",
+                    "type": "document"
+                }),
+            )
+            .await;
+
+            if status == StatusCode::OK {
+                alice_success_clone.fetch_add(1, Ordering::Relaxed);
+                if let Some(objects) = response["objects"].as_array() {
+                    if objects.len() == 30 {
+                        alice_correct_clone.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }));
+
+        // Bob requests
+        let storage_clone = Arc::clone(&storage);
+        let cache_clone = Arc::clone(&cache);
+        let store_id_clone = store_id.clone();
+        let bob_success_clone = Arc::clone(&bob_success);
+        let bob_correct_clone = Arc::clone(&bob_correct_count);
+
+        handles.push(tokio::spawn(async move {
+            let (status, response) = post_json(
+                create_test_app_with_shared_cache(&storage_clone, &cache_clone),
+                &format!("/stores/{store_id_clone}/list-objects"),
+                serde_json::json!({
+                    "user": "user:bob",
+                    "relation": "viewer",
+                    "type": "document"
+                }),
+            )
+            .await;
+
+            if status == StatusCode::OK {
+                bob_success_clone.fetch_add(1, Ordering::Relaxed);
+                if let Some(objects) = response["objects"].as_array() {
+                    if objects.len() == 30 {
+                        bob_correct_clone.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let alice_successes = alice_success.load(Ordering::Relaxed);
+    let bob_successes = bob_success.load(Ordering::Relaxed);
+    let alice_correct = alice_correct_count.load(Ordering::Relaxed);
+    let bob_correct = bob_correct_count.load(Ordering::Relaxed);
+
+    assert_eq!(alice_successes, 25, "All Alice requests should succeed");
+    assert_eq!(bob_successes, 25, "All Bob requests should succeed");
+    assert_eq!(
+        alice_correct, 25,
+        "All Alice requests should return exactly 30 documents"
+    );
+    assert_eq!(
+        bob_correct, 25,
+        "All Bob requests should return exactly 30 documents"
+    );
+
+    println!(
+        "ListObjects overlapping filters test: Alice {}/{}, Bob {}/{}",
+        alice_correct, alice_successes, bob_correct, bob_successes
+    );
+}
+
+/// Test: Concurrent ListObjects during write operations maintain correctness.
+///
+/// ListObjects should return consistent results even when writes are happening
+/// concurrently. Results should reflect either before or after the write, not
+/// a partial/corrupted state.
+#[tokio::test]
+async fn test_listobjects_concurrent_with_writes_maintains_correctness() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "listobjects-write-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Initial setup: user can view 20 documents
+    for i in 0..20 {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": "user:writer_reader",
+                        "relation": "viewer",
+                        "object": format!("document:initial{i}")
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let read_success = Arc::new(AtomicU64::new(0));
+    let write_success = Arc::new(AtomicU64::new(0));
+    let valid_results = Arc::new(AtomicU64::new(0));
+
+    let mut handles = Vec::new();
+
+    // Launch concurrent reads and writes
+    for i in 0..30 {
+        // Read operation
+        let storage_clone = Arc::clone(&storage);
+        let cache_clone = Arc::clone(&cache);
+        let store_id_clone = store_id.clone();
+        let read_success_clone = Arc::clone(&read_success);
+        let valid_results_clone = Arc::clone(&valid_results);
+
+        handles.push(tokio::spawn(async move {
+            let (status, response) = post_json(
+                create_test_app_with_shared_cache(&storage_clone, &cache_clone),
+                &format!("/stores/{store_id_clone}/list-objects"),
+                serde_json::json!({
+                    "user": "user:writer_reader",
+                    "relation": "viewer",
+                    "type": "document"
+                }),
+            )
+            .await;
+
+            if status == StatusCode::OK {
+                read_success_clone.fetch_add(1, Ordering::Relaxed);
+                // Result should be >= 20 (initial) and <= 50 (initial + new writes)
+                if let Some(objects) = response["objects"].as_array() {
+                    if objects.len() >= 20 && objects.len() <= 50 {
+                        valid_results_clone.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }));
+
+        // Write operation (add new documents)
+        let storage_clone = Arc::clone(&storage);
+        let cache_clone = Arc::clone(&cache);
+        let store_id_clone = store_id.clone();
+        let write_success_clone = Arc::clone(&write_success);
+
+        handles.push(tokio::spawn(async move {
+            let (status, _) = post_json(
+                create_test_app_with_shared_cache(&storage_clone, &cache_clone),
+                &format!("/stores/{store_id_clone}/write"),
+                serde_json::json!({
+                    "writes": {
+                        "tuple_keys": [{
+                            "user": "user:writer_reader",
+                            "relation": "viewer",
+                            "object": format!("document:new{i}")
+                        }]
+                    }
+                }),
+            )
+            .await;
+
+            if status == StatusCode::OK {
+                write_success_clone.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let reads = read_success.load(Ordering::Relaxed);
+    let writes = write_success.load(Ordering::Relaxed);
+    let valid = valid_results.load(Ordering::Relaxed);
+
+    assert_eq!(reads, 30, "All read operations should succeed");
+    assert_eq!(writes, 30, "All write operations should succeed");
+    assert_eq!(
+        valid, reads,
+        "All read results should be valid (between 20 and 50 objects)"
+    );
+
+    println!(
+        "ListObjects concurrent with writes: {} reads, {} writes, {} valid results",
+        reads, writes, valid
+    );
+}
+
+/// Test: High concurrency ListObjects (100+ parallel) completes without errors.
+///
+/// Verifies the system can handle 100+ concurrent ListObjects requests without
+/// errors, deadlocks, or performance degradation.
+#[tokio::test]
+async fn test_listobjects_high_concurrency_100_parallel() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "listobjects-high-concurrency"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Create test data
+    for i in 0..LISTOBJECTS_TEST_OBJECT_COUNT {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": "user:high_concurrency_user",
+                        "relation": "viewer",
+                        "object": format!("document:hc_doc{i}")
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let success_count = Arc::new(AtomicU64::new(0));
+    let error_count = Arc::new(AtomicU64::new(0));
+    let correct_count = Arc::new(AtomicU64::new(0));
+
+    let start = Instant::now();
+
+    // Launch 100+ concurrent ListObjects requests
+    let handles: Vec<_> = (0..HIGH_CONCURRENCY_LISTOBJECTS_COUNT)
+        .map(|_| {
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let success_count = Arc::clone(&success_count);
+            let error_count = Arc::clone(&error_count);
+            let correct_count = Arc::clone(&correct_count);
+
+            tokio::spawn(async move {
+                let (status, response) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/list-objects"),
+                    serde_json::json!({
+                        "user": "user:high_concurrency_user",
+                        "relation": "viewer",
+                        "type": "document"
+                    }),
+                )
+                .await;
+
+                if status == StatusCode::OK {
+                    success_count.fetch_add(1, Ordering::Relaxed);
+                    if let Some(objects) = response["objects"].as_array() {
+                        if objects.len() == LISTOBJECTS_TEST_OBJECT_COUNT {
+                            correct_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                } else {
+                    error_count.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let elapsed = start.elapsed();
+    let successes = success_count.load(Ordering::Relaxed);
+    let errors = error_count.load(Ordering::Relaxed);
+    let correct = correct_count.load(Ordering::Relaxed);
+
+    println!(
+        "High concurrency ListObjects test: {} requests in {:?}",
+        HIGH_CONCURRENCY_LISTOBJECTS_COUNT, elapsed
+    );
+    println!(
+        "  Successes: {}, Errors: {}, Correct results: {}",
+        successes, errors, correct
+    );
+    println!(
+        "  Throughput: {:.0} req/s",
+        HIGH_CONCURRENCY_LISTOBJECTS_COUNT as f64 / elapsed.as_secs_f64()
+    );
+
+    assert_eq!(
+        errors, 0,
+        "Should have no errors under high concurrency ListObjects load"
+    );
+    assert_eq!(
+        successes, HIGH_CONCURRENCY_LISTOBJECTS_COUNT as u64,
+        "All concurrent ListObjects requests should succeed"
+    );
+    assert_eq!(
+        correct, HIGH_CONCURRENCY_LISTOBJECTS_COUNT as u64,
+        "All results should have correct object count"
+    );
+}
+
+/// Test: ListObjects results are consistent across concurrent reads.
+///
+/// Multiple concurrent ListObjects requests for the same user/relation/type
+/// should return identical results (same set of objects).
+#[tokio::test]
+async fn test_listobjects_results_consistent_across_concurrent_reads() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "listobjects-consistency-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Create test data with specific document IDs
+    let expected_objects: std::collections::HashSet<String> = (0..25)
+        .map(|i| format!("document:consistent_doc{i}"))
+        .collect();
+
+    for doc in &expected_objects {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": "user:consistency_user",
+                        "relation": "viewer",
+                        "object": doc
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let results = Arc::new(tokio::sync::Mutex::new(
+        Vec::<std::collections::HashSet<String>>::new(),
+    ));
+    let success_count = Arc::new(AtomicU64::new(0));
+
+    // Launch concurrent reads
+    let handles: Vec<_> = (0..50)
+        .map(|_| {
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let results = Arc::clone(&results);
+            let success_count = Arc::clone(&success_count);
+
+            tokio::spawn(async move {
+                let (status, response) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/list-objects"),
+                    serde_json::json!({
+                        "user": "user:consistency_user",
+                        "relation": "viewer",
+                        "type": "document"
+                    }),
+                )
+                .await;
+
+                if status == StatusCode::OK {
+                    success_count.fetch_add(1, Ordering::Relaxed);
+                    if let Some(objects) = response["objects"].as_array() {
+                        let object_set: std::collections::HashSet<String> = objects
+                            .iter()
+                            .filter_map(|o| o.as_str().map(String::from))
+                            .collect();
+                        results.lock().await.push(object_set);
+                    }
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let successes = success_count.load(Ordering::Relaxed);
+    let all_results = results.lock().await;
+
+    assert_eq!(successes, 50, "All read requests should succeed");
+
+    // Verify all results are identical
+    let first_result = &all_results[0];
+    for (idx, result) in all_results.iter().enumerate() {
+        assert_eq!(
+            result, first_result,
+            "Result {} differs from first result - concurrent reads should be consistent",
+            idx
+        );
+    }
+
+    // Verify results match expected
+    assert_eq!(
+        first_result, &expected_objects,
+        "Results should match expected objects"
+    );
+
+    println!(
+        "ListObjects consistency test: {} identical results across concurrent reads",
+        all_results.len()
+    );
+}
+
+// =============================================================================
+// Section 7: ListUsers Concurrency Tests (Issue #210)
+// =============================================================================
+
+/// Number of concurrent ListUsers requests for high-load tests.
+const HIGH_CONCURRENCY_LISTUSERS_COUNT: usize = 100;
+
+/// Number of users to create for ListUsers tests.
+const LISTUSERS_TEST_USER_COUNT: usize = 30;
+
+/// Test: Concurrent ListUsers operations return consistent results.
+///
+/// Multiple concurrent ListUsers requests for the same object/relation should
+/// return identical user lists without interference.
+#[tokio::test]
+async fn test_listusers_concurrent_requests_consistent() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "listusers-concurrent-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Create users who can view a shared document
+    for i in 0..LISTUSERS_TEST_USER_COUNT {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:viewer{i}"),
+                        "relation": "viewer",
+                        "object": "document:shared_doc"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let success_count = Arc::new(AtomicU64::new(0));
+    let correct_count = Arc::new(AtomicU64::new(0));
+
+    // Launch concurrent ListUsers requests
+    let handles: Vec<_> = (0..50)
+        .map(|_| {
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let success_count = Arc::clone(&success_count);
+            let correct_count = Arc::clone(&correct_count);
+
+            tokio::spawn(async move {
+                let (status, response) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/list-users"),
+                    serde_json::json!({
+                        "object": {"type": "document", "id": "shared_doc"},
+                        "relation": "viewer",
+                        "user_filters": [{"type": "user"}]
+                    }),
+                )
+                .await;
+
+                if status == StatusCode::OK {
+                    success_count.fetch_add(1, Ordering::Relaxed);
+                    if let Some(users) = response["users"].as_array() {
+                        if users.len() == LISTUSERS_TEST_USER_COUNT {
+                            correct_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let successes = success_count.load(Ordering::Relaxed);
+    let correct = correct_count.load(Ordering::Relaxed);
+
+    assert_eq!(successes, 50, "All ListUsers requests should succeed");
+    assert_eq!(
+        correct, 50,
+        "All ListUsers should return exactly {} users",
+        LISTUSERS_TEST_USER_COUNT
+    );
+
+    println!(
+        "ListUsers concurrent test: {} successful, {} correct results",
+        successes, correct
+    );
+}
+
+/// Test: Concurrent ListUsers with same parameters deduplicate correctly.
+///
+/// Multiple identical ListUsers requests running concurrently should
+/// not cause duplication issues or return incorrect results.
+#[tokio::test]
+async fn test_listusers_concurrent_same_params_deduplicate() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "listusers-dedup-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Create users
+    let expected_users: std::collections::HashSet<String> = (0..20)
+        .map(|i| format!("user:dedup_user{i}"))
+        .collect();
+
+    for user in &expected_users {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": user,
+                        "relation": "viewer",
+                        "object": "document:dedup_doc"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let results = Arc::new(tokio::sync::Mutex::new(
+        Vec::<std::collections::HashSet<String>>::new(),
+    ));
+    let success_count = Arc::new(AtomicU64::new(0));
+
+    // Launch many concurrent identical requests
+    let handles: Vec<_> = (0..40)
+        .map(|_| {
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let results = Arc::clone(&results);
+            let success_count = Arc::clone(&success_count);
+
+            tokio::spawn(async move {
+                let (status, response) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/list-users"),
+                    serde_json::json!({
+                        "object": {"type": "document", "id": "dedup_doc"},
+                        "relation": "viewer",
+                        "user_filters": [{"type": "user"}]
+                    }),
+                )
+                .await;
+
+                if status == StatusCode::OK {
+                    success_count.fetch_add(1, Ordering::Relaxed);
+                    if let Some(users) = response["users"].as_array() {
+                        let user_set: std::collections::HashSet<String> = users
+                            .iter()
+                            .filter_map(|u| {
+                                u["object"]["id"].as_str().map(|id| format!("user:{id}"))
+                            })
+                            .collect();
+                        results.lock().await.push(user_set);
+                    }
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let successes = success_count.load(Ordering::Relaxed);
+    let all_results = results.lock().await;
+
+    assert_eq!(successes, 40, "All requests should succeed");
+
+    // All results should be identical
+    let first_result = &all_results[0];
+    for (idx, result) in all_results.iter().enumerate() {
+        assert_eq!(
+            result, first_result,
+            "Result {} differs from first - deduplication should ensure consistency",
+            idx
+        );
+    }
+
+    // Verify we got the expected users
+    assert_eq!(
+        first_result, &expected_users,
+        "Results should match expected users"
+    );
+
+    println!(
+        "ListUsers deduplication test: {} identical results",
+        all_results.len()
+    );
+}
+
+/// Test: Concurrent ListUsers during tuple writes maintain correctness.
+///
+/// ListUsers should return consistent results even when writes are happening
+/// concurrently. Results should reflect either before or after the write.
+#[tokio::test]
+async fn test_listusers_concurrent_with_writes_maintains_correctness() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "listusers-write-test"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Initial setup: 15 users can view the document
+    for i in 0..15 {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:initial{i}"),
+                        "relation": "viewer",
+                        "object": "document:write_test_doc"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let read_success = Arc::new(AtomicU64::new(0));
+    let write_success = Arc::new(AtomicU64::new(0));
+    let valid_results = Arc::new(AtomicU64::new(0));
+
+    let mut handles = Vec::new();
+
+    // Launch concurrent reads and writes
+    for i in 0..25 {
+        // Read operation
+        let storage_clone = Arc::clone(&storage);
+        let cache_clone = Arc::clone(&cache);
+        let store_id_clone = store_id.clone();
+        let read_success_clone = Arc::clone(&read_success);
+        let valid_results_clone = Arc::clone(&valid_results);
+
+        handles.push(tokio::spawn(async move {
+            let (status, response) = post_json(
+                create_test_app_with_shared_cache(&storage_clone, &cache_clone),
+                &format!("/stores/{store_id_clone}/list-users"),
+                serde_json::json!({
+                    "object": {"type": "document", "id": "write_test_doc"},
+                    "relation": "viewer",
+                    "user_filters": [{"type": "user"}]
+                }),
+            )
+            .await;
+
+            if status == StatusCode::OK {
+                read_success_clone.fetch_add(1, Ordering::Relaxed);
+                // Result should be >= 15 (initial) and <= 40 (initial + new writes)
+                if let Some(users) = response["users"].as_array() {
+                    if users.len() >= 15 && users.len() <= 40 {
+                        valid_results_clone.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }));
+
+        // Write operation (add new users)
+        let storage_clone = Arc::clone(&storage);
+        let cache_clone = Arc::clone(&cache);
+        let store_id_clone = store_id.clone();
+        let write_success_clone = Arc::clone(&write_success);
+
+        handles.push(tokio::spawn(async move {
+            let (status, _) = post_json(
+                create_test_app_with_shared_cache(&storage_clone, &cache_clone),
+                &format!("/stores/{store_id_clone}/write"),
+                serde_json::json!({
+                    "writes": {
+                        "tuple_keys": [{
+                            "user": format!("user:new{i}"),
+                            "relation": "viewer",
+                            "object": "document:write_test_doc"
+                        }]
+                    }
+                }),
+            )
+            .await;
+
+            if status == StatusCode::OK {
+                write_success_clone.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let reads = read_success.load(Ordering::Relaxed);
+    let writes = write_success.load(Ordering::Relaxed);
+    let valid = valid_results.load(Ordering::Relaxed);
+
+    assert_eq!(reads, 25, "All read operations should succeed");
+    assert_eq!(writes, 25, "All write operations should succeed");
+    assert_eq!(
+        valid, reads,
+        "All read results should be valid (between 15 and 40 users)"
+    );
+
+    println!(
+        "ListUsers concurrent with writes: {} reads, {} writes, {} valid results",
+        reads, writes, valid
+    );
+}
+
+/// Test: High concurrency ListUsers (100+ parallel) completes without errors.
+///
+/// Verifies the system can handle 100+ concurrent ListUsers requests without
+/// errors, deadlocks, or performance degradation.
+#[tokio::test]
+async fn test_listusers_high_concurrency_100_parallel() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "listusers-high-concurrency"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Create test data
+    for i in 0..LISTUSERS_TEST_USER_COUNT {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:hc_user{i}"),
+                        "relation": "viewer",
+                        "object": "document:hc_doc"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let success_count = Arc::new(AtomicU64::new(0));
+    let error_count = Arc::new(AtomicU64::new(0));
+    let correct_count = Arc::new(AtomicU64::new(0));
+
+    let start = Instant::now();
+
+    // Launch 100+ concurrent ListUsers requests
+    let handles: Vec<_> = (0..HIGH_CONCURRENCY_LISTUSERS_COUNT)
+        .map(|_| {
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let success_count = Arc::clone(&success_count);
+            let error_count = Arc::clone(&error_count);
+            let correct_count = Arc::clone(&correct_count);
+
+            tokio::spawn(async move {
+                let (status, response) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/list-users"),
+                    serde_json::json!({
+                        "object": {"type": "document", "id": "hc_doc"},
+                        "relation": "viewer",
+                        "user_filters": [{"type": "user"}]
+                    }),
+                )
+                .await;
+
+                if status == StatusCode::OK {
+                    success_count.fetch_add(1, Ordering::Relaxed);
+                    if let Some(users) = response["users"].as_array() {
+                        if users.len() == LISTUSERS_TEST_USER_COUNT {
+                            correct_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                } else {
+                    error_count.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let elapsed = start.elapsed();
+    let successes = success_count.load(Ordering::Relaxed);
+    let errors = error_count.load(Ordering::Relaxed);
+    let correct = correct_count.load(Ordering::Relaxed);
+
+    println!(
+        "High concurrency ListUsers test: {} requests in {:?}",
+        HIGH_CONCURRENCY_LISTUSERS_COUNT, elapsed
+    );
+    println!(
+        "  Successes: {}, Errors: {}, Correct results: {}",
+        successes, errors, correct
+    );
+    println!(
+        "  Throughput: {:.0} req/s",
+        HIGH_CONCURRENCY_LISTUSERS_COUNT as f64 / elapsed.as_secs_f64()
+    );
+
+    assert_eq!(
+        errors, 0,
+        "Should have no errors under high concurrency ListUsers load"
+    );
+    assert_eq!(
+        successes, HIGH_CONCURRENCY_LISTUSERS_COUNT as u64,
+        "All concurrent ListUsers requests should succeed"
+    );
+    assert_eq!(
+        correct, HIGH_CONCURRENCY_LISTUSERS_COUNT as u64,
+        "All results should have correct user count"
+    );
+}
+
+/// Test: ListUsers results match between sequential and concurrent execution.
+///
+/// Verifies that concurrent execution doesn't produce different results
+/// than sequential execution for the same query.
+#[tokio::test]
+async fn test_listusers_sequential_vs_concurrent_results_match() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({"name": "listusers-seq-vs-conc"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+    setup_simple_model(&storage, &store_id).await;
+
+    // Create test users
+    for i in 0..25 {
+        let (status, _) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/write"),
+            serde_json::json!({
+                "writes": {
+                    "tuple_keys": [{
+                        "user": format!("user:seq_user{i}"),
+                        "relation": "viewer",
+                        "object": "document:seq_doc"
+                    }]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // Get sequential result first
+    let (status, seq_response) = post_json(
+        create_test_app_with_shared_cache(&storage, &cache),
+        &format!("/stores/{store_id}/list-users"),
+        serde_json::json!({
+            "object": {"type": "document", "id": "seq_doc"},
+            "relation": "viewer",
+            "user_filters": [{"type": "user"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let sequential_users: std::collections::HashSet<String> = seq_response["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|u| u["object"]["id"].as_str().map(|id| format!("user:{id}")))
+        .collect();
+
+    // Now run concurrent requests
+    let concurrent_results = Arc::new(tokio::sync::Mutex::new(
+        Vec::<std::collections::HashSet<String>>::new(),
+    ));
+
+    let handles: Vec<_> = (0..30)
+        .map(|_| {
+            let storage = Arc::clone(&storage);
+            let cache = Arc::clone(&cache);
+            let store_id = store_id.clone();
+            let concurrent_results = Arc::clone(&concurrent_results);
+
+            tokio::spawn(async move {
+                let (status, response) = post_json(
+                    create_test_app_with_shared_cache(&storage, &cache),
+                    &format!("/stores/{store_id}/list-users"),
+                    serde_json::json!({
+                        "object": {"type": "document", "id": "seq_doc"},
+                        "relation": "viewer",
+                        "user_filters": [{"type": "user"}]
+                    }),
+                )
+                .await;
+
+                if status == StatusCode::OK {
+                    if let Some(users) = response["users"].as_array() {
+                        let user_set: std::collections::HashSet<String> = users
+                            .iter()
+                            .filter_map(|u| {
+                                u["object"]["id"].as_str().map(|id| format!("user:{id}"))
+                            })
+                            .collect();
+                        concurrent_results.lock().await.push(user_set);
+                    }
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.await.expect("Task should complete without panic");
+    }
+
+    let all_concurrent = concurrent_results.lock().await;
+
+    // All concurrent results should match sequential
+    for (idx, result) in all_concurrent.iter().enumerate() {
+        assert_eq!(
+            result, &sequential_users,
+            "Concurrent result {} should match sequential result",
+            idx
+        );
+    }
+
+    println!(
+        "ListUsers sequential vs concurrent test: {} concurrent results match sequential",
+        all_concurrent.len()
+    );
+}
