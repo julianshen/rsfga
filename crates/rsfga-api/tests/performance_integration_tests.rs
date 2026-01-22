@@ -4176,18 +4176,18 @@ async fn test_cache_invalidation_no_thundering_herd() {
 
     // Spawn many readers that will check after invalidation
     let store_id_clone = store_id.clone();
-    let storage_clone = storage.clone();
-    let cache_clone = cache.clone();
+    let storage_clone = Arc::clone(&storage);
+    let cache_clone = Arc::clone(&cache);
     let mut reader_handles = Vec::new();
 
     for i in 0..THUNDERING_HERD_READER_COUNT {
         let store_id = store_id_clone.clone();
-        let storage = storage_clone.clone();
-        let cache = cache_clone.clone();
-        let complete = all_reads_complete.clone();
-        let max_conc = max_concurrent_observed.clone();
-        let curr_conc = current_concurrent.clone();
-        let successes = read_successes.clone();
+        let storage = Arc::clone(&storage_clone);
+        let cache = Arc::clone(&cache_clone);
+        let complete = Arc::clone(&all_reads_complete);
+        let max_conc = Arc::clone(&max_concurrent_observed);
+        let curr_conc = Arc::clone(&current_concurrent);
+        let successes = Arc::clone(&read_successes);
         let stagger_micros = (i * 20) as u64; // Stagger by 20μs per reader
 
         reader_handles.push(tokio::spawn(async move {
