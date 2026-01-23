@@ -1557,17 +1557,16 @@ async fn test_write_invalid_tuple_returns_400() {
     assert_eq!(response["code"], "validation_error");
 }
 
-/// Test: Write to unknown type returns 200
+/// Test: Write to unknown type returns 400 Bad Request
 ///
-/// Note: Write operations accept tuples for unknown types without strict
-/// validation at write time. This is consistent with OpenFGA behavior
-/// where tuple storage is permissive.
+/// OpenFGA validates that types exist in the authorization model at write time.
+/// Tuples referencing undefined types are rejected.
 #[tokio::test]
-async fn test_write_unknown_type_accepted() {
+async fn test_write_unknown_type_rejected() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    let (status, _response) = post_json(
+    let (status, response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/write"),
         serde_json::json!({
@@ -1584,24 +1583,25 @@ async fn test_write_unknown_type_accepted() {
     )
     .await;
 
-    // Write accepts tuples even for unknown types
+    // Write rejects tuples for unknown types
     assert_eq!(
         status,
-        StatusCode::OK,
-        "Write to unknown type is accepted (returns 200)"
+        StatusCode::BAD_REQUEST,
+        "Write to unknown type should return 400 Bad Request"
     );
+    assert_eq!(response["code"], "validation_error");
 }
 
-/// Test: Write with unknown relation returns 200
+/// Test: Write with unknown relation returns 400 Bad Request
 ///
-/// Note: Write operations accept tuples with unknown relations without
-/// strict validation at write time. This is consistent with OpenFGA behavior.
+/// OpenFGA validates that relations exist in the authorization model at write time.
+/// Tuples referencing undefined relations are rejected.
 #[tokio::test]
-async fn test_write_unknown_relation_accepted() {
+async fn test_write_unknown_relation_rejected() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    let (status, _response) = post_json(
+    let (status, response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/write"),
         serde_json::json!({
@@ -1618,12 +1618,13 @@ async fn test_write_unknown_relation_accepted() {
     )
     .await;
 
-    // Write accepts tuples even for unknown relations
+    // Write rejects tuples with unknown relations
     assert_eq!(
         status,
-        StatusCode::OK,
-        "Write with unknown relation is accepted (returns 200)"
+        StatusCode::BAD_REQUEST,
+        "Write with unknown relation should return 400 Bad Request"
     );
+    assert_eq!(response["code"], "validation_error");
 }
 
 // ============================================================================

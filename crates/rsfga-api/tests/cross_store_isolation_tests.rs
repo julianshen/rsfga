@@ -1473,6 +1473,10 @@ async fn test_http_write_respects_store_boundaries() {
     assert_eq!(status, StatusCode::CREATED);
     let store_2 = response["id"].as_str().unwrap().to_string();
 
+    // Set up authorization models for both stores (required for tuple validation)
+    setup_complete_model(&storage, &store_1).await;
+    setup_complete_model(&storage, &store_2).await;
+
     // Write via HTTP to store 1
     let (status, _) = post_json(
         create_test_app(&storage),
@@ -1709,6 +1713,10 @@ async fn test_grpc_write_respects_store_boundaries() {
         .create_store("grpc-write-2", "gRPC Write 2")
         .await
         .unwrap();
+
+    // Set up authorization models for both stores (required for tuple validation)
+    setup_complete_model(&storage, "grpc-write-1").await;
+    setup_complete_model(&storage, "grpc-write-2").await;
 
     let service = test_grpc_service(Arc::clone(&storage));
 

@@ -23,7 +23,7 @@ use std::time::Instant;
 
 use axum::http::StatusCode;
 use futures::future::join_all;
-use rsfga_storage::MemoryDataStore;
+use rsfga_storage::{DataStore, MemoryDataStore, StoredAuthorizationModel};
 
 use common::{
     create_test_app, post_json, OVERLOAD_TEST_CONCURRENT_REQUESTS, STRESS_TEST_CONCURRENT_REQUESTS,
@@ -386,6 +386,17 @@ async fn test_high_write_throughput() {
         assert_eq!(status, StatusCode::CREATED);
         response["id"].as_str().unwrap().to_string()
     };
+
+    // Set up authorization model (required for tuple validation)
+    let model_json = r#"{
+        "type_definitions": [
+            {"type": "user"},
+            {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
+        ]
+    }"#;
+    let model =
+        StoredAuthorizationModel::new(ulid::Ulid::new().to_string(), &store_id, "1.1", model_json);
+    storage.write_authorization_model(model).await.unwrap();
 
     let start = Instant::now();
     let success_count = Arc::new(AtomicU64::new(0));
