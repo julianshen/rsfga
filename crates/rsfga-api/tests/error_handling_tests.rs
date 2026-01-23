@@ -23,9 +23,12 @@ use common::{create_test_app, post_json};
 async fn test_check_nonexistent_store_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
 
+    // Use a valid ULID format that doesn't exist (OpenFGA validates format first, returning 400 for invalid ULIDs)
+    let nonexistent_store_id = ulid::Ulid::new().to_string();
+
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store-id/check",
+        &format!("/stores/{nonexistent_store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -55,9 +58,12 @@ async fn test_check_nonexistent_store_returns_404() {
 async fn test_expand_nonexistent_store_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
 
+    // Use a valid ULID format that doesn't exist (OpenFGA validates format first, returning 400 for invalid ULIDs)
+    let nonexistent_store_id = ulid::Ulid::new().to_string();
+
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store-id/expand",
+        &format!("/stores/{nonexistent_store_id}/expand"),
         serde_json::json!({
             "tuple_key": {
                 "relation": "viewer",
@@ -85,9 +91,12 @@ async fn test_expand_nonexistent_store_returns_404() {
 async fn test_list_objects_nonexistent_store_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
 
+    // Use a valid ULID format that doesn't exist (OpenFGA validates format first, returning 400 for invalid ULIDs)
+    let nonexistent_store_id = ulid::Ulid::new().to_string();
+
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store-id/list-objects",
+        &format!("/stores/{nonexistent_store_id}/list-objects"),
         serde_json::json!({
             "type": "document",
             "relation": "viewer",
@@ -255,9 +264,12 @@ async fn test_check_relation_not_found_returns_400() {
 async fn test_write_nonexistent_store_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
 
+    // Use a valid ULID format that doesn't exist (OpenFGA validates format first, returning 400 for invalid ULIDs)
+    let nonexistent_store_id = ulid::Ulid::new().to_string();
+
     let (status, _) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store-id/write",
+        &format!("/stores/{nonexistent_store_id}/write"),
         serde_json::json!({
             "writes": {
                 "tuple_keys": [
@@ -288,9 +300,12 @@ async fn test_write_nonexistent_store_returns_404() {
 async fn test_read_tuples_nonexistent_store_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
 
+    // Use a valid ULID format that doesn't exist (OpenFGA validates format first, returning 400 for invalid ULIDs)
+    let nonexistent_store_id = ulid::Ulid::new().to_string();
+
     let (status, _) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store-id/read",
+        &format!("/stores/{nonexistent_store_id}/read"),
         serde_json::json!({}),
     )
     .await;
@@ -396,10 +411,13 @@ async fn test_batch_check_with_invalid_request_returns_error_for_that_request() 
 async fn test_error_response_structure_is_consistent() {
     let storage = Arc::new(MemoryDataStore::new());
 
+    // Use a valid ULID format that doesn't exist (OpenFGA validates format first, returning 400 for invalid ULIDs)
+    let nonexistent_store_id = ulid::Ulid::new().to_string();
+
     // Test 404 error structure
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent/check",
+        &format!("/stores/{nonexistent_store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",

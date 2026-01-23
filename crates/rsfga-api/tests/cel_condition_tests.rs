@@ -1513,13 +1513,17 @@ async fn test_context_with_emoji_handled_safely() {
 }
 
 /// Test: Check with non-existent store returns 404.
+/// Note: The store ID must be in valid ULID format (OpenFGA validates format first).
 #[tokio::test]
 async fn test_check_nonexistent_store_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
 
+    // Use a valid ULID format for non-existent store (OpenFGA validates format first)
+    let nonexistent_store_id = ulid::Ulid::new().to_string();
+
     let (status, _response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{}/check", nonexistent_store_id),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:test",
@@ -1533,7 +1537,33 @@ async fn test_check_nonexistent_store_returns_404() {
     assert_eq!(
         status,
         StatusCode::NOT_FOUND,
-        "Non-existent store should return 404"
+        "Non-existent store (with valid ULID format) should return 404"
+    );
+}
+
+/// Test: Check with invalid store ID format returns 400.
+/// OpenFGA validates store ID format before checking if the store exists.
+#[tokio::test]
+async fn test_check_invalid_store_id_format_returns_400() {
+    let storage = Arc::new(MemoryDataStore::new());
+
+    let (status, _response) = post_json(
+        create_test_app(&storage),
+        "/stores/invalid-store-id/check",
+        serde_json::json!({
+            "tuple_key": {
+                "user": "user:test",
+                "relation": "viewer",
+                "object": "document:test"
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "Invalid store ID format should return 400"
     );
 }
 

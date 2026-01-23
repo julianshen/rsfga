@@ -384,13 +384,16 @@ mod tests {
     async fn test_error_codes_match_openfga() {
         let app = test_app();
 
-        // Non-existent store should return 404 with proper error format
+        // Use a valid ULID format store ID that doesn't exist
+        let nonexistent_store_id = ulid::Ulid::new().to_string();
+
+        // Non-existent store (with valid ULID format) should return 404 with proper error format
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/nonexistent-store/check")
+                    .uri(format!("/stores/{}/check", nonexistent_store_id))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"tuple_key":{"user":"user:alice","relation":"viewer","object":"doc:1"}}"#,
@@ -400,7 +403,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "Check store: expected 404 for non-existent store with valid ULID, got {}",
+            response.status()
+        );
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();
@@ -416,13 +424,36 @@ mod tests {
             "Error response must have 'message' field"
         );
 
-        // Invalid JSON should return 400
+        // Invalid store ID format should return 400 (OpenFGA validates format first)
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/test-store/check")
+                    .uri("/stores/invalid-store-id/check")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"tuple_key":{"user":"user:alice","relation":"viewer","object":"doc:1"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "Invalid store ID format should return 400"
+        );
+
+        // Invalid JSON should return 400
+        let valid_store_id = ulid::Ulid::new().to_string();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/stores/{}/check", valid_store_id))
                     .header("content-type", "application/json")
                     .body(Body::from("{ invalid json }"))
                     .unwrap(),
@@ -433,9 +464,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         // Invalid request body should return 400 or 422
+        let test_store_id = ulid::Ulid::new().to_string();
         let storage = Arc::new(MemoryDataStore::new());
         storage
-            .create_store("test-store", "Test Store")
+            .create_store(&test_store_id, "Test Store")
             .await
             .unwrap();
         let state = AppState::new(storage);
@@ -445,7 +477,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/test-store/check")
+                    .uri(format!("/stores/{}/check", test_store_id))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"invalid":"request"}"#))
                     .unwrap(),

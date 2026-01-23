@@ -938,9 +938,13 @@ async fn test_400_errors_are_non_retryable() {
 async fn test_404_errors_are_non_retryable() {
     let storage = Arc::new(MemoryDataStore::new());
 
+    // Use a valid ULID format that doesn't exist in storage
+    // (OpenFGA validates store ID format first - invalid format returns 400, valid format not found returns 404)
+    let nonexistent_store = ulid::Ulid::new().to_string();
+
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{nonexistent_store}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -1019,7 +1023,9 @@ async fn test_validation_error_consistent_across_check_and_expand() {
 #[tokio::test]
 async fn test_store_not_found_consistent_across_endpoints() {
     let storage = Arc::new(MemoryDataStore::new());
-    let nonexistent_store = "nonexistent-store-id";
+    // Use a valid ULID format that doesn't exist in storage
+    // (OpenFGA validates store ID format first - invalid format returns 400, valid format not found returns 404)
+    let nonexistent_store = ulid::Ulid::new().to_string();
 
     // Test all endpoints
     let endpoints = vec![
@@ -1163,8 +1169,13 @@ async fn test_grpc_check_nonexistent_store_returns_not_found() {
     let storage = Arc::new(MemoryDataStore::new());
     let service = create_grpc_service(&storage);
 
+    // Use a valid ULID format that doesn't exist in storage
+    // (OpenFGA validates store ID format first - invalid format returns INVALID_ARGUMENT,
+    // valid format not found returns NOT_FOUND)
+    let nonexistent_store = ulid::Ulid::new().to_string();
+
     let request = Request::new(CheckRequest {
-        store_id: "nonexistent-store".to_string(),
+        store_id: nonexistent_store,
         tuple_key: Some(TupleKey {
             user: "user:alice".to_string(),
             relation: "viewer".to_string(),

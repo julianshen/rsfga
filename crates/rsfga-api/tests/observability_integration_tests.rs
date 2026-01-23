@@ -16,6 +16,7 @@ use axum::{
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tower::ServiceExt;
+use ulid::Ulid;
 use uuid::Uuid;
 
 use rsfga_api::http::{create_router, create_router_with_observability, AppState};
@@ -213,13 +214,15 @@ async fn test_error_responses_include_request_id() {
     let app = create_test_router_with_observability(storage, metrics);
 
     // Request to non-existent store should return 404
+    // Use valid ULID format for store ID (OpenFGA validates format first - invalid format returns 400)
+    let nonexistent_store_id = Ulid::new().to_string();
     let custom_id = "error-request-id-404";
 
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/nonexistent-store/check")
+                .uri(format!("/stores/{}/check", nonexistent_store_id))
                 .header(REQUEST_ID_HEADER, custom_id)
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -259,7 +262,8 @@ async fn test_error_responses_include_request_id() {
 #[tokio::test]
 async fn test_multiple_requests_preserve_distinct_ids() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_test_store(&storage, "test-store").await;
+    let store_id = Ulid::new().to_string();
+    setup_test_store(&storage, &store_id).await;
 
     let metrics = Arc::new(RequestMetrics::new());
     let app = create_test_router_with_observability(Arc::clone(&storage), metrics);
@@ -297,12 +301,13 @@ async fn test_multiple_requests_preserve_distinct_ids() {
 #[tokio::test]
 async fn test_request_id_with_batch_operations() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_test_store(&storage, "test-store").await;
+    let store_id = Ulid::new().to_string();
+    setup_test_store(&storage, &store_id).await;
 
     // Write a tuple for the batch check
     storage
         .write_tuple(
-            "test-store",
+            &store_id,
             StoredTuple::new("document", "readme", "viewer", "user", "alice", None),
         )
         .await
@@ -317,7 +322,7 @@ async fn test_request_id_with_batch_operations() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/batch-check")
+                .uri(format!("/stores/{}/batch-check", store_id))
                 .header(REQUEST_ID_HEADER, batch_request_id)
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -399,11 +404,13 @@ async fn test_metrics_collected_for_client_errors() {
     let app = create_test_router_with_observability(Arc::clone(&storage), Arc::clone(&metrics));
 
     // Request to non-existent store (404)
+    // Use valid ULID format for store ID (OpenFGA validates format first - invalid format returns 400)
+    let nonexistent_store_id = Ulid::new().to_string();
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/nonexistent/check")
+                .uri(format!("/stores/{}/check", nonexistent_store_id))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{"tuple_key":{"user":"user:a","relation":"viewer","object":"doc:b"}}"#,
@@ -425,7 +432,8 @@ async fn test_metrics_collected_for_client_errors() {
 #[tokio::test]
 async fn test_metrics_track_different_endpoints() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_test_store(&storage, "test-store").await;
+    let store_id = Ulid::new().to_string();
+    setup_test_store(&storage, &store_id).await;
 
     let metrics = Arc::new(RequestMetrics::new());
     let app = create_test_router_with_observability(Arc::clone(&storage), Arc::clone(&metrics));
@@ -515,7 +523,8 @@ async fn test_prometheus_metrics_endpoint_format_with_labels() {
 #[tokio::test]
 async fn test_metrics_accumulate_across_requests() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_test_store(&storage, "test-store").await;
+    let store_id = Ulid::new().to_string();
+    setup_test_store(&storage, &store_id).await;
 
     let metrics = Arc::new(RequestMetrics::new());
     let app = create_test_router_with_observability(Arc::clone(&storage), Arc::clone(&metrics));
@@ -535,14 +544,15 @@ async fn test_metrics_accumulate_across_requests() {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    // Make 2 error requests
+    // Make 2 error requests with valid ULID format for non-existent store
+    let nonexistent_store_id = Ulid::new().to_string();
     for _ in 0..2 {
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/nonexistent/check")
+                    .uri(format!("/stores/{}/check", nonexistent_store_id))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"tuple_key":{"user":"u:a","relation":"v","object":"d:b"}}"#,
@@ -670,11 +680,13 @@ async fn test_tracing_spans_for_error_responses() {
     let app = create_test_router_with_observability(Arc::clone(&storage), metrics);
 
     // Error request - tracing should still work
+    // Use valid ULID format for store ID (OpenFGA validates format first - invalid format returns 400)
+    let nonexistent_store_id = Ulid::new().to_string();
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/nonexistent/check")
+                .uri(format!("/stores/{}/check", nonexistent_store_id))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{"tuple_key":{"user":"u:a","relation":"v","object":"d:b"}}"#,
@@ -856,11 +868,12 @@ async fn test_health_endpoint_includes_request_id() {
 #[tokio::test]
 async fn test_observability_with_check_endpoint() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_test_store(&storage, "test-store").await;
+    let store_id = Ulid::new().to_string();
+    setup_test_store(&storage, &store_id).await;
 
     storage
         .write_tuple(
-            "test-store",
+            &store_id,
             StoredTuple::new("document", "readme", "viewer", "user", "alice", None),
         )
         .await
@@ -875,7 +888,7 @@ async fn test_observability_with_check_endpoint() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri(format!("/stores/{}/check", store_id))
                 .header(REQUEST_ID_HEADER, check_request_id)
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -908,7 +921,8 @@ async fn test_observability_with_check_endpoint() {
 #[tokio::test]
 async fn test_observability_with_write_endpoint() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_test_store(&storage, "test-store").await;
+    let store_id = Ulid::new().to_string();
+    setup_test_store(&storage, &store_id).await;
 
     let metrics = Arc::new(RequestMetrics::new());
     let app = create_test_router_with_observability(Arc::clone(&storage), Arc::clone(&metrics));
@@ -919,7 +933,7 @@ async fn test_observability_with_write_endpoint() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri(format!("/stores/{}/write", store_id))
                 .header(REQUEST_ID_HEADER, write_request_id)
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -949,7 +963,8 @@ async fn test_observability_with_write_endpoint() {
 #[tokio::test]
 async fn test_observability_with_expand_endpoint() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_test_store(&storage, "test-store").await;
+    let store_id = Ulid::new().to_string();
+    setup_test_store(&storage, &store_id).await;
 
     let metrics = Arc::new(RequestMetrics::new());
     let app = create_test_router_with_observability(Arc::clone(&storage), Arc::clone(&metrics));
@@ -960,7 +975,7 @@ async fn test_observability_with_expand_endpoint() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/expand")
+                .uri(format!("/stores/{}/expand", store_id))
                 .header(REQUEST_ID_HEADER, expand_request_id)
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -985,7 +1000,8 @@ async fn test_observability_with_expand_endpoint() {
 #[tokio::test]
 async fn test_observability_with_list_objects_endpoint() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_test_store(&storage, "test-store").await;
+    let store_id = Ulid::new().to_string();
+    setup_test_store(&storage, &store_id).await;
 
     let metrics = Arc::new(RequestMetrics::new());
     let app = create_test_router_with_observability(Arc::clone(&storage), Arc::clone(&metrics));
@@ -996,7 +1012,7 @@ async fn test_observability_with_list_objects_endpoint() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/list-objects")
+                .uri(format!("/stores/{}/list-objects", store_id))
                 .header(REQUEST_ID_HEADER, list_request_id)
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -1020,7 +1036,8 @@ async fn test_observability_with_list_objects_endpoint() {
 #[tokio::test]
 async fn test_observability_with_list_users_endpoint() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_test_store(&storage, "test-store").await;
+    let store_id = Ulid::new().to_string();
+    setup_test_store(&storage, &store_id).await;
 
     let metrics = Arc::new(RequestMetrics::new());
     let app = create_test_router_with_observability(Arc::clone(&storage), Arc::clone(&metrics));
@@ -1031,7 +1048,7 @@ async fn test_observability_with_list_users_endpoint() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/list-users")
+                .uri(format!("/stores/{}/list-users", store_id))
                 .header(REQUEST_ID_HEADER, list_users_request_id)
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -1062,11 +1079,12 @@ async fn test_full_observability_chain_end_to_end() {
     init_tracing();
 
     let storage = Arc::new(MemoryDataStore::new());
-    setup_test_store(&storage, "test-store").await;
+    let store_id = Ulid::new().to_string();
+    setup_test_store(&storage, &store_id).await;
 
     storage
         .write_tuple(
-            "test-store",
+            &store_id,
             StoredTuple::new("document", "spec", "owner", "user", "admin", None),
         )
         .await
@@ -1078,14 +1096,15 @@ async fn test_full_observability_chain_end_to_end() {
     let e2e_request_id = "e2e-observability-test-id";
 
     // Make multiple requests to verify all layers work together
+    let check_endpoint = format!("/stores/{}/check", store_id);
     let endpoints = vec![
-        ("/health", "GET"),
-        ("/ready", "GET"),
-        ("/stores/test-store/check", "POST"),
+        ("/health".to_string(), "GET"),
+        ("/ready".to_string(), "GET"),
+        (check_endpoint, "POST"),
     ];
 
-    for (uri, method) in endpoints {
-        let body = if method == "POST" {
+    for (uri, method) in &endpoints {
+        let body = if *method == "POST" {
             Body::from(
                 r#"{"tuple_key":{"user":"user:admin","relation":"owner","object":"document:spec"}}"#,
             )
@@ -1094,10 +1113,10 @@ async fn test_full_observability_chain_end_to_end() {
         };
 
         let mut builder = Request::builder()
-            .uri(uri)
+            .uri(uri.as_str())
             .header(REQUEST_ID_HEADER, e2e_request_id);
 
-        if method == "POST" {
+        if *method == "POST" {
             builder = builder
                 .method("POST")
                 .header("content-type", "application/json");
