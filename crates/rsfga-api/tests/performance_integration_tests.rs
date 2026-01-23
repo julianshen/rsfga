@@ -4622,3 +4622,769 @@ async fn test_memory_stable_under_sustained_load() {
         );
     }
 }
+
+// =============================================================================
+// Section 10: gRPC Protocol Coverage Tests (Issue #210 Section 6)
+// =============================================================================
+//
+// These tests verify that gRPC performance is comparable to REST performance
+// for all major operations. The goal is to ensure no protocol-specific
+// bottlenecks exist between REST and gRPC.
+
+use rsfga_api::grpc::OpenFgaGrpcService;
+use rsfga_api::proto::openfga::v1::open_fga_service_server::OpenFgaService;
+use rsfga_api::proto::openfga::v1::{
+    BatchCheckItem, BatchCheckRequest, CheckRequest as GrpcCheckRequest, CreateStoreRequest,
+    FgaObject, ListObjectsRequest as GrpcListObjectsRequest,
+    ListUsersRequest as GrpcListUsersRequest, TupleKey, UserTypeFilter, WriteRequest,
+    WriteRequestWrites,
+};
+use rsfga_domain::cache::CheckCacheConfig as GrpcCacheConfig;
+use tonic::Request;
+
+/// Number of iterations for performance comparison tests.
+const GRPC_PERF_ITERATIONS: usize = 100;
+
+/// Tolerance factor for performance comparison (gRPC should be within 3x of REST).
+/// This is generous to account for CI variability. Both should be sub-ms for in-memory.
+const PERF_COMPARISON_TOLERANCE: f64 = 3.0;
+
+/// Helper to create a gRPC service with caching enabled.
+fn create_grpc_service_with_cache(
+    storage: Arc<MemoryDataStore>,
+) -> OpenFgaGrpcService<MemoryDataStore> {
+    let cache_config = GrpcCacheConfig::default().with_enabled(true);
+    OpenFgaGrpcService::with_cache_config(storage, cache_config)
+}
+
+/// Helper to set up a gRPC store with a simple model.
+async fn setup_grpc_store(
+    service: &OpenFgaGrpcService<MemoryDataStore>,
+    storage: &MemoryDataStore,
+    store_name: &str,
+) -> String {
+    let response = service
+        .create_store(Request::new(CreateStoreRequest {
+            name: store_name.to_string(),
+        }))
+        .await
+        .unwrap();
+    let store_id = response.into_inner().id;
+    setup_simple_model(storage, &store_id).await;
+    store_id
+}
+
+/// Test: gRPC Check performance is comparable to REST Check performance.
+///
+/// This test measures the latency of Check operations via both gRPC and REST,
+/// ensuring gRPC is not significantly slower than REST.
+#[tokio::test]
+async fn test_grpc_check_performance_comparable_to_rest() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+    let grpc_service = create_grpc_service_with_cache(Arc::clone(&storage));
+
+    // Create store via gRPC
+    let store_id = setup_grpc_store(&grpc_service, &storage, "grpc-check-perf").await;
+
+    // Write test tuples via gRPC
+    for i in 0..10 {
+        let write_response = grpc_service
+            .write(Request::new(WriteRequest {
+                store_id: store_id.clone(),
+                writes: Some(WriteRequestWrites {
+                    tuple_keys: vec![TupleKey {
+                        user: format!("user:perf{i}"),
+                        relation: "viewer".to_string(),
+                        object: format!("document:doc{i}"),
+                        condition: None,
+                    }],
+                }),
+                deletes: None,
+                authorization_model_id: String::new(),
+            }))
+            .await;
+        assert!(write_response.is_ok());
+    }
+
+    // Measure REST Check performance
+    let rest_start = Instant::now();
+    for i in 0..GRPC_PERF_ITERATIONS {
+        let user_idx = i % 10;
+        let (status, _) = post_json(
+            create_test_app_with_shared_cache(&storage, &cache),
+            &format!("/stores/{store_id}/check"),
+            serde_json::json!({
+                "tuple_key": {
+                    "user": format!("user:perf{user_idx}"),
+                    "relation": "viewer",
+                    "object": format!("document:doc{user_idx}")
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let rest_duration = rest_start.elapsed();
+
+    // Measure gRPC Check performance
+    let grpc_start = Instant::now();
+    for i in 0..GRPC_PERF_ITERATIONS {
+        let user_idx = i % 10;
+        let response = grpc_service
+            .check(Request::new(GrpcCheckRequest {
+                store_id: store_id.clone(),
+                tuple_key: Some(TupleKey {
+                    user: format!("user:perf{user_idx}"),
+                    relation: "viewer".to_string(),
+                    object: format!("document:doc{user_idx}"),
+                    condition: None,
+                }),
+                contextual_tuples: None,
+                authorization_model_id: String::new(),
+                trace: false,
+                context: None,
+                consistency: 0,
+            }))
+            .await;
+        assert!(response.is_ok());
+    }
+    let grpc_duration = grpc_start.elapsed();
+
+    let rest_avg_ms = rest_duration.as_secs_f64() * 1000.0 / GRPC_PERF_ITERATIONS as f64;
+    let grpc_avg_ms = grpc_duration.as_secs_f64() * 1000.0 / GRPC_PERF_ITERATIONS as f64;
+    let ratio = grpc_avg_ms / rest_avg_ms.max(0.001);
+
+    println!(
+        "Check performance comparison ({} iterations):",
+        GRPC_PERF_ITERATIONS
+    );
+    println!(
+        "  REST: {:.3}ms avg ({:?} total)",
+        rest_avg_ms, rest_duration
+    );
+    println!(
+        "  gRPC: {:.3}ms avg ({:?} total)",
+        grpc_avg_ms, grpc_duration
+    );
+    println!("  Ratio (gRPC/REST): {:.2}x", ratio);
+
+    assert!(
+        ratio < PERF_COMPARISON_TOLERANCE,
+        "gRPC Check should be within {:.0}x of REST performance. \
+         REST: {:.3}ms, gRPC: {:.3}ms, ratio: {:.2}x",
+        PERF_COMPARISON_TOLERANCE,
+        rest_avg_ms,
+        grpc_avg_ms,
+        ratio
+    );
+}
+
+/// Test: gRPC BatchCheck performance is comparable to REST BatchCheck performance.
+///
+/// This test measures batch check latency via both protocols, ensuring gRPC
+/// handles batches efficiently.
+#[tokio::test]
+async fn test_grpc_batchcheck_performance_comparable_to_rest() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+    let grpc_service = create_grpc_service_with_cache(Arc::clone(&storage));
+
+    // Create store via gRPC
+    let store_id = setup_grpc_store(&grpc_service, &storage, "grpc-batch-perf").await;
+
+    // Write test tuples
+    for i in 0..20 {
+        let write_response = grpc_service
+            .write(Request::new(WriteRequest {
+                store_id: store_id.clone(),
+                writes: Some(WriteRequestWrites {
+                    tuple_keys: vec![TupleKey {
+                        user: format!("user:batch{i}"),
+                        relation: "viewer".to_string(),
+                        object: format!("document:batch{i}"),
+                        condition: None,
+                    }],
+                }),
+                deletes: None,
+                authorization_model_id: String::new(),
+            }))
+            .await;
+        assert!(write_response.is_ok());
+    }
+
+    const BATCH_SIZE: usize = 10;
+    const BATCH_ITERATIONS: usize = 50;
+
+    // Measure REST BatchCheck performance
+    let rest_start = Instant::now();
+    for iter in 0..BATCH_ITERATIONS {
+        let checks: Vec<serde_json::Value> = (0..BATCH_SIZE)
+            .map(|i| {
+                let idx = (iter * BATCH_SIZE + i) % 20;
+                serde_json::json!({
+                    "tuple_key": {
+                        "user": format!("user:batch{idx}"),
+                        "relation": "viewer",
+                        "object": format!("document:batch{idx}")
+                    },
+                    "correlation_id": format!("check-{i}")
+                })
+            })
+            .collect();
+
+        let (status, _) = post_json(
+            create_test_app_with_shared_cache(&storage, &cache),
+            &format!("/stores/{store_id}/batch-check"),
+            serde_json::json!({ "checks": checks }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let rest_duration = rest_start.elapsed();
+
+    // Measure gRPC BatchCheck performance
+    let grpc_start = Instant::now();
+    for iter in 0..BATCH_ITERATIONS {
+        let checks: Vec<BatchCheckItem> = (0..BATCH_SIZE)
+            .map(|i| {
+                let idx = (iter * BATCH_SIZE + i) % 20;
+                BatchCheckItem {
+                    tuple_key: Some(TupleKey {
+                        user: format!("user:batch{idx}"),
+                        relation: "viewer".to_string(),
+                        object: format!("document:batch{idx}"),
+                        condition: None,
+                    }),
+                    contextual_tuples: None,
+                    context: None,
+                    correlation_id: format!("check-{i}"),
+                }
+            })
+            .collect();
+
+        let response = grpc_service
+            .batch_check(Request::new(BatchCheckRequest {
+                store_id: store_id.clone(),
+                checks,
+                authorization_model_id: String::new(),
+                consistency: 0,
+            }))
+            .await;
+        assert!(response.is_ok());
+    }
+    let grpc_duration = grpc_start.elapsed();
+
+    let rest_avg_ms = rest_duration.as_secs_f64() * 1000.0 / BATCH_ITERATIONS as f64;
+    let grpc_avg_ms = grpc_duration.as_secs_f64() * 1000.0 / BATCH_ITERATIONS as f64;
+    let ratio = grpc_avg_ms / rest_avg_ms.max(0.001);
+
+    println!(
+        "BatchCheck performance comparison ({} batches of {} checks):",
+        BATCH_ITERATIONS, BATCH_SIZE
+    );
+    println!(
+        "  REST: {:.3}ms avg ({:?} total)",
+        rest_avg_ms, rest_duration
+    );
+    println!(
+        "  gRPC: {:.3}ms avg ({:?} total)",
+        grpc_avg_ms, grpc_duration
+    );
+    println!("  Ratio (gRPC/REST): {:.2}x", ratio);
+
+    assert!(
+        ratio < PERF_COMPARISON_TOLERANCE,
+        "gRPC BatchCheck should be within {:.0}x of REST performance. \
+         REST: {:.3}ms, gRPC: {:.3}ms, ratio: {:.2}x",
+        PERF_COMPARISON_TOLERANCE,
+        rest_avg_ms,
+        grpc_avg_ms,
+        ratio
+    );
+}
+
+/// Test: gRPC ListObjects performance is comparable to REST ListObjects performance.
+///
+/// This test measures ListObjects latency via both protocols.
+#[tokio::test]
+async fn test_grpc_listobjects_performance_comparable_to_rest() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+    let grpc_service = create_grpc_service_with_cache(Arc::clone(&storage));
+
+    // Create store via gRPC
+    let store_id = setup_grpc_store(&grpc_service, &storage, "grpc-listobj-perf").await;
+
+    // Write test tuples - user can view 50 documents
+    for i in 0..50 {
+        let write_response = grpc_service
+            .write(Request::new(WriteRequest {
+                store_id: store_id.clone(),
+                writes: Some(WriteRequestWrites {
+                    tuple_keys: vec![TupleKey {
+                        user: "user:listobj_user".to_string(),
+                        relation: "viewer".to_string(),
+                        object: format!("document:listobj{i}"),
+                        condition: None,
+                    }],
+                }),
+                deletes: None,
+                authorization_model_id: String::new(),
+            }))
+            .await;
+        assert!(write_response.is_ok());
+    }
+
+    const LIST_ITERATIONS: usize = 50;
+
+    // Measure REST ListObjects performance
+    let rest_start = Instant::now();
+    for _ in 0..LIST_ITERATIONS {
+        let (status, response) = post_json(
+            create_test_app_with_shared_cache(&storage, &cache),
+            &format!("/stores/{store_id}/list-objects"),
+            serde_json::json!({
+                "user": "user:listobj_user",
+                "relation": "viewer",
+                "type": "document"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response["objects"].as_array().unwrap().len(), 50);
+    }
+    let rest_duration = rest_start.elapsed();
+
+    // Measure gRPC ListObjects performance
+    let grpc_start = Instant::now();
+    for _ in 0..LIST_ITERATIONS {
+        let response = grpc_service
+            .list_objects(Request::new(GrpcListObjectsRequest {
+                store_id: store_id.clone(),
+                authorization_model_id: String::new(),
+                r#type: "document".to_string(),
+                relation: "viewer".to_string(),
+                user: "user:listobj_user".to_string(),
+                contextual_tuples: None,
+                context: None,
+                consistency: 0,
+            }))
+            .await;
+        let resp = response.unwrap().into_inner();
+        assert_eq!(resp.objects.len(), 50);
+    }
+    let grpc_duration = grpc_start.elapsed();
+
+    let rest_avg_ms = rest_duration.as_secs_f64() * 1000.0 / LIST_ITERATIONS as f64;
+    let grpc_avg_ms = grpc_duration.as_secs_f64() * 1000.0 / LIST_ITERATIONS as f64;
+    let ratio = grpc_avg_ms / rest_avg_ms.max(0.001);
+
+    println!(
+        "ListObjects performance comparison ({} iterations, 50 objects each):",
+        LIST_ITERATIONS
+    );
+    println!(
+        "  REST: {:.3}ms avg ({:?} total)",
+        rest_avg_ms, rest_duration
+    );
+    println!(
+        "  gRPC: {:.3}ms avg ({:?} total)",
+        grpc_avg_ms, grpc_duration
+    );
+    println!("  Ratio (gRPC/REST): {:.2}x", ratio);
+
+    assert!(
+        ratio < PERF_COMPARISON_TOLERANCE,
+        "gRPC ListObjects should be within {:.0}x of REST performance. \
+         REST: {:.3}ms, gRPC: {:.3}ms, ratio: {:.2}x",
+        PERF_COMPARISON_TOLERANCE,
+        rest_avg_ms,
+        grpc_avg_ms,
+        ratio
+    );
+}
+
+/// Test: gRPC ListUsers performance is comparable to REST ListUsers performance.
+///
+/// This test measures ListUsers latency via both protocols.
+#[tokio::test]
+async fn test_grpc_listusers_performance_comparable_to_rest() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+    let grpc_service = create_grpc_service_with_cache(Arc::clone(&storage));
+
+    // Create store via gRPC
+    let store_id = setup_grpc_store(&grpc_service, &storage, "grpc-listusers-perf").await;
+
+    // Write test tuples - 30 users can view the same document
+    for i in 0..30 {
+        let write_response = grpc_service
+            .write(Request::new(WriteRequest {
+                store_id: store_id.clone(),
+                writes: Some(WriteRequestWrites {
+                    tuple_keys: vec![TupleKey {
+                        user: format!("user:listuser{i}"),
+                        relation: "viewer".to_string(),
+                        object: "document:shared".to_string(),
+                        condition: None,
+                    }],
+                }),
+                deletes: None,
+                authorization_model_id: String::new(),
+            }))
+            .await;
+        assert!(write_response.is_ok());
+    }
+
+    const LIST_ITERATIONS: usize = 50;
+
+    // Measure REST ListUsers performance
+    let rest_start = Instant::now();
+    for _ in 0..LIST_ITERATIONS {
+        let (status, response) = post_json(
+            create_test_app_with_shared_cache(&storage, &cache),
+            &format!("/stores/{store_id}/list-users"),
+            serde_json::json!({
+                "object": {
+                    "type": "document",
+                    "id": "shared"
+                },
+                "relation": "viewer",
+                "user_filters": [{"type": "user"}]
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response["users"].as_array().unwrap().len(), 30);
+    }
+    let rest_duration = rest_start.elapsed();
+
+    // Measure gRPC ListUsers performance
+    let grpc_start = Instant::now();
+    for _ in 0..LIST_ITERATIONS {
+        let response = grpc_service
+            .list_users(Request::new(GrpcListUsersRequest {
+                store_id: store_id.clone(),
+                authorization_model_id: String::new(),
+                object: Some(FgaObject {
+                    r#type: "document".to_string(),
+                    id: "shared".to_string(),
+                }),
+                relation: "viewer".to_string(),
+                user_filters: vec![UserTypeFilter {
+                    r#type: "user".to_string(),
+                    relation: String::new(),
+                }],
+                contextual_tuples: None,
+                context: None,
+                consistency: 0,
+            }))
+            .await;
+        let resp = response.unwrap().into_inner();
+        assert_eq!(resp.users.len(), 30);
+    }
+    let grpc_duration = grpc_start.elapsed();
+
+    let rest_avg_ms = rest_duration.as_secs_f64() * 1000.0 / LIST_ITERATIONS as f64;
+    let grpc_avg_ms = grpc_duration.as_secs_f64() * 1000.0 / LIST_ITERATIONS as f64;
+    let ratio = grpc_avg_ms / rest_avg_ms.max(0.001);
+
+    println!(
+        "ListUsers performance comparison ({} iterations, 30 users each):",
+        LIST_ITERATIONS
+    );
+    println!(
+        "  REST: {:.3}ms avg ({:?} total)",
+        rest_avg_ms, rest_duration
+    );
+    println!(
+        "  gRPC: {:.3}ms avg ({:?} total)",
+        grpc_avg_ms, grpc_duration
+    );
+    println!("  Ratio (gRPC/REST): {:.2}x", ratio);
+
+    assert!(
+        ratio < PERF_COMPARISON_TOLERANCE,
+        "gRPC ListUsers should be within {:.0}x of REST performance. \
+         REST: {:.3}ms, gRPC: {:.3}ms, ratio: {:.2}x",
+        PERF_COMPARISON_TOLERANCE,
+        rest_avg_ms,
+        grpc_avg_ms,
+        ratio
+    );
+}
+
+/// Test: No protocol-specific bottlenecks between REST and gRPC.
+///
+/// This test performs a mixed workload of all operations via both protocols
+/// and verifies that gRPC performance is comparable across all operation types,
+/// indicating no protocol-specific bottlenecks.
+#[tokio::test]
+async fn test_no_protocol_specific_bottlenecks() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let cache = create_shared_cache();
+    let grpc_service = create_grpc_service_with_cache(Arc::clone(&storage));
+
+    // Create store
+    let store_id = setup_grpc_store(&grpc_service, &storage, "protocol-bottleneck-test").await;
+
+    // Setup data for all operations
+    for i in 0..20 {
+        let write_response = grpc_service
+            .write(Request::new(WriteRequest {
+                store_id: store_id.clone(),
+                writes: Some(WriteRequestWrites {
+                    tuple_keys: vec![TupleKey {
+                        user: format!("user:mixed{i}"),
+                        relation: "viewer".to_string(),
+                        object: format!("document:mixed{i}"),
+                        condition: None,
+                    }],
+                }),
+                deletes: None,
+                authorization_model_id: String::new(),
+            }))
+            .await;
+        assert!(write_response.is_ok());
+    }
+
+    const MIXED_ITERATIONS: usize = 20;
+
+    // Track performance ratios for each operation type
+    let mut ratios: Vec<(&str, f64)> = Vec::new();
+
+    // Test Check
+    let rest_check_start = Instant::now();
+    for i in 0..MIXED_ITERATIONS {
+        let idx = i % 20;
+        let (status, _) = post_json(
+            create_test_app_with_shared_cache(&storage, &cache),
+            &format!("/stores/{store_id}/check"),
+            serde_json::json!({
+                "tuple_key": {
+                    "user": format!("user:mixed{idx}"),
+                    "relation": "viewer",
+                    "object": format!("document:mixed{idx}")
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let rest_check_duration = rest_check_start.elapsed();
+
+    let grpc_check_start = Instant::now();
+    for i in 0..MIXED_ITERATIONS {
+        let idx = i % 20;
+        let response = grpc_service
+            .check(Request::new(GrpcCheckRequest {
+                store_id: store_id.clone(),
+                tuple_key: Some(TupleKey {
+                    user: format!("user:mixed{idx}"),
+                    relation: "viewer".to_string(),
+                    object: format!("document:mixed{idx}"),
+                    condition: None,
+                }),
+                contextual_tuples: None,
+                authorization_model_id: String::new(),
+                trace: false,
+                context: None,
+                consistency: 0,
+            }))
+            .await;
+        assert!(response.is_ok());
+    }
+    let grpc_check_duration = grpc_check_start.elapsed();
+
+    let check_ratio =
+        grpc_check_duration.as_secs_f64() / rest_check_duration.as_secs_f64().max(0.001);
+    ratios.push(("Check", check_ratio));
+
+    // Test BatchCheck
+    let rest_batch_start = Instant::now();
+    for _ in 0..MIXED_ITERATIONS {
+        let checks: Vec<serde_json::Value> = (0..5)
+            .map(|i| {
+                serde_json::json!({
+                    "tuple_key": {
+                        "user": format!("user:mixed{i}"),
+                        "relation": "viewer",
+                        "object": format!("document:mixed{i}")
+                    },
+                    "correlation_id": format!("check-{i}")
+                })
+            })
+            .collect();
+        let (status, _) = post_json(
+            create_test_app_with_shared_cache(&storage, &cache),
+            &format!("/stores/{store_id}/batch-check"),
+            serde_json::json!({ "checks": checks }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let rest_batch_duration = rest_batch_start.elapsed();
+
+    let grpc_batch_start = Instant::now();
+    for _ in 0..MIXED_ITERATIONS {
+        let checks: Vec<BatchCheckItem> = (0..5)
+            .map(|i| BatchCheckItem {
+                tuple_key: Some(TupleKey {
+                    user: format!("user:mixed{i}"),
+                    relation: "viewer".to_string(),
+                    object: format!("document:mixed{i}"),
+                    condition: None,
+                }),
+                contextual_tuples: None,
+                context: None,
+                correlation_id: format!("check-{i}"),
+            })
+            .collect();
+        let response = grpc_service
+            .batch_check(Request::new(BatchCheckRequest {
+                store_id: store_id.clone(),
+                checks,
+                authorization_model_id: String::new(),
+                consistency: 0,
+            }))
+            .await;
+        assert!(response.is_ok());
+    }
+    let grpc_batch_duration = grpc_batch_start.elapsed();
+
+    let batch_ratio =
+        grpc_batch_duration.as_secs_f64() / rest_batch_duration.as_secs_f64().max(0.001);
+    ratios.push(("BatchCheck", batch_ratio));
+
+    // Test ListObjects
+    let rest_list_obj_start = Instant::now();
+    for _ in 0..MIXED_ITERATIONS {
+        let (status, _) = post_json(
+            create_test_app_with_shared_cache(&storage, &cache),
+            &format!("/stores/{store_id}/list-objects"),
+            serde_json::json!({
+                "user": "user:mixed0",
+                "relation": "viewer",
+                "type": "document"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let rest_list_obj_duration = rest_list_obj_start.elapsed();
+
+    let grpc_list_obj_start = Instant::now();
+    for _ in 0..MIXED_ITERATIONS {
+        let response = grpc_service
+            .list_objects(Request::new(GrpcListObjectsRequest {
+                store_id: store_id.clone(),
+                authorization_model_id: String::new(),
+                r#type: "document".to_string(),
+                relation: "viewer".to_string(),
+                user: "user:mixed0".to_string(),
+                contextual_tuples: None,
+                context: None,
+                consistency: 0,
+            }))
+            .await;
+        assert!(response.is_ok());
+    }
+    let grpc_list_obj_duration = grpc_list_obj_start.elapsed();
+
+    let list_obj_ratio =
+        grpc_list_obj_duration.as_secs_f64() / rest_list_obj_duration.as_secs_f64().max(0.001);
+    ratios.push(("ListObjects", list_obj_ratio));
+
+    // Test ListUsers
+    let rest_list_users_start = Instant::now();
+    for _ in 0..MIXED_ITERATIONS {
+        let (status, _) = post_json(
+            create_test_app_with_shared_cache(&storage, &cache),
+            &format!("/stores/{store_id}/list-users"),
+            serde_json::json!({
+                "object": {"type": "document", "id": "mixed0"},
+                "relation": "viewer",
+                "user_filters": [{"type": "user"}]
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let rest_list_users_duration = rest_list_users_start.elapsed();
+
+    let grpc_list_users_start = Instant::now();
+    for _ in 0..MIXED_ITERATIONS {
+        let response = grpc_service
+            .list_users(Request::new(GrpcListUsersRequest {
+                store_id: store_id.clone(),
+                authorization_model_id: String::new(),
+                object: Some(FgaObject {
+                    r#type: "document".to_string(),
+                    id: "mixed0".to_string(),
+                }),
+                relation: "viewer".to_string(),
+                user_filters: vec![UserTypeFilter {
+                    r#type: "user".to_string(),
+                    relation: String::new(),
+                }],
+                contextual_tuples: None,
+                context: None,
+                consistency: 0,
+            }))
+            .await;
+        assert!(response.is_ok());
+    }
+    let grpc_list_users_duration = grpc_list_users_start.elapsed();
+
+    let list_users_ratio =
+        grpc_list_users_duration.as_secs_f64() / rest_list_users_duration.as_secs_f64().max(0.001);
+    ratios.push(("ListUsers", list_users_ratio));
+
+    // Report results
+    println!(
+        "Protocol bottleneck test results ({} iterations each):",
+        MIXED_ITERATIONS
+    );
+    for (op, ratio) in &ratios {
+        let status = if *ratio < PERF_COMPARISON_TOLERANCE {
+            "✓"
+        } else {
+            "✗"
+        };
+        println!("  {} {}: gRPC/REST ratio = {:.2}x", status, op, ratio);
+    }
+
+    // Calculate variance in ratios to detect protocol-specific issues
+    let avg_ratio: f64 = ratios.iter().map(|(_, r)| r).sum::<f64>() / ratios.len() as f64;
+    let variance: f64 = ratios
+        .iter()
+        .map(|(_, r)| (r - avg_ratio).powi(2))
+        .sum::<f64>()
+        / ratios.len() as f64;
+    let std_dev = variance.sqrt();
+
+    println!(
+        "  Average ratio: {:.2}x, Std dev: {:.2}",
+        avg_ratio, std_dev
+    );
+
+    // All operations should be within tolerance
+    for (op, ratio) in &ratios {
+        assert!(
+            *ratio < PERF_COMPARISON_TOLERANCE,
+            "{} gRPC/REST ratio {:.2}x exceeds tolerance {:.0}x - possible protocol bottleneck",
+            op,
+            ratio,
+            PERF_COMPARISON_TOLERANCE
+        );
+    }
+
+    // Variance should be low (no operation significantly different from others)
+    // A high std dev would indicate protocol-specific bottleneck for certain ops
+    assert!(
+        std_dev < 1.0,
+        "High variance ({:.2}) in gRPC/REST ratios suggests protocol-specific bottleneck",
+        std_dev
+    );
+}
