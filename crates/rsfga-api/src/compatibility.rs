@@ -238,16 +238,17 @@ mod tests {
     /// Verifies that request and response JSON schemas match OpenFGA format.
     #[tokio::test]
     async fn test_request_response_schemas_match_exactly() {
+        // Use valid ULID format for store and model IDs (OpenFGA compatibility)
+        let store_id = ulid::Ulid::new().to_string();
+        let model_id = ulid::Ulid::new().to_string();
+
         let storage = Arc::new(MemoryDataStore::new());
-        storage
-            .create_store("test-store", "Test Store")
-            .await
-            .unwrap();
+        storage.create_store(&store_id, "Test Store").await.unwrap();
 
         // Create an authorization model for the check request to work
         let model = StoredAuthorizationModel::new(
-            "test-model".to_string(),
-            "test-store",
+            model_id.clone(),
+            &store_id,
             "1.1",
             r#"{
                 "type_definitions": [
@@ -268,7 +269,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/test-store/check")
+                    .uri(format!("/stores/{store_id}/check"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"tuple_key":{"user":"user:alice","relation":"viewer","object":"document:readme"}}"#,
@@ -297,7 +298,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/test-store/read")
+                    .uri(format!("/stores/{store_id}/read"))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{}"#))
                     .unwrap(),
@@ -324,7 +325,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/test-store/batch-check")
+                    .uri(format!("/stores/{store_id}/batch-check"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"checks":[{"tuple_key":{"user":"user:alice","relation":"viewer","object":"doc:1"},"correlation_id":"c1"}]}"#,
@@ -352,7 +353,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/stores/test-store")
+                    .uri(format!("/stores/{store_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -468,11 +469,14 @@ mod tests {
     async fn test_openfga_compatibility_test_suite() {
         use rsfga_storage::StoredAuthorizationModel;
 
+        // Use valid ULID format for store ID (OpenFGA compatibility)
+        let store_id = ulid::Ulid::new().to_string();
+
         let storage = Arc::new(MemoryDataStore::new());
 
         // Create a test store
         let store = storage
-            .create_store("compat-store", "Compatibility Test Store")
+            .create_store(&store_id, "Compatibility Test Store")
             .await
             .unwrap();
         assert!(!store.id.is_empty());
@@ -488,7 +492,7 @@ mod tests {
         }"#;
         let model = StoredAuthorizationModel::new(
             ulid::Ulid::new().to_string(),
-            "compat-store",
+            &store_id,
             "1.1",
             model_json,
         );
@@ -503,7 +507,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/write")
+                    .uri(format!("/stores/{store_id}/write"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"writes":{"tuple_keys":[
@@ -524,7 +528,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/read")
+                    .uri(format!("/stores/{store_id}/read"))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{}"#))
                     .unwrap(),
@@ -545,7 +549,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/check")
+                    .uri(format!("/stores/{store_id}/check"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"tuple_key":{"user":"user:alice","relation":"owner","object":"document:budget"}}"#,
@@ -567,7 +571,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/check")
+                    .uri(format!("/stores/{store_id}/check"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"tuple_key":{"user":"user:charlie","relation":"owner","object":"document:budget"}}"#,
@@ -589,7 +593,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/batch-check")
+                    .uri(format!("/stores/{store_id}/batch-check"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"checks":[
@@ -618,7 +622,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/write")
+                    .uri(format!("/stores/{store_id}/write"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"deletes":{"tuple_keys":[
@@ -637,7 +641,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/check")
+                    .uri(format!("/stores/{store_id}/check"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"tuple_key":{"user":"user:bob","relation":"viewer","object":"document:budget"}}"#,
@@ -681,7 +685,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri("/stores/compat-store")
+                    .uri(format!("/stores/{store_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )

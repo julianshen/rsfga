@@ -430,6 +430,12 @@ async fn get_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
+    // Validate store ID format first (OpenFGA compatibility I2)
+    // Invalid formats return 400, valid formats that don't exist return 404
+    if let Some(err) = validate_store_id_format(&store_id) {
+        return Err(ApiError::invalid_input(err));
+    }
+
     let store = state.storage.get_store(&store_id).await?;
     Ok(Json(StoreResponse::from(store)))
 }
@@ -481,6 +487,12 @@ async fn delete_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
+    // Validate store ID format first (OpenFGA compatibility I2)
+    // Invalid formats return 400, valid formats that don't exist return 404
+    if let Some(err) = validate_store_id_format(&store_id) {
+        return Err(ApiError::invalid_input(err));
+    }
+
     // Clean up assertions FIRST, before storage deletion.
     // This ensures we don't leak assertions if storage deletion fails.
     // Using retain for atomic cleanup - no race condition window.
@@ -1289,7 +1301,8 @@ async fn write_tuples<S: DataStore>(
 
 // Use shared validation functions from the validation module
 use crate::validation::{
-    is_valid_condition_name, json_exceeds_max_depth, MAX_CONDITION_CONTEXT_SIZE,
+    is_valid_condition_name, json_exceeds_max_depth, validate_store_id_format,
+    MAX_CONDITION_CONTEXT_SIZE,
 };
 
 /// Error returned when tuple key parsing fails.

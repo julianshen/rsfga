@@ -17,6 +17,40 @@ pub const MAX_JSON_DEPTH: usize = 10;
 /// Matches OpenFGA's default limit to prevent memory exhaustion.
 pub const MAX_LIST_OBJECTS_CANDIDATES: usize = 1000;
 
+/// Validates that a store ID is in valid ULID format.
+///
+/// OpenFGA validates store ID format before checking if the store exists.
+/// Invalid formats return 400 Bad Request, while valid formats that don't
+/// exist return 404 Not Found. This ensures API compatibility (Invariant I2).
+///
+/// # Returns
+///
+/// Returns `Some(error_message)` if the format is invalid, `None` if valid.
+///
+/// # Examples
+///
+/// ```
+/// use rsfga_api::validation::validate_store_id_format;
+///
+/// // Valid ULID format
+/// assert!(validate_store_id_format("01ARZ3NDEKTSV4RRFFQ69G5FAV").is_none());
+///
+/// // Invalid: UUID format
+/// assert!(validate_store_id_format("550e8400-e29b-41d4-a716-446655440000").is_some());
+///
+/// // Invalid: arbitrary string
+/// assert!(validate_store_id_format("invalid-store-id").is_some());
+/// ```
+pub fn validate_store_id_format(store_id: &str) -> Option<String> {
+    match ulid::Ulid::from_string(store_id) {
+        Ok(_) => None, // Valid ULID format
+        Err(_) => Some(format!(
+            "invalid store_id format: '{}' is not a valid ULID",
+            store_id
+        )),
+    }
+}
+
 /// Validates a condition name format (security constraint I4).
 ///
 /// Allows only alphanumeric, underscore, and hyphen characters with max 256 chars.
@@ -263,5 +297,38 @@ mod tests {
             };
         }
         assert!(prost_value_exceeds_max_depth(&value, 1));
+    }
+
+    #[test]
+    fn test_validate_store_id_format_valid_ulid() {
+        // Valid ULID formats should return None
+        assert!(validate_store_id_format("01ARZ3NDEKTSV4RRFFQ69G5FAV").is_none());
+        assert!(validate_store_id_format("01AAAAAAAAAAAAAAAAAAAAAA00").is_none());
+        // Generated ULID
+        let ulid = ulid::Ulid::new().to_string();
+        assert!(validate_store_id_format(&ulid).is_none());
+    }
+
+    #[test]
+    fn test_validate_store_id_format_invalid_uuid() {
+        // UUID format should return error
+        let result = validate_store_id_format("550e8400-e29b-41d4-a716-446655440000");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("not a valid ULID"));
+    }
+
+    #[test]
+    fn test_validate_store_id_format_invalid_arbitrary_string() {
+        // Arbitrary strings should return error
+        let result = validate_store_id_format("invalid-store-id");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("not a valid ULID"));
+    }
+
+    #[test]
+    fn test_validate_store_id_format_empty() {
+        // Empty string should return error
+        let result = validate_store_id_format("");
+        assert!(result.is_some());
     }
 }
