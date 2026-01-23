@@ -379,6 +379,7 @@ fn classify_domain_error_kind(err: &rsfga_domain::error::DomainError) -> BatchCh
         // Client errors (400) - user input or model configuration issues
         DomainError::TypeNotFound { .. }
         | DomainError::RelationNotFound { .. }
+        | DomainError::ConditionNotFound { .. }
         | DomainError::ModelParseError { .. }
         | DomainError::ModelValidationError { .. }
         | DomainError::InvalidUserFormat { .. }

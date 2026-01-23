@@ -613,7 +613,7 @@ async fn write_authorization_model<S: DataStore>(
 
     // Validate model semantics (duplicates, undefined refs, CEL syntax, etc.)
     // This is critical for API compatibility - OpenFGA returns 400 for invalid models
-    crate::adapters::validate_authorization_model_json(&model_json)
+    crate::adapters::validate_authorization_model_json(&model_json, &body.schema_version)
         .map_err(|e| ApiError::invalid_input(e.to_string()))?;
 
     // Validate model size before storage
@@ -1297,8 +1297,12 @@ async fn write_tuples<S: DataStore>(
 
     // Validate all tuples against the authorization model
     // OpenFGA returns 400 if tuples reference undefined types, relations, or conditions
+    // Create validator once for batch efficiency
+    let validator = crate::adapters::create_model_validator(&model);
+
     for (i, tuple) in writes.iter().enumerate() {
-        crate::adapters::validate_tuple_against_model(
+        crate::adapters::validate_tuple_with_validator(
+            &validator,
             &model,
             &tuple.object_type,
             &tuple.relation,
@@ -1307,13 +1311,16 @@ async fn write_tuples<S: DataStore>(
         .map_err(|e| {
             ApiError::invalid_input(format!(
                 "invalid tuple at index {i}: type={}, relation={}, reason={}",
-                tuple.object_type, tuple.relation, e
+                tuple.object_type,
+                tuple.relation,
+                crate::adapters::domain_error_to_validation_message(&e)
             ))
         })?;
     }
 
     for (i, tuple) in deletes.iter().enumerate() {
-        crate::adapters::validate_tuple_against_model(
+        crate::adapters::validate_tuple_with_validator(
+            &validator,
             &model,
             &tuple.object_type,
             &tuple.relation,
@@ -1322,7 +1329,9 @@ async fn write_tuples<S: DataStore>(
         .map_err(|e| {
             ApiError::invalid_input(format!(
                 "invalid delete tuple at index {i}: type={}, relation={}, reason={}",
-                tuple.object_type, tuple.relation, e
+                tuple.object_type,
+                tuple.relation,
+                crate::adapters::domain_error_to_validation_message(&e)
             ))
         })?;
     }

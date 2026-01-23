@@ -23,6 +23,39 @@ use rsfga_domain::model::{
 use rsfga_domain::resolver::{ModelReader, StoredTupleRef, TupleReader};
 use rsfga_storage::DataStore;
 
+/// Converts a DomainError to a user-friendly validation error message.
+///
+/// This function provides centralized error message formatting for validation errors,
+/// ensuring consistent error messages across HTTP and gRPC layers.
+///
+/// # Arguments
+///
+/// * `error` - The domain error to convert
+///
+/// # Returns
+///
+/// A human-readable error message suitable for API responses.
+pub fn domain_error_to_validation_message(error: &DomainError) -> String {
+    match error {
+        DomainError::ModelParseError { message } => message.clone(),
+        DomainError::ModelValidationError { message } => message.clone(),
+        DomainError::TypeNotFound { type_name } => {
+            format!("type '{type_name}' not defined in authorization model")
+        }
+        DomainError::RelationNotFound {
+            type_name,
+            relation,
+        } => {
+            format!("relation '{relation}' not defined for type '{type_name}'")
+        }
+        DomainError::ConditionNotFound { condition_name } => {
+            format!("condition '{condition_name}' not defined in authorization model")
+        }
+        // For other errors, use the Display implementation
+        other => other.to_string(),
+    }
+}
+
 /// Default cache TTL for parsed authorization models.
 /// Slightly longer TTL (30s) is safe with moka's automatic eviction.
 const MODEL_CACHE_TTL: Duration = Duration::from_secs(30);
@@ -385,22 +418,111 @@ fn parse_conditions(model_json: &serde_json::Value) -> DomainResult<Vec<Conditio
     Ok(conditions)
 }
 
+/// Parses type definitions from a model JSON array.
+///
+/// This helper extracts the common parsing logic used by `validate_authorization_model_json`,
+/// `parse_model_json`, and `fetch_and_parse_model` to follow DRY principles.
+///
+/// # Arguments
+///
+/// * `type_defs` - The JSON array of type definitions
+///
+/// # Errors
+///
+/// Returns `DomainError::ModelParseError` if:
+/// - A type definition is missing the required "type" field
+/// - Relation parsing fails
+/// - Type constraint parsing fails
+fn parse_type_definitions_from_json(
+    type_defs: &[serde_json::Value],
+) -> DomainResult<Vec<TypeDefinition>> {
+    let mut type_definitions = Vec::with_capacity(type_defs.len());
+
+    for (idx, type_def) in type_defs.iter().enumerate() {
+        // Fail fast if "type" field is missing - don't silently skip
+        let type_name = type_def
+            .get("type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| DomainError::ModelParseError {
+                message: format!("type_definitions[{idx}] missing required 'type' field"),
+            })?;
+
+        let mut relations = Vec::new();
+
+        // Parse relations if present
+        if let Some(rels) = type_def.get("relations").and_then(|v| v.as_object()) {
+            for (rel_name, rel_def) in rels {
+                // Parse the userset (relation rewrite) from JSON
+                let rewrite = parse_userset(rel_def, type_name, rel_name)?;
+
+                // Parse type constraints from metadata
+                let type_constraints = parse_type_constraints(type_def, type_name, rel_name)?;
+
+                relations.push(RelationDefinition {
+                    name: rel_name.clone(),
+                    type_constraints,
+                    rewrite,
+                });
+            }
+        }
+
+        type_definitions.push(TypeDefinition {
+            type_name: type_name.to_string(),
+            relations,
+        });
+    }
+
+    Ok(type_definitions)
+}
+
+/// Valid schema versions supported by RSFGA.
+const VALID_SCHEMA_VERSIONS: &[&str] = &["1.1", "1.2"];
+
+/// Validates that a schema version is supported.
+fn validate_schema_version(version: &str) -> DomainResult<()> {
+    if VALID_SCHEMA_VERSIONS.contains(&version) {
+        Ok(())
+    } else {
+        Err(DomainError::ModelParseError {
+            message: format!(
+                "unsupported schema version '{}'. Supported versions: {}",
+                version,
+                VALID_SCHEMA_VERSIONS.join(", ")
+            ),
+        })
+    }
+}
+
 /// Validates an authorization model JSON without storing it.
 ///
 /// This function performs comprehensive validation including:
+/// - Schema version validation
 /// - JSON structure parsing
 /// - Duplicate type name detection (OpenFGA compatibility)
 /// - Domain-level semantic validation (cycles, undefined references, etc.)
 /// - CEL condition expression validation
 ///
+/// # Arguments
+///
+/// * `model_json` - The authorization model as a JSON value
+/// * `schema_version` - The schema version (must be "1.1" or "1.2")
+///
 /// # Errors
 ///
 /// Returns `DomainError::ModelParseError` if:
+/// - Schema version is unsupported
 /// - JSON structure is invalid
 /// - Duplicate type definitions exist
+/// - Type definitions are missing required "type" field
 /// - Any domain validation error occurs (cycles, undefined refs, etc.)
-pub fn validate_authorization_model_json(model_json: &serde_json::Value) -> DomainResult<()> {
+pub fn validate_authorization_model_json(
+    model_json: &serde_json::Value,
+    schema_version: &str,
+) -> DomainResult<()> {
     use std::collections::HashSet;
+
+    // Validate schema version
+    validate_schema_version(schema_version)?;
 
     // Extract type_definitions from the JSON
     let type_defs = model_json
@@ -411,52 +533,32 @@ pub fn validate_authorization_model_json(model_json: &serde_json::Value) -> Doma
         })?;
 
     // Check for duplicate type names (OpenFGA returns 400 for duplicates)
+    // Must happen before parse_type_definitions_from_json which fails on missing type
     let mut seen_types = HashSet::new();
-    for type_def in type_defs {
-        if let Some(type_name) = type_def.get("type").and_then(|v| v.as_str()) {
-            if !seen_types.insert(type_name.to_string()) {
-                return Err(DomainError::ModelParseError {
-                    message: format!("duplicate type definition: '{type_name}'"),
-                });
-            }
-        }
-    }
+    for (idx, type_def) in type_defs.iter().enumerate() {
+        let type_name = type_def
+            .get("type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| DomainError::ModelParseError {
+                message: format!("type_definitions[{idx}] missing required 'type' field"),
+            })?;
 
-    // Parse into domain model for semantic validation
-    let mut type_definitions = Vec::new();
-    for type_def in type_defs {
-        if let Some(type_name) = type_def.get("type").and_then(|v| v.as_str()) {
-            let mut relations = Vec::new();
-
-            // Parse relations if present
-            if let Some(rels) = type_def.get("relations").and_then(|v| v.as_object()) {
-                for (rel_name, rel_def) in rels {
-                    // Parse the userset (relation rewrite) from JSON
-                    let rewrite = parse_userset(rel_def, type_name, rel_name)?;
-
-                    // Parse type constraints from metadata
-                    let type_constraints = parse_type_constraints(type_def, type_name, rel_name)?;
-
-                    relations.push(RelationDefinition {
-                        name: rel_name.clone(),
-                        type_constraints,
-                        rewrite,
-                    });
-                }
-            }
-
-            type_definitions.push(TypeDefinition {
-                type_name: type_name.to_string(),
-                relations,
+        if !seen_types.insert(type_name.to_string()) {
+            return Err(DomainError::ModelParseError {
+                message: format!("duplicate type definition: '{type_name}'"),
             });
         }
     }
 
+    // Parse type definitions using shared helper
+    let type_definitions = parse_type_definitions_from_json(type_defs)?;
+
     // Parse conditions from the JSON
     let conditions = parse_conditions(model_json)?;
 
-    // Build the domain model
-    let model = AuthorizationModel::with_types_and_conditions("1.1", type_definitions, conditions);
+    // Build the domain model with the provided schema version
+    let model =
+        AuthorizationModel::with_types_and_conditions(schema_version, type_definitions, conditions);
 
     // Run domain validation (cycles, undefined refs, CEL syntax, etc.)
     rsfga_domain::validation::validate(&model).map_err(|errors| {
@@ -485,6 +587,12 @@ pub fn validate_authorization_model_json(model_json: &serde_json::Value) -> Doma
 /// # Errors
 ///
 /// Returns `DomainError` if validation fails.
+///
+/// # Performance Note
+///
+/// For batch validation, use `create_model_validator` once and call
+/// `validate_tuple_with_validator` for each tuple to avoid recreating
+/// the validator for each tuple.
 pub fn validate_tuple_against_model(
     model: &AuthorizationModel,
     object_type: &str,
@@ -494,7 +602,47 @@ pub fn validate_tuple_against_model(
     use rsfga_domain::validation::ModelValidator;
 
     let validator = ModelValidator::new(model);
+    validate_tuple_with_validator(&validator, model, object_type, relation, condition_name)
+}
 
+/// Creates a ModelValidator for batch tuple validation.
+///
+/// Use this to create a validator once before validating multiple tuples,
+/// then call `validate_tuple_with_validator` for each tuple.
+///
+/// # Performance
+///
+/// Creating a validator is O(n) where n is the number of types in the model.
+/// Reusing the validator across multiple tuples avoids this overhead.
+pub fn create_model_validator(
+    model: &AuthorizationModel,
+) -> rsfga_domain::validation::ModelValidator {
+    rsfga_domain::validation::ModelValidator::new(model)
+}
+
+/// Validates a tuple using a pre-created ModelValidator.
+///
+/// This is the optimized version for batch validation. Build a validator
+/// once with `create_model_validator` and reuse it for all tuples.
+///
+/// # Arguments
+///
+/// * `validator` - Pre-created ModelValidator for efficiency
+/// * `model` - The authorization model (for condition lookup)
+/// * `object_type` - The type of the object in the tuple
+/// * `relation` - The relation in the tuple
+/// * `condition_name` - Optional condition name in the tuple
+///
+/// # Errors
+///
+/// Returns `DomainError` if validation fails.
+pub fn validate_tuple_with_validator(
+    validator: &rsfga_domain::validation::ModelValidator,
+    model: &AuthorizationModel,
+    object_type: &str,
+    relation: &str,
+    condition_name: Option<&str>,
+) -> DomainResult<()> {
     // Check if the object type exists in the model
     if !validator.type_exists(object_type) {
         return Err(DomainError::TypeNotFound {
@@ -514,8 +662,8 @@ pub fn validate_tuple_against_model(
     if let Some(cond_name) = condition_name {
         let condition_exists = model.conditions.iter().any(|c| c.name == cond_name);
         if !condition_exists {
-            return Err(DomainError::ModelParseError {
-                message: format!("condition '{cond_name}' not defined in authorization model"),
+            return Err(DomainError::ConditionNotFound {
+                condition_name: cond_name.to_string(),
             });
         }
     }
@@ -540,49 +688,24 @@ pub fn parse_model_json(
     model_json_str: &str,
     schema_version: &str,
 ) -> DomainResult<AuthorizationModel> {
-    // Parse the stored model JSON into an AuthorizationModel
+    // Validate schema version
+    validate_schema_version(schema_version)?;
+
+    // Parse the stored model JSON
     let model_json: serde_json::Value =
         serde_json::from_str(model_json_str).map_err(|e| DomainError::ModelParseError {
             message: format!("failed to parse model JSON: {e}"),
         })?;
 
-    // Build AuthorizationModel from the parsed JSON
-    let mut type_definitions = Vec::new();
-
-    // Extract type_definitions from the JSON
-    if let Some(type_defs) = model_json
+    // Extract and parse type_definitions using shared helper
+    let type_definitions = if let Some(type_defs) = model_json
         .get("type_definitions")
         .and_then(|v| v.as_array())
     {
-        for type_def in type_defs {
-            if let Some(type_name) = type_def.get("type").and_then(|v| v.as_str()) {
-                let mut relations = Vec::new();
-
-                // Parse relations if present
-                if let Some(rels) = type_def.get("relations").and_then(|v| v.as_object()) {
-                    for (rel_name, rel_def) in rels {
-                        // Parse the userset (relation rewrite) from JSON
-                        let rewrite = parse_userset(rel_def, type_name, rel_name)?;
-
-                        // Parse type constraints from metadata
-                        let type_constraints =
-                            parse_type_constraints(type_def, type_name, rel_name)?;
-
-                        relations.push(RelationDefinition {
-                            name: rel_name.clone(),
-                            type_constraints,
-                            rewrite,
-                        });
-                    }
-                }
-
-                type_definitions.push(TypeDefinition {
-                    type_name: type_name.to_string(),
-                    relations,
-                });
-            }
-        }
-    }
+        parse_type_definitions_from_json(type_defs)?
+    } else {
+        Vec::new()
+    };
 
     // Parse conditions from the JSON
     let conditions = parse_conditions(&model_json)?;
@@ -738,6 +861,11 @@ impl<S: DataStore> DataStoreModelReader<S> {
                         type_name: type_name.clone(),
                         relation: relation.clone(),
                     },
+                    DomainError::ConditionNotFound { condition_name } => {
+                        DomainError::ConditionNotFound {
+                            condition_name: condition_name.clone(),
+                        }
+                    }
                     // Default fallback for any other variants
                     other => DomainError::ResolverError {
                         message: other.to_string(),
@@ -759,49 +887,21 @@ impl<S: DataStore> DataStoreModelReader<S> {
                 message: format!("storage error: {e}"),
             })?;
 
-        // Parse the stored model JSON into an AuthorizationModel
+        // Parse the stored model JSON
         let model_json: serde_json::Value = serde_json::from_str(&stored_model.model_json)
             .map_err(|e| DomainError::ModelParseError {
                 message: format!("failed to parse model JSON: {e}"),
             })?;
 
-        // Build AuthorizationModel from the parsed JSON
-        let mut type_definitions = Vec::new();
-
-        // Extract type_definitions from the JSON
-        if let Some(type_defs) = model_json
+        // Extract and parse type_definitions using shared helper
+        let type_definitions = if let Some(type_defs) = model_json
             .get("type_definitions")
             .and_then(|v| v.as_array())
         {
-            for type_def in type_defs {
-                if let Some(type_name) = type_def.get("type").and_then(|v| v.as_str()) {
-                    let mut relations = Vec::new();
-
-                    // Parse relations if present
-                    if let Some(rels) = type_def.get("relations").and_then(|v| v.as_object()) {
-                        for (rel_name, rel_def) in rels {
-                            // Parse the userset (relation rewrite) from JSON
-                            let rewrite = parse_userset(rel_def, type_name, rel_name)?;
-
-                            // Parse type constraints from metadata
-                            let type_constraints =
-                                parse_type_constraints(type_def, type_name, rel_name)?;
-
-                            relations.push(RelationDefinition {
-                                name: rel_name.clone(),
-                                type_constraints,
-                                rewrite,
-                            });
-                        }
-                    }
-
-                    type_definitions.push(TypeDefinition {
-                        type_name: type_name.to_string(),
-                        relations,
-                    });
-                }
-            }
-        }
+            parse_type_definitions_from_json(type_defs)?
+        } else {
+            Vec::new()
+        };
 
         // Parse conditions from the JSON
         let conditions = parse_conditions(&model_json)?;
