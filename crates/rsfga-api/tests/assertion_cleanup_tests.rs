@@ -24,6 +24,8 @@ use axum::{
 use dashmap::DashMap;
 use tower::ServiceExt;
 
+use ulid::Ulid;
+
 use rsfga_api::http::{create_router, AppState, AssertionKey, StoredAssertion};
 use rsfga_storage::{DataStore, MemoryDataStore, StoredAuthorizationModel};
 
@@ -154,18 +156,22 @@ impl TestContext {
 async fn test_delete_store_cleans_up_assertions() {
     let ctx = TestContext::new();
 
+    // Use valid ULID format for store and model IDs (OpenFGA compatibility)
+    let store_id = Ulid::new().to_string();
+    let model_id = Ulid::new().to_string();
+
     // Setup: Create store, model, and assertion
-    ctx.create_store("test-store", "Test Store").await;
-    ctx.create_model("model-1", "test-store").await;
-    ctx.write_assertion("test-store", "model-1", "user:alice")
+    ctx.create_store(&store_id, "Test Store").await;
+    ctx.create_model(&model_id, &store_id).await;
+    ctx.write_assertion(&store_id, &model_id, "user:alice")
         .await;
 
     // Verify assertion exists
     assert_eq!(ctx.assertion_count(), 1);
-    assert!(ctx.has_assertion("test-store", "model-1"));
+    assert!(ctx.has_assertion(&store_id, &model_id));
 
     // Delete the store
-    let status = ctx.delete("/stores/test-store").await;
+    let status = ctx.delete(&format!("/stores/{store_id}")).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify assertions are cleaned up
@@ -177,20 +183,25 @@ async fn test_delete_store_cleans_up_assertions() {
 async fn test_delete_store_cleans_up_multiple_model_assertions() {
     let ctx = TestContext::new();
 
+    // Use valid ULID format for store and model IDs (OpenFGA compatibility)
+    let store_id = Ulid::new().to_string();
+    let model_id_1 = Ulid::new().to_string();
+    let model_id_2 = Ulid::new().to_string();
+
     // Setup: Create store with two models and assertions
-    ctx.create_store("test-store", "Test Store").await;
-    ctx.create_model("model-1", "test-store").await;
-    ctx.create_model("model-2", "test-store").await;
-    ctx.write_assertion("test-store", "model-1", "user:alice")
+    ctx.create_store(&store_id, "Test Store").await;
+    ctx.create_model(&model_id_1, &store_id).await;
+    ctx.create_model(&model_id_2, &store_id).await;
+    ctx.write_assertion(&store_id, &model_id_1, "user:alice")
         .await;
-    ctx.write_assertion("test-store", "model-2", "user:bob")
+    ctx.write_assertion(&store_id, &model_id_2, "user:bob")
         .await;
 
     // Verify both assertions exist
     assert_eq!(ctx.assertion_count(), 2);
 
     // Delete the store
-    let status = ctx.delete("/stores/test-store").await;
+    let status = ctx.delete(&format!("/stores/{store_id}")).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify all assertions are cleaned up
@@ -202,26 +213,33 @@ async fn test_delete_store_cleans_up_multiple_model_assertions() {
 async fn test_delete_store_preserves_other_store_assertions() {
     let ctx = TestContext::new();
 
+    // Use valid ULID format for store and model IDs (OpenFGA compatibility)
+    let store_id_1 = Ulid::new().to_string();
+    let store_id_2 = Ulid::new().to_string();
+    let model_id_a = Ulid::new().to_string();
+    let model_id_b = Ulid::new().to_string();
+
     // Setup: Create two stores with assertions
-    ctx.create_store("store-1", "Store 1").await;
-    ctx.create_store("store-2", "Store 2").await;
-    ctx.create_model("model-a", "store-1").await;
-    ctx.create_model("model-b", "store-2").await;
-    ctx.write_assertion("store-1", "model-a", "user:alice")
+    ctx.create_store(&store_id_1, "Store 1").await;
+    ctx.create_store(&store_id_2, "Store 2").await;
+    ctx.create_model(&model_id_a, &store_id_1).await;
+    ctx.create_model(&model_id_b, &store_id_2).await;
+    ctx.write_assertion(&store_id_1, &model_id_a, "user:alice")
         .await;
-    ctx.write_assertion("store-2", "model-b", "user:bob").await;
+    ctx.write_assertion(&store_id_2, &model_id_b, "user:bob")
+        .await;
 
     // Verify both assertions exist
     assert_eq!(ctx.assertion_count(), 2);
 
     // Delete store-1
-    let status = ctx.delete("/stores/store-1").await;
+    let status = ctx.delete(&format!("/stores/{store_id_1}")).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify only store-1 assertions are removed
     assert_eq!(ctx.assertion_count(), 1);
-    assert!(!ctx.has_assertion("store-1", "model-a"));
-    assert!(ctx.has_assertion("store-2", "model-b"));
+    assert!(!ctx.has_assertion(&store_id_1, &model_id_a));
+    assert!(ctx.has_assertion(&store_id_2, &model_id_b));
 }
 
 // ============================================================================
@@ -233,10 +251,14 @@ async fn test_delete_store_preserves_other_store_assertions() {
 async fn test_delete_authorization_model_cleans_up_assertions() {
     let ctx = TestContext::new();
 
+    // Use valid ULID format for store and model IDs (OpenFGA compatibility)
+    let store_id = Ulid::new().to_string();
+    let model_id = Ulid::new().to_string();
+
     // Setup: Create store, model, and assertion
-    ctx.create_store("test-store", "Test Store").await;
-    ctx.create_model("model-1", "test-store").await;
-    ctx.write_assertion("test-store", "model-1", "user:alice")
+    ctx.create_store(&store_id, "Test Store").await;
+    ctx.create_model(&model_id, &store_id).await;
+    ctx.write_assertion(&store_id, &model_id, "user:alice")
         .await;
 
     // Verify assertion exists
@@ -244,7 +266,9 @@ async fn test_delete_authorization_model_cleans_up_assertions() {
 
     // Delete the authorization model
     let status = ctx
-        .delete("/stores/test-store/authorization-models/model-1")
+        .delete(&format!(
+            "/stores/{store_id}/authorization-models/{model_id}"
+        ))
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
@@ -257,13 +281,18 @@ async fn test_delete_authorization_model_cleans_up_assertions() {
 async fn test_delete_model_preserves_other_model_assertions() {
     let ctx = TestContext::new();
 
+    // Use valid ULID format for store and model IDs (OpenFGA compatibility)
+    let store_id = Ulid::new().to_string();
+    let model_id_1 = Ulid::new().to_string();
+    let model_id_2 = Ulid::new().to_string();
+
     // Setup: Create store with two models and assertions
-    ctx.create_store("test-store", "Test Store").await;
-    ctx.create_model("model-1", "test-store").await;
-    ctx.create_model("model-2", "test-store").await;
-    ctx.write_assertion("test-store", "model-1", "user:alice")
+    ctx.create_store(&store_id, "Test Store").await;
+    ctx.create_model(&model_id_1, &store_id).await;
+    ctx.create_model(&model_id_2, &store_id).await;
+    ctx.write_assertion(&store_id, &model_id_1, "user:alice")
         .await;
-    ctx.write_assertion("test-store", "model-2", "user:bob")
+    ctx.write_assertion(&store_id, &model_id_2, "user:bob")
         .await;
 
     // Verify both assertions exist
@@ -271,14 +300,16 @@ async fn test_delete_model_preserves_other_model_assertions() {
 
     // Delete model-1
     let status = ctx
-        .delete("/stores/test-store/authorization-models/model-1")
+        .delete(&format!(
+            "/stores/{store_id}/authorization-models/{model_id_1}"
+        ))
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify only model-1 assertions are removed
     assert_eq!(ctx.assertion_count(), 1);
-    assert!(!ctx.has_assertion("test-store", "model-1"));
-    assert!(ctx.has_assertion("test-store", "model-2"));
+    assert!(!ctx.has_assertion(&store_id, &model_id_1));
+    assert!(ctx.has_assertion(&store_id, &model_id_2));
 }
 
 /// Test that deleting a non-existent model returns 404.
@@ -286,12 +317,18 @@ async fn test_delete_model_preserves_other_model_assertions() {
 async fn test_delete_nonexistent_model_returns_404() {
     let ctx = TestContext::new();
 
-    // Setup: Create store only (no model)
-    ctx.create_store("test-store", "Test Store").await;
+    // Use valid ULID format for store and model IDs (OpenFGA compatibility)
+    let store_id = Ulid::new().to_string();
+    let nonexistent_model_id = Ulid::new().to_string();
 
-    // Try to delete a non-existent model
+    // Setup: Create store only (no model)
+    ctx.create_store(&store_id, "Test Store").await;
+
+    // Try to delete a non-existent model (valid ULID format but doesn't exist)
     let status = ctx
-        .delete("/stores/test-store/authorization-models/nonexistent")
+        .delete(&format!(
+            "/stores/{store_id}/authorization-models/{nonexistent_model_id}"
+        ))
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -301,9 +338,16 @@ async fn test_delete_nonexistent_model_returns_404() {
 async fn test_delete_model_from_nonexistent_store_returns_404() {
     let ctx = TestContext::new();
 
-    // Try to delete a model from a non-existent store
+    // Use valid ULID format (OpenFGA compatibility)
+    // A valid ULID that doesn't exist returns 404; invalid format returns 400
+    let nonexistent_store_id = Ulid::new().to_string();
+    let model_id = Ulid::new().to_string();
+
+    // Try to delete a model from a non-existent store (valid ULID format)
     let status = ctx
-        .delete("/stores/nonexistent/authorization-models/model-1")
+        .delete(&format!(
+            "/stores/{nonexistent_store_id}/authorization-models/{model_id}"
+        ))
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -317,14 +361,17 @@ async fn test_delete_model_from_nonexistent_store_returns_404() {
 async fn test_delete_store_with_no_assertions_succeeds() {
     let ctx = TestContext::new();
 
+    // Use valid ULID format for store ID (OpenFGA compatibility)
+    let store_id = Ulid::new().to_string();
+
     // Setup: Create store only (no assertions)
-    ctx.create_store("test-store", "Test Store").await;
+    ctx.create_store(&store_id, "Test Store").await;
 
     // Verify no assertions exist
     assert_eq!(ctx.assertion_count(), 0);
 
     // Delete the store
-    let status = ctx.delete("/stores/test-store").await;
+    let status = ctx.delete(&format!("/stores/{store_id}")).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify still no assertions
@@ -336,16 +383,22 @@ async fn test_delete_store_with_no_assertions_succeeds() {
 async fn test_delete_model_with_no_assertions_succeeds() {
     let ctx = TestContext::new();
 
+    // Use valid ULID format for store and model IDs (OpenFGA compatibility)
+    let store_id = Ulid::new().to_string();
+    let model_id = Ulid::new().to_string();
+
     // Setup: Create store and model (no assertions)
-    ctx.create_store("test-store", "Test Store").await;
-    ctx.create_model("model-1", "test-store").await;
+    ctx.create_store(&store_id, "Test Store").await;
+    ctx.create_model(&model_id, &store_id).await;
 
     // Verify no assertions exist
     assert_eq!(ctx.assertion_count(), 0);
 
     // Delete the model
     let status = ctx
-        .delete("/stores/test-store/authorization-models/model-1")
+        .delete(&format!(
+            "/stores/{store_id}/authorization-models/{model_id}"
+        ))
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 

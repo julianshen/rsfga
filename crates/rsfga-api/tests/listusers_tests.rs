@@ -596,9 +596,12 @@ async fn test_listusers_respects_timeout() {
 async fn test_listusers_returns_error_for_nonexistent_store() {
     let storage = Arc::new(MemoryDataStore::new());
 
+    // Use a valid ULID format that doesn't exist (OpenFGA validates format first, returning 400 for invalid ULIDs)
+    let nonexistent_store_id = ulid::Ulid::new().to_string();
+
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/list-users",
+        &format!("/stores/{}/list-users", nonexistent_store_id),
         serde_json::json!({
             "object": { "type": "document", "id": "doc1" },
             "relation": "viewer",

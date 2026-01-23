@@ -238,16 +238,17 @@ mod tests {
     /// Verifies that request and response JSON schemas match OpenFGA format.
     #[tokio::test]
     async fn test_request_response_schemas_match_exactly() {
+        // Use valid ULID format for store and model IDs (OpenFGA compatibility)
+        let store_id = ulid::Ulid::new().to_string();
+        let model_id = ulid::Ulid::new().to_string();
+
         let storage = Arc::new(MemoryDataStore::new());
-        storage
-            .create_store("test-store", "Test Store")
-            .await
-            .unwrap();
+        storage.create_store(&store_id, "Test Store").await.unwrap();
 
         // Create an authorization model for the check request to work
         let model = StoredAuthorizationModel::new(
-            "test-model".to_string(),
-            "test-store",
+            model_id.clone(),
+            &store_id,
             "1.1",
             r#"{
                 "type_definitions": [
@@ -268,7 +269,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/test-store/check")
+                    .uri(format!("/stores/{store_id}/check"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"tuple_key":{"user":"user:alice","relation":"viewer","object":"document:readme"}}"#,
@@ -297,7 +298,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/test-store/read")
+                    .uri(format!("/stores/{store_id}/read"))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{}"#))
                     .unwrap(),
@@ -324,7 +325,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/test-store/batch-check")
+                    .uri(format!("/stores/{store_id}/batch-check"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"checks":[{"tuple_key":{"user":"user:alice","relation":"viewer","object":"doc:1"},"correlation_id":"c1"}]}"#,
@@ -352,7 +353,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/stores/test-store")
+                    .uri(format!("/stores/{store_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -383,13 +384,16 @@ mod tests {
     async fn test_error_codes_match_openfga() {
         let app = test_app();
 
-        // Non-existent store should return 404 with proper error format
+        // Use a valid ULID format store ID that doesn't exist
+        let nonexistent_store_id = ulid::Ulid::new().to_string();
+
+        // Non-existent store (with valid ULID format) should return 404 with proper error format
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/nonexistent-store/check")
+                    .uri(format!("/stores/{}/check", nonexistent_store_id))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"tuple_key":{"user":"user:alice","relation":"viewer","object":"doc:1"}}"#,
@@ -399,7 +403,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "Check store: expected 404 for non-existent store with valid ULID, got {}",
+            response.status()
+        );
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();
@@ -415,13 +424,36 @@ mod tests {
             "Error response must have 'message' field"
         );
 
-        // Invalid JSON should return 400
+        // Invalid store ID format should return 400 (OpenFGA validates format first)
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/test-store/check")
+                    .uri("/stores/invalid-store-id/check")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"tuple_key":{"user":"user:alice","relation":"viewer","object":"doc:1"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "Invalid store ID format should return 400"
+        );
+
+        // Invalid JSON should return 400
+        let valid_store_id = ulid::Ulid::new().to_string();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/stores/{}/check", valid_store_id))
                     .header("content-type", "application/json")
                     .body(Body::from("{ invalid json }"))
                     .unwrap(),
@@ -432,9 +464,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         // Invalid request body should return 400 or 422
+        let test_store_id = ulid::Ulid::new().to_string();
         let storage = Arc::new(MemoryDataStore::new());
         storage
-            .create_store("test-store", "Test Store")
+            .create_store(&test_store_id, "Test Store")
             .await
             .unwrap();
         let state = AppState::new(storage);
@@ -444,7 +477,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/test-store/check")
+                    .uri(format!("/stores/{}/check", test_store_id))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"invalid":"request"}"#))
                     .unwrap(),
@@ -468,11 +501,14 @@ mod tests {
     async fn test_openfga_compatibility_test_suite() {
         use rsfga_storage::StoredAuthorizationModel;
 
+        // Use valid ULID format for store ID (OpenFGA compatibility)
+        let store_id = ulid::Ulid::new().to_string();
+
         let storage = Arc::new(MemoryDataStore::new());
 
         // Create a test store
         let store = storage
-            .create_store("compat-store", "Compatibility Test Store")
+            .create_store(&store_id, "Compatibility Test Store")
             .await
             .unwrap();
         assert!(!store.id.is_empty());
@@ -488,7 +524,7 @@ mod tests {
         }"#;
         let model = StoredAuthorizationModel::new(
             ulid::Ulid::new().to_string(),
-            "compat-store",
+            &store_id,
             "1.1",
             model_json,
         );
@@ -503,7 +539,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/write")
+                    .uri(format!("/stores/{store_id}/write"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"writes":{"tuple_keys":[
@@ -524,7 +560,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/read")
+                    .uri(format!("/stores/{store_id}/read"))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{}"#))
                     .unwrap(),
@@ -545,7 +581,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/check")
+                    .uri(format!("/stores/{store_id}/check"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"tuple_key":{"user":"user:alice","relation":"owner","object":"document:budget"}}"#,
@@ -567,7 +603,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/check")
+                    .uri(format!("/stores/{store_id}/check"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"tuple_key":{"user":"user:charlie","relation":"owner","object":"document:budget"}}"#,
@@ -589,7 +625,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/batch-check")
+                    .uri(format!("/stores/{store_id}/batch-check"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"checks":[
@@ -618,7 +654,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/write")
+                    .uri(format!("/stores/{store_id}/write"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"deletes":{"tuple_keys":[
@@ -637,7 +673,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stores/compat-store/check")
+                    .uri(format!("/stores/{store_id}/check"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"tuple_key":{"user":"user:bob","relation":"viewer","object":"document:budget"}}"#,
@@ -681,7 +717,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri("/stores/compat-store")
+                    .uri(format!("/stores/{store_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
