@@ -229,6 +229,10 @@ impl CheckCache {
     ///
     /// The entry will expire after the configured TTL.
     /// Also updates secondary indices for O(1) invalidation.
+    ///
+    /// # Metrics
+    ///
+    /// Updates `rsfga_cache_size` gauge after insertion.
     pub async fn insert(&self, key: CacheKey, allowed: bool) {
         // Clone store_id once to avoid double cloning
         let store_id = key.store_id.clone();
@@ -245,6 +249,9 @@ impl CheckCache {
             .insert(key.clone());
 
         self.cache.insert(key, allowed).await;
+
+        // Update cache size gauge
+        metrics::gauge!("rsfga_cache_size").set(self.cache.entry_count() as f64);
     }
 
     /// Retrieves a cached check result.
@@ -268,6 +275,10 @@ impl CheckCache {
 
     /// Manually invalidates a single cache entry.
     /// Also removes from secondary indices.
+    ///
+    /// # Metrics
+    ///
+    /// Updates `rsfga_cache_size` gauge after invalidation.
     pub async fn invalidate(&self, key: &CacheKey) {
         // Remove from secondary indices
         if let Some(mut keys) = self.by_store.get_mut(&key.store_id) {
@@ -281,12 +292,19 @@ impl CheckCache {
         }
 
         self.cache.invalidate(key).await;
+
+        // Update cache size gauge
+        metrics::gauge!("rsfga_cache_size").set(self.cache.entry_count() as f64);
     }
 
     /// Invalidates all entries for a specific store.
     ///
     /// Uses secondary index for O(K) where K is number of keys for this store,
     /// instead of O(N) where N is total cache entries.
+    ///
+    /// # Metrics
+    ///
+    /// Updates `rsfga_cache_size` gauge after invalidation.
     pub async fn invalidate_store(&self, store_id: &str) {
         // Use atomic remove() to avoid TOCTOU race condition.
         // This ensures no concurrent insert can add keys between reading and removing.
@@ -302,12 +320,19 @@ impl CheckCache {
                 }
             }
         }
+
+        // Update cache size gauge
+        metrics::gauge!("rsfga_cache_size").set(self.cache.entry_count() as f64);
     }
 
     /// Invalidates entries matching a predicate.
     ///
     /// The predicate receives each cache key and returns true if the
     /// entry should be invalidated.
+    ///
+    /// # Metrics
+    ///
+    /// Updates `rsfga_cache_size` gauge after invalidation.
     pub async fn invalidate_matching<F>(&self, predicate: F)
     where
         F: Fn(&CacheKey) -> bool,
@@ -325,6 +350,9 @@ impl CheckCache {
         for key in keys_to_remove {
             self.cache.invalidate(&key).await;
         }
+
+        // Update cache size gauge
+        metrics::gauge!("rsfga_cache_size").set(self.cache.entry_count() as f64);
     }
 
     /// Returns the approximate number of entries in the cache.
@@ -349,6 +377,10 @@ impl CheckCache {
     ///
     /// For now, we use a conservative approach and invalidate all entries
     /// for the affected object across all relations.
+    ///
+    /// # Metrics
+    ///
+    /// Updates `rsfga_cache_size` gauge after invalidation.
     pub async fn invalidate_for_tuple(&self, store_id: &str, object: &str, _relation: &str) {
         // Use atomic remove() to avoid TOCTOU race condition.
         // This ensures no concurrent insert can add keys between reading and removing.
@@ -362,6 +394,9 @@ impl CheckCache {
                 }
             }
         }
+
+        // Update cache size gauge
+        metrics::gauge!("rsfga_cache_size").set(self.cache.entry_count() as f64);
     }
 
     /// Spawns an async invalidation task that runs in the background.
