@@ -36,6 +36,17 @@
 //! 2. Write handlers properly invalidate affected cache entries
 //! 3. The TTL is acceptable for your authorization freshness requirements
 //!
+//! # Metrics
+//!
+//! The cache exposes Prometheus-compatible metrics for observability:
+//!
+//! - `rsfga_cache_hits_total` - Counter for cache hits
+//! - `rsfga_cache_misses_total` - Counter for cache misses
+//! - `rsfga_cache_size` - Gauge tracking current number of cached entries
+//!
+//! Call [`register_check_cache_metrics`] during application startup to register
+//! metric descriptions with the metrics recorder.
+//!
 //! # Example
 //!
 //! ```rust,ignore
