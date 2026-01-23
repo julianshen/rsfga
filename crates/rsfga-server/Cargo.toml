@@ -27,6 +27,9 @@ anyhow = { workspace = true }
 # Tracing
 tracing = { workspace = true }
 
+# Metrics
+metrics = { workspace = true }
+
 # Concurrency
 dashmap = { workspace = true }
 futures = { workspace = true }

@@ -31,7 +31,7 @@ mod handler;
 mod singleflight;
 mod types;
 
-pub use handler::{BatchCheckHandler, DEFAULT_BATCH_CONCURRENCY};
+pub use handler::{register_batch_check_metrics, BatchCheckHandler, DEFAULT_BATCH_CONCURRENCY};
 pub use types::{
     BatchCheckError, BatchCheckItem, BatchCheckItemErrorKind, BatchCheckItemResult,
     BatchCheckRequest, BatchCheckResponse, BatchCheckResult, MAX_BATCH_SIZE,

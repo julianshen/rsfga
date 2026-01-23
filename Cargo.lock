@@ -3301,6 +3301,7 @@ dependencies = [
  "criterion",
  "dashmap",
  "futures",
+ "metrics",
  "mockall",
  "proptest",
  "rsfga-domain",

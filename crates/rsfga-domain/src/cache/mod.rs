@@ -250,8 +250,20 @@ impl CheckCache {
     /// Retrieves a cached check result.
     ///
     /// Returns `None` if the key is not in the cache or has expired.
+    ///
+    /// # Metrics
+    ///
+    /// Records cache hit/miss to:
+    /// - `rsfga_cache_hits_total` - Incremented on cache hit
+    /// - `rsfga_cache_misses_total` - Incremented on cache miss
     pub async fn get(&self, key: &CacheKey) -> Option<bool> {
-        self.cache.get(key).await
+        let result = self.cache.get(key).await;
+        if result.is_some() {
+            metrics::counter!("rsfga_cache_hits_total").increment(1);
+        } else {
+            metrics::counter!("rsfga_cache_misses_total").increment(1);
+        }
+        result
     }
 
     /// Manually invalidates a single cache entry.
@@ -396,6 +408,41 @@ impl Clone for CheckCache {
             by_object: self.by_object.clone(),
         }
     }
+}
+
+/// Registers check cache metrics descriptions.
+///
+/// Call this function once during application startup to register metric
+/// descriptions with the metrics recorder. This is optional but provides
+/// better documentation in Prometheus/Grafana.
+///
+/// # Metrics Registered
+///
+/// - `rsfga_cache_hits_total` - Total number of check cache hits
+/// - `rsfga_cache_misses_total` - Total number of check cache misses
+/// - `rsfga_cache_size` - Current number of cached check results (gauge)
+///
+/// # Example
+///
+/// ```ignore
+/// use rsfga_domain::cache::register_check_cache_metrics;
+///
+/// // During application initialization
+/// register_check_cache_metrics();
+/// ```
+pub fn register_check_cache_metrics() {
+    metrics::describe_counter!(
+        "rsfga_cache_hits_total",
+        "Total number of check cache hits"
+    );
+    metrics::describe_counter!(
+        "rsfga_cache_misses_total",
+        "Total number of check cache misses"
+    );
+    metrics::describe_gauge!(
+        "rsfga_cache_size",
+        "Current number of cached check results"
+    );
 }
 
 #[cfg(test)]
