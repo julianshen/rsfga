@@ -35,6 +35,64 @@ fn simple_model_json() -> &'static str {
     }"#
 }
 
+/// Helper function to create an authorization model JSON with conditions.
+/// This model includes conditions used in condition-related tests.
+fn model_with_conditions_json() -> &'static str {
+    r#"{
+        "type_definitions": [
+            {"type": "user"},
+            {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
+        ],
+        "conditions": {
+            "ip_restriction": {
+                "name": "ip_restriction",
+                "expression": "true",
+                "parameters": {}
+            },
+            "ip_restriction-v2": {
+                "name": "ip_restriction-v2",
+                "expression": "true",
+                "parameters": {}
+            },
+            "time_based_access": {
+                "name": "time_based_access",
+                "expression": "true",
+                "parameters": {}
+            },
+            "valid_condition": {
+                "name": "valid_condition",
+                "expression": "true",
+                "parameters": {}
+            },
+            "valid-condition-with-dashes": {
+                "name": "valid-condition-with-dashes",
+                "expression": "true",
+                "parameters": {}
+            },
+            "UPPER_CASE_CONDITION": {
+                "name": "UPPER_CASE_CONDITION",
+                "expression": "true",
+                "parameters": {}
+            },
+            "mixedCase123": {
+                "name": "mixedCase123",
+                "expression": "true",
+                "parameters": {}
+            },
+            "condition_a": {
+                "name": "condition_a",
+                "expression": "true",
+                "parameters": {}
+            },
+            "condition_c": {
+                "name": "condition_c",
+                "expression": "true",
+                "parameters": {}
+            }
+        }
+    }"#
+}
+
 /// Helper function to set up a store with a basic authorization model.
 /// Returns the store_id for convenience.
 async fn setup_store_with_model(storage: &MemoryDataStore, store_id: &str, store_name: &str) {
@@ -45,6 +103,19 @@ async fn setup_store_with_model(storage: &MemoryDataStore, store_id: &str, store
         store_id,
         "1.1",
         simple_model_json().to_string(),
+    );
+    storage.write_authorization_model(model).await.unwrap();
+}
+
+/// Helper function to set up a store with an authorization model that includes conditions.
+async fn setup_store_with_conditions(storage: &MemoryDataStore, store_id: &str, store_name: &str) {
+    storage.create_store(store_id, store_name).await.unwrap();
+
+    let model = StoredAuthorizationModel::new(
+        format!("{}-model", store_id),
+        store_id,
+        "1.1",
+        model_with_conditions_json().to_string(),
     );
     storage.write_authorization_model(model).await.unwrap();
 }
@@ -240,10 +311,7 @@ async fn test_expand_endpoint_returns_200() {
 #[tokio::test]
 async fn test_write_endpoint_returns_200() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    setup_store_with_model(&storage, "test-store", "Test Store").await;
 
     let state = AppState::new(storage);
     let app = create_router(state);
@@ -1341,10 +1409,7 @@ async fn test_list_authorization_models_returns_latest_first() {
 #[tokio::test]
 async fn test_write_endpoint_parses_conditions() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    setup_store_with_conditions(&storage, "test-store", "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -1413,10 +1478,7 @@ async fn test_write_endpoint_parses_conditions() {
 #[tokio::test]
 async fn test_write_endpoint_parses_condition_without_context() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    setup_store_with_conditions(&storage, "test-store", "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -1471,10 +1533,7 @@ async fn test_write_endpoint_parses_condition_without_context() {
 #[tokio::test]
 async fn test_write_endpoint_ignores_empty_condition_name() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    setup_store_with_model(&storage, "test-store", "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -1530,10 +1589,7 @@ async fn test_write_endpoint_ignores_empty_condition_name() {
 #[tokio::test]
 async fn test_write_endpoint_handles_multiple_tuples_with_conditions() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    setup_store_with_conditions(&storage, "test-store", "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -1610,10 +1666,7 @@ async fn test_write_endpoint_handles_multiple_tuples_with_conditions() {
 #[tokio::test]
 async fn test_write_endpoint_rejects_invalid_condition_name() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    setup_store_with_model(&storage, "test-store", "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -1662,10 +1715,7 @@ async fn test_write_endpoint_rejects_invalid_condition_name() {
 #[tokio::test]
 async fn test_write_endpoint_accepts_valid_condition_name_formats() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    setup_store_with_conditions(&storage, "test-store", "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -1718,10 +1768,7 @@ async fn test_write_endpoint_accepts_valid_condition_name_formats() {
 #[tokio::test]
 async fn test_read_endpoint_returns_conditions() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    setup_store_with_conditions(&storage, "test-store", "Test Store").await;
 
     // First, write a tuple with a condition
     let write_state = AppState::new(Arc::clone(&storage));

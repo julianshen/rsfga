@@ -385,6 +385,215 @@ fn parse_conditions(model_json: &serde_json::Value) -> DomainResult<Vec<Conditio
     Ok(conditions)
 }
 
+/// Validates an authorization model JSON without storing it.
+///
+/// This function performs comprehensive validation including:
+/// - JSON structure parsing
+/// - Duplicate type name detection (OpenFGA compatibility)
+/// - Domain-level semantic validation (cycles, undefined references, etc.)
+/// - CEL condition expression validation
+///
+/// # Errors
+///
+/// Returns `DomainError::ModelParseError` if:
+/// - JSON structure is invalid
+/// - Duplicate type definitions exist
+/// - Any domain validation error occurs (cycles, undefined refs, etc.)
+pub fn validate_authorization_model_json(model_json: &serde_json::Value) -> DomainResult<()> {
+    use std::collections::HashSet;
+
+    // Extract type_definitions from the JSON
+    let type_defs = model_json
+        .get("type_definitions")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| DomainError::ModelParseError {
+            message: "type_definitions must be an array".to_string(),
+        })?;
+
+    // Check for duplicate type names (OpenFGA returns 400 for duplicates)
+    let mut seen_types = HashSet::new();
+    for type_def in type_defs {
+        if let Some(type_name) = type_def.get("type").and_then(|v| v.as_str()) {
+            if !seen_types.insert(type_name.to_string()) {
+                return Err(DomainError::ModelParseError {
+                    message: format!("duplicate type definition: '{type_name}'"),
+                });
+            }
+        }
+    }
+
+    // Parse into domain model for semantic validation
+    let mut type_definitions = Vec::new();
+    for type_def in type_defs {
+        if let Some(type_name) = type_def.get("type").and_then(|v| v.as_str()) {
+            let mut relations = Vec::new();
+
+            // Parse relations if present
+            if let Some(rels) = type_def.get("relations").and_then(|v| v.as_object()) {
+                for (rel_name, rel_def) in rels {
+                    // Parse the userset (relation rewrite) from JSON
+                    let rewrite = parse_userset(rel_def, type_name, rel_name)?;
+
+                    // Parse type constraints from metadata
+                    let type_constraints = parse_type_constraints(type_def, type_name, rel_name)?;
+
+                    relations.push(RelationDefinition {
+                        name: rel_name.clone(),
+                        type_constraints,
+                        rewrite,
+                    });
+                }
+            }
+
+            type_definitions.push(TypeDefinition {
+                type_name: type_name.to_string(),
+                relations,
+            });
+        }
+    }
+
+    // Parse conditions from the JSON
+    let conditions = parse_conditions(model_json)?;
+
+    // Build the domain model
+    let model = AuthorizationModel::with_types_and_conditions("1.1", type_definitions, conditions);
+
+    // Run domain validation (cycles, undefined refs, CEL syntax, etc.)
+    rsfga_domain::validation::validate(&model).map_err(|errors| {
+        // Combine all validation errors into a single message
+        let messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        DomainError::ModelParseError {
+            message: messages.join("; "),
+        }
+    })
+}
+
+/// Validates that a tuple is consistent with the authorization model.
+///
+/// Checks that:
+/// - The object type exists in the model
+/// - The relation exists for that object type
+/// - If a condition is specified, it exists in the model
+///
+/// # Arguments
+///
+/// * `model` - The authorization model to validate against
+/// * `object_type` - The type of the object in the tuple
+/// * `relation` - The relation in the tuple
+/// * `condition_name` - Optional condition name in the tuple
+///
+/// # Errors
+///
+/// Returns `DomainError` if validation fails.
+pub fn validate_tuple_against_model(
+    model: &AuthorizationModel,
+    object_type: &str,
+    relation: &str,
+    condition_name: Option<&str>,
+) -> DomainResult<()> {
+    use rsfga_domain::validation::ModelValidator;
+
+    let validator = ModelValidator::new(model);
+
+    // Check if the object type exists in the model
+    if !validator.type_exists(object_type) {
+        return Err(DomainError::TypeNotFound {
+            type_name: object_type.to_string(),
+        });
+    }
+
+    // Check if the relation exists for this type
+    if !validator.relation_exists(object_type, relation) {
+        return Err(DomainError::RelationNotFound {
+            type_name: object_type.to_string(),
+            relation: relation.to_string(),
+        });
+    }
+
+    // Check if the condition exists in the model (if specified)
+    if let Some(cond_name) = condition_name {
+        let condition_exists = model.conditions.iter().any(|c| c.name == cond_name);
+        if !condition_exists {
+            return Err(DomainError::ModelParseError {
+                message: format!("condition '{cond_name}' not defined in authorization model"),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Parses a stored authorization model JSON into a domain AuthorizationModel.
+///
+/// This is used for tuple validation to check that tuples reference valid types
+/// and relations in the current model.
+///
+/// # Arguments
+///
+/// * `model_json_str` - The JSON string from storage
+/// * `schema_version` - The schema version of the model
+///
+/// # Errors
+///
+/// Returns `DomainError::ModelParseError` if parsing fails.
+pub fn parse_model_json(
+    model_json_str: &str,
+    schema_version: &str,
+) -> DomainResult<AuthorizationModel> {
+    // Parse the stored model JSON into an AuthorizationModel
+    let model_json: serde_json::Value =
+        serde_json::from_str(model_json_str).map_err(|e| DomainError::ModelParseError {
+            message: format!("failed to parse model JSON: {e}"),
+        })?;
+
+    // Build AuthorizationModel from the parsed JSON
+    let mut type_definitions = Vec::new();
+
+    // Extract type_definitions from the JSON
+    if let Some(type_defs) = model_json
+        .get("type_definitions")
+        .and_then(|v| v.as_array())
+    {
+        for type_def in type_defs {
+            if let Some(type_name) = type_def.get("type").and_then(|v| v.as_str()) {
+                let mut relations = Vec::new();
+
+                // Parse relations if present
+                if let Some(rels) = type_def.get("relations").and_then(|v| v.as_object()) {
+                    for (rel_name, rel_def) in rels {
+                        // Parse the userset (relation rewrite) from JSON
+                        let rewrite = parse_userset(rel_def, type_name, rel_name)?;
+
+                        // Parse type constraints from metadata
+                        let type_constraints =
+                            parse_type_constraints(type_def, type_name, rel_name)?;
+
+                        relations.push(RelationDefinition {
+                            name: rel_name.clone(),
+                            type_constraints,
+                            rewrite,
+                        });
+                    }
+                }
+
+                type_definitions.push(TypeDefinition {
+                    type_name: type_name.to_string(),
+                    relations,
+                });
+            }
+        }
+    }
+
+    // Parse conditions from the JSON
+    let conditions = parse_conditions(&model_json)?;
+
+    Ok(AuthorizationModel::with_types_and_conditions(
+        schema_version,
+        type_definitions,
+        conditions,
+    ))
+}
+
 /// Adapter that implements `TupleReader` using a `DataStore`.
 ///
 /// This adapter bridges the storage layer to the domain layer for tuple operations.

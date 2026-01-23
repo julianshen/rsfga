@@ -434,6 +434,25 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
+        // Get the latest authorization model to validate tuples against
+        // OpenFGA requires tuples to reference types/relations defined in the model
+        let stored_model = self
+            .storage
+            .get_latest_authorization_model(&req.store_id)
+            .await
+            .map_err(|e| match e {
+                rsfga_storage::StorageError::ModelNotFound { .. } => Status::invalid_argument(
+                    "cannot write tuples: no authorization model exists for this store",
+                ),
+                other => storage_error_to_status(other),
+            })?;
+
+        let model = crate::adapters::parse_model_json(
+            &stored_model.model_json,
+            &stored_model.schema_version,
+        )
+        .map_err(|e| Status::internal(format!("failed to parse authorization model: {e}")))?;
+
         // Convert writes - fail if any tuple key is invalid
         // No clones in happy path - error contains user/object for messages
         let writes: Vec<StoredTuple> = req
@@ -481,6 +500,38 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             })
             .transpose()?
             .unwrap_or_default();
+
+        // Validate all tuples against the authorization model
+        // OpenFGA returns INVALID_ARGUMENT if tuples reference undefined types, relations, or conditions
+        for (i, tuple) in writes.iter().enumerate() {
+            crate::adapters::validate_tuple_against_model(
+                &model,
+                &tuple.object_type,
+                &tuple.relation,
+                tuple.condition_name.as_deref(),
+            )
+            .map_err(|e| {
+                Status::invalid_argument(format!(
+                    "invalid tuple at index {i}: type={}, relation={}, reason={}",
+                    tuple.object_type, tuple.relation, e
+                ))
+            })?;
+        }
+
+        for (i, tuple) in deletes.iter().enumerate() {
+            crate::adapters::validate_tuple_against_model(
+                &model,
+                &tuple.object_type,
+                &tuple.relation,
+                tuple.condition_name.as_deref(),
+            )
+            .map_err(|e| {
+                Status::invalid_argument(format!(
+                    "invalid delete tuple at index {i}: type={}, relation={}, reason={}",
+                    tuple.object_type, tuple.relation, e
+                ))
+            })?;
+        }
 
         self.storage
             .write_tuples(&req.store_id, writes, deletes)
@@ -1162,6 +1213,11 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 .collect();
             model_json["conditions"] = serde_json::Value::Object(conditions_json);
         }
+
+        // Validate model semantics (duplicates, undefined refs, CEL syntax, etc.)
+        // This is critical for API compatibility - OpenFGA returns INVALID_ARGUMENT for invalid models
+        crate::adapters::validate_authorization_model_json(&model_json)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         // Validate model size before storage
         let model_json_str = model_json.to_string();

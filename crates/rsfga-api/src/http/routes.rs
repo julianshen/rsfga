@@ -595,19 +595,12 @@ async fn write_authorization_model<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<WriteAuthorizationModelRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validation strategy: Validate at HTTP layer for immediate feedback.
-    // Domain-level validation (schema version, type definition semantics) is deferred
-    // to allow storage of models that may be validated differently across versions.
-
     // Validate type_definitions is not empty (OpenFGA requirement)
     if body.type_definitions.is_empty() {
         return Err(ApiError::invalid_input("type_definitions cannot be empty"));
     }
 
-    // Generate a new ULID for the model
-    let model_id = ulid::Ulid::new().to_string();
-
-    // Serialize the model data to JSON for storage (omit conditions if absent/null)
+    // Serialize the model data to JSON for validation and storage
     let mut model_json = serde_json::json!({
         "type_definitions": body.type_definitions,
     });
@@ -618,6 +611,11 @@ async fn write_authorization_model<S: DataStore>(
         }
     }
 
+    // Validate model semantics (duplicates, undefined refs, CEL syntax, etc.)
+    // This is critical for API compatibility - OpenFGA returns 400 for invalid models
+    crate::adapters::validate_authorization_model_json(&model_json)
+        .map_err(|e| ApiError::invalid_input(e.to_string()))?;
+
     // Validate model size before storage
     let model_json_str = model_json.to_string();
     if model_json_str.len() > MAX_AUTHORIZATION_MODEL_SIZE {
@@ -625,6 +623,9 @@ async fn write_authorization_model<S: DataStore>(
             "authorization model exceeds maximum size of {MAX_AUTHORIZATION_MODEL_SIZE} bytes"
         )));
     }
+
+    // Generate a new ULID for the model
+    let model_id = ulid::Ulid::new().to_string();
 
     let model =
         StoredAuthorizationModel::new(&model_id, &store_id, &body.schema_version, model_json_str);
@@ -1233,6 +1234,25 @@ async fn write_tuples<S: DataStore>(
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
+    // Get the latest authorization model to validate tuples against
+    // OpenFGA requires tuples to reference types/relations defined in the model
+    let stored_model = state
+        .storage
+        .get_latest_authorization_model(&store_id)
+        .await
+        .map_err(|e| match e {
+            StorageError::ModelNotFound { .. } => ApiError::invalid_input(
+                "cannot write tuples: no authorization model exists for this store",
+            ),
+            other => ApiError::from(other),
+        })?;
+
+    let model =
+        crate::adapters::parse_model_json(&stored_model.model_json, &stored_model.schema_version)
+            .map_err(|e| {
+            ApiError::internal_error(format!("failed to parse authorization model: {e}"))
+        })?;
+
     // Convert write tuples - fail if any tuple key is invalid
     // No clones in happy path - error contains user/object for messages
     let writes: Vec<StoredTuple> = body
@@ -1274,6 +1294,38 @@ async fn write_tuples<S: DataStore>(
         })
         .transpose()?
         .unwrap_or_default();
+
+    // Validate all tuples against the authorization model
+    // OpenFGA returns 400 if tuples reference undefined types, relations, or conditions
+    for (i, tuple) in writes.iter().enumerate() {
+        crate::adapters::validate_tuple_against_model(
+            &model,
+            &tuple.object_type,
+            &tuple.relation,
+            tuple.condition_name.as_deref(),
+        )
+        .map_err(|e| {
+            ApiError::invalid_input(format!(
+                "invalid tuple at index {i}: type={}, relation={}, reason={}",
+                tuple.object_type, tuple.relation, e
+            ))
+        })?;
+    }
+
+    for (i, tuple) in deletes.iter().enumerate() {
+        crate::adapters::validate_tuple_against_model(
+            &model,
+            &tuple.object_type,
+            &tuple.relation,
+            tuple.condition_name.as_deref(),
+        )
+        .map_err(|e| {
+            ApiError::invalid_input(format!(
+                "invalid delete tuple at index {i}: type={}, relation={}, reason={}",
+                tuple.object_type, tuple.relation, e
+            ))
+        })?;
+    }
 
     state
         .storage

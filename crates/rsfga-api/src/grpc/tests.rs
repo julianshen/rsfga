@@ -44,6 +44,50 @@ fn simple_model_json() -> String {
     .to_string()
 }
 
+/// Helper function to create an authorization model JSON with conditions.
+/// This model includes conditions used in condition-related tests.
+fn model_with_conditions_json() -> String {
+    r#"{
+        "type_definitions": [
+            {"type": "user"},
+            {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
+        ],
+        "conditions": {
+            "ip_restriction": {
+                "name": "ip_restriction",
+                "expression": "true",
+                "parameters": {}
+            },
+            "ip_restriction-v2": {
+                "name": "ip_restriction-v2",
+                "expression": "true",
+                "parameters": {}
+            },
+            "time_based_access": {
+                "name": "time_based_access",
+                "expression": "true",
+                "parameters": {}
+            },
+            "valid_condition": {
+                "name": "valid_condition",
+                "expression": "true",
+                "parameters": {}
+            },
+            "valid-condition-with-dashes": {
+                "name": "valid-condition-with-dashes",
+                "expression": "true",
+                "parameters": {}
+            },
+            "age_restriction": {
+                "name": "age_restriction",
+                "expression": "true",
+                "parameters": {}
+            }
+        }
+    }"#
+    .to_string()
+}
+
 /// Helper to create and write a simple authorization model to a store.
 async fn setup_simple_model(storage: &MemoryDataStore, store_id: &str) -> String {
     let model = StoredAuthorizationModel::new(
@@ -51,6 +95,19 @@ async fn setup_simple_model(storage: &MemoryDataStore, store_id: &str) -> String
         store_id,
         "1.1",
         simple_model_json(),
+    );
+    let model_id = model.id.clone();
+    storage.write_authorization_model(model).await.unwrap();
+    model_id
+}
+
+/// Helper to create and write an authorization model with conditions to a store.
+async fn setup_model_with_conditions(storage: &MemoryDataStore, store_id: &str) -> String {
+    let model = StoredAuthorizationModel::new(
+        ulid::Ulid::new().to_string(),
+        store_id,
+        "1.1",
+        model_with_conditions_json(),
     );
     let model_id = model.id.clone();
     storage.write_authorization_model(model).await.unwrap();
@@ -523,6 +580,7 @@ async fn test_write_rpc_works_correctly() {
         .create_store("test-store", "Test Store")
         .await
         .unwrap();
+    setup_simple_model(&storage, "test-store").await;
 
     let service = test_service_with_storage(Arc::clone(&storage));
 
@@ -833,6 +891,7 @@ async fn test_write_rpc_parses_conditions() {
         .create_store("test-store", "Test Store")
         .await
         .unwrap();
+    setup_model_with_conditions(&storage, "test-store").await;
 
     let service = test_service_with_storage(Arc::clone(&storage));
 
@@ -912,6 +971,7 @@ async fn test_write_rpc_parses_condition_without_context() {
         .create_store("test-store", "Test Store")
         .await
         .unwrap();
+    setup_model_with_conditions(&storage, "test-store").await;
 
     let service = test_service_with_storage(Arc::clone(&storage));
 
@@ -962,6 +1022,7 @@ async fn test_write_rpc_ignores_empty_condition_name() {
         .create_store("test-store", "Test Store")
         .await
         .unwrap();
+    setup_simple_model(&storage, "test-store").await;
 
     let service = test_service_with_storage(Arc::clone(&storage));
 
@@ -1014,6 +1075,7 @@ async fn test_write_rpc_rejects_invalid_condition_name() {
         .create_store("test-store", "Test Store")
         .await
         .unwrap();
+    setup_simple_model(&storage, "test-store").await;
 
     let service = test_service_with_storage(Arc::clone(&storage));
 
@@ -1054,6 +1116,7 @@ async fn test_write_rpc_accepts_valid_condition_name_formats() {
         .create_store("test-store", "Test Store")
         .await
         .unwrap();
+    setup_model_with_conditions(&storage, "test-store").await;
 
     let service = test_service_with_storage(Arc::clone(&storage));
 
@@ -1103,6 +1166,7 @@ async fn test_write_rpc_rejects_nan_infinity_in_condition_context() {
         .create_store("test-store", "Test Store")
         .await
         .unwrap();
+    setup_simple_model(&storage, "test-store").await;
 
     let service = test_service_with_storage(Arc::clone(&storage));
 
@@ -1189,6 +1253,7 @@ async fn test_read_rpc_returns_conditions() {
         .create_store("test-store", "Test Store")
         .await
         .unwrap();
+    setup_model_with_conditions(&storage, "test-store").await;
 
     let service = test_service_with_storage(Arc::clone(&storage));
 
