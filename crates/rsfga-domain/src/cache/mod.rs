@@ -36,6 +36,17 @@
 //! 2. Write handlers properly invalidate affected cache entries
 //! 3. The TTL is acceptable for your authorization freshness requirements
 //!
+//! # Metrics
+//!
+//! The cache exposes Prometheus-compatible metrics for observability:
+//!
+//! - `rsfga_cache_hits_total` - Counter for cache hits
+//! - `rsfga_cache_misses_total` - Counter for cache misses
+//! - `rsfga_cache_size` - Gauge tracking current number of cached entries
+//!
+//! Call [`register_check_cache_metrics`] during application startup to register
+//! metric descriptions with the metrics recorder.
+//!
 //! # Example
 //!
 //! ```rust,ignore
@@ -229,6 +240,10 @@ impl CheckCache {
     ///
     /// The entry will expire after the configured TTL.
     /// Also updates secondary indices for O(1) invalidation.
+    ///
+    /// # Metrics
+    ///
+    /// Updates `rsfga_cache_size` gauge after insertion.
     pub async fn insert(&self, key: CacheKey, allowed: bool) {
         // Clone store_id once to avoid double cloning
         let store_id = key.store_id.clone();
@@ -245,17 +260,36 @@ impl CheckCache {
             .insert(key.clone());
 
         self.cache.insert(key, allowed).await;
+
+        // Update cache size gauge
+        metrics::gauge!("rsfga_cache_size").set(self.cache.entry_count() as f64);
     }
 
     /// Retrieves a cached check result.
     ///
     /// Returns `None` if the key is not in the cache or has expired.
+    ///
+    /// # Metrics
+    ///
+    /// Records cache hit/miss to:
+    /// - `rsfga_cache_hits_total` - Incremented on cache hit
+    /// - `rsfga_cache_misses_total` - Incremented on cache miss
     pub async fn get(&self, key: &CacheKey) -> Option<bool> {
-        self.cache.get(key).await
+        let result = self.cache.get(key).await;
+        if result.is_some() {
+            metrics::counter!("rsfga_cache_hits_total").increment(1);
+        } else {
+            metrics::counter!("rsfga_cache_misses_total").increment(1);
+        }
+        result
     }
 
     /// Manually invalidates a single cache entry.
     /// Also removes from secondary indices.
+    ///
+    /// # Metrics
+    ///
+    /// Updates `rsfga_cache_size` gauge after invalidation.
     pub async fn invalidate(&self, key: &CacheKey) {
         // Remove from secondary indices
         if let Some(mut keys) = self.by_store.get_mut(&key.store_id) {
@@ -269,12 +303,19 @@ impl CheckCache {
         }
 
         self.cache.invalidate(key).await;
+
+        // Update cache size gauge
+        metrics::gauge!("rsfga_cache_size").set(self.cache.entry_count() as f64);
     }
 
     /// Invalidates all entries for a specific store.
     ///
     /// Uses secondary index for O(K) where K is number of keys for this store,
     /// instead of O(N) where N is total cache entries.
+    ///
+    /// # Metrics
+    ///
+    /// Updates `rsfga_cache_size` gauge after invalidation.
     pub async fn invalidate_store(&self, store_id: &str) {
         // Use atomic remove() to avoid TOCTOU race condition.
         // This ensures no concurrent insert can add keys between reading and removing.
@@ -290,12 +331,19 @@ impl CheckCache {
                 }
             }
         }
+
+        // Update cache size gauge
+        metrics::gauge!("rsfga_cache_size").set(self.cache.entry_count() as f64);
     }
 
     /// Invalidates entries matching a predicate.
     ///
     /// The predicate receives each cache key and returns true if the
     /// entry should be invalidated.
+    ///
+    /// # Metrics
+    ///
+    /// Updates `rsfga_cache_size` gauge after invalidation.
     pub async fn invalidate_matching<F>(&self, predicate: F)
     where
         F: Fn(&CacheKey) -> bool,
@@ -313,6 +361,9 @@ impl CheckCache {
         for key in keys_to_remove {
             self.cache.invalidate(&key).await;
         }
+
+        // Update cache size gauge
+        metrics::gauge!("rsfga_cache_size").set(self.cache.entry_count() as f64);
     }
 
     /// Returns the approximate number of entries in the cache.
@@ -337,6 +388,10 @@ impl CheckCache {
     ///
     /// For now, we use a conservative approach and invalidate all entries
     /// for the affected object across all relations.
+    ///
+    /// # Metrics
+    ///
+    /// Updates `rsfga_cache_size` gauge after invalidation.
     pub async fn invalidate_for_tuple(&self, store_id: &str, object: &str, _relation: &str) {
         // Use atomic remove() to avoid TOCTOU race condition.
         // This ensures no concurrent insert can add keys between reading and removing.
@@ -350,6 +405,9 @@ impl CheckCache {
                 }
             }
         }
+
+        // Update cache size gauge
+        metrics::gauge!("rsfga_cache_size").set(self.cache.entry_count() as f64);
     }
 
     /// Spawns an async invalidation task that runs in the background.
@@ -396,6 +454,35 @@ impl Clone for CheckCache {
             by_object: self.by_object.clone(),
         }
     }
+}
+
+/// Registers check cache metrics descriptions.
+///
+/// Call this function once during application startup to register metric
+/// descriptions with the metrics recorder. This is optional but provides
+/// better documentation in Prometheus/Grafana.
+///
+/// # Metrics Registered
+///
+/// - `rsfga_cache_hits_total` - Total number of check cache hits
+/// - `rsfga_cache_misses_total` - Total number of check cache misses
+/// - `rsfga_cache_size` - Current number of cached check results (gauge)
+///
+/// # Example
+///
+/// ```ignore
+/// use rsfga_domain::cache::register_check_cache_metrics;
+///
+/// // During application initialization
+/// register_check_cache_metrics();
+/// ```
+pub fn register_check_cache_metrics() {
+    metrics::describe_counter!("rsfga_cache_hits_total", "Total number of check cache hits");
+    metrics::describe_counter!(
+        "rsfga_cache_misses_total",
+        "Total number of check cache misses"
+    );
+    metrics::describe_gauge!("rsfga_cache_size", "Current number of cached check results");
 }
 
 #[cfg(test)]

@@ -130,6 +130,12 @@ fn register_default_metrics() {
 
     // Register CEL cache metrics
     rsfga_domain::cel::register_cel_cache_metrics();
+
+    // Register check cache metrics
+    rsfga_domain::cache::register_check_cache_metrics();
+
+    // Register batch check and deduplication metrics
+    rsfga_server::handlers::batch::register_batch_check_metrics();
 }
 
 /// Prometheus exposition format content type.

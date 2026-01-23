@@ -159,9 +159,21 @@ where
     /// Executes a batch check request.
     ///
     /// The results are returned in the same order as the input checks.
+    ///
+    /// # Metrics
+    ///
+    /// Records batch deduplication metrics:
+    /// - `rsfga_batch_check_total` - Total batch check requests
+    /// - `rsfga_batch_check_items_total` - Total items across all batches
+    /// - `rsfga_batch_check_unique_items_total` - Unique items after intra-batch dedup
+    /// - `rsfga_batch_check_dedup_saved_total` - Items saved by deduplication
     pub async fn check(&self, request: BatchCheckRequest) -> BatchCheckResult<BatchCheckResponse> {
         // Validate the request
         self.validate(&request)?;
+
+        // Record batch request metric
+        metrics::counter!("rsfga_batch_check_total").increment(1);
+        metrics::counter!("rsfga_batch_check_items_total").increment(request.checks.len() as u64);
 
         // Stage 1: Intra-batch deduplication
         // Build a map of unique checks with their keys, avoiding key recreation
@@ -182,6 +194,13 @@ where
             };
             position_to_unique.push(unique_index);
         }
+
+        // Record deduplication metrics
+        let unique_count = unique_entries.len();
+        let total_count = request.checks.len();
+        let saved_count = total_count.saturating_sub(unique_count);
+        metrics::counter!("rsfga_batch_check_unique_items_total").increment(unique_count as u64);
+        metrics::counter!("rsfga_batch_check_dedup_saved_total").increment(saved_count as u64);
 
         // Execute unique checks in parallel with singleflight (Stage 2: Cross-request dedup)
         // Use buffer_unordered to limit concurrent executions and prevent resource exhaustion
@@ -257,6 +276,8 @@ where
         // Atomically acquire a slot - either become leader or follower
         match self.singleflight.acquire(key.clone()) {
             SingleflightSlot::Follower(mut receiver) => {
+                // Record singleflight hit - we're reusing an in-flight request
+                metrics::counter!("rsfga_singleflight_hits_total").increment(1);
                 // Wait for the leader's result
                 match receiver.recv().await {
                     Ok(result) => BatchCheckItemResult {
@@ -267,7 +288,9 @@ where
                     Err(_) => {
                         // Leader was dropped (likely panicked), retry as new leader
                         // Limit retries to prevent unbounded recursion
+                        metrics::counter!("rsfga_singleflight_retries_total").increment(1);
                         if retry_count >= MAX_SINGLEFLIGHT_RETRIES {
+                            metrics::counter!("rsfga_singleflight_timeouts_total").increment(1);
                             return BatchCheckItemResult {
                                 allowed: false,
                                 error: Some(format!(
@@ -370,4 +393,59 @@ fn classify_domain_error_kind(err: &rsfga_domain::error::DomainError) -> BatchCh
         | DomainError::OperationTimeout { .. }
         | DomainError::ResolverError { .. } => BatchCheckItemErrorKind::Internal,
     }
+}
+
+/// Registers batch check metrics descriptions.
+///
+/// Call this function once during application startup to register metric
+/// descriptions with the metrics recorder. This is optional but provides
+/// better documentation in Prometheus/Grafana.
+///
+/// # Metrics Registered
+///
+/// - `rsfga_batch_check_total` - Total batch check requests
+/// - `rsfga_batch_check_items_total` - Total items across all batch requests
+/// - `rsfga_batch_check_unique_items_total` - Unique items after intra-batch deduplication
+/// - `rsfga_batch_check_dedup_saved_total` - Items saved by intra-batch deduplication
+/// - `rsfga_singleflight_hits_total` - Cross-request singleflight deduplication hits
+/// - `rsfga_singleflight_retries_total` - Singleflight retries due to leader failures
+/// - `rsfga_singleflight_timeouts_total` - Singleflight retries that exceeded the limit
+///
+/// # Example
+///
+/// ```ignore
+/// use rsfga_server::handlers::batch::register_batch_check_metrics;
+///
+/// // During application initialization
+/// register_batch_check_metrics();
+/// ```
+pub fn register_batch_check_metrics() {
+    metrics::describe_counter!(
+        "rsfga_batch_check_total",
+        "Total number of batch check requests"
+    );
+    metrics::describe_counter!(
+        "rsfga_batch_check_items_total",
+        "Total items across all batch check requests"
+    );
+    metrics::describe_counter!(
+        "rsfga_batch_check_unique_items_total",
+        "Unique items after intra-batch deduplication"
+    );
+    metrics::describe_counter!(
+        "rsfga_batch_check_dedup_saved_total",
+        "Items saved by intra-batch deduplication (total - unique)"
+    );
+    metrics::describe_counter!(
+        "rsfga_singleflight_hits_total",
+        "Cross-request singleflight deduplication hits (shared in-flight results)"
+    );
+    metrics::describe_counter!(
+        "rsfga_singleflight_retries_total",
+        "Singleflight retries due to leader task failures"
+    );
+    metrics::describe_counter!(
+        "rsfga_singleflight_timeouts_total",
+        "Singleflight retries that exceeded the maximum retry limit"
+    );
 }

@@ -192,3 +192,129 @@ pub async fn post_raw(app: axum::Router, uri: &str, body: &str) -> StatusCode {
 
     response.status()
 }
+
+// =============================================================================
+// Metrics Test Helpers
+// =============================================================================
+
+use metrics_exporter_prometheus::PrometheusBuilder;
+use rsfga_api::http::create_router_with_observability;
+use rsfga_api::observability::MetricsState;
+use std::sync::OnceLock;
+
+/// Global metrics state for tests.
+///
+/// Because the metrics crate uses a global recorder, we need to share a single
+/// recorder across all tests. This is initialized lazily on first use.
+static GLOBAL_METRICS_STATE: OnceLock<MetricsState> = OnceLock::new();
+
+/// Initialize the global metrics recorder (if not already initialized).
+///
+/// Returns the MetricsState that can be used to render metrics.
+/// This is safe to call multiple times - only the first call initializes the recorder.
+pub fn init_global_metrics() -> MetricsState {
+    GLOBAL_METRICS_STATE
+        .get_or_init(|| {
+            let builder = PrometheusBuilder::new();
+            let handle = builder
+                .install_recorder()
+                .expect("Failed to install metrics recorder");
+            MetricsState::new(handle)
+        })
+        .clone()
+}
+
+/// Create a test app with metrics enabled.
+///
+/// Returns (Router, MetricsState) where MetricsState can be used to read metrics.
+///
+/// **NOTE**: Uses the global metrics recorder. Call metrics operations before
+/// calling `metrics_state.render()` to see them in the output.
+pub fn create_test_app_with_metrics(
+    storage: &Arc<MemoryDataStore>,
+) -> (axum::Router, MetricsState) {
+    let metrics_state = init_global_metrics();
+    let state = AppState::new(Arc::clone(storage));
+    let router = create_router_with_observability(state, metrics_state.clone());
+
+    (router, metrics_state)
+}
+
+/// Create a test app with metrics enabled and shared cache.
+pub fn create_test_app_with_metrics_and_cache(
+    storage: &Arc<MemoryDataStore>,
+    cache: &Arc<CheckCache>,
+) -> (axum::Router, MetricsState) {
+    let metrics_state = init_global_metrics();
+    let state = AppState::with_shared_cache(Arc::clone(storage), Arc::clone(cache));
+    let router = create_router_with_observability(state, metrics_state.clone());
+
+    (router, metrics_state)
+}
+
+/// Fetch metrics from the /metrics endpoint and return raw text.
+pub async fn get_metrics(app: axum::Router) -> (StatusCode, String) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+
+    (status, String::from_utf8_lossy(&body).to_string())
+}
+
+/// Parse a specific counter metric value from Prometheus output.
+///
+/// Returns Some(value) if the metric is found, None otherwise.
+/// Handles metrics with or without labels.
+///
+/// # Arguments
+///
+/// * `metrics_text` - Raw Prometheus metrics text
+/// * `metric_name` - Name of the metric to find (e.g., "rsfga_cache_hits_total")
+pub fn parse_metric_value(metrics_text: &str, metric_name: &str) -> Option<f64> {
+    for line in metrics_text.lines() {
+        // Skip comments and empty lines
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+
+        // Parse line format: metric_name{labels} value OR metric_name value
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let name = parts[0].split('{').next().unwrap_or(parts[0]);
+            if name == metric_name {
+                return parts[1].parse().ok();
+            }
+        }
+    }
+    None
+}
+
+/// Check if a metric exists in the Prometheus output.
+pub fn metric_exists(metrics_text: &str, metric_name: &str) -> bool {
+    for line in metrics_text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if !parts.is_empty() {
+            let name = parts[0].split('{').next().unwrap_or(parts[0]);
+            if name == metric_name {
+                return true;
+            }
+        }
+    }
+    false
+}

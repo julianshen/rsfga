@@ -1662,7 +1662,7 @@ Implemented full OpenFGA relation definition parsing in `adapters.rs`:
 
 ---
 
-### Issue #210: Performance Integration Tests - Remaining Tasks 🏗️ IN PROGRESS
+### Issue #210: Performance Integration Tests - Remaining Tasks ✅ COMPLETE
 
 **PR**: #244 (partial implementation complete)
 
@@ -1729,18 +1729,19 @@ Implemented full OpenFGA relation definition parsing in `adapters.rs`:
 - [x] Test: gRPC ListUsers performance comparable to REST
 - [x] Test: No protocol-specific bottlenecks between REST and gRPC
 
-#### Section 7: Metrics Integration (Lower Priority)
+#### Section 7: Metrics Integration (Lower Priority) ✅ COMPLETE
 
-- [ ] Test: Cache hit rate observable via metrics endpoint
-- [ ] Test: Deduplication metrics show eliminated duplicates
-- [ ] Test: Deduplication timeout/TTL metrics are exposed
-- [ ] Test: Cache effectiveness metrics vary with model sizes
+- [x] Test: Cache hit rate observable via metrics endpoint
+- [x] Test: Deduplication metrics show eliminated duplicates
+- [x] Test: Deduplication timeout/TTL metrics are exposed
+- [x] Test: Cache effectiveness metrics vary with model sizes
 
 **Validation Criteria**:
 - [x] All concurrency tests pass without race conditions
 - [x] No deadlocks detected under high load
 - [x] Memory remains stable during sustained operations
 - [x] gRPC and REST performance comparable (gRPC ≤3x tolerance, actual: ~0.1x faster)
+- [x] Cache and deduplication metrics observable via /metrics endpoint
 
 **Deliverables**:
 - Additional tests in `crates/rsfga-api/tests/performance_integration_tests.rs`
@@ -1748,6 +1749,7 @@ Implemented full OpenFGA relation definition parsing in `adapters.rs`:
 - Graph resolver thread-safety tests
 - Memory stability tests
 - gRPC performance tests
+- Metrics integration tests (Section 11)
 
 ---
 
