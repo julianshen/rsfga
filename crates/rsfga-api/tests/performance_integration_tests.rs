@@ -4649,6 +4649,15 @@ const GRPC_PERF_ITERATIONS: usize = 100;
 /// This is generous to account for CI variability. Both should be sub-ms for in-memory.
 const PERF_COMPARISON_TOLERANCE: f64 = 3.0;
 
+/// Maximum allowed standard deviation in gRPC/REST performance ratios across operations.
+///
+/// A high variance would indicate that some operations have protocol-specific bottlenecks
+/// (e.g., if Check is 0.1x but ListObjects is 2.0x, something is wrong with ListObjects).
+/// We expect all operations to have similar ratios since they use the same underlying
+/// transport layer. A threshold of 1.0 allows for natural variation while catching
+/// significant outliers.
+const MAX_RATIO_VARIANCE_STD_DEV: f64 = 1.0;
+
 /// Helper to create a gRPC service with caching enabled.
 fn create_grpc_service_with_cache(
     storage: Arc<MemoryDataStore>,
@@ -5383,8 +5392,9 @@ async fn test_no_protocol_specific_bottlenecks() {
     // Variance should be low (no operation significantly different from others)
     // A high std dev would indicate protocol-specific bottleneck for certain ops
     assert!(
-        std_dev < 1.0,
-        "High variance ({:.2}) in gRPC/REST ratios suggests protocol-specific bottleneck",
-        std_dev
+        std_dev < MAX_RATIO_VARIANCE_STD_DEV,
+        "High variance ({:.2}) in gRPC/REST ratios suggests protocol-specific bottleneck (max: {:.1})",
+        std_dev,
+        MAX_RATIO_VARIANCE_STD_DEV
     );
 }
