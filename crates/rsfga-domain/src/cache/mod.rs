@@ -431,18 +431,12 @@ impl Clone for CheckCache {
 /// register_check_cache_metrics();
 /// ```
 pub fn register_check_cache_metrics() {
-    metrics::describe_counter!(
-        "rsfga_cache_hits_total",
-        "Total number of check cache hits"
-    );
+    metrics::describe_counter!("rsfga_cache_hits_total", "Total number of check cache hits");
     metrics::describe_counter!(
         "rsfga_cache_misses_total",
         "Total number of check cache misses"
     );
-    metrics::describe_gauge!(
-        "rsfga_cache_size",
-        "Current number of cached check results"
-    );
+    metrics::describe_gauge!("rsfga_cache_size", "Current number of cached check results");
 }
 
 #[cfg(test)]

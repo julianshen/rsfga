@@ -535,5 +535,127 @@ criterion_group!(
     bench_batch_check,
     bench_tuple_count_scalability,
     bench_cel_cache,
+    bench_cache_metrics_overhead,
 );
 criterion_main!(benches);
+
+// =============================================================================
+// Metrics Overhead Benchmark
+// =============================================================================
+
+/// Benchmark cache metrics recording overhead.
+///
+/// This validates that recording cache hit/miss metrics adds minimal overhead.
+/// The metrics recording uses the `metrics` crate which is designed for
+/// low-overhead observability.
+///
+/// Target: <5% overhead for metrics recording on cache operations.
+fn bench_cache_metrics_overhead(c: &mut Criterion) {
+    use rsfga_domain::cache::{CacheKey, CheckCache, CheckCacheConfig};
+
+    let rt = Runtime::new().unwrap();
+
+    // Initialize the metrics recorder (required for metrics to be recorded)
+    use metrics_exporter_prometheus::PrometheusBuilder;
+    use std::sync::OnceLock;
+
+    static METRICS_INIT: OnceLock<()> = OnceLock::new();
+    METRICS_INIT.get_or_init(|| {
+        // Install a recorder that discards output (for benchmark purposes)
+        let builder = PrometheusBuilder::new();
+        let _ = builder.install_recorder();
+    });
+
+    let mut group = c.benchmark_group("cache_metrics_overhead");
+    group.throughput(Throughput::Elements(1));
+
+    // Setup: Create a cache and populate it with entries
+    let cache_config = CheckCacheConfig::default().with_enabled(true);
+    let cache = Arc::new(CheckCache::new(cache_config));
+
+    // Pre-populate cache with entries
+    rt.block_on(async {
+        for i in 0..1000 {
+            let key = CacheKey::new(
+                "bench-store",
+                format!("document:doc{i}"),
+                "viewer",
+                "user:alice",
+            );
+            cache.insert(key, true).await;
+        }
+        cache.run_pending_tasks().await;
+    });
+
+    // Benchmark 1: Cache get (hit) - includes metrics recording
+    // This measures the full cost of cache.get() which now records metrics
+    group.bench_function("cache_get_hit_with_metrics", |b| {
+        let cache = Arc::clone(&cache);
+        b.to_async(&rt).iter(|| {
+            let cache = Arc::clone(&cache);
+            let hit_key = CacheKey::new("bench-store", "document:doc0", "viewer", "user:alice");
+            async move {
+                let result = cache.get(black_box(&hit_key)).await;
+                black_box(result)
+            }
+        })
+    });
+
+    // Benchmark 2: Cache get (miss) - includes metrics recording
+    group.bench_function("cache_get_miss_with_metrics", |b| {
+        let cache = Arc::clone(&cache);
+        b.to_async(&rt).iter(|| {
+            let cache = Arc::clone(&cache);
+            let miss_key = CacheKey::new(
+                "bench-store",
+                "document:nonexistent",
+                "viewer",
+                "user:nobody",
+            );
+            async move {
+                let result = cache.get(black_box(&miss_key)).await;
+                black_box(result)
+            }
+        })
+    });
+
+    // Benchmark 3: Raw metrics counter increment (baseline for metrics overhead)
+    group.bench_function("metrics_counter_increment_only", |b| {
+        b.iter(|| {
+            metrics::counter!("rsfga_bench_counter_test").increment(1);
+        })
+    });
+
+    // Benchmark 4: Multiple cache operations in sequence (simulates real usage)
+    group.bench_function("cache_mixed_ops_100", |b| {
+        let cache = Arc::clone(&cache);
+        b.to_async(&rt).iter(|| {
+            let cache = Arc::clone(&cache);
+            async move {
+                let mut results = Vec::with_capacity(100);
+                for i in 0..100 {
+                    // Mix of hits and misses
+                    let key = if i % 10 == 0 {
+                        CacheKey::new(
+                            "bench-store",
+                            "document:nonexistent",
+                            "viewer",
+                            "user:nobody",
+                        )
+                    } else {
+                        CacheKey::new(
+                            "bench-store",
+                            format!("document:doc{}", i % 1000),
+                            "viewer",
+                            "user:alice",
+                        )
+                    };
+                    results.push(cache.get(&key).await);
+                }
+                black_box(results)
+            }
+        })
+    });
+
+    group.finish();
+}

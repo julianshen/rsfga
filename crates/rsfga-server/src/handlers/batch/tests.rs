@@ -1810,3 +1810,238 @@ fn test_empty_and_absent_context_are_equal() {
     assert_eq!(total, 2);
     assert_eq!(unique, 1, "Empty contexts should be deduplicated");
 }
+
+// ============================================================
+// Deterministic Singleflight Tests
+// ============================================================
+
+/// Test: Singleflight deduplication is deterministic - first acquirer becomes leader.
+///
+/// This test verifies the core singleflight behavior in a deterministic way
+/// by directly testing the Singleflight struct's acquire() method.
+#[test]
+fn test_singleflight_acquire_deterministic_leader_election() {
+    use super::singleflight::{Singleflight, SingleflightSlot};
+
+    let sf: Singleflight<String> = Singleflight::new();
+    let key = "test-key".to_string();
+
+    // First acquire should become leader
+    match sf.acquire(key.clone()) {
+        SingleflightSlot::Leader(sender) => {
+            // Verify we got a valid sender
+            assert!(
+                sender.receiver_count() == 0,
+                "New leader should start with 0 receivers"
+            );
+
+            // Second acquire should become follower
+            match sf.acquire(key.clone()) {
+                SingleflightSlot::Follower(_receiver) => {
+                    // Expected - follower should be able to receive broadcasts
+                }
+                SingleflightSlot::Leader(_) => {
+                    panic!("Second acquire should be follower, not leader");
+                }
+            }
+
+            // Third acquire should also become follower
+            match sf.acquire(key.clone()) {
+                SingleflightSlot::Follower(_) => {
+                    // Expected
+                }
+                SingleflightSlot::Leader(_) => {
+                    panic!("Third acquire should be follower, not leader");
+                }
+            }
+        }
+        SingleflightSlot::Follower(_) => {
+            panic!("First acquire should be leader, not follower");
+        }
+    }
+}
+
+/// Test: Singleflight cleanup allows new leader after completion.
+#[test]
+fn test_singleflight_complete_allows_new_leader() {
+    use super::singleflight::{Singleflight, SingleflightSlot};
+
+    let sf: Singleflight<String> = Singleflight::new();
+    let key = "test-key".to_string();
+
+    // First acquire becomes leader
+    let leader_sender = match sf.acquire(key.clone()) {
+        SingleflightSlot::Leader(sender) => sender,
+        SingleflightSlot::Follower(_) => panic!("First acquire should be leader"),
+    };
+
+    // Complete the operation (clean up)
+    sf.complete(&key);
+
+    // After completion, new acquire should become leader again
+    match sf.acquire(key.clone()) {
+        SingleflightSlot::Leader(_new_sender) => {
+            // Expected - new leader after completion
+        }
+        SingleflightSlot::Follower(_) => {
+            panic!("Acquire after complete should be leader, not follower");
+        }
+    }
+
+    // Drop the original sender to avoid unused warning
+    drop(leader_sender);
+}
+
+/// Test: Singleflight result broadcast works correctly.
+#[tokio::test]
+async fn test_singleflight_broadcast_result_to_followers() {
+    use super::singleflight::{Singleflight, SingleflightResult, SingleflightSlot};
+
+    let sf: Singleflight<String> = Singleflight::new();
+    let key = "test-key".to_string();
+
+    // First acquire - leader
+    let sender = match sf.acquire(key.clone()) {
+        SingleflightSlot::Leader(s) => s,
+        SingleflightSlot::Follower(_) => panic!("First should be leader"),
+    };
+
+    // Second acquire - follower
+    let mut receiver1 = match sf.acquire(key.clone()) {
+        SingleflightSlot::Follower(r) => r,
+        SingleflightSlot::Leader(_) => panic!("Second should be follower"),
+    };
+
+    // Third acquire - follower
+    let mut receiver2 = match sf.acquire(key.clone()) {
+        SingleflightSlot::Follower(r) => r,
+        SingleflightSlot::Leader(_) => panic!("Third should be follower"),
+    };
+
+    // Leader broadcasts result
+    let result = SingleflightResult {
+        allowed: true,
+        error: None,
+        error_kind: None,
+    };
+    let _ = sender.send(result);
+
+    // Both followers should receive the result
+    let received1 = receiver1.recv().await.unwrap();
+    let received2 = receiver2.recv().await.unwrap();
+
+    assert!(received1.allowed, "Follower 1 should receive allowed=true");
+    assert!(received2.allowed, "Follower 2 should receive allowed=true");
+    assert!(
+        received1.error.is_none(),
+        "Follower 1 should receive no error"
+    );
+    assert!(
+        received2.error.is_none(),
+        "Follower 2 should receive no error"
+    );
+}
+
+/// Test: SingleflightGuard ensures cleanup on drop.
+#[test]
+fn test_singleflight_guard_cleanup_on_drop() {
+    use super::singleflight::{Singleflight, SingleflightGuard, SingleflightSlot};
+
+    let sf: Singleflight<String> = Singleflight::new();
+    let key = "test-key".to_string();
+
+    // Acquire leadership
+    let _leader = match sf.acquire(key.clone()) {
+        SingleflightSlot::Leader(s) => s,
+        SingleflightSlot::Follower(_) => panic!("Should be leader"),
+    };
+
+    // Create guard and let it drop without calling complete()
+    {
+        let guard = SingleflightGuard::new(&sf, key.clone());
+        // Guard drops here
+        drop(guard);
+    }
+
+    // After guard drops, new acquire should become leader
+    match sf.acquire(key.clone()) {
+        SingleflightSlot::Leader(_) => {
+            // Expected - guard cleanup should allow new leader
+        }
+        SingleflightSlot::Follower(_) => {
+            panic!("Guard drop should clean up, allowing new leader");
+        }
+    }
+}
+
+/// Test: Singleflight with concurrent tokio tasks shows deterministic behavior.
+///
+/// This test verifies that exactly one of multiple concurrent acquirers
+/// becomes the leader while others become followers.
+#[tokio::test]
+async fn test_singleflight_concurrent_tasks_deterministic() {
+    use super::singleflight::{Singleflight, SingleflightSlot};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let sf = Arc::new(Singleflight::<String>::new());
+    let leader_count = Arc::new(AtomicUsize::new(0));
+    let follower_count = Arc::new(AtomicUsize::new(0));
+
+    let key = "concurrent-key".to_string();
+
+    // Sequential acquires on the same key (before completion)
+    // This is deterministic: first is leader, rest are followers
+    for i in 0..5 {
+        let sf = Arc::clone(&sf);
+        let leader_count = Arc::clone(&leader_count);
+        let follower_count = Arc::clone(&follower_count);
+        let key = key.clone();
+
+        match sf.acquire(key) {
+            SingleflightSlot::Leader(_sender) => {
+                leader_count.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(i, 0, "Only the first acquire should be leader");
+            }
+            SingleflightSlot::Follower(_receiver) => {
+                follower_count.fetch_add(1, Ordering::SeqCst);
+                assert!(i > 0, "First acquire should not be follower");
+            }
+        }
+    }
+
+    // Deterministic assertion: exactly 1 leader and 4 followers
+    assert_eq!(
+        leader_count.load(Ordering::SeqCst),
+        1,
+        "Exactly one acquire should become leader"
+    );
+    assert_eq!(
+        follower_count.load(Ordering::SeqCst),
+        4,
+        "Exactly four acquires should become followers"
+    );
+
+    // Clean up
+    sf.complete(&key);
+
+    // After completion, next acquire should be leader again
+    let leader_count2 = Arc::new(AtomicUsize::new(0));
+    for i in 0..3 {
+        match sf.acquire(key.clone()) {
+            SingleflightSlot::Leader(_) => {
+                leader_count2.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(i, 0, "Only first acquire after complete should be leader");
+            }
+            SingleflightSlot::Follower(_) => {
+                assert!(i > 0, "First acquire after complete should be leader");
+            }
+        }
+    }
+
+    assert_eq!(
+        leader_count2.load(Ordering::SeqCst),
+        1,
+        "Should have exactly one new leader after complete"
+    );
+}

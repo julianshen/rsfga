@@ -3280,6 +3280,7 @@ dependencies = [
  "dashmap",
  "futures",
  "metrics",
+ "metrics-exporter-prometheus",
  "mockall",
  "moka",
  "nom",
