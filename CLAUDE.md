@@ -971,8 +971,8 @@ Follow this process precisely, always prioritizing:
   - Milestone 1.12 (CockroachDB Storage): ✅ Complete
   - Milestone 1.13 (Expand API): ✅ Complete
   - Milestone 1.14 (ListObjects API): ✅ Complete
-  - Milestone 1.15 (ListUsers API): 🏗️ In Progress (PR #191)
+  - Milestone 1.15 (ListUsers API): ✅ Complete
 
-**Next Step**: Complete ListUsers API (PR #191), then Phase 2 - Precomputation Engine (Optional)
+**Next Step**: Phase 2 - Precomputation Engine (Optional) or Phase 3 - Edge Deployment with NATS (Future)
 
-**To continue**: Check `plan.md` for detailed test status and say "go" to proceed!
+**To continue**: Say "go" to proceed with Phase 2 or specify what you'd like to work on next!
