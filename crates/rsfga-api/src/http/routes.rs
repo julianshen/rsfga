@@ -701,7 +701,7 @@ pub struct ListStoresResponse {
     pub continuation_token: Option<String>,
 }
 
-/// Default page size for listing stores.
+/// Default and maximum page size for listing stores (OpenFGA limit).
 const DEFAULT_STORES_PAGE_SIZE: u32 = 50;
 
 async fn create_store<S: DataStore>(
@@ -732,8 +732,16 @@ async fn list_stores<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     axum::extract::Query(query): axum::extract::Query<ListStoresQuery>,
 ) -> ApiResult<impl IntoResponse> {
+    // Clamp page_size to the maximum allowed value to prevent DoS
+    let page_size = Some(
+        query
+            .page_size
+            .unwrap_or(DEFAULT_STORES_PAGE_SIZE)
+            .min(DEFAULT_STORES_PAGE_SIZE),
+    );
+
     let pagination = PaginationOptions {
-        page_size: Some(query.page_size.unwrap_or(DEFAULT_STORES_PAGE_SIZE)),
+        page_size,
         continuation_token: query.continuation_token,
     };
 
