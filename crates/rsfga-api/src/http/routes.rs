@@ -684,6 +684,40 @@ impl From<rsfga_storage::Store> for StoreResponse {
     }
 }
 
+/// Query parameters for listing stores.
+///
+/// # Validation Rules
+///
+/// - `page_size`: Optional. Defaults to 50. Must be positive (> 0).
+///   Values exceeding 50 are clamped to the maximum (50).
+/// - `continuation_token`: Optional. Base64-encoded token from a previous
+///   response to fetch the next page of results.
+#[derive(Debug, Deserialize)]
+pub struct ListStoresQuery {
+    #[serde(default)]
+    pub page_size: Option<u32>,
+    #[serde(default)]
+    pub continuation_token: Option<String>,
+}
+
+/// Response for listing stores.
+///
+/// # Fields
+///
+/// - `stores`: Array of store objects in the current page.
+/// - `continuation_token`: Present when more results are available.
+///   Pass this token in the next request to fetch the next page.
+///   Format: Base64-encoded pagination state.
+#[derive(Debug, Serialize)]
+pub struct ListStoresResponse {
+    pub stores: Vec<StoreResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_token: Option<String>,
+}
+
+/// Default and maximum page size for listing stores (OpenFGA limit).
+const DEFAULT_STORES_PAGE_SIZE: u32 = 50;
+
 async fn create_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     JsonBadRequest(body): JsonBadRequest<CreateStoreRequest>,
@@ -710,10 +744,27 @@ async fn get_store<S: DataStore>(
 
 async fn list_stores<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
+    axum::extract::Query(query): axum::extract::Query<ListStoresQuery>,
 ) -> ApiResult<impl IntoResponse> {
-    let stores = state.storage.list_stores().await?;
-    let response: Vec<StoreResponse> = stores.into_iter().map(StoreResponse::from).collect();
-    Ok(Json(serde_json::json!({ "stores": response })))
+    // Validate and clamp page_size
+    let page_size = query.page_size.unwrap_or(DEFAULT_STORES_PAGE_SIZE);
+    if page_size == 0 {
+        return Err(ApiError::validation_error("page_size must be positive"));
+    }
+    let page_size = page_size.min(DEFAULT_STORES_PAGE_SIZE);
+
+    let pagination = PaginationOptions {
+        page_size: Some(page_size),
+        continuation_token: query.continuation_token,
+    };
+
+    let result = state.storage.list_stores_paginated(&pagination).await?;
+    let stores: Vec<StoreResponse> = result.items.into_iter().map(StoreResponse::from).collect();
+
+    Ok(Json(ListStoresResponse {
+        stores,
+        continuation_token: result.continuation_token,
+    }))
 }
 
 /// Request body for updating a store.
