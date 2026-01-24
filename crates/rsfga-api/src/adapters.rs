@@ -982,9 +982,46 @@ impl<S: DataStore> DataStoreModelReader<S> {
                     DomainError::MissingContextKey { key } => {
                         DomainError::MissingContextKey { key: key.clone() }
                     }
-                    // Default fallback for any other variants
-                    other => DomainError::StorageOperationFailed {
-                        reason: other.to_string(),
+                    // Remaining variants - exhaustive handling ensures compile-time
+                    // detection if new variants are added to DomainError
+                    DomainError::ModelValidationError { message } => {
+                        DomainError::ModelValidationError {
+                            message: message.clone(),
+                        }
+                    }
+                    DomainError::DepthLimitExceeded { max_depth } => {
+                        DomainError::DepthLimitExceeded {
+                            max_depth: *max_depth,
+                        }
+                    }
+                    DomainError::Timeout { duration_ms } => DomainError::Timeout {
+                        duration_ms: *duration_ms,
+                    },
+                    DomainError::OperationTimeout {
+                        operation,
+                        timeout_secs,
+                    } => DomainError::OperationTimeout {
+                        operation: operation.clone(),
+                        timeout_secs: *timeout_secs,
+                    },
+                    DomainError::CycleDetected { path } => {
+                        DomainError::CycleDetected { path: path.clone() }
+                    }
+                    DomainError::InvalidUserFormat { value } => DomainError::InvalidUserFormat {
+                        value: value.clone(),
+                    },
+                    DomainError::InvalidObjectFormat { value } => {
+                        DomainError::InvalidObjectFormat {
+                            value: value.clone(),
+                        }
+                    }
+                    DomainError::InvalidRelationFormat { value } => {
+                        DomainError::InvalidRelationFormat {
+                            value: value.clone(),
+                        }
+                    }
+                    DomainError::StoreNotFound { store_id } => DomainError::StoreNotFound {
+                        store_id: store_id.clone(),
                     },
                 }
             })
