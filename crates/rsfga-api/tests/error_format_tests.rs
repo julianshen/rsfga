@@ -155,7 +155,7 @@ async fn test_404_not_found_error_code() {
     .await;
 
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(response["code"].as_str().unwrap(), "not_found");
+    assert_eq!(response["code"].as_str().unwrap(), "store_id_not_found");
 }
 
 /// Test: 400 Bad Request returns validation_error code
@@ -764,7 +764,7 @@ async fn test_error_code_coverage() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(response["code"], "not_found");
+    assert_eq!(response["code"], "store_id_not_found");
 
     // Test validation_error code (invalid user format)
     let (status, response) = post_json(
@@ -782,7 +782,7 @@ async fn test_error_code_coverage() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(response["code"], "validation_error");
 
-    // Test validation_error code (type not found)
+    // Test type_not_found code (type not found)
     let (status, response) = post_json(
         create_test_app(&storage),
         &uri,
@@ -796,9 +796,9 @@ async fn test_error_code_coverage() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(response["code"], "validation_error");
+    assert_eq!(response["code"], "type_not_found");
 
-    // Test validation_error code (relation not found)
+    // Test relation_not_found code (relation not found)
     let (status, response) = post_json(
         create_test_app(&storage),
         &uri,
@@ -812,7 +812,7 @@ async fn test_error_code_coverage() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(response["code"], "validation_error");
+    assert_eq!(response["code"], "relation_not_found");
 }
 
 /// Test: Batch check errors are properly formatted

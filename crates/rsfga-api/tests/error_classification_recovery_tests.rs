@@ -220,7 +220,7 @@ async fn test_invalid_object_format_returns_400() {
 // Section 2: Type/Relation Not Found Errors (400, not 500)
 // ============================================================================
 
-/// Test: Type not found in model returns 400 VALIDATION_ERROR (not 500)
+/// Test: Type not found in model returns 400 type_not_found (not 500)
 #[tokio::test]
 async fn test_type_not_found_returns_400_not_500() {
     let storage = Arc::new(MemoryDataStore::new());
@@ -245,8 +245,8 @@ async fn test_type_not_found_returns_400_not_500() {
         "Type not found should return 400, not 500"
     );
     assert_eq!(
-        response["code"], "validation_error",
-        "Type not found should be a validation error"
+        response["code"], "type_not_found",
+        "Type not found should use type_not_found error code"
     );
 
     let message = response["message"].as_str().unwrap_or("");
@@ -256,7 +256,7 @@ async fn test_type_not_found_returns_400_not_500() {
     );
 }
 
-/// Test: Relation not found on type returns 400 VALIDATION_ERROR (not 500)
+/// Test: Relation not found on type returns 400 relation_not_found (not 500)
 #[tokio::test]
 async fn test_relation_not_found_returns_400_not_500() {
     let storage = Arc::new(MemoryDataStore::new());
@@ -281,8 +281,8 @@ async fn test_relation_not_found_returns_400_not_500() {
         "Relation not found should return 400, not 500"
     );
     assert_eq!(
-        response["code"], "validation_error",
-        "Relation not found should be a validation error"
+        response["code"], "relation_not_found",
+        "Relation not found should use relation_not_found error code"
     );
 
     let message = response["message"].as_str().unwrap_or("");
@@ -382,10 +382,10 @@ async fn test_expand_unknown_type_returns_400() {
         StatusCode::BAD_REQUEST,
         "Expand with unknown type should return 400"
     );
-    assert_eq!(response["code"], "validation_error");
+    assert_eq!(response["code"], "type_not_found");
 }
 
-/// Test: Expand with unknown relation returns 400 VALIDATION_ERROR
+/// Test: Expand with unknown relation returns 400 RELATION_NOT_FOUND
 #[tokio::test]
 async fn test_expand_unknown_relation_returns_400() {
     let storage = Arc::new(MemoryDataStore::new());
@@ -408,7 +408,7 @@ async fn test_expand_unknown_relation_returns_400() {
         StatusCode::BAD_REQUEST,
         "Expand with unknown relation should return 400"
     );
-    assert_eq!(response["code"], "validation_error");
+    assert_eq!(response["code"], "relation_not_found");
 }
 
 // ============================================================================
@@ -956,7 +956,7 @@ async fn test_404_errors_are_non_retryable() {
     .await;
 
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(response["code"], "not_found");
+    assert_eq!(response["code"], "store_id_not_found");
 
     // Client should NOT retry 404 errors - resource doesn't exist
 }
@@ -1014,9 +1014,9 @@ async fn test_validation_error_consistent_across_check_and_expand() {
         "Expand should return 400"
     );
 
-    // Both should use validation_error code
-    assert_eq!(check_response["code"], "validation_error");
-    assert_eq!(expand_response["code"], "validation_error");
+    // Both should use relation_not_found code for unknown relations
+    assert_eq!(check_response["code"], "relation_not_found");
+    assert_eq!(expand_response["code"], "relation_not_found");
 }
 
 /// Test: Store not found returns 404 consistently across all endpoints
@@ -1080,8 +1080,8 @@ async fn test_store_not_found_consistent_across_endpoints() {
             "Endpoint {uri} should return 404 for nonexistent store"
         );
         assert_eq!(
-            response["code"], "not_found",
-            "Endpoint {uri} should return not_found code"
+            response["code"], "store_id_not_found",
+            "Endpoint {uri} should return store_id_not_found code"
         );
     }
 }

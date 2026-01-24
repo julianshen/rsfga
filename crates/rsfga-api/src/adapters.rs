@@ -837,8 +837,13 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
             .storage
             .read_tuples(store_id, &filter)
             .await
-            .map_err(|e| DomainError::ResolverError {
-                message: format!("storage error: {e}"),
+            .map_err(|e| match e {
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
             })?;
 
         // Convert StoredTuple to StoredTupleRef
@@ -860,8 +865,8 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
         match self.storage.get_store(store_id).await {
             Ok(_) => Ok(true),
             Err(rsfga_storage::StorageError::StoreNotFound { .. }) => Ok(false),
-            Err(e) => Err(DomainError::ResolverError {
-                message: format!("storage error: {e}"),
+            Err(e) => Err(DomainError::StorageOperationFailed {
+                reason: e.to_string(),
             }),
         }
     }
@@ -875,8 +880,13 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
         self.storage
             .list_objects_by_type(store_id, object_type, max_count)
             .await
-            .map_err(|e| DomainError::ResolverError {
-                message: format!("storage error: {e}"),
+            .map_err(|e| match e {
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
             })
     }
 }
@@ -951,9 +961,77 @@ impl<S: DataStore> DataStoreModelReader<S> {
                             condition_name: condition_name.clone(),
                         }
                     }
-                    // Default fallback for any other variants
-                    other => DomainError::ResolverError {
-                        message: other.to_string(),
+                    DomainError::AuthorizationModelNotFound { store_id } => {
+                        DomainError::AuthorizationModelNotFound {
+                            store_id: store_id.clone(),
+                        }
+                    }
+                    DomainError::StorageOperationFailed { reason } => {
+                        DomainError::StorageOperationFailed {
+                            reason: reason.clone(),
+                        }
+                    }
+                    DomainError::ConditionParseError { expression, reason } => {
+                        DomainError::ConditionParseError {
+                            expression: expression.clone(),
+                            reason: reason.clone(),
+                        }
+                    }
+                    DomainError::ConditionEvalError { reason } => DomainError::ConditionEvalError {
+                        reason: reason.clone(),
+                    },
+                    DomainError::InvalidParameter { parameter, reason } => {
+                        DomainError::InvalidParameter {
+                            parameter: parameter.clone(),
+                            reason: reason.clone(),
+                        }
+                    }
+                    DomainError::InvalidFilter { reason } => DomainError::InvalidFilter {
+                        reason: reason.clone(),
+                    },
+                    DomainError::MissingContextKey { key } => {
+                        DomainError::MissingContextKey { key: key.clone() }
+                    }
+                    // Remaining variants - exhaustive handling ensures compile-time
+                    // detection if new variants are added to DomainError
+                    DomainError::ModelValidationError { message } => {
+                        DomainError::ModelValidationError {
+                            message: message.clone(),
+                        }
+                    }
+                    DomainError::DepthLimitExceeded { max_depth } => {
+                        DomainError::DepthLimitExceeded {
+                            max_depth: *max_depth,
+                        }
+                    }
+                    DomainError::Timeout { duration_ms } => DomainError::Timeout {
+                        duration_ms: *duration_ms,
+                    },
+                    DomainError::OperationTimeout {
+                        operation,
+                        timeout_secs,
+                    } => DomainError::OperationTimeout {
+                        operation: operation.clone(),
+                        timeout_secs: *timeout_secs,
+                    },
+                    DomainError::CycleDetected { path } => {
+                        DomainError::CycleDetected { path: path.clone() }
+                    }
+                    DomainError::InvalidUserFormat { value } => DomainError::InvalidUserFormat {
+                        value: value.clone(),
+                    },
+                    DomainError::InvalidObjectFormat { value } => {
+                        DomainError::InvalidObjectFormat {
+                            value: value.clone(),
+                        }
+                    }
+                    DomainError::InvalidRelationFormat { value } => {
+                        DomainError::InvalidRelationFormat {
+                            value: value.clone(),
+                        }
+                    }
+                    DomainError::StoreNotFound { store_id } => DomainError::StoreNotFound {
+                        store_id: store_id.clone(),
                     },
                 }
             })
@@ -968,8 +1046,21 @@ impl<S: DataStore> DataStoreModelReader<S> {
         let stored_model = storage
             .get_latest_authorization_model(store_id)
             .await
-            .map_err(|e| DomainError::ResolverError {
-                message: format!("storage error: {e}"),
+            .map_err(|e| match e {
+                // Model not found - no authorization model exists for this store
+                rsfga_storage::StorageError::ModelNotFound { .. } => {
+                    DomainError::AuthorizationModelNotFound {
+                        store_id: store_id.to_string(),
+                    }
+                }
+                // Store not found - preserve for 404 response
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                // All other storage errors
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
             })?;
 
         // Parse the stored model JSON

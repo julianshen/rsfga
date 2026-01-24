@@ -13,9 +13,41 @@ pub enum DomainError {
     #[error("model validation error: {message}")]
     ModelValidationError { message: String },
 
-    /// Error during permission check resolution.
+    /// Generic resolver error (legacy - prefer specific variants).
+    ///
+    /// # Deprecated
+    /// This variant is being phased out in favor of specific error variants.
+    /// New code should use the structured variants below instead.
     #[error("resolver error: {message}")]
     ResolverError { message: String },
+
+    /// Authorization model not found for store during resolution.
+    #[error("authorization model not found for store: {store_id}")]
+    AuthorizationModelNotFound { store_id: String },
+
+    /// Missing required context key for condition evaluation.
+    #[error("missing required context key: {key}")]
+    MissingContextKey { key: String },
+
+    /// Failed to parse condition expression.
+    #[error("failed to parse condition '{expression}': {reason}")]
+    ConditionParseError { expression: String, reason: String },
+
+    /// Condition evaluation failed.
+    #[error("condition evaluation failed: {reason}")]
+    ConditionEvalError { reason: String },
+
+    /// Invalid parameter value.
+    #[error("invalid parameter '{parameter}': {reason}")]
+    InvalidParameter { parameter: String, reason: String },
+
+    /// Invalid filter specification.
+    #[error("invalid filter: {reason}")]
+    InvalidFilter { reason: String },
+
+    /// Storage operation failed during resolution.
+    #[error("storage operation failed: {reason}")]
+    StorageOperationFailed { reason: String },
 
     /// Depth limit exceeded during graph traversal.
     #[error("depth limit exceeded (max: {max_depth})")]

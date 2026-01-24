@@ -1192,7 +1192,12 @@ async fn test_write_authorization_model_with_empty_type_definitions_returns_400(
     assert!(json["message"]
         .as_str()
         .unwrap()
-        .contains("type_definitions cannot be empty"));
+        .contains("type_definitions requires at least 1 item"));
+    assert_eq!(
+        json["code"].as_str(),
+        Some("type_definitions_too_few_items"),
+        "Error code should be 'type_definitions_too_few_items'"
+    );
 }
 
 /// Test: GET /stores/{store_id}/authorization-models with invalid continuation_token returns 400
@@ -1859,4 +1864,234 @@ async fn test_read_endpoint_returns_conditions() {
     let condition = &key["condition"];
     assert_eq!(condition["name"], "ip_restriction");
     assert_eq!(condition["context"]["allowed_ip"], "192.168.1.100");
+}
+
+// ============================================================================
+// From<DomainError> Structured Variant Tests
+// ============================================================================
+// These tests verify that structured DomainError variants map to correct
+// OpenFGA error codes. The refactoring from string-based ResolverError to
+// structured variants (per #270) ensures type-safe error handling.
+
+use rsfga_domain::error::DomainError;
+
+use super::routes::{error_codes, ApiError};
+
+/// Test: AuthorizationModelNotFound maps to latest_authorization_model_not_found
+#[test]
+fn test_authorization_model_not_found_maps_correctly() {
+    let error = DomainError::AuthorizationModelNotFound {
+        store_id: "01AAAAAAAAAAAAAAAAAAAAAA00".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(
+        api_error.code,
+        error_codes::LATEST_AUTHORIZATION_MODEL_NOT_FOUND
+    );
+    assert_eq!(api_error.message, "no authorization model found");
+}
+
+/// Test: MissingContextKey maps to validation_error
+#[test]
+fn test_missing_context_key_maps_correctly() {
+    let error = DomainError::MissingContextKey {
+        key: "allowed_ip".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert_eq!(api_error.message, "missing required context parameter");
+}
+
+/// Test: ConditionParseError maps to validation_error
+#[test]
+fn test_condition_parse_error_maps_correctly() {
+    let error = DomainError::ConditionParseError {
+        expression: "invalid_expr".to_string(),
+        reason: "syntax error".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert_eq!(api_error.message, "invalid condition expression");
+}
+
+/// Test: ConditionEvalError maps to validation_error
+#[test]
+fn test_condition_eval_error_maps_correctly() {
+    let error = DomainError::ConditionEvalError {
+        reason: "type mismatch".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert_eq!(api_error.message, "condition evaluation failed");
+}
+
+/// Test: InvalidParameter maps to validation_error with message
+#[test]
+fn test_invalid_parameter_maps_correctly() {
+    let error = DomainError::InvalidParameter {
+        parameter: "max_results".to_string(),
+        reason: "must be greater than 0".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert!(api_error.message.contains("max_results"));
+}
+
+/// Test: InvalidFilter maps to validation_error with message
+#[test]
+fn test_invalid_filter_maps_correctly() {
+    let error = DomainError::InvalidFilter {
+        reason: "user_filters cannot be empty".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert!(api_error.message.contains("user_filters"));
+}
+
+/// Test: StorageOperationFailed maps to internal_error
+#[test]
+fn test_storage_operation_failed_maps_correctly() {
+    let error = DomainError::StorageOperationFailed {
+        reason: "database connection failed".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::INTERNAL_ERROR);
+    assert_eq!(
+        api_error.message,
+        "internal error during authorization check"
+    );
+}
+
+/// Test: Legacy ResolverError (unstructured) maps to internal_error
+#[test]
+fn test_legacy_resolver_error_maps_to_internal_error() {
+    let error = DomainError::ResolverError {
+        message: "unexpected resolver state".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::INTERNAL_ERROR);
+    assert_eq!(
+        api_error.message,
+        "internal error during authorization check"
+    );
+}
+
+/// Test: All structured DomainError variants map to correct error codes
+#[test]
+fn test_structured_domain_errors_map_correctly() {
+    // TypeNotFound -> type_not_found
+    let type_error = DomainError::TypeNotFound {
+        type_name: "nonexistent".to_string(),
+    };
+    let api_error: ApiError = type_error.into();
+    assert_eq!(api_error.code, error_codes::TYPE_NOT_FOUND);
+
+    // RelationNotFound -> relation_not_found
+    let rel_error = DomainError::RelationNotFound {
+        type_name: "document".to_string(),
+        relation: "nonexistent".to_string(),
+    };
+    let api_error: ApiError = rel_error.into();
+    assert_eq!(api_error.code, error_codes::RELATION_NOT_FOUND);
+
+    // DepthLimitExceeded -> authorization_model_resolution_too_complex
+    let depth_error = DomainError::DepthLimitExceeded { max_depth: 25 };
+    let api_error: ApiError = depth_error.into();
+    assert_eq!(
+        api_error.code,
+        error_codes::AUTHORIZATION_MODEL_RESOLUTION_TOO_COMPLEX
+    );
+
+    // InvalidUserFormat -> validation_error with field-specific message
+    let user_error = DomainError::InvalidUserFormat {
+        value: "no-colon".to_string(),
+    };
+    let api_error: ApiError = user_error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert!(api_error.message.contains("user"));
+    assert!(api_error.message.contains("no-colon"));
+
+    // InvalidObjectFormat -> validation_error with field-specific message
+    let obj_error = DomainError::InvalidObjectFormat {
+        value: "missing-colon".to_string(),
+    };
+    let api_error: ApiError = obj_error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert!(api_error.message.contains("object"));
+    assert!(api_error.message.contains("missing-colon"));
+}
+
+// ============================================================================
+// From<StorageError> Tests
+// ============================================================================
+
+use rsfga_storage::StorageError;
+
+/// Test: StorageError::InvalidInput with continuation_token maps to invalid_continuation_token
+#[test]
+fn test_storage_error_invalid_continuation_token() {
+    let error = StorageError::InvalidInput {
+        message: "invalid continuation_token: 'abc' (must be a non-negative integer)".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::INVALID_CONTINUATION_TOKEN);
+    assert!(api_error.message.contains("continuation_token"));
+}
+
+/// Test: StorageError::InvalidInput without continuation_token maps to validation_error
+#[test]
+fn test_storage_error_generic_invalid_input() {
+    let error = StorageError::InvalidInput {
+        message: "invalid store name".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+}
+
+/// Test: ApiError constructors produce correct error codes
+#[test]
+fn test_api_error_constructors_produce_correct_codes() {
+    // 404 Not Found errors
+    assert_eq!(
+        ApiError::store_not_found("test").code,
+        error_codes::STORE_ID_NOT_FOUND
+    );
+    assert_eq!(
+        ApiError::authorization_model_not_found("test").code,
+        error_codes::AUTHORIZATION_MODEL_NOT_FOUND
+    );
+    assert_eq!(
+        ApiError::latest_authorization_model_not_found("test").code,
+        error_codes::LATEST_AUTHORIZATION_MODEL_NOT_FOUND
+    );
+    assert_eq!(
+        ApiError::assertion_not_found("test").code,
+        error_codes::ASSERTION_NOT_FOUND
+    );
+
+    // 400 Bad Request errors
+    assert_eq!(
+        ApiError::validation_error("test").code,
+        error_codes::VALIDATION_ERROR
+    );
+    assert_eq!(
+        ApiError::type_not_found("test").code,
+        error_codes::TYPE_NOT_FOUND
+    );
+    assert_eq!(
+        ApiError::relation_not_found("test").code,
+        error_codes::RELATION_NOT_FOUND
+    );
+    assert_eq!(
+        ApiError::invalid_continuation_token("test").code,
+        error_codes::INVALID_CONTINUATION_TOKEN
+    );
+    assert_eq!(
+        ApiError::type_definitions_too_few_items("test").code,
+        error_codes::TYPE_DEFINITIONS_TOO_FEW_ITEMS
+    );
+    assert_eq!(
+        ApiError::resolution_too_complex("test").code,
+        error_codes::AUTHORIZATION_MODEL_RESOLUTION_TOO_COMPLEX
+    );
 }

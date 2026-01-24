@@ -1747,11 +1747,12 @@ async fn test_deleting_last_model_behavior() {
     )
     .await;
 
-    // Should return 400 Bad Request since there's no authorization model
+    // Should return 404 Not Found since there's no authorization model
+    // (OpenFGA returns latest_authorization_model_not_found with 404)
     assert_eq!(
         status,
-        StatusCode::BAD_REQUEST,
-        "Check should fail when no models exist (400)"
+        StatusCode::NOT_FOUND,
+        "Check should fail when no models exist (404 latest_authorization_model_not_found)"
     );
 }
 

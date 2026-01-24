@@ -216,8 +216,8 @@ async fn test_nonexistent_store_returns_404() {
     );
     assert_eq!(
         response["code"].as_str(),
-        Some("not_found"),
-        "Error code should be 'not_found'"
+        Some("store_id_not_found"),
+        "Error code should be 'store_id_not_found'"
     );
 }
 
@@ -293,8 +293,8 @@ async fn test_duplicate_tuple_error_returns_409_conflict() {
     );
     assert_eq!(
         response["code"].as_str(),
-        Some("conflict"),
-        "Error code should be 'conflict'"
+        Some("write_failed_due_to_invalid_input"),
+        "Error code should be 'write_failed_due_to_invalid_input'"
     );
     assert!(
         response["message"]
@@ -341,8 +341,8 @@ async fn test_condition_conflict_error_returns_409() {
     );
     assert_eq!(
         response["code"].as_str(),
-        Some("conflict"),
-        "Error code should be 'conflict'"
+        Some("write_failed_due_to_invalid_input"),
+        "Error code should be 'write_failed_due_to_invalid_input'"
     );
 }
 
@@ -529,8 +529,8 @@ async fn test_conflict_error_response_format() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(
         response["code"].as_str(),
-        Some("conflict"),
-        "Error code should be 'conflict'"
+        Some("write_failed_due_to_invalid_input"),
+        "Error code should be 'write_failed_due_to_invalid_input'"
     );
     assert!(
         response.get("message").is_some(),
@@ -568,16 +568,20 @@ async fn test_http_to_grpc_status_code_mappings() {
 
     let test_cases = vec![
         (
-            ApiError::not_found("test"),
-            "not_found",
+            ApiError::store_not_found("test"),
+            "store_id_not_found",
             StatusCode::NOT_FOUND,
         ),
         (
-            ApiError::invalid_input("test"),
+            ApiError::validation_error("test"),
             "validation_error",
             StatusCode::BAD_REQUEST,
         ),
-        (ApiError::conflict("test"), "conflict", StatusCode::CONFLICT),
+        (
+            ApiError::conflict("test"),
+            "write_failed_due_to_invalid_input",
+            StatusCode::CONFLICT,
+        ),
         (
             ApiError::gateway_timeout("test"),
             "timeout",

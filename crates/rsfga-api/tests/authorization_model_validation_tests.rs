@@ -112,15 +112,15 @@ async fn test_empty_type_definitions_returns_400() {
     );
     assert_eq!(
         response["code"].as_str(),
-        Some("validation_error"),
-        "Error code should be 'validation_error'"
+        Some("type_definitions_too_few_items"),
+        "Error code should be 'type_definitions_too_few_items'"
     );
     assert!(
         response["message"]
             .as_str()
             .unwrap_or("")
-            .contains("type_definitions cannot be empty"),
-        "Message should indicate type_definitions cannot be empty: {:?}",
+            .contains("type_definitions requires at least 1 item"),
+        "Message should indicate type_definitions requires at least 1 item: {:?}",
         response["message"]
     );
 }
@@ -151,8 +151,8 @@ async fn test_check_with_nonexistent_type_returns_400() {
     );
     assert_eq!(
         response["code"].as_str(),
-        Some("validation_error"),
-        "Error code should be 'validation_error'"
+        Some("type_not_found"),
+        "Error code should be 'type_not_found'"
     );
 }
 
@@ -182,8 +182,8 @@ async fn test_check_with_nonexistent_relation_returns_400() {
     );
     assert_eq!(
         response["code"].as_str(),
-        Some("validation_error"),
-        "Error code should be 'validation_error'"
+        Some("relation_not_found"),
+        "Error code should be 'relation_not_found'"
     );
 }
 
@@ -1130,8 +1130,8 @@ async fn test_expand_with_nonexistent_type_returns_400() {
     );
     assert_eq!(
         response["code"].as_str(),
-        Some("validation_error"),
-        "Error code should be 'validation_error'"
+        Some("type_not_found"),
+        "Error code should be 'type_not_found'"
     );
 }
 
@@ -1160,8 +1160,8 @@ async fn test_expand_with_nonexistent_relation_returns_400() {
     );
     assert_eq!(
         response["code"].as_str(),
-        Some("validation_error"),
-        "Error code should be 'validation_error'"
+        Some("relation_not_found"),
+        "Error code should be 'relation_not_found'"
     );
 }
 
