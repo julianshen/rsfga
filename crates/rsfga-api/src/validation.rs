@@ -198,6 +198,7 @@ pub fn validate_user_format(user: &str) -> Option<&'static str> {
 /// Validates the object identifier length per OpenFGA spec.
 ///
 /// The object ID (the part after "type:") must not exceed 256 characters.
+/// Also validates that the object is in valid "type:id" format.
 ///
 /// # Arguments
 ///
@@ -205,18 +206,21 @@ pub fn validate_user_format(user: &str) -> Option<&'static str> {
 ///
 /// # Returns
 ///
-/// Returns `Some(error_message)` if the object ID exceeds the limit, `None` if valid.
+/// Returns `Some(error_message)` if the format is invalid or object ID exceeds the limit,
+/// `None` if valid.
 pub fn validate_object_id_length(object: &str) -> Option<String> {
     // Extract the ID part after "type:"
-    if let Some(colon_pos) = object.find(':') {
-        let id = &object[colon_pos + 1..];
-        if id.len() > MAX_OBJECT_ID_LENGTH {
-            return Some(format!(
-                "object identifier exceeds maximum length of {} (got {})",
-                MAX_OBJECT_ID_LENGTH,
-                id.len()
-            ));
-        }
+    let Some(colon_pos) = object.find(':') else {
+        return Some("object must be in 'type:id' format".to_string());
+    };
+
+    let id = &object[colon_pos + 1..];
+    if id.len() > MAX_OBJECT_ID_LENGTH {
+        return Some(format!(
+            "object identifier exceeds maximum length of {} (got {})",
+            MAX_OBJECT_ID_LENGTH,
+            id.len()
+        ));
     }
     None
 }
@@ -432,6 +436,14 @@ mod tests {
         let result = validate_object_id_length(&object);
         assert!(result.is_some());
         assert!(result.unwrap().contains("exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_validate_object_id_length_no_colon() {
+        // Invalid: object without colon (malformed)
+        let result = validate_object_id_length("invalidobject");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("must be in 'type:id' format"));
     }
 
     #[test]
