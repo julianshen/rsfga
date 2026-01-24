@@ -2,6 +2,7 @@
 //!
 //! Validates that authorization models are semantically correct:
 //! - Model has at least one type definition (not empty)
+//! - No duplicate type definitions
 //! - No cyclic relation definitions
 //! - All referenced types exist
 //! - All referenced relations exist
@@ -65,6 +66,8 @@ pub enum ValidationError {
         length: usize,
         max_length: usize,
     },
+    /// Duplicate type definition in model
+    DuplicateType { type_name: String },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -128,6 +131,9 @@ impl std::fmt::Display for ValidationError {
                 f,
                 "condition '{condition_name}' expression too long: {length} bytes exceeds maximum of {max_length} bytes"
             ),
+            ValidationError::DuplicateType { type_name } => {
+                write!(f, "duplicate type definition: '{type_name}'")
+            }
         }
     }
 }
@@ -178,6 +184,16 @@ impl ModelValidator {
         if model.type_definitions.is_empty() {
             errors.push(ValidationError::EmptyModel);
             return Err(errors);
+        }
+
+        // Check for duplicate type definitions
+        let mut seen_types = HashSet::new();
+        for type_def in &model.type_definitions {
+            if !seen_types.insert(&type_def.type_name) {
+                errors.push(ValidationError::DuplicateType {
+                    type_name: type_def.type_name.clone(),
+                });
+            }
         }
 
         // Validate condition expressions are valid CEL
@@ -1087,6 +1103,53 @@ mod tests {
             result.is_ok(),
             "Valid condition reference should pass validation: {:?}",
             result.err()
+        );
+    }
+
+    #[test]
+    fn test_validator_rejects_duplicate_type_definitions() {
+        let model = AuthorizationModel {
+            id: None,
+            schema_version: "1.1".to_string(),
+            type_definitions: vec![
+                TypeDefinition {
+                    type_name: "user".into(),
+                    relations: vec![],
+                },
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::This,
+                    }],
+                },
+                // Duplicate type definition!
+                TypeDefinition {
+                    type_name: "document".to_string(),
+                    relations: vec![RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::This,
+                    }],
+                },
+            ],
+            conditions: Vec::new(),
+        };
+
+        let result = validate(&model);
+        assert!(
+            result.is_err(),
+            "Duplicate type definitions should fail validation"
+        );
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::DuplicateType { type_name }
+                if type_name == "document"
+            )),
+            "Should have duplicate type error for 'document'"
         );
     }
 }
