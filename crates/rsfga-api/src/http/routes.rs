@@ -807,8 +807,8 @@ async fn write_authorization_model<S: DataStore>(
 
     // Validate type_definitions is not empty (OpenFGA requirement)
     if body.type_definitions.is_empty() {
-        return Err(ApiError::validation_error(
-            "type_definitions cannot be empty",
+        return Err(ApiError::type_definitions_too_few_items(
+            "type_definitions requires at least 1 item",
         ));
     }
 

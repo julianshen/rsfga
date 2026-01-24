@@ -294,7 +294,7 @@ async fn test_duplicate_tuple_error_returns_409_conflict() {
     assert_eq!(
         response["code"].as_str(),
         Some("write_failed_due_to_invalid_input"),
-        "Error code should be 'conflict'"
+        "Error code should be 'write_failed_due_to_invalid_input'"
     );
     assert!(
         response["message"]
@@ -342,7 +342,7 @@ async fn test_condition_conflict_error_returns_409() {
     assert_eq!(
         response["code"].as_str(),
         Some("write_failed_due_to_invalid_input"),
-        "Error code should be 'conflict'"
+        "Error code should be 'write_failed_due_to_invalid_input'"
     );
 }
 
@@ -530,7 +530,7 @@ async fn test_conflict_error_response_format() {
     assert_eq!(
         response["code"].as_str(),
         Some("write_failed_due_to_invalid_input"),
-        "Error code should be 'conflict'"
+        "Error code should be 'write_failed_due_to_invalid_input'"
     );
     assert!(
         response.get("message").is_some(),

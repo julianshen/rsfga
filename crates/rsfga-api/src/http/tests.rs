@@ -1192,7 +1192,12 @@ async fn test_write_authorization_model_with_empty_type_definitions_returns_400(
     assert!(json["message"]
         .as_str()
         .unwrap()
-        .contains("type_definitions cannot be empty"));
+        .contains("type_definitions requires at least 1 item"));
+    assert_eq!(
+        json["code"].as_str(),
+        Some("type_definitions_too_few_items"),
+        "Error code should be 'type_definitions_too_few_items'"
+    );
 }
 
 /// Test: GET /stores/{store_id}/authorization-models with invalid continuation_token returns 400

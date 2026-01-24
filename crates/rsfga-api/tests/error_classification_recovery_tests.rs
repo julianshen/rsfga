@@ -220,7 +220,7 @@ async fn test_invalid_object_format_returns_400() {
 // Section 2: Type/Relation Not Found Errors (400, not 500)
 // ============================================================================
 
-/// Test: Type not found in model returns 400 VALIDATION_ERROR (not 500)
+/// Test: Type not found in model returns 400 type_not_found (not 500)
 #[tokio::test]
 async fn test_type_not_found_returns_400_not_500() {
     let storage = Arc::new(MemoryDataStore::new());
@@ -256,7 +256,7 @@ async fn test_type_not_found_returns_400_not_500() {
     );
 }
 
-/// Test: Relation not found on type returns 400 RELATION_NOT_FOUND (not 500)
+/// Test: Relation not found on type returns 400 relation_not_found (not 500)
 #[tokio::test]
 async fn test_relation_not_found_returns_400_not_500() {
     let storage = Arc::new(MemoryDataStore::new());
