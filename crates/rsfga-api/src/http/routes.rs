@@ -732,16 +732,15 @@ async fn list_stores<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     axum::extract::Query(query): axum::extract::Query<ListStoresQuery>,
 ) -> ApiResult<impl IntoResponse> {
-    // Clamp page_size to the maximum allowed value to prevent DoS
-    let page_size = Some(
-        query
-            .page_size
-            .unwrap_or(DEFAULT_STORES_PAGE_SIZE)
-            .min(DEFAULT_STORES_PAGE_SIZE),
-    );
+    // Validate and clamp page_size
+    let page_size = query.page_size.unwrap_or(DEFAULT_STORES_PAGE_SIZE);
+    if page_size == 0 {
+        return Err(ApiError::validation_error("page_size must be positive"));
+    }
+    let page_size = page_size.min(DEFAULT_STORES_PAGE_SIZE);
 
     let pagination = PaginationOptions {
-        page_size,
+        page_size: Some(page_size),
         continuation_token: query.continuation_token,
     };
 
