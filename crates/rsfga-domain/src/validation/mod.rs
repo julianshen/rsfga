@@ -339,6 +339,11 @@ impl ModelValidator {
             .is_some_and(|relations| relations.contains(relation_name))
     }
 
+    /// Check if a condition exists in the model
+    pub fn condition_exists(&self, condition_name: &str) -> bool {
+        self.defined_conditions.contains(condition_name)
+    }
+
     /// Detect cycles in relation definitions using DFS
     fn detect_cycle_in_type(type_def: &TypeDefinition) -> Option<(String, Vec<String>)> {
         // Build adjacency list: relation -> [referenced relations]
@@ -581,6 +586,29 @@ mod tests {
         assert!(validator.relation_exists("document", "viewer"));
         assert!(!validator.relation_exists("document", "nonexistent"));
         assert!(!validator.relation_exists("nonexistent", "owner"));
+    }
+
+    #[test]
+    fn test_validator_checks_condition_exists() {
+        use crate::model::Condition;
+
+        // Model with a condition
+        let model = AuthorizationModel {
+            id: None,
+            schema_version: "1.1".to_string(),
+            type_definitions: vec![TypeDefinition {
+                type_name: "user".into(),
+                relations: vec![],
+            }],
+            conditions: vec![Condition::new("time_check", "true").unwrap()],
+        };
+        let validator = ModelValidator::new(&model);
+        assert!(validator.condition_exists("time_check"));
+        assert!(!validator.condition_exists("nonexistent"));
+
+        // Model without conditions
+        let validator_no_conditions = ModelValidator::new(&create_valid_model());
+        assert!(!validator_no_conditions.condition_exists("any_condition"));
     }
 
     #[test]

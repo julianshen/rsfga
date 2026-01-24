@@ -653,12 +653,17 @@ async fn write_authorization_model<S: DataStore>(
     let model =
         StoredAuthorizationModel::new(&model_id, &store_id, &body.schema_version, model_json_str);
 
-    state.storage.write_authorization_model(model).await?;
-
-    // Invalidate CEL expression cache to ensure stale expressions from
-    // previous models are not reused. This is critical for security:
-    // old condition expressions must not be evaluated against new models.
+    // CRITICAL: Invalidate caches BEFORE writing the model to prevent race conditions.
+    // If we invalidate after writing, concurrent requests could:
+    // 1. Read the new model from storage
+    // 2. Use cached CEL expressions or check results from the old model
+    // 3. Return incorrect authorization decisions (security vulnerability)
+    //
+    // By invalidating first, any concurrent request will re-evaluate with fresh data.
     global_cache().invalidate_all();
+    state.cache.invalidate_store(&store_id).await;
+
+    state.storage.write_authorization_model(model).await?;
 
     Ok((
         StatusCode::CREATED,

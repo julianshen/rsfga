@@ -1223,15 +1223,20 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             model_json_str,
         );
 
+        // CRITICAL: Invalidate caches BEFORE writing the model to prevent race conditions.
+        // If we invalidate after writing, concurrent requests could:
+        // 1. Read the new model from storage
+        // 2. Use cached CEL expressions or check results from the old model
+        // 3. Return incorrect authorization decisions (security vulnerability)
+        //
+        // By invalidating first, any concurrent request will re-evaluate with fresh data.
+        global_cache().invalidate_all();
+        self.cache.invalidate_store(&req.store_id).await;
+
         self.storage
             .write_authorization_model(stored_model)
             .await
             .map_err(storage_error_to_status)?;
-
-        // Invalidate CEL expression cache to ensure stale expressions from
-        // previous models are not reused. This is critical for security:
-        // old condition expressions must not be evaluated against new models.
-        global_cache().invalidate_all();
 
         Ok(Response::new(WriteAuthorizationModelResponse {
             authorization_model_id: model_id,
