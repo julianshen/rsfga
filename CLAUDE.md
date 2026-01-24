@@ -68,6 +68,12 @@ Storage Backends (PostgreSQL, MySQL, In-Memory)
 - Graph resolver requires >95% coverage, property tests, security review, fuzz testing
 - Quality Gate: No graph resolver changes merge without security review
 
+### I5: Never Commit Directly to Main
+- **NEVER commit directly to the `main` branch** - No exceptions, no matter how small the change
+- **ALWAYS create a feature branch first**, even for single-line fixes
+- **ALWAYS create a Pull Request** for review before merging
+- Quality Gate: All changes must go through PR review process
+
 See [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) for full constraints (C1-C12) and assumptions (A1-A10).
 
 ---
@@ -318,10 +324,20 @@ Adding or modifying actual functionality:
 
 ## BRANCHING STRATEGY
 
+> ⛔ **CRITICAL: STOP AND CHECK BEFORE ANY COMMIT** ⛔
+>
+> Before running `git commit`, ALWAYS verify:
+> 1. Run `git branch --show-current` - Are you on a feature branch (NOT `main`)?
+> 2. If on `main`, STOP! Create a feature branch first: `git checkout -b fix/XXX-description`
+> 3. Only then proceed with your commit
+>
+> **This is Invariant I5. Violating this rule is as serious as introducing a security bug.**
+
 ### Golden Rule: Never Commit Directly to Main
 
-- **NEVER commit directly to the `main` branch** - No exceptions
-- **Always create a feature branch** for new implementation
+- **NEVER commit directly to the `main` branch** - No exceptions, not even for "quick fixes"
+- **ALWAYS create a feature branch first** for ANY change, no matter how small
+- **ALWAYS create a Pull Request** - direct pushes to main are forbidden
 - Feature branches should be created from the latest `main`
 
 ### Branch Naming Convention
@@ -413,13 +429,19 @@ After completing a **section** or logical group of tests:
 git checkout main
 git pull origin main
 
+# Create a new branch for documentation updates
+git checkout -b docs/update-plan-status
+
 # Update plan.md with completed tests
 # Mark tests [x], update milestone status, etc.
 
 # Commit the status update
 git add plan.md
 git commit -m "[DOCS] Update plan.md status after Milestone X.Y completion"
-git push origin main
+git push origin docs/update-plan-status
+
+# Create PR for the docs update
+gh pr create --title "[DOCS] Update plan.md status" --body "Update status after milestone completion"
 ```
 
 **Status Indicators**:
@@ -433,14 +455,23 @@ git push origin main
 
 ## COMMIT DISCIPLINE
 
+> ⚠️ **PRE-COMMIT CHECKLIST** - Run this before EVERY commit:
+> ```bash
+> # 1. FIRST: Verify you're NOT on main (Invariant I5)
+> git branch --show-current | grep -v '^main$' || echo "⛔ STOP! You're on main! Create a feature branch first!"
+>
+> # 2. Then verify quality gates
+> cargo test && cargo clippy --all-targets --all-features -- -D warnings && cargo fmt --check
+> ```
+
 Only commit when:
 
-1. **ALL tests are passing** - No exceptions
-2. **ALL compiler/linter warnings have been resolved** - Zero warnings policy
-3. **Code is properly formatted** - Run `cargo fmt` before commit
-4. **The change represents a single logical unit of work** - One concept per commit
-5. **Commit messages clearly state** whether the commit contains structural or behavioral changes
-6. **You are on a feature branch** - Never on main
+1. **⛔ You are on a feature branch** - NEVER on main (check with `git branch --show-current`)
+2. **ALL tests are passing** - No exceptions
+3. **ALL compiler/linter warnings have been resolved** - Zero warnings policy
+4. **Code is properly formatted** - Run `cargo fmt` before commit
+5. **The change represents a single logical unit of work** - One concept per commit
+6. **Commit messages clearly state** whether the commit contains structural or behavioral changes
 7. **Security audit passes** - Run `cargo audit` for dependency changes
 
 ### Commit Message Format:
@@ -689,9 +720,15 @@ mod tests {
 
 ## QUALITY GATES (Must Pass Before Commit)
 
+> ⛔ **FIRST CHECK: Are you on a feature branch?**
+> ```bash
+> git branch --show-current  # Must NOT be "main"
+> ```
+> If you see `main`, STOP! Run `git checkout -b fix/XXX-description` first!
+
 ```bash
 # All must succeed:
-git branch --show-current | grep -v '^main$'     # ✅ Not on main branch
+git branch --show-current | grep -v '^main$'     # ⛔ CRITICAL: Not on main branch (Invariant I5)
 cargo test                                        # ✅ All tests passing
 cargo clippy --all-targets --all-features -- -D warnings  # ✅ No warnings
 cargo fmt --check                                 # ✅ Code formatted
@@ -701,7 +738,7 @@ cargo audit                                       # ✅ No security vulnerabilit
 
 **Never commit when:**
 
-- You are on the `main` branch
+- ⛔ **You are on the `main` branch** - This is Invariant I5, never violate it!
 - Any test is failing
 - Clippy shows any warnings
 - Code is not formatted
@@ -711,7 +748,7 @@ cargo audit                                       # ✅ No security vulnerabilit
 
 **Never merge to main without:**
 
-- A Pull Request
+- ⛔ **A Pull Request** - Direct commits to main are FORBIDDEN (Invariant I5)
 - Passing CI checks (tests, clippy, fmt, audit)
 - OpenFGA compatibility tests passing (if API changes)
 - Code review approval
@@ -901,6 +938,9 @@ Ok(results.iter().all(|r| r.as_ref().map_or(false, |&b| b)))
 
 ```
 ┌─────────────────────────────────────────────────────┐
+│ ⛔ BEFORE ANY WORK: Check you're NOT on main!       │
+│    git branch --show-current  # Must NOT be "main"  │
+│                                                     │
 │ MILESTONE START:                                    │
 │ 1. Create feature branch from main                  │
 │    git checkout -b feature/milestone-X.Y-name       │
@@ -912,23 +952,24 @@ Ok(results.iter().all(|r| r.as_ref().map_or(false, |&b| b)))
 │ 5. Write failing test (Red)                         │
 │ 6. Write minimum code to pass (Green)               │
 │ 7. Refactor if needed (keep green)                  │
-│ 8. Run quality gates (test, clippy, fmt, audit)     │
-│ 9. Mark test [x] in plan.md                         │
-│ 10. Commit with [BEHAVIORAL] or [STRUCTURAL] prefix │
-│ 11. Repeat until section complete (5-15 tests)      │
+│ 8. ⛔ VERIFY: git branch (not on main!)             │
+│ 9. Run quality gates (test, clippy, fmt, audit)     │
+│ 10. Mark test [x] in plan.md                        │
+│ 11. Commit with [BEHAVIORAL] or [STRUCTURAL] prefix │
+│ 12. Repeat until section complete (5-15 tests)      │
 │                                                     │
 │ SECTION END (Create PR):                            │
-│ 12. Push feature branch                             │
-│ 13. Create PR: [Milestone X.Y] Section N: Title     │
-│ 14. Wait for review and approval                    │
-│ 15. Merge to main (squash merge)                    │
-│ 16. Continue on same branch for next section        │
+│ 13. Push feature branch                             │
+│ 14. Create PR: [Milestone X.Y] Section N: Title     │
+│ 15. Wait for review and approval                    │
+│ 16. Merge to main (squash merge via GitHub)         │
+│ 17. Continue on same branch for next section        │
 │                                                     │
 │ MILESTONE END:                                      │
-│ 17. Verify all milestone validation criteria met    │
-│ 18. Update ADRs if architectural changes             │
-│ 19. Delete feature branch                           │
-│ 20. Start next milestone on new branch              │
+│ 18. Verify all milestone validation criteria met    │
+│ 19. Update ADRs if architectural changes            │
+│ 20. Delete feature branch                           │
+│ 21. Start next milestone on new branch              │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -937,14 +978,16 @@ Follow this process precisely, always prioritizing:
 2. **Compatibility** over innovation (I2)
 3. **Validation** over claims (I3)
 4. **Security** over convenience (I4)
+5. **Feature branches** over direct commits (I5)
 
-**Quality is not negotiable.**
+**Quality is not negotiable. Branching rules are not negotiable.**
 
 ---
 
 ## WHEN IN DOUBT
 
-- **Consult the invariants** (I1-I4) - These are non-negotiable
+- **Consult the invariants** (I1-I5) - These are non-negotiable
+- **Check your branch** - Run `git branch --show-current` before committing (I5)
 - **Check constraints** (C1-C12 in ARCHITECTURE.md) - May require ADR to violate
 - **Review assumptions** (A1-A10 in ARCHITECTURE.md) - Plan validation if relying on them
 - **Check risks** (RISKS.md) - Related to what you're implementing?
