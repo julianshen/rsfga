@@ -56,6 +56,10 @@ pub enum DomainError {
     #[error("relation '{relation}' not found on type '{type_name}'")]
     RelationNotFound { type_name: String, relation: String },
 
+    /// Condition not found in authorization model.
+    #[error("condition '{condition_name}' not defined in authorization model")]
+    ConditionNotFound { condition_name: String },
+
     /// Store not found.
     #[error("store not found: {store_id}")]
     StoreNotFound { store_id: String },

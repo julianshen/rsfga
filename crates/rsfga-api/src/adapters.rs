@@ -23,6 +23,39 @@ use rsfga_domain::model::{
 use rsfga_domain::resolver::{ModelReader, StoredTupleRef, TupleReader};
 use rsfga_storage::DataStore;
 
+/// Converts a DomainError to a user-friendly validation error message.
+///
+/// This function provides centralized error message formatting for validation errors,
+/// ensuring consistent error messages across HTTP and gRPC layers.
+///
+/// # Arguments
+///
+/// * `error` - The domain error to convert
+///
+/// # Returns
+///
+/// A human-readable error message suitable for API responses.
+pub fn domain_error_to_validation_message(error: &DomainError) -> String {
+    match error {
+        DomainError::ModelParseError { message } => message.clone(),
+        DomainError::ModelValidationError { message } => message.clone(),
+        DomainError::TypeNotFound { type_name } => {
+            format!("type '{type_name}' not defined in authorization model")
+        }
+        DomainError::RelationNotFound {
+            type_name,
+            relation,
+        } => {
+            format!("relation '{relation}' not defined for type '{type_name}'")
+        }
+        DomainError::ConditionNotFound { condition_name } => {
+            format!("condition '{condition_name}' not defined in authorization model")
+        }
+        // For other errors, use the Display implementation
+        other => other.to_string(),
+    }
+}
+
 /// Default cache TTL for parsed authorization models.
 /// Slightly longer TTL (30s) is safe with moka's automatic eviction.
 const MODEL_CACHE_TTL: Duration = Duration::from_secs(30);
@@ -385,6 +418,390 @@ fn parse_conditions(model_json: &serde_json::Value) -> DomainResult<Vec<Conditio
     Ok(conditions)
 }
 
+/// Parses type definitions from a model JSON array.
+///
+/// This helper extracts the common parsing logic used by `validate_authorization_model_json`,
+/// `parse_model_json`, and `fetch_and_parse_model` to follow DRY principles.
+///
+/// # Arguments
+///
+/// * `type_defs` - The JSON array of type definitions
+///
+/// # Errors
+///
+/// Returns `DomainError::ModelParseError` if:
+/// - A type definition is missing the required "type" field
+/// - Relation parsing fails
+/// - Type constraint parsing fails
+fn parse_type_definitions_from_json(
+    type_defs: &[serde_json::Value],
+) -> DomainResult<Vec<TypeDefinition>> {
+    let mut type_definitions = Vec::with_capacity(type_defs.len());
+
+    for (idx, type_def) in type_defs.iter().enumerate() {
+        // Fail fast if "type" field is missing - don't silently skip
+        let type_name = type_def
+            .get("type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| DomainError::ModelParseError {
+                message: format!("type_definitions[{idx}] missing required 'type' field"),
+            })?;
+
+        let mut relations = Vec::new();
+
+        // Parse relations if present
+        if let Some(rels) = type_def.get("relations").and_then(|v| v.as_object()) {
+            for (rel_name, rel_def) in rels {
+                // Parse the userset (relation rewrite) from JSON
+                let rewrite = parse_userset(rel_def, type_name, rel_name)?;
+
+                // Parse type constraints from metadata
+                let type_constraints = parse_type_constraints(type_def, type_name, rel_name)?;
+
+                relations.push(RelationDefinition {
+                    name: rel_name.clone(),
+                    type_constraints,
+                    rewrite,
+                });
+            }
+        }
+
+        type_definitions.push(TypeDefinition {
+            type_name: type_name.to_string(),
+            relations,
+        });
+    }
+
+    Ok(type_definitions)
+}
+
+/// Valid schema versions supported by RSFGA.
+const VALID_SCHEMA_VERSIONS: &[&str] = &["1.1", "1.2"];
+
+/// Validates that a schema version is supported.
+fn validate_schema_version(version: &str) -> DomainResult<()> {
+    if VALID_SCHEMA_VERSIONS.contains(&version) {
+        Ok(())
+    } else {
+        Err(DomainError::ModelParseError {
+            message: format!(
+                "unsupported schema version '{}'. Supported versions: {}",
+                version,
+                VALID_SCHEMA_VERSIONS.join(", ")
+            ),
+        })
+    }
+}
+
+/// Validates an authorization model JSON without storing it.
+///
+/// This function performs comprehensive validation including:
+/// - Schema version validation
+/// - JSON structure parsing
+/// - Duplicate type name detection (OpenFGA compatibility)
+/// - Domain-level semantic validation (cycles, undefined references, etc.)
+/// - CEL condition expression validation
+///
+/// # Arguments
+///
+/// * `model_json` - The authorization model as a JSON value
+/// * `schema_version` - The schema version (must be "1.1" or "1.2")
+///
+/// # Errors
+///
+/// Returns `DomainError::ModelParseError` if:
+/// - Schema version is unsupported
+/// - JSON structure is invalid
+/// - Duplicate type definitions exist
+/// - Type definitions are missing required "type" field
+/// - Any domain validation error occurs (cycles, undefined refs, etc.)
+pub fn validate_authorization_model_json(
+    model_json: &serde_json::Value,
+    schema_version: &str,
+) -> DomainResult<()> {
+    use std::collections::HashSet;
+
+    // Validate schema version
+    validate_schema_version(schema_version)?;
+
+    // Extract type_definitions from the JSON
+    let type_defs = model_json
+        .get("type_definitions")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| DomainError::ModelParseError {
+            message: "type_definitions must be an array".to_string(),
+        })?;
+
+    // Check for duplicate type names (OpenFGA returns 400 for duplicates)
+    // Must happen before parse_type_definitions_from_json which fails on missing type
+    let mut seen_types = HashSet::new();
+    for (idx, type_def) in type_defs.iter().enumerate() {
+        let type_name = type_def
+            .get("type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| DomainError::ModelParseError {
+                message: format!("type_definitions[{idx}] missing required 'type' field"),
+            })?;
+
+        if !seen_types.insert(type_name.to_string()) {
+            return Err(DomainError::ModelParseError {
+                message: format!("duplicate type definition: '{type_name}'"),
+            });
+        }
+    }
+
+    // Parse type definitions using shared helper
+    let type_definitions = parse_type_definitions_from_json(type_defs)?;
+
+    // Parse conditions from the JSON
+    let conditions = parse_conditions(model_json)?;
+
+    // Build the domain model with the provided schema version
+    let model =
+        AuthorizationModel::with_types_and_conditions(schema_version, type_definitions, conditions);
+
+    // Run domain validation (cycles, undefined refs, CEL syntax, etc.)
+    rsfga_domain::validation::validate(&model).map_err(|errors| {
+        // Combine all validation errors into a single message
+        let messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        DomainError::ModelParseError {
+            message: messages.join("; "),
+        }
+    })
+}
+
+/// Validates that a tuple is consistent with the authorization model.
+///
+/// Checks that:
+/// - The object type exists in the model
+/// - The relation exists for that object type
+/// - If a condition is specified, it exists in the model
+///
+/// # Arguments
+///
+/// * `model` - The authorization model to validate against
+/// * `object_type` - The type of the object in the tuple
+/// * `relation` - The relation in the tuple
+/// * `condition_name` - Optional condition name in the tuple
+///
+/// # Errors
+///
+/// Returns `DomainError` if validation fails.
+///
+/// # Performance Note
+///
+/// For batch validation, use `create_model_validator` once and call
+/// `validate_tuple_with_validator` for each tuple to avoid recreating
+/// the validator for each tuple.
+pub fn validate_tuple_against_model(
+    model: &AuthorizationModel,
+    object_type: &str,
+    relation: &str,
+    condition_name: Option<&str>,
+) -> DomainResult<()> {
+    use rsfga_domain::validation::ModelValidator;
+
+    let validator = ModelValidator::new(model);
+    validate_tuple_with_validator(&validator, object_type, relation, condition_name)
+}
+
+/// Creates a ModelValidator for batch tuple validation.
+///
+/// Use this to create a validator once before validating multiple tuples,
+/// then call `validate_tuple_with_validator` for each tuple.
+///
+/// # Performance
+///
+/// Creating a validator is O(n) where n is the number of types in the model.
+/// Reusing the validator across multiple tuples avoids this overhead.
+pub fn create_model_validator(
+    model: &AuthorizationModel,
+) -> rsfga_domain::validation::ModelValidator {
+    rsfga_domain::validation::ModelValidator::new(model)
+}
+
+/// Validates a tuple using a pre-created ModelValidator.
+///
+/// This is the optimized version for batch validation. Build a validator
+/// once with `create_model_validator` and reuse it for all tuples.
+///
+/// # Validation Performed
+///
+/// - Object type must exist in the authorization model
+/// - Relation must exist for the given object type
+/// - Condition (if specified) must exist in the model
+///
+/// # User Field Validation (Intentionally Not Performed)
+///
+/// This function does NOT validate the user field type. This is intentional
+/// and matches OpenFGA's behavior. The user field can contain:
+/// - External identity references (e.g., `user:alice` where `user` may not be in the model)
+/// - Usersets from other types (e.g., `group:admins#member`)
+/// - Wildcards (e.g., `*` for public access)
+///
+/// User type validation would be overly restrictive and break valid use cases.
+/// Type constraints on the relation definition (if present) are enforced at
+/// check time by the graph resolver, not at write time.
+///
+/// # Arguments
+///
+/// * `validator` - Pre-created ModelValidator for efficiency
+/// * `model` - The authorization model (for condition lookup)
+/// * `object_type` - The type of the object in the tuple
+/// * `relation` - The relation in the tuple
+/// * `condition_name` - Optional condition name in the tuple
+///
+/// # Errors
+///
+/// Returns `DomainError` if validation fails.
+pub fn validate_tuple_with_validator(
+    validator: &rsfga_domain::validation::ModelValidator,
+    object_type: &str,
+    relation: &str,
+    condition_name: Option<&str>,
+) -> DomainResult<()> {
+    // Check if the object type exists in the model
+    if !validator.type_exists(object_type) {
+        return Err(DomainError::TypeNotFound {
+            type_name: object_type.to_string(),
+        });
+    }
+
+    // Check if the relation exists for this type
+    if !validator.relation_exists(object_type, relation) {
+        return Err(DomainError::RelationNotFound {
+            type_name: object_type.to_string(),
+            relation: relation.to_string(),
+        });
+    }
+
+    // Check if the condition exists in the model (if specified)
+    // Use validator.condition_exists() for O(1) HashSet lookup instead of O(n) linear scan
+    if let Some(cond_name) = condition_name {
+        if !validator.condition_exists(cond_name) {
+            return Err(DomainError::ConditionNotFound {
+                condition_name: cond_name.to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Describes a tuple validation error with context.
+#[derive(Debug)]
+pub struct TupleValidationError {
+    /// Index of the tuple in the batch.
+    pub index: usize,
+    /// Object type that was invalid.
+    pub object_type: String,
+    /// Relation that was invalid.
+    pub relation: String,
+    /// Human-readable error message.
+    pub reason: String,
+    /// Whether this was a write or delete operation.
+    pub is_delete: bool,
+}
+
+impl std::fmt::Display for TupleValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let op = if self.is_delete { "delete " } else { "" };
+        write!(
+            f,
+            "invalid {op}tuple at index {}: type={}, relation={}, reason={}",
+            self.index, self.object_type, self.relation, self.reason
+        )
+    }
+}
+
+/// Validates a batch of tuples against an authorization model.
+///
+/// This shared helper reduces duplication between HTTP and gRPC layers by
+/// centralizing the tuple validation loop. Both layers can call this once
+/// for writes and once for deletes.
+///
+/// # Arguments
+///
+/// * `model` - The authorization model to validate against
+/// * `tuples` - Iterator over tuples to validate (object_type, relation, condition_name)
+/// * `is_delete` - Whether these are delete operations (affects error message)
+///
+/// # Returns
+///
+/// `Ok(())` if all tuples are valid, `Err(TupleValidationError)` for the first invalid tuple.
+pub fn validate_tuples_batch<'a, I>(
+    model: &AuthorizationModel,
+    tuples: I,
+    is_delete: bool,
+) -> Result<(), TupleValidationError>
+where
+    I: Iterator<Item = (usize, &'a str, &'a str, Option<&'a str>)>,
+{
+    let validator = create_model_validator(model);
+
+    for (index, object_type, relation, condition_name) in tuples {
+        if let Err(e) =
+            validate_tuple_with_validator(&validator, object_type, relation, condition_name)
+        {
+            return Err(TupleValidationError {
+                index,
+                object_type: object_type.to_string(),
+                relation: relation.to_string(),
+                reason: domain_error_to_validation_message(&e),
+                is_delete,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Parses a stored authorization model JSON into a domain AuthorizationModel.
+///
+/// This is used for tuple validation to check that tuples reference valid types
+/// and relations in the current model.
+///
+/// # Arguments
+///
+/// * `model_json_str` - The JSON string from storage
+/// * `schema_version` - The schema version of the model
+///
+/// # Errors
+///
+/// Returns `DomainError::ModelParseError` if parsing fails.
+pub fn parse_model_json(
+    model_json_str: &str,
+    schema_version: &str,
+) -> DomainResult<AuthorizationModel> {
+    // Validate schema version
+    validate_schema_version(schema_version)?;
+
+    // Parse the stored model JSON
+    let model_json: serde_json::Value =
+        serde_json::from_str(model_json_str).map_err(|e| DomainError::ModelParseError {
+            message: format!("failed to parse model JSON: {e}"),
+        })?;
+
+    // Extract and parse type_definitions using shared helper
+    let type_definitions = if let Some(type_defs) = model_json
+        .get("type_definitions")
+        .and_then(|v| v.as_array())
+    {
+        parse_type_definitions_from_json(type_defs)?
+    } else {
+        Vec::new()
+    };
+
+    // Parse conditions from the JSON
+    let conditions = parse_conditions(&model_json)?;
+
+    Ok(AuthorizationModel::with_types_and_conditions(
+        schema_version,
+        type_definitions,
+        conditions,
+    ))
+}
+
 /// Adapter that implements `TupleReader` using a `DataStore`.
 ///
 /// This adapter bridges the storage layer to the domain layer for tuple operations.
@@ -529,6 +946,11 @@ impl<S: DataStore> DataStoreModelReader<S> {
                         type_name: type_name.clone(),
                         relation: relation.clone(),
                     },
+                    DomainError::ConditionNotFound { condition_name } => {
+                        DomainError::ConditionNotFound {
+                            condition_name: condition_name.clone(),
+                        }
+                    }
                     // Default fallback for any other variants
                     other => DomainError::ResolverError {
                         message: other.to_string(),
@@ -550,49 +972,21 @@ impl<S: DataStore> DataStoreModelReader<S> {
                 message: format!("storage error: {e}"),
             })?;
 
-        // Parse the stored model JSON into an AuthorizationModel
+        // Parse the stored model JSON
         let model_json: serde_json::Value = serde_json::from_str(&stored_model.model_json)
             .map_err(|e| DomainError::ModelParseError {
                 message: format!("failed to parse model JSON: {e}"),
             })?;
 
-        // Build AuthorizationModel from the parsed JSON
-        let mut type_definitions = Vec::new();
-
-        // Extract type_definitions from the JSON
-        if let Some(type_defs) = model_json
+        // Extract and parse type_definitions using shared helper
+        let type_definitions = if let Some(type_defs) = model_json
             .get("type_definitions")
             .and_then(|v| v.as_array())
         {
-            for type_def in type_defs {
-                if let Some(type_name) = type_def.get("type").and_then(|v| v.as_str()) {
-                    let mut relations = Vec::new();
-
-                    // Parse relations if present
-                    if let Some(rels) = type_def.get("relations").and_then(|v| v.as_object()) {
-                        for (rel_name, rel_def) in rels {
-                            // Parse the userset (relation rewrite) from JSON
-                            let rewrite = parse_userset(rel_def, type_name, rel_name)?;
-
-                            // Parse type constraints from metadata
-                            let type_constraints =
-                                parse_type_constraints(type_def, type_name, rel_name)?;
-
-                            relations.push(RelationDefinition {
-                                name: rel_name.clone(),
-                                type_constraints,
-                                rewrite,
-                            });
-                        }
-                    }
-
-                    type_definitions.push(TypeDefinition {
-                        type_name: type_name.to_string(),
-                        relations,
-                    });
-                }
-            }
-        }
+            parse_type_definitions_from_json(type_defs)?
+        } else {
+            Vec::new()
+        };
 
         // Parse conditions from the JSON
         let conditions = parse_conditions(&model_json)?;
@@ -1792,5 +2186,172 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ============================================================
+    // Tests for validate_tuples_batch and TupleValidationError
+    // ============================================================
+
+    #[test]
+    fn test_tuple_validation_error_display_write() {
+        let err = super::TupleValidationError {
+            index: 5,
+            object_type: "document".to_string(),
+            relation: "viewer".to_string(),
+            reason: "type 'document' not defined in authorization model".to_string(),
+            is_delete: false,
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid tuple at index 5: type=document, relation=viewer, reason=type 'document' not defined in authorization model"
+        );
+    }
+
+    #[test]
+    fn test_tuple_validation_error_display_delete() {
+        let err = super::TupleValidationError {
+            index: 3,
+            object_type: "folder".to_string(),
+            relation: "editor".to_string(),
+            reason: "relation 'editor' not defined for type 'folder'".to_string(),
+            is_delete: true,
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid delete tuple at index 3: type=folder, relation=editor, reason=relation 'editor' not defined for type 'folder'"
+        );
+    }
+
+    #[test]
+    fn test_validate_tuples_batch_empty_succeeds() {
+        let model = AuthorizationModel::with_types("1.1", vec![]);
+        let tuples: Vec<(usize, &str, &str, Option<&str>)> = vec![];
+
+        let result = super::validate_tuples_batch(&model, tuples.into_iter(), false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_tuples_batch_valid_tuples_succeed() {
+        use rsfga_domain::model::{RelationDefinition, TypeDefinition};
+
+        let type_def = TypeDefinition {
+            type_name: "document".to_string(),
+            relations: vec![
+                RelationDefinition {
+                    name: "viewer".to_string(),
+                    rewrite: rsfga_domain::model::Userset::This,
+                    type_constraints: vec![],
+                },
+                RelationDefinition {
+                    name: "editor".to_string(),
+                    rewrite: rsfga_domain::model::Userset::This,
+                    type_constraints: vec![],
+                },
+            ],
+        };
+        let model = AuthorizationModel::with_types("1.1", vec![type_def]);
+
+        let tuples = vec![
+            (0, "document", "viewer", None),
+            (1, "document", "editor", None),
+        ];
+
+        let result = super::validate_tuples_batch(&model, tuples.into_iter(), false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_tuples_batch_invalid_type_fails() {
+        use rsfga_domain::model::{RelationDefinition, TypeDefinition};
+
+        let type_def = TypeDefinition {
+            type_name: "document".to_string(),
+            relations: vec![RelationDefinition {
+                name: "viewer".to_string(),
+                rewrite: rsfga_domain::model::Userset::This,
+                type_constraints: vec![],
+            }],
+        };
+        let model = AuthorizationModel::with_types("1.1", vec![type_def]);
+
+        let tuples = vec![
+            (0, "document", "viewer", None),
+            (1, "folder", "viewer", None), // Invalid type
+        ];
+
+        let result = super::validate_tuples_batch(&model, tuples.into_iter(), false);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert_eq!(err.index, 1);
+        assert_eq!(err.object_type, "folder");
+        assert!(err.reason.contains("not defined"));
+        assert!(!err.is_delete);
+    }
+
+    #[test]
+    fn test_validate_tuples_batch_invalid_relation_fails() {
+        use rsfga_domain::model::{RelationDefinition, TypeDefinition};
+
+        let type_def = TypeDefinition {
+            type_name: "document".to_string(),
+            relations: vec![RelationDefinition {
+                name: "viewer".to_string(),
+                rewrite: rsfga_domain::model::Userset::This,
+                type_constraints: vec![],
+            }],
+        };
+        let model = AuthorizationModel::with_types("1.1", vec![type_def]);
+
+        let tuples = vec![
+            (0, "document", "owner", None), // Invalid relation
+        ];
+
+        let result = super::validate_tuples_batch(&model, tuples.into_iter(), false);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert_eq!(err.index, 0);
+        assert_eq!(err.relation, "owner");
+        assert!(err.reason.contains("not defined"));
+    }
+
+    #[test]
+    fn test_validate_tuples_batch_invalid_condition_fails() {
+        use rsfga_domain::model::{RelationDefinition, TypeDefinition};
+
+        let type_def = TypeDefinition {
+            type_name: "document".to_string(),
+            relations: vec![RelationDefinition {
+                name: "viewer".to_string(),
+                rewrite: rsfga_domain::model::Userset::This,
+                type_constraints: vec![],
+            }],
+        };
+        let model = AuthorizationModel::with_types("1.1", vec![type_def]);
+
+        let tuples = vec![(0, "document", "viewer", Some("nonexistent_condition"))];
+
+        let result = super::validate_tuples_batch(&model, tuples.into_iter(), false);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert_eq!(err.index, 0);
+        assert!(err.reason.contains("condition"));
+    }
+
+    #[test]
+    fn test_validate_tuples_batch_delete_flag_in_error() {
+        let model = AuthorizationModel::with_types("1.1", vec![]);
+
+        let tuples = vec![(2, "unknown_type", "relation", None)];
+
+        let result = super::validate_tuples_batch(&model, tuples.into_iter(), true);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(err.is_delete);
+        assert!(err.to_string().contains("delete tuple"));
     }
 }

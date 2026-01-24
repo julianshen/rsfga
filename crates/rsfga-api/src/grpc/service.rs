@@ -434,6 +434,32 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
+        // Get the latest authorization model to validate tuples against
+        // OpenFGA requires tuples to reference types/relations defined in the model
+        let stored_model = self
+            .storage
+            .get_latest_authorization_model(&req.store_id)
+            .await
+            .map_err(|e| match e {
+                rsfga_storage::StorageError::ModelNotFound { .. } => Status::invalid_argument(
+                    "cannot write tuples: no authorization model exists for this store",
+                ),
+                other => storage_error_to_status(other),
+            })?;
+
+        let model = crate::adapters::parse_model_json(
+            &stored_model.model_json,
+            &stored_model.schema_version,
+        )
+        .map_err(|e| {
+            // Log full error for debugging but don't leak internal details to client
+            tracing::error!(
+                "Failed to parse stored authorization model for store {}: {e}",
+                req.store_id
+            );
+            Status::internal("failed to parse authorization model")
+        })?;
+
         // Convert writes - fail if any tuple key is invalid
         // No clones in happy path - error contains user/object for messages
         let writes: Vec<StoredTuple> = req
@@ -481,6 +507,36 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             })
             .transpose()?
             .unwrap_or_default();
+
+        // Validate all tuples against the authorization model
+        // OpenFGA returns INVALID_ARGUMENT if tuples reference undefined types, relations, or conditions
+        crate::adapters::validate_tuples_batch(
+            &model,
+            writes.iter().enumerate().map(|(i, t)| {
+                (
+                    i,
+                    t.object_type.as_str(),
+                    t.relation.as_str(),
+                    t.condition_name.as_deref(),
+                )
+            }),
+            false,
+        )
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        crate::adapters::validate_tuples_batch(
+            &model,
+            deletes.iter().enumerate().map(|(i, t)| {
+                (
+                    i,
+                    t.object_type.as_str(),
+                    t.relation.as_str(),
+                    t.condition_name.as_deref(),
+                )
+            }),
+            true,
+        )
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         self.storage
             .write_tuples(&req.store_id, writes, deletes)
@@ -1163,6 +1219,11 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             model_json["conditions"] = serde_json::Value::Object(conditions_json);
         }
 
+        // Validate model semantics (duplicates, undefined refs, CEL syntax, etc.)
+        // This is critical for API compatibility - OpenFGA returns INVALID_ARGUMENT for invalid models
+        crate::adapters::validate_authorization_model_json(&model_json, &req.schema_version)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
         // Validate model size before storage
         let model_json_str = model_json.to_string();
         if model_json_str.len() > MAX_AUTHORIZATION_MODEL_SIZE {
@@ -1179,15 +1240,20 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             model_json_str,
         );
 
+        // CRITICAL: Invalidate caches BEFORE writing the model to prevent race conditions.
+        // If we invalidate after writing, concurrent requests could:
+        // 1. Read the new model from storage
+        // 2. Use cached CEL expressions or check results from the old model
+        // 3. Return incorrect authorization decisions (security vulnerability)
+        //
+        // By invalidating first, any concurrent request will re-evaluate with fresh data.
+        global_cache().invalidate_all();
+        self.cache.invalidate_store(&req.store_id).await;
+
         self.storage
             .write_authorization_model(stored_model)
             .await
             .map_err(storage_error_to_status)?;
-
-        // Invalidate CEL expression cache to ensure stale expressions from
-        // previous models are not reused. This is critical for security:
-        // old condition expressions must not be evaluated against new models.
-        global_cache().invalidate_all();
 
         Ok(Response::new(WriteAuthorizationModelResponse {
             authorization_model_id: model_id,

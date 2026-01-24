@@ -8,11 +8,16 @@
 //! - Type constraints are satisfied (including `type#relation` format)
 //! - All referenced conditions exist in the model
 //! - All condition expressions are valid CEL syntax
+//! - CEL expressions don't exceed maximum length (DoS protection)
 
 use std::collections::{HashMap, HashSet};
 
 use crate::cel::CelExpression;
 use crate::model::{AuthorizationModel, TypeConstraint, TypeDefinition, Userset};
+
+/// Maximum allowed CEL expression length (DoS protection - constraint C11).
+/// Prevents resource exhaustion from parsing extremely long expressions.
+pub const MAX_CEL_EXPRESSION_LENGTH: usize = 4096;
 
 /// Validation error types
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +58,12 @@ pub enum ValidationError {
     InvalidConditionExpression {
         condition_name: String,
         error_message: String,
+    },
+    /// Condition expression exceeds maximum length (DoS protection)
+    ConditionExpressionTooLong {
+        condition_name: String,
+        length: usize,
+        max_length: usize,
     },
 }
 
@@ -109,6 +120,14 @@ impl std::fmt::Display for ValidationError {
                 f,
                 "invalid CEL expression in condition '{condition_name}': {error_message}"
             ),
+            ValidationError::ConditionExpressionTooLong {
+                condition_name,
+                length,
+                max_length,
+            } => write!(
+                f,
+                "condition '{condition_name}' expression too long: {length} bytes exceeds maximum of {max_length} bytes"
+            ),
         }
     }
 }
@@ -163,6 +182,16 @@ impl ModelValidator {
 
         // Validate condition expressions are valid CEL
         for condition in &model.conditions {
+            // Check expression length first (DoS protection - constraint C11)
+            if condition.expression.len() > MAX_CEL_EXPRESSION_LENGTH {
+                errors.push(ValidationError::ConditionExpressionTooLong {
+                    condition_name: condition.name.clone(),
+                    length: condition.expression.len(),
+                    max_length: MAX_CEL_EXPRESSION_LENGTH,
+                });
+                continue; // Skip parsing if too long
+            }
+
             if let Err(e) = CelExpression::parse(&condition.expression) {
                 errors.push(ValidationError::InvalidConditionExpression {
                     condition_name: condition.name.clone(),
@@ -337,6 +366,11 @@ impl ModelValidator {
         self.type_relations
             .get(type_name)
             .is_some_and(|relations| relations.contains(relation_name))
+    }
+
+    /// Check if a condition exists in the model
+    pub fn condition_exists(&self, condition_name: &str) -> bool {
+        self.defined_conditions.contains(condition_name)
     }
 
     /// Detect cycles in relation definitions using DFS
@@ -581,6 +615,29 @@ mod tests {
         assert!(validator.relation_exists("document", "viewer"));
         assert!(!validator.relation_exists("document", "nonexistent"));
         assert!(!validator.relation_exists("nonexistent", "owner"));
+    }
+
+    #[test]
+    fn test_validator_checks_condition_exists() {
+        use crate::model::Condition;
+
+        // Model with a condition
+        let model = AuthorizationModel {
+            id: None,
+            schema_version: "1.1".to_string(),
+            type_definitions: vec![TypeDefinition {
+                type_name: "user".into(),
+                relations: vec![],
+            }],
+            conditions: vec![Condition::new("time_check", "true").unwrap()],
+        };
+        let validator = ModelValidator::new(&model);
+        assert!(validator.condition_exists("time_check"));
+        assert!(!validator.condition_exists("nonexistent"));
+
+        // Model without conditions
+        let validator_no_conditions = ModelValidator::new(&create_valid_model());
+        assert!(!validator_no_conditions.condition_exists("any_condition"));
     }
 
     #[test]
@@ -916,6 +973,42 @@ mod tests {
                 if condition_name == "bad_condition"
             )),
             "Should have invalid condition expression error"
+        );
+    }
+
+    #[test]
+    fn test_validator_rejects_cel_expression_too_long() {
+        // CEL expression exceeding MAX_CEL_EXPRESSION_LENGTH should fail (DoS protection)
+        use crate::model::Condition;
+
+        // Create an expression longer than MAX_CEL_EXPRESSION_LENGTH (4096 bytes)
+        let long_expression = "a".repeat(super::MAX_CEL_EXPRESSION_LENGTH + 1);
+
+        let model = AuthorizationModel {
+            id: None,
+            schema_version: "1.1".to_string(),
+            type_definitions: vec![TypeDefinition {
+                type_name: "user".into(),
+                relations: vec![],
+            }],
+            conditions: vec![Condition::new("long_condition", &long_expression).unwrap()],
+        };
+
+        let result = validate(&model);
+        assert!(
+            result.is_err(),
+            "CEL expression exceeding max length should fail validation"
+        );
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::ConditionExpressionTooLong { condition_name, length, max_length }
+                if condition_name == "long_condition"
+                    && *length == super::MAX_CEL_EXPRESSION_LENGTH + 1
+                    && *max_length == super::MAX_CEL_EXPRESSION_LENGTH
+            )),
+            "Should have condition expression too long error"
         );
     }
 

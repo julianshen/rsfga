@@ -27,11 +27,11 @@
 //!
 //! ## OpenFGA Validation Timing
 //!
-//! OpenFGA validates tuples at **Check time**, not Write time. This means:
-//! - Write operations accept any well-formed tuple (valid user/object format)
-//! - Type and relation validation occurs when Check/Expand/ListObjects is called
-//! - This allows storing tuples before the model is finalized
-//! - Tests in this module verify both behaviors
+//! OpenFGA validates tuples at **Write time** (not just Check time). This means:
+//! - Write operations validate that object types and relations exist in the model
+//! - Write operations validate that condition names exist in the model
+//! - A valid authorization model must exist before tuples can be written
+//! - Tests in this module verify both model validation and tuple validation
 //!
 //! Related to GitHub issue #204.
 
@@ -187,16 +187,13 @@ async fn test_check_with_nonexistent_relation_returns_400() {
     );
 }
 
-/// Test: Write operations succeed even with types/relations not in model (OpenFGA behavior).
-/// OpenFGA validates at Check time, not Write time. This test documents that behavior.
+/// Test: Write operations succeed when tuple references valid types and relations from model.
 #[tokio::test]
 async fn test_write_tuple_succeeds_for_valid_format() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    // Write succeeds even though this type isn't in the model
-    // (OpenFGA validates at Check time, not Write time)
-    // Using nonexistent_type to demonstrate that writes don't validate against model
+    // Write succeeds when type and relation exist in the model
     let (status, _response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/write"),
@@ -204,8 +201,8 @@ async fn test_write_tuple_succeeds_for_valid_format() {
             "writes": {
                 "tuple_keys": [{
                     "user": "user:alice",
-                    "relation": "some_relation",
-                    "object": "nonexistent_type:doc1"
+                    "relation": "viewer",
+                    "object": "document:doc1"
                 }]
             }
         }),
@@ -215,7 +212,7 @@ async fn test_write_tuple_succeeds_for_valid_format() {
     assert_eq!(
         status,
         StatusCode::OK,
-        "Write with valid format should succeed even for types not in model"
+        "Write with valid type and relation from model should succeed"
     );
 }
 
@@ -816,7 +813,7 @@ async fn test_deeply_nested_condition_context_returns_error() {
 #[tokio::test]
 async fn test_nested_condition_context_within_limits_succeeds() {
     let storage = Arc::new(MemoryDataStore::new());
-    let store_id = setup_test_store(&storage).await;
+    let store_id = setup_test_store_with_conditions(&storage).await;
 
     // Create nested JSON within limits
     let mut nested = serde_json::json!({"leaf": true});
@@ -1526,6 +1523,31 @@ async fn setup_test_store(storage: &MemoryDataStore) -> String {
             {"type": "team", "relations": {"member": {}}},
             {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
         ]
+    }"#;
+    let model =
+        StoredAuthorizationModel::new(ulid::Ulid::new().to_string(), &store_id, "1.1", model_json);
+    storage.write_authorization_model(model).await.unwrap();
+
+    store_id
+}
+
+/// Set up a test store with an authorization model that includes conditions.
+async fn setup_test_store_with_conditions(storage: &MemoryDataStore) -> String {
+    let store_id = create_store(storage).await;
+
+    let model_json = r#"{
+        "type_definitions": [
+            {"type": "user"},
+            {"type": "team", "relations": {"member": {}}},
+            {"type": "document", "relations": {"viewer": {}, "editor": {}, "owner": {}}}
+        ],
+        "conditions": {
+            "valid_condition": {
+                "name": "valid_condition",
+                "expression": "true",
+                "parameters": {}
+            }
+        }
     }"#;
     let model =
         StoredAuthorizationModel::new(ulid::Ulid::new().to_string(), &store_id, "1.1", model_json);
