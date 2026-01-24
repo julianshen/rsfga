@@ -741,13 +741,9 @@ where
     let validator = create_model_validator(model);
 
     for (index, object_type, relation, condition_name) in tuples {
-        if let Err(e) = validate_tuple_with_validator(
-            &validator,
-            model,
-            object_type,
-            relation,
-            condition_name,
-        ) {
+        if let Err(e) =
+            validate_tuple_with_validator(&validator, model, object_type, relation, condition_name)
+        {
             return Err(TupleValidationError {
                 index,
                 object_type: object_type.to_string(),
@@ -2336,9 +2332,7 @@ mod tests {
         };
         let model = AuthorizationModel::with_types("1.1", vec![type_def]);
 
-        let tuples = vec![
-            (0, "document", "viewer", Some("nonexistent_condition")),
-        ];
+        let tuples = vec![(0, "document", "viewer", Some("nonexistent_condition"))];
 
         let result = super::validate_tuples_batch(&model, tuples.into_iter(), false);
         assert!(result.is_err());

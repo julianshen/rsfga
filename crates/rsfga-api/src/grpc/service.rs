@@ -506,7 +506,12 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         crate::adapters::validate_tuples_batch(
             &model,
             writes.iter().enumerate().map(|(i, t)| {
-                (i, t.object_type.as_str(), t.relation.as_str(), t.condition_name.as_deref())
+                (
+                    i,
+                    t.object_type.as_str(),
+                    t.relation.as_str(),
+                    t.condition_name.as_deref(),
+                )
             }),
             false,
         )
@@ -515,7 +520,12 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         crate::adapters::validate_tuples_batch(
             &model,
             deletes.iter().enumerate().map(|(i, t)| {
-                (i, t.object_type.as_str(), t.relation.as_str(), t.condition_name.as_deref())
+                (
+                    i,
+                    t.object_type.as_str(),
+                    t.relation.as_str(),
+                    t.condition_name.as_deref(),
+                )
             }),
             true,
         )
