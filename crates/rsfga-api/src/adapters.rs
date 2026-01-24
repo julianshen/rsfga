@@ -602,7 +602,7 @@ pub fn validate_tuple_against_model(
     use rsfga_domain::validation::ModelValidator;
 
     let validator = ModelValidator::new(model);
-    validate_tuple_with_validator(&validator, model, object_type, relation, condition_name)
+    validate_tuple_with_validator(&validator, object_type, relation, condition_name)
 }
 
 /// Creates a ModelValidator for batch tuple validation.
@@ -656,7 +656,6 @@ pub fn create_model_validator(
 /// Returns `DomainError` if validation fails.
 pub fn validate_tuple_with_validator(
     validator: &rsfga_domain::validation::ModelValidator,
-    model: &AuthorizationModel,
     object_type: &str,
     relation: &str,
     condition_name: Option<&str>,
@@ -677,9 +676,9 @@ pub fn validate_tuple_with_validator(
     }
 
     // Check if the condition exists in the model (if specified)
+    // Use validator.condition_exists() for O(1) HashSet lookup instead of O(n) linear scan
     if let Some(cond_name) = condition_name {
-        let condition_exists = model.conditions.iter().any(|c| c.name == cond_name);
-        if !condition_exists {
+        if !validator.condition_exists(cond_name) {
             return Err(DomainError::ConditionNotFound {
                 condition_name: cond_name.to_string(),
             });
@@ -742,7 +741,7 @@ where
 
     for (index, object_type, relation, condition_name) in tuples {
         if let Err(e) =
-            validate_tuple_with_validator(&validator, model, object_type, relation, condition_name)
+            validate_tuple_with_validator(&validator, object_type, relation, condition_name)
         {
             return Err(TupleValidationError {
                 index,
