@@ -1865,3 +1865,133 @@ async fn test_read_endpoint_returns_conditions() {
     assert_eq!(condition["name"], "ip_restriction");
     assert_eq!(condition["context"]["allowed_ip"], "192.168.1.100");
 }
+
+// ============================================================================
+// From<DomainError> String Parsing Tests
+// ============================================================================
+// These tests verify the string parsing logic in From<DomainError> for
+// ResolverError variants. This is critical to catch regressions if the
+// error message format changes in the domain layer.
+//
+// Related issue: #270 (Refactor DomainError::ResolverError to structured variants)
+
+use rsfga_domain::error::DomainError;
+
+use super::routes::{error_codes, ApiError};
+
+/// Test: ResolverError with "store not found:" prefix maps to store_not_found
+#[test]
+fn test_resolver_error_store_not_found_parsing() {
+    let error = DomainError::ResolverError {
+        message: "store not found: 01AAAAAAAAAAAAAAAAAAAAAA00".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::STORE_ID_NOT_FOUND);
+    assert_eq!(api_error.message, "store not found");
+}
+
+/// Test: ResolverError containing "model not found:" maps to latest_authorization_model_not_found
+#[test]
+fn test_resolver_error_model_not_found_parsing() {
+    let error = DomainError::ResolverError {
+        message: "no authorization model not found: store 01AAAAAAAAAAAAAAAAAAAAAA00".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(
+        api_error.code,
+        error_codes::LATEST_AUTHORIZATION_MODEL_NOT_FOUND
+    );
+    assert_eq!(api_error.message, "no authorization model found");
+}
+
+/// Test: ResolverError containing "No such key:" maps to validation_error
+#[test]
+fn test_resolver_error_missing_context_key_parsing() {
+    let error = DomainError::ResolverError {
+        message: "CEL evaluation failed: No such key: 'allowed_ip'".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert_eq!(api_error.message, "missing required context parameter");
+}
+
+/// Test: ResolverError with "condition not found:" prefix maps to validation_error
+#[test]
+fn test_resolver_error_condition_not_found_parsing() {
+    let error = DomainError::ResolverError {
+        message: "condition not found: ip_check".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert_eq!(api_error.message, "condition not found");
+}
+
+/// Test: ResolverError containing "condition evaluation failed:" maps to validation_error
+#[test]
+fn test_resolver_error_condition_eval_failed_parsing() {
+    let error = DomainError::ResolverError {
+        message: "condition evaluation failed: type mismatch".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert_eq!(api_error.message, "condition evaluation failed");
+}
+
+/// Test: ResolverError with unrecognized message maps to internal_error
+#[test]
+fn test_resolver_error_unknown_maps_to_internal_error() {
+    let error = DomainError::ResolverError {
+        message: "unexpected resolver state".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::INTERNAL_ERROR);
+    assert_eq!(
+        api_error.message,
+        "internal error during authorization check"
+    );
+}
+
+/// Test: All structured DomainError variants map to correct error codes
+#[test]
+fn test_structured_domain_errors_map_correctly() {
+    // TypeNotFound -> type_not_found
+    let type_error = DomainError::TypeNotFound {
+        type_name: "nonexistent".to_string(),
+    };
+    let api_error: ApiError = type_error.into();
+    assert_eq!(api_error.code, error_codes::TYPE_NOT_FOUND);
+
+    // RelationNotFound -> relation_not_found
+    let rel_error = DomainError::RelationNotFound {
+        type_name: "document".to_string(),
+        relation: "nonexistent".to_string(),
+    };
+    let api_error: ApiError = rel_error.into();
+    assert_eq!(api_error.code, error_codes::RELATION_NOT_FOUND);
+
+    // DepthLimitExceeded -> authorization_model_resolution_too_complex
+    let depth_error = DomainError::DepthLimitExceeded { max_depth: 25 };
+    let api_error: ApiError = depth_error.into();
+    assert_eq!(
+        api_error.code,
+        error_codes::AUTHORIZATION_MODEL_RESOLUTION_TOO_COMPLEX
+    );
+
+    // InvalidUserFormat -> validation_error with field-specific message
+    let user_error = DomainError::InvalidUserFormat {
+        value: "no-colon".to_string(),
+    };
+    let api_error: ApiError = user_error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert!(api_error.message.contains("user"));
+    assert!(api_error.message.contains("no-colon"));
+
+    // InvalidObjectFormat -> validation_error with field-specific message
+    let obj_error = DomainError::InvalidObjectFormat {
+        value: "missing-colon".to_string(),
+    };
+    let api_error: ApiError = obj_error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert!(api_error.message.contains("object"));
+    assert!(api_error.message.contains("missing-colon"));
+}

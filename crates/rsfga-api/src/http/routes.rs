@@ -195,37 +195,103 @@ pub fn create_router_with_observability_and_limit<S: DataStore>(
 
 /// OpenFGA-compatible error codes.
 ///
-/// These match the error codes defined in OpenFGA's protobuf specification.
-/// Using specific codes instead of generic ones ensures API compatibility.
+/// These error codes match the OpenFGA protobuf specification and ensure full API
+/// compatibility. Each code maps to a specific HTTP status code via [`ApiError::into_response`].
+///
+/// # Error Code Categories
+///
+/// ## 404 Not Found
+/// - [`STORE_ID_NOT_FOUND`] - Store with given ID does not exist
+/// - [`AUTHORIZATION_MODEL_NOT_FOUND`] - Authorization model with given ID not found
+/// - [`LATEST_AUTHORIZATION_MODEL_NOT_FOUND`] - No authorization models exist in store
+/// - [`ASSERTION_NOT_FOUND`] - Assertions for given model not found
+///
+/// ## 400 Bad Request
+/// - [`VALIDATION_ERROR`] - Generic input validation failure (format, missing fields)
+/// - [`TYPE_NOT_FOUND`] - Type not defined in authorization model
+/// - [`RELATION_NOT_FOUND`] - Relation not defined on type in authorization model
+/// - [`TYPE_DEFINITIONS_TOO_FEW_ITEMS`] - type_definitions array is empty
+/// - [`INVALID_WRITE_INPUT`] - Invalid tuple write request
+/// - [`CANNOT_ALLOW_DUPLICATE_TUPLES_IN_ONE_REQUEST`] - Duplicate tuples in batch write
+/// - [`CANNOT_ALLOW_DUPLICATE_TYPES_IN_ONE_REQUEST`] - Duplicate types in model definition
+/// - [`INVALID_CONTINUATION_TOKEN`] - Invalid pagination token
+/// - [`AUTHORIZATION_MODEL_RESOLUTION_TOO_COMPLEX`] - Resolution exceeded depth/complexity limits
+///
+/// ## 409 Conflict
+/// - [`WRITE_FAILED_DUE_TO_INVALID_INPUT`] - Write conflict (tuple exists, condition mismatch)
+///
+/// ## 5xx Server Errors
+/// - [`INTERNAL_ERROR`] - Unexpected internal error
+/// - [`TIMEOUT`] - Operation timed out
+/// - [`SERVICE_UNAVAILABLE`] - Service temporarily unavailable
+/// - [`RESOURCE_EXHAUSTED`] - Resource limit reached (rate limiting)
+/// - [`PAYLOAD_TOO_LARGE`] - Request body exceeds size limit
+///
+/// # Usage
+///
+/// Use the corresponding [`ApiError`] constructor methods rather than these constants directly:
+///
+/// ```ignore
+/// // Preferred: Use ApiError constructors
+/// ApiError::store_not_found("store not found")
+/// ApiError::type_not_found("type 'foo' not found in authorization model")
+///
+/// // Avoid: Direct constant usage (for internal use only)
+/// ApiError::new(error_codes::STORE_ID_NOT_FOUND, "message")
+/// ```
+///
+/// # Compatibility
+///
+/// These codes are validated against OpenFGA's behavior in Phase 0 compatibility tests
+/// (see `crates/compatibility-tests/tests/test_section_17_error_format.rs`).
 pub mod error_codes {
     // 404 Not Found codes
+    /// Store with the specified ID does not exist.
     pub const STORE_ID_NOT_FOUND: &str = "store_id_not_found";
+    /// Authorization model with the specified ID not found in store.
     pub const AUTHORIZATION_MODEL_NOT_FOUND: &str = "authorization_model_not_found";
+    /// No authorization models exist in the store.
     pub const LATEST_AUTHORIZATION_MODEL_NOT_FOUND: &str = "latest_authorization_model_not_found";
+    /// Assertions for the specified authorization model not found.
     pub const ASSERTION_NOT_FOUND: &str = "assertion_not_found";
 
     // 400 Bad Request codes
+    /// Generic input validation error (invalid format, missing required fields).
     pub const VALIDATION_ERROR: &str = "validation_error";
+    /// Invalid write request format or content.
     pub const INVALID_WRITE_INPUT: &str = "invalid_write_input";
+    /// type_definitions array must contain at least one type definition.
     pub const TYPE_DEFINITIONS_TOO_FEW_ITEMS: &str = "type_definitions_too_few_items";
+    /// Cannot include duplicate tuples in a single write request.
     pub const CANNOT_ALLOW_DUPLICATE_TUPLES_IN_ONE_REQUEST: &str =
         "cannot_allow_duplicate_tuples_in_one_request";
+    /// Cannot include duplicate type names in authorization model.
     pub const CANNOT_ALLOW_DUPLICATE_TYPES_IN_ONE_REQUEST: &str =
         "cannot_allow_duplicate_types_in_one_request";
+    /// Pagination continuation token is invalid or expired.
     pub const INVALID_CONTINUATION_TOKEN: &str = "invalid_continuation_token";
+    /// Authorization model resolution exceeded complexity limits (depth, cycles).
     pub const AUTHORIZATION_MODEL_RESOLUTION_TOO_COMPLEX: &str =
         "authorization_model_resolution_too_complex";
+    /// Type not defined in the authorization model.
     pub const TYPE_NOT_FOUND: &str = "type_not_found";
+    /// Relation not defined on type in the authorization model.
     pub const RELATION_NOT_FOUND: &str = "relation_not_found";
 
     // 409 Conflict codes
+    /// Write failed due to conflict (tuple already exists or condition mismatch).
     pub const WRITE_FAILED_DUE_TO_INVALID_INPUT: &str = "write_failed_due_to_invalid_input";
 
     // 5xx codes
+    /// Unexpected internal server error.
     pub const INTERNAL_ERROR: &str = "internal_error";
+    /// Operation timed out before completion.
     pub const TIMEOUT: &str = "timeout";
+    /// Service temporarily unavailable (storage backend issues).
     pub const SERVICE_UNAVAILABLE: &str = "service_unavailable";
+    /// Resource limit reached (e.g., rate limiting).
     pub const RESOURCE_EXHAUSTED: &str = "resource_exhausted";
+    /// Request body exceeds maximum allowed size.
     pub const PAYLOAD_TOO_LARGE: &str = "payload_too_large";
 }
 
@@ -343,12 +409,20 @@ impl ApiError {
     }
 
     // Legacy methods for backward compatibility - deprecated in favor of specific methods
-    #[deprecated(note = "Use store_not_found, authorization_model_not_found, etc. instead")]
+    // TODO: Remove in v2.0.0 - tracked in issue #270
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use store_not_found, authorization_model_not_found, etc. instead. Will be removed in v2.0.0."
+    )]
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(error_codes::STORE_ID_NOT_FOUND, message)
     }
 
-    #[deprecated(note = "Use validation_error instead")]
+    // TODO: Remove in v2.0.0 - tracked in issue #270
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use validation_error instead. Will be removed in v2.0.0."
+    )]
     pub fn invalid_input(message: impl Into<String>) -> Self {
         Self::new(error_codes::VALIDATION_ERROR, message)
     }
