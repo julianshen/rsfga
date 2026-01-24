@@ -1082,9 +1082,12 @@ async fn test_read_tuples_empty_continuation_token() {
 async fn test_read_tuples_nonexistent_store_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
 
+    // Use a valid ULID format that doesn't exist (OpenFGA validates format first, returning 400 for invalid ULIDs)
+    let nonexistent_store_id = ulid::Ulid::new().to_string();
+
     let (status, _response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/read",
+        &format!("/stores/{}/read", nonexistent_store_id),
         serde_json::json!({
             "page_size": 10
         }),

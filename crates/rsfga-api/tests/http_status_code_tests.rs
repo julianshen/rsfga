@@ -191,10 +191,14 @@ async fn test_invalid_json_returns_400() {
 #[tokio::test]
 async fn test_nonexistent_store_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
+    // Use a valid ULID format that doesn't exist in storage
+    // OpenFGA validates store ID format first (400 for invalid format),
+    // then checks existence (404 for valid format but non-existent)
+    let nonexistent_store_id = ulid::Ulid::new().to_string();
 
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store-id/check",
+        &format!("/stores/{nonexistent_store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -262,9 +266,12 @@ async fn test_duplicate_tuple_error_returns_409_conflict() {
     let state = AppState::new(storage);
     let app = create_router_with_body_limit(state, 1024 * 1024);
 
+    // Use a valid ULID format for store ID (OpenFGA validates format first)
+    let store_id = ulid::Ulid::new().to_string();
+
     let (status, response) = post_json_raw(
         app,
-        "/stores/test-store/write",
+        &format!("/stores/{store_id}/write"),
         serde_json::json!({
             "writes": {
                 "tuple_keys": [
@@ -307,9 +314,12 @@ async fn test_condition_conflict_error_returns_409() {
     let state = AppState::new(storage);
     let app = create_router_with_body_limit(state, 1024 * 1024);
 
+    // Use a valid ULID format for store ID (OpenFGA validates format first)
+    let store_id = ulid::Ulid::new().to_string();
+
     let (status, response) = post_json_raw(
         app,
-        "/stores/test-store/write",
+        &format!("/stores/{store_id}/write"),
         serde_json::json!({
             "writes": {
                 "tuple_keys": [
@@ -457,11 +467,15 @@ async fn test_readiness_check_returns_503_when_storage_unavailable() {
 #[tokio::test]
 async fn test_error_response_format_consistency() {
     let storage = Arc::new(MemoryDataStore::new());
+    // Use a valid ULID format that doesn't exist in storage
+    // OpenFGA validates store ID format first (400 for invalid format),
+    // then checks existence (404 for valid format but non-existent)
+    let nonexistent_store_id = ulid::Ulid::new().to_string();
 
     // Test 404 error format
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent/check",
+        &format!("/stores/{nonexistent_store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -492,9 +506,12 @@ async fn test_conflict_error_response_format() {
     let state = AppState::new(storage);
     let app = create_router_with_body_limit(state, 1024 * 1024);
 
+    // Use a valid ULID format for store ID (OpenFGA validates format first)
+    let store_id = ulid::Ulid::new().to_string();
+
     let (status, response) = post_json_raw(
         app,
-        "/stores/test-store/write",
+        &format!("/stores/{store_id}/write"),
         serde_json::json!({
             "writes": {
                 "tuple_keys": [

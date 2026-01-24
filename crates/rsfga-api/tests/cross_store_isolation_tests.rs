@@ -1836,18 +1836,16 @@ async fn test_grpc_read_respects_store_boundaries() {
 async fn test_http_grpc_behavioral_parity_for_isolation() {
     let storage = Arc::new(MemoryDataStore::new());
 
+    // Use valid ULID format for store IDs (OpenFGA compatibility)
+    let store_id_a = ulid::Ulid::new().to_string();
+    let store_id_b = ulid::Ulid::new().to_string();
+
     // Create stores
-    storage
-        .create_store("parity-store-a", "Parity A")
-        .await
-        .unwrap();
-    storage
-        .create_store("parity-store-b", "Parity B")
-        .await
-        .unwrap();
+    storage.create_store(&store_id_a, "Parity A").await.unwrap();
+    storage.create_store(&store_id_b, "Parity B").await.unwrap();
 
     // Set up models for both stores using shared constant
-    for store_id in ["parity-store-a", "parity-store-b"] {
+    for store_id in [&store_id_a, &store_id_b] {
         let model = StoredAuthorizationModel::new(
             ulid::Ulid::new().to_string(),
             store_id,
@@ -1860,7 +1858,7 @@ async fn test_http_grpc_behavioral_parity_for_isolation() {
     // Write tuple to store A only
     storage
         .write_tuple(
-            "parity-store-a",
+            &store_id_a,
             StoredTuple::new(
                 "document",
                 "parity-doc",
@@ -1876,7 +1874,7 @@ async fn test_http_grpc_behavioral_parity_for_isolation() {
     // HTTP Check in store A
     let (http_status_a, http_response_a) = post_json(
         create_test_app(&storage),
-        "/stores/parity-store-a/check",
+        &format!("/stores/{}/check", store_id_a),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:parity-user",
@@ -1892,7 +1890,7 @@ async fn test_http_grpc_behavioral_parity_for_isolation() {
     // gRPC Check in store A
     let service = test_grpc_service(Arc::clone(&storage));
     let request = Request::new(CheckRequest {
-        store_id: "parity-store-a".to_string(),
+        store_id: store_id_a.clone(),
         tuple_key: Some(TupleKey {
             user: "user:parity-user".to_string(),
             relation: "viewer".to_string(),
@@ -1918,7 +1916,7 @@ async fn test_http_grpc_behavioral_parity_for_isolation() {
     // HTTP Check in store B
     let (http_status_b, http_response_b) = post_json(
         create_test_app(&storage),
-        "/stores/parity-store-b/check",
+        &format!("/stores/{}/check", store_id_b),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:parity-user",
@@ -1933,7 +1931,7 @@ async fn test_http_grpc_behavioral_parity_for_isolation() {
 
     // gRPC Check in store B
     let request = Request::new(CheckRequest {
-        store_id: "parity-store-b".to_string(),
+        store_id: store_id_b.clone(),
         tuple_key: Some(TupleKey {
             user: "user:parity-user".to_string(),
             relation: "viewer".to_string(),

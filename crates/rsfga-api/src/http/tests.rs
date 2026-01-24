@@ -8,6 +8,7 @@ use axum::{
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tower::ServiceExt; // for oneshot
+use ulid::Ulid;
 
 use rsfga_storage::{DataStore, MemoryDataStore, StoredAuthorizationModel};
 
@@ -16,6 +17,17 @@ use super::routes::{
 };
 use super::state::AppState;
 use crate::observability::MetricsState;
+
+/// Helper to generate a valid ULID store ID for testing.
+/// OpenFGA requires store IDs to be valid ULID format (Invariant I2).
+fn test_store_id() -> String {
+    Ulid::new().to_string()
+}
+
+/// Helper to generate a valid ULID model ID for testing.
+fn test_model_id() -> String {
+    Ulid::new().to_string()
+}
 
 /// Helper to create a test app with in-memory storage.
 fn test_app() -> axum::Router {
@@ -99,7 +111,7 @@ async fn setup_store_with_model(storage: &MemoryDataStore, store_id: &str, store
     storage.create_store(store_id, store_name).await.unwrap();
 
     let model = StoredAuthorizationModel::new(
-        format!("{}-model", store_id),
+        test_model_id(), // Use valid ULID for model ID
         store_id,
         "1.1",
         simple_model_json().to_string(),
@@ -155,13 +167,16 @@ async fn test_check_endpoint_returns_200() {
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
 
+    // Use valid ULID format for store ID (OpenFGA compatibility I2)
+    let store_id = test_store_id();
+
     // Create a store with authorization model
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
 
     // Write a tuple
     storage
         .write_tuple(
-            "test-store",
+            &store_id,
             rsfga_storage::StoredTuple::new("document", "readme", "viewer", "user", "alice", None),
         )
         .await
@@ -172,7 +187,7 @@ async fn test_check_endpoint_returns_200() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri(format!("/stores/{store_id}/check"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -203,10 +218,8 @@ async fn test_check_endpoint_returns_200() {
 #[tokio::test]
 async fn test_check_endpoint_validates_request_body() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     let state = AppState::new(storage);
     let app = create_router(state);
@@ -215,7 +228,7 @@ async fn test_check_endpoint_validates_request_body() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri(format!("/stores/{store_id}/check"))
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{ "invalid": "body" }"#))
                 .unwrap(),
@@ -236,9 +249,10 @@ async fn test_check_endpoint_validates_request_body() {
 #[tokio::test]
 async fn test_check_endpoint_returns_correct_response_format() {
     let storage = Arc::new(MemoryDataStore::new());
+    let store_id = test_store_id();
 
     // Create a store with authorization model
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -248,7 +262,7 @@ async fn test_check_endpoint_returns_correct_response_format() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri(format!("/stores/{store_id}/check"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -280,7 +294,8 @@ async fn test_check_endpoint_returns_correct_response_format() {
 #[tokio::test]
 async fn test_expand_endpoint_returns_200() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    let store_id = test_store_id();
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
 
     let state = AppState::new(storage);
     let app = create_router(state);
@@ -289,7 +304,7 @@ async fn test_expand_endpoint_returns_200() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/expand")
+                .uri(format!("/stores/{store_id}/expand"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -311,7 +326,8 @@ async fn test_expand_endpoint_returns_200() {
 #[tokio::test]
 async fn test_write_endpoint_returns_200() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    let store_id = test_store_id();
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
 
     let state = AppState::new(storage);
     let app = create_router(state);
@@ -320,7 +336,7 @@ async fn test_write_endpoint_returns_200() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri(format!("/stores/{store_id}/write"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -347,10 +363,8 @@ async fn test_write_endpoint_returns_200() {
 #[tokio::test]
 async fn test_read_endpoint_returns_200() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     let state = AppState::new(storage);
     let app = create_router(state);
@@ -359,7 +373,7 @@ async fn test_read_endpoint_returns_200() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/read")
+                .uri(format!("/stores/{store_id}/read"))
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{}"#))
                 .unwrap(),
@@ -380,10 +394,8 @@ async fn test_read_endpoint_returns_200() {
 #[tokio::test]
 async fn test_invalid_json_returns_400() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     let state = AppState::new(storage);
     let app = create_router(state);
@@ -392,7 +404,7 @@ async fn test_invalid_json_returns_400() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri(format!("/stores/{store_id}/check"))
                 .header("content-type", "application/json")
                 .body(Body::from("{ invalid json }"))
                 .unwrap(),
@@ -407,12 +419,14 @@ async fn test_invalid_json_returns_400() {
 #[tokio::test]
 async fn test_nonexistent_store_returns_404() {
     let app = test_app();
+    // Use a valid ULID format for the nonexistent store ID
+    let nonexistent_store_id = test_store_id();
 
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/nonexistent-store/check")
+                .uri(format!("/stores/{nonexistent_store_id}/check"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -438,10 +452,8 @@ async fn test_nonexistent_store_returns_404() {
 #[tokio::test]
 async fn test_validation_errors_return_400_with_details() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     let state = AppState::new(storage);
     let app = create_router(state);
@@ -459,7 +471,7 @@ async fn test_validation_errors_return_400_with_details() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/batch-check")
+                .uri(format!("/stores/{store_id}/batch-check"))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),
@@ -597,9 +609,10 @@ async fn test_readiness_check_validates_dependencies() {
 #[tokio::test]
 async fn test_requests_within_body_limit_succeed() {
     let storage = Arc::new(MemoryDataStore::new());
+    let store_id = test_store_id();
 
     // Create a store with authorization model
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     // Use a small limit for testing (1KB)
@@ -610,7 +623,7 @@ async fn test_requests_within_body_limit_succeed() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri(format!("/stores/{store_id}/check"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -636,10 +649,8 @@ async fn test_requests_within_body_limit_succeed() {
 #[tokio::test]
 async fn test_requests_exceeding_body_limit_rejected() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     let state = AppState::new(storage);
     // Use a very small limit (100 bytes) for testing
@@ -659,7 +670,7 @@ async fn test_requests_exceeding_body_limit_rejected() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri(format!("/stores/{store_id}/check"))
                 .header("content-type", "application/json")
                 .body(Body::from(large_payload))
                 .unwrap(),
@@ -679,8 +690,9 @@ async fn test_requests_exceeding_body_limit_rejected() {
 #[tokio::test]
 async fn test_update_store_updates_name() {
     let storage = Arc::new(MemoryDataStore::new());
+    let store_id = test_store_id();
     storage
-        .create_store("test-store", "Original Name")
+        .create_store(&store_id, "Original Name")
         .await
         .unwrap();
 
@@ -691,7 +703,7 @@ async fn test_update_store_updates_name() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/stores/test-store")
+                .uri(format!("/stores/{store_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"name": "Updated Name"}"#))
                 .unwrap(),
@@ -707,13 +719,13 @@ async fn test_update_store_updates_name() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     // Response should contain the updated store
-    assert_eq!(json["id"], "test-store");
+    assert_eq!(json["id"], store_id);
     assert_eq!(json["name"], "Updated Name");
     assert!(json.get("created_at").is_some());
     assert!(json.get("updated_at").is_some());
 
     // Verify the store was actually updated in storage
-    let store = storage.get_store("test-store").await.unwrap();
+    let store = storage.get_store(&store_id).await.unwrap();
     assert_eq!(store.name, "Updated Name");
 }
 
@@ -721,12 +733,14 @@ async fn test_update_store_updates_name() {
 #[tokio::test]
 async fn test_update_store_returns_404_for_nonexistent() {
     let app = test_app();
+    // Use a valid ULID format for the nonexistent store ID
+    let nonexistent_store_id = test_store_id();
 
     let response = app
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/stores/nonexistent-store")
+                .uri(format!("/stores/{nonexistent_store_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"name": "New Name"}"#))
                 .unwrap(),
@@ -741,8 +755,9 @@ async fn test_update_store_returns_404_for_nonexistent() {
 #[tokio::test]
 async fn test_update_store_validates_name() {
     let storage = Arc::new(MemoryDataStore::new());
+    let store_id = test_store_id();
     storage
-        .create_store("test-store", "Original Name")
+        .create_store(&store_id, "Original Name")
         .await
         .unwrap();
 
@@ -754,7 +769,7 @@ async fn test_update_store_validates_name() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/stores/test-store")
+                .uri(format!("/stores/{store_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"name": ""}"#))
                 .unwrap(),
@@ -824,14 +839,15 @@ async fn test_created_store_id_is_ulid_format() {
 #[tokio::test]
 async fn test_check_handles_null_contextual_tuple_keys() {
     let storage = Arc::new(MemoryDataStore::new());
+    let store_id = test_store_id();
 
     // Create a store with authorization model
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
 
     // Write a tuple to check against
     storage
         .write_tuple(
-            "test-store",
+            &store_id,
             rsfga_storage::StoredTuple::new("document", "readme", "viewer", "user", "alice", None),
         )
         .await
@@ -845,7 +861,7 @@ async fn test_check_handles_null_contextual_tuple_keys() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri(format!("/stores/{store_id}/check"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -879,13 +895,14 @@ async fn test_check_handles_null_contextual_tuple_keys() {
 #[tokio::test]
 async fn test_check_handles_missing_contextual_tuples() {
     let storage = Arc::new(MemoryDataStore::new());
+    let store_id = test_store_id();
 
     // Create a store with authorization model
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
 
     storage
         .write_tuple(
-            "test-store",
+            &store_id,
             rsfga_storage::StoredTuple::new("document", "readme", "viewer", "user", "bob", None),
         )
         .await
@@ -899,7 +916,7 @@ async fn test_check_handles_missing_contextual_tuples() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/check")
+                .uri(format!("/stores/{store_id}/check"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -932,10 +949,8 @@ async fn test_check_handles_missing_contextual_tuples() {
 #[tokio::test]
 async fn test_write_authorization_model_returns_201() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     let state = AppState::new(storage);
     let app = create_router(state);
@@ -944,7 +959,7 @@ async fn test_write_authorization_model_returns_201() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/authorization-models")
+                .uri(format!("/stores/{store_id}/authorization-models"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -996,15 +1011,14 @@ async fn test_write_authorization_model_returns_201() {
 #[tokio::test]
 async fn test_list_authorization_models_returns_200() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    let model_id = test_model_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     // Write a model directly to storage
     let model = rsfga_storage::StoredAuthorizationModel::new(
-        "01HXK0ABCDEFGHIJKLMNOPQRST",
-        "test-store",
+        &model_id,
+        &store_id,
         "1.1",
         r#"{"type_definitions": [{"type": "user"}]}"#,
     );
@@ -1017,7 +1031,7 @@ async fn test_list_authorization_models_returns_200() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/stores/test-store/authorization-models")
+                .uri(format!("/stores/{store_id}/authorization-models"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1035,7 +1049,7 @@ async fn test_list_authorization_models_returns_200() {
         .as_array()
         .expect("authorization_models should be an array");
     assert_eq!(models.len(), 1);
-    assert_eq!(models[0]["id"], "01HXK0ABCDEFGHIJKLMNOPQRST");
+    assert_eq!(models[0]["id"], model_id);
     assert_eq!(models[0]["schema_version"], "1.1");
 }
 
@@ -1043,15 +1057,14 @@ async fn test_list_authorization_models_returns_200() {
 #[tokio::test]
 async fn test_get_authorization_model_returns_200() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    let model_id = test_model_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     // Write a model directly to storage
     let model = rsfga_storage::StoredAuthorizationModel::new(
-        "01HXK0ABCDEFGHIJKLMNOPQRST",
-        "test-store",
+        &model_id,
+        &store_id,
         "1.1",
         r#"{"type_definitions": [{"type": "user"}], "conditions": null}"#,
     );
@@ -1064,7 +1077,9 @@ async fn test_get_authorization_model_returns_200() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/stores/test-store/authorization-models/01HXK0ABCDEFGHIJKLMNOPQRST")
+                .uri(format!(
+                    "/stores/{store_id}/authorization-models/{model_id}"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1079,7 +1094,7 @@ async fn test_get_authorization_model_returns_200() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     let model = &json["authorization_model"];
-    assert_eq!(model["id"], "01HXK0ABCDEFGHIJKLMNOPQRST");
+    assert_eq!(model["id"], model_id);
     assert_eq!(model["schema_version"], "1.1");
     assert!(model["type_definitions"].is_array());
 }
@@ -1088,10 +1103,8 @@ async fn test_get_authorization_model_returns_200() {
 #[tokio::test]
 async fn test_get_nonexistent_authorization_model_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     let state = AppState::new(storage);
     let app = create_router(state);
@@ -1100,7 +1113,9 @@ async fn test_get_nonexistent_authorization_model_returns_404() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/stores/test-store/authorization-models/nonexistent")
+                .uri(format!(
+                    "/stores/{store_id}/authorization-models/nonexistent"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1116,12 +1131,16 @@ async fn test_write_authorization_model_to_nonexistent_store_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
     let state = AppState::new(storage);
     let app = create_router(state);
+    // Use a valid ULID format for the nonexistent store ID
+    let nonexistent_store_id = test_store_id();
 
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/nonexistent-store/authorization-models")
+                .uri(format!(
+                    "/stores/{nonexistent_store_id}/authorization-models"
+                ))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1141,10 +1160,8 @@ async fn test_write_authorization_model_to_nonexistent_store_returns_404() {
 #[tokio::test]
 async fn test_write_authorization_model_with_empty_type_definitions_returns_400() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     let state = AppState::new(storage);
     let app = create_router(state);
@@ -1153,7 +1170,7 @@ async fn test_write_authorization_model_with_empty_type_definitions_returns_400(
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/authorization-models")
+                .uri(format!("/stores/{store_id}/authorization-models"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1182,10 +1199,8 @@ async fn test_write_authorization_model_with_empty_type_definitions_returns_400(
 #[tokio::test]
 async fn test_list_authorization_models_with_invalid_continuation_token_returns_400() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     let state = AppState::new(storage);
     let app = create_router(state);
@@ -1194,7 +1209,9 @@ async fn test_list_authorization_models_with_invalid_continuation_token_returns_
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/stores/test-store/authorization-models?continuation_token=invalid")
+                .uri(format!(
+                    "/stores/{store_id}/authorization-models?continuation_token=invalid"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1217,16 +1234,14 @@ async fn test_list_authorization_models_with_invalid_continuation_token_returns_
 #[tokio::test]
 async fn test_list_authorization_models_pagination_works() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     // Create 3 models
     for i in 0..3 {
         let model = StoredAuthorizationModel::new(
             format!("model-{i}"),
-            "test-store",
+            &store_id,
             "1.1",
             format!(r#"{{"type_definitions": [{{"type": "type{i}"}}]}}"#),
         );
@@ -1242,7 +1257,9 @@ async fn test_list_authorization_models_pagination_works() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/stores/test-store/authorization-models?page_size=2")
+                .uri(format!(
+                    "/stores/{store_id}/authorization-models?page_size=2"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1266,7 +1283,7 @@ async fn test_list_authorization_models_pagination_works() {
             Request::builder()
                 .method("GET")
                 .uri(format!(
-                    "/stores/test-store/authorization-models?page_size=2&continuation_token={token}"
+                    "/stores/{store_id}/authorization-models?page_size=2&continuation_token={token}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -1290,10 +1307,8 @@ async fn test_list_authorization_models_pagination_works() {
 #[tokio::test]
 async fn test_write_authorization_model_rejects_oversized_model() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     let state = AppState::new(storage);
     // Use a higher body limit (2MB) so the request passes Axum's middleware
@@ -1311,7 +1326,7 @@ async fn test_write_authorization_model_rejects_oversized_model() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/authorization-models")
+                .uri(format!("/stores/{store_id}/authorization-models"))
                 .header("content-type", "application/json")
                 .body(Body::from(body_json.to_string()))
                 .unwrap(),
@@ -1339,10 +1354,8 @@ async fn test_write_authorization_model_rejects_oversized_model() {
 #[tokio::test]
 async fn test_list_authorization_models_returns_latest_first() {
     let storage = Arc::new(MemoryDataStore::new());
-    storage
-        .create_store("test-store", "Test Store")
-        .await
-        .unwrap();
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
 
     // Create first model
     let model_json1 = serde_json::json!({
@@ -1350,7 +1363,7 @@ async fn test_list_authorization_models_returns_latest_first() {
         "type_definitions": [{"type": "document"}]
     });
     let model1 =
-        StoredAuthorizationModel::new("model-001", "test-store", "1.1", model_json1.to_string());
+        StoredAuthorizationModel::new("model-001", &store_id, "1.1", model_json1.to_string());
     storage.write_authorization_model(model1).await.unwrap();
 
     // Small delay to ensure different timestamps
@@ -1362,7 +1375,7 @@ async fn test_list_authorization_models_returns_latest_first() {
         "type_definitions": [{"type": "user"}]
     });
     let model2 =
-        StoredAuthorizationModel::new("model-002", "test-store", "1.1", model_json2.to_string());
+        StoredAuthorizationModel::new("model-002", &store_id, "1.1", model_json2.to_string());
     storage.write_authorization_model(model2).await.unwrap();
 
     let state = AppState::new(storage);
@@ -1373,7 +1386,7 @@ async fn test_list_authorization_models_returns_latest_first() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/stores/test-store/authorization-models")
+                .uri(format!("/stores/{store_id}/authorization-models"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1409,7 +1422,8 @@ async fn test_list_authorization_models_returns_latest_first() {
 #[tokio::test]
 async fn test_write_endpoint_parses_conditions() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_store_with_conditions(&storage, "test-store", "Test Store").await;
+    let store_id = test_store_id();
+    setup_store_with_conditions(&storage, &store_id, "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -1419,7 +1433,7 @@ async fn test_write_endpoint_parses_conditions() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri(format!("/stores/{store_id}/write"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1450,7 +1464,7 @@ async fn test_write_endpoint_parses_conditions() {
 
     // Verify the tuple was written with the condition
     let tuples = storage
-        .read_tuples("test-store", &Default::default())
+        .read_tuples(&store_id, &Default::default())
         .await
         .unwrap();
 
@@ -1478,7 +1492,8 @@ async fn test_write_endpoint_parses_conditions() {
 #[tokio::test]
 async fn test_write_endpoint_parses_condition_without_context() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_store_with_conditions(&storage, "test-store", "Test Store").await;
+    let store_id = test_store_id();
+    setup_store_with_conditions(&storage, &store_id, "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -1488,7 +1503,7 @@ async fn test_write_endpoint_parses_condition_without_context() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri(format!("/stores/{store_id}/write"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1515,7 +1530,7 @@ async fn test_write_endpoint_parses_condition_without_context() {
 
     // Verify the tuple was written
     let tuples = storage
-        .read_tuples("test-store", &Default::default())
+        .read_tuples(&store_id, &Default::default())
         .await
         .unwrap();
 
@@ -1533,7 +1548,8 @@ async fn test_write_endpoint_parses_condition_without_context() {
 #[tokio::test]
 async fn test_write_endpoint_ignores_empty_condition_name() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    let store_id = test_store_id();
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -1543,7 +1559,7 @@ async fn test_write_endpoint_ignores_empty_condition_name() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri(format!("/stores/{store_id}/write"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1571,7 +1587,7 @@ async fn test_write_endpoint_ignores_empty_condition_name() {
 
     // Verify the tuple was written without condition
     let tuples = storage
-        .read_tuples("test-store", &Default::default())
+        .read_tuples(&store_id, &Default::default())
         .await
         .unwrap();
 
@@ -1589,7 +1605,8 @@ async fn test_write_endpoint_ignores_empty_condition_name() {
 #[tokio::test]
 async fn test_write_endpoint_handles_multiple_tuples_with_conditions() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_store_with_conditions(&storage, "test-store", "Test Store").await;
+    let store_id = test_store_id();
+    setup_store_with_conditions(&storage, &store_id, "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -1599,7 +1616,7 @@ async fn test_write_endpoint_handles_multiple_tuples_with_conditions() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri(format!("/stores/{store_id}/write"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1640,7 +1657,7 @@ async fn test_write_endpoint_handles_multiple_tuples_with_conditions() {
 
     // Verify all tuples were written
     let tuples = storage
-        .read_tuples("test-store", &Default::default())
+        .read_tuples(&store_id, &Default::default())
         .await
         .unwrap();
 
@@ -1666,7 +1683,8 @@ async fn test_write_endpoint_handles_multiple_tuples_with_conditions() {
 #[tokio::test]
 async fn test_write_endpoint_rejects_invalid_condition_name() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_store_with_model(&storage, "test-store", "Test Store").await;
+    let store_id = test_store_id();
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -1676,7 +1694,7 @@ async fn test_write_endpoint_rejects_invalid_condition_name() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri(format!("/stores/{store_id}/write"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1715,7 +1733,8 @@ async fn test_write_endpoint_rejects_invalid_condition_name() {
 #[tokio::test]
 async fn test_write_endpoint_accepts_valid_condition_name_formats() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_store_with_conditions(&storage, "test-store", "Test Store").await;
+    let store_id = test_store_id();
+    setup_store_with_conditions(&storage, &store_id, "Test Store").await;
 
     let state = AppState::new(Arc::clone(&storage));
     let app = create_router(state);
@@ -1725,7 +1744,7 @@ async fn test_write_endpoint_accepts_valid_condition_name_formats() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri(format!("/stores/{store_id}/write"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1752,7 +1771,7 @@ async fn test_write_endpoint_accepts_valid_condition_name_formats() {
 
     // Verify the tuple was written with the condition
     let tuples = storage
-        .read_tuples("test-store", &Default::default())
+        .read_tuples(&store_id, &Default::default())
         .await
         .unwrap();
     assert_eq!(tuples.len(), 1);
@@ -1768,7 +1787,8 @@ async fn test_write_endpoint_accepts_valid_condition_name_formats() {
 #[tokio::test]
 async fn test_read_endpoint_returns_conditions() {
     let storage = Arc::new(MemoryDataStore::new());
-    setup_store_with_conditions(&storage, "test-store", "Test Store").await;
+    let store_id = test_store_id();
+    setup_store_with_conditions(&storage, &store_id, "Test Store").await;
 
     // First, write a tuple with a condition
     let write_state = AppState::new(Arc::clone(&storage));
@@ -1777,7 +1797,7 @@ async fn test_read_endpoint_returns_conditions() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/write")
+                .uri(format!("/stores/{store_id}/write"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -1812,7 +1832,7 @@ async fn test_read_endpoint_returns_conditions() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/stores/test-store/read")
+                .uri(format!("/stores/{store_id}/read"))
                 .header("content-type", "application/json")
                 .body(Body::from("{}"))
                 .unwrap(),

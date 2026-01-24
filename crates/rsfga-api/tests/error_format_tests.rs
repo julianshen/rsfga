@@ -27,10 +27,11 @@ use rsfga_storage::{DataStore, MemoryDataStore};
 #[tokio::test]
 async fn test_error_response_has_required_fields() {
     let storage = Arc::new(MemoryDataStore::new());
+    let store_id = nonexistent_store_id();
 
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -68,10 +69,11 @@ async fn test_error_codes_are_snake_case() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    // Test 404 Not Found - static URI
+    // Test 404 Not Found - use valid ULID format for nonexistent store
+    let nonexistent = nonexistent_store_id();
     let (_, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{nonexistent}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -137,10 +139,11 @@ async fn test_error_codes_are_snake_case() {
 #[tokio::test]
 async fn test_404_not_found_error_code() {
     let storage = Arc::new(MemoryDataStore::new());
+    let store_id = nonexistent_store_id();
 
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -182,10 +185,11 @@ async fn test_400_bad_request_error_code() {
 #[tokio::test]
 async fn test_error_response_has_no_extraneous_fields() {
     let storage = Arc::new(MemoryDataStore::new());
+    let store_id = nonexistent_store_id();
 
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{store_id}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -220,9 +224,10 @@ async fn test_error_messages_are_descriptive() {
     let uri = format!("/stores/{store_id}/check");
 
     // Test store not found error mentions store
+    let nonexistent = nonexistent_store_id();
     let (_, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{nonexistent}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -327,9 +332,10 @@ async fn test_error_messages_no_stack_traces() {
     ];
 
     // Test store not found
+    let nonexistent = nonexistent_store_id();
     let (_, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{nonexistent}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -426,9 +432,10 @@ async fn test_error_messages_no_file_paths() {
     ];
 
     // Test store not found
+    let nonexistent = nonexistent_store_id();
     let (_, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{nonexistent}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -516,9 +523,10 @@ async fn test_error_messages_no_sql_queries() {
     ];
 
     // Test store not found
+    let nonexistent = nonexistent_store_id();
     let (_, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{nonexistent}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -600,9 +608,10 @@ async fn test_error_messages_no_internal_module_names() {
     ];
 
     // Test store not found
+    let nonexistent = nonexistent_store_id();
     let (_, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{nonexistent}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -680,9 +689,10 @@ async fn test_error_messages_no_credentials() {
     ];
 
     // Test store not found
+    let nonexistent = nonexistent_store_id();
     let (_, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{nonexistent}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -740,9 +750,10 @@ async fn test_error_code_coverage() {
     let uri = format!("/stores/{store_id}/check");
 
     // Test not_found code
+    let nonexistent = nonexistent_store_id();
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{nonexistent}/check"),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -974,10 +985,13 @@ async fn test_batch_size_exceeded_error_format() {
 async fn test_error_format_consistent_across_endpoints() {
     let storage = Arc::new(MemoryDataStore::new());
 
+    // Use a valid ULID format for nonexistent store to get 404 (not 400 for invalid format)
+    let nonexistent = nonexistent_store_id();
+
     // Test store not found error across multiple endpoints
-    let endpoints: Vec<(&str, serde_json::Value)> = vec![
+    let endpoints: Vec<(String, serde_json::Value)> = vec![
         (
-            "/stores/nonexistent-store/check",
+            format!("/stores/{nonexistent}/check"),
             serde_json::json!({
                 "tuple_key": {
                     "user": "user:alice",
@@ -987,7 +1001,7 @@ async fn test_error_format_consistent_across_endpoints() {
             }),
         ),
         (
-            "/stores/nonexistent-store/expand",
+            format!("/stores/{nonexistent}/expand"),
             serde_json::json!({
                 "tuple_key": {
                     "relation": "viewer",
@@ -996,7 +1010,7 @@ async fn test_error_format_consistent_across_endpoints() {
             }),
         ),
         (
-            "/stores/nonexistent-store/list-objects",
+            format!("/stores/{nonexistent}/list-objects"),
             serde_json::json!({
                 "type": "document",
                 "relation": "viewer",
@@ -1004,7 +1018,7 @@ async fn test_error_format_consistent_across_endpoints() {
             }),
         ),
         (
-            "/stores/nonexistent-store/write",
+            format!("/stores/{nonexistent}/write"),
             serde_json::json!({
                 "writes": {
                     "tuple_keys": [{
@@ -1015,14 +1029,14 @@ async fn test_error_format_consistent_across_endpoints() {
                 }
             }),
         ),
-        ("/stores/nonexistent-store/read", serde_json::json!({})),
+        (format!("/stores/{nonexistent}/read"), serde_json::json!({})),
     ];
 
     let mut error_codes = Vec::new();
     let mut error_statuses = Vec::new();
 
     for (uri, body) in endpoints {
-        let (status, response) = post_json(create_test_app(&storage), uri, body).await;
+        let (status, response) = post_json(create_test_app(&storage), &uri, body).await;
 
         error_statuses.push(status);
 
@@ -1394,6 +1408,13 @@ async fn test_concurrent_error_responses_consistent() {
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Generate a valid ULID format store ID that doesn't exist in storage.
+/// OpenFGA validates store ID format first (returns 400 for invalid format),
+/// then checks existence (returns 404 for valid format but non-existent).
+fn nonexistent_store_id() -> String {
+    ulid::Ulid::new().to_string()
+}
 
 /// Set up a test store with a simple authorization model
 async fn setup_test_store(storage: &MemoryDataStore) -> String {

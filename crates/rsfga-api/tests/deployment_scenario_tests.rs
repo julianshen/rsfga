@@ -979,10 +979,11 @@ async fn test_rapid_successive_requests_handled() {
 async fn test_rest_api_consistent_error_format() {
     let storage = Arc::new(MemoryDataStore::new());
 
-    // Test 404 - store not found
+    // Test 404 - store not found (using valid ULID format)
+    let nonexistent_store_id = ulid::Ulid::new().to_string();
     let (status, response) = post_json(
         create_test_app(&storage),
-        "/stores/nonexistent-store/check",
+        &format!("/stores/{}/check", nonexistent_store_id),
         serde_json::json!({
             "tuple_key": {
                 "user": "user:alice",
@@ -1000,7 +1001,28 @@ async fn test_rest_api_consistent_error_format() {
         "Error should have 'message'"
     );
 
-    // Test 400 - bad request
+    // Test 400 - bad request (invalid store ID format)
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores/invalid-store-id/check",
+        serde_json::json!({
+            "tuple_key": {
+                "user": "user:alice",
+                "relation": "viewer",
+                "object": "document:test"
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(response.get("code").is_some(), "Error should have 'code'");
+    assert!(
+        response.get("message").is_some(),
+        "Error should have 'message'"
+    );
+
+    // Test 400 - missing required 'name' field
     let (status, response) = post_json(
         create_test_app(&storage),
         "/stores",
