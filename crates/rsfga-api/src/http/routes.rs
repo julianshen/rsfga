@@ -685,6 +685,13 @@ impl From<rsfga_storage::Store> for StoreResponse {
 }
 
 /// Query parameters for listing stores.
+///
+/// # Validation Rules
+///
+/// - `page_size`: Optional. Defaults to 50. Must be positive (> 0).
+///   Values exceeding 50 are clamped to the maximum (50).
+/// - `continuation_token`: Optional. Base64-encoded token from a previous
+///   response to fetch the next page of results.
 #[derive(Debug, Deserialize)]
 pub struct ListStoresQuery {
     #[serde(default)]
@@ -694,6 +701,13 @@ pub struct ListStoresQuery {
 }
 
 /// Response for listing stores.
+///
+/// # Fields
+///
+/// - `stores`: Array of store objects in the current page.
+/// - `continuation_token`: Present when more results are available.
+///   Pass this token in the next request to fetch the next page.
+///   Format: Base64-encoded pagination state.
 #[derive(Debug, Serialize)]
 pub struct ListStoresResponse {
     pub stores: Vec<StoreResponse>,
