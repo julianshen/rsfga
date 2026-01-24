@@ -625,6 +625,24 @@ pub fn create_model_validator(
 /// This is the optimized version for batch validation. Build a validator
 /// once with `create_model_validator` and reuse it for all tuples.
 ///
+/// # Validation Performed
+///
+/// - Object type must exist in the authorization model
+/// - Relation must exist for the given object type
+/// - Condition (if specified) must exist in the model
+///
+/// # User Field Validation (Intentionally Not Performed)
+///
+/// This function does NOT validate the user field type. This is intentional
+/// and matches OpenFGA's behavior. The user field can contain:
+/// - External identity references (e.g., `user:alice` where `user` may not be in the model)
+/// - Usersets from other types (e.g., `group:admins#member`)
+/// - Wildcards (e.g., `*` for public access)
+///
+/// User type validation would be overly restrictive and break valid use cases.
+/// Type constraints on the relation definition (if present) are enforced at
+/// check time by the graph resolver, not at write time.
+///
 /// # Arguments
 ///
 /// * `validator` - Pre-created ModelValidator for efficiency
@@ -2173,5 +2191,174 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ============================================================
+    // Tests for validate_tuples_batch and TupleValidationError
+    // ============================================================
+
+    #[test]
+    fn test_tuple_validation_error_display_write() {
+        let err = super::TupleValidationError {
+            index: 5,
+            object_type: "document".to_string(),
+            relation: "viewer".to_string(),
+            reason: "type 'document' not defined in authorization model".to_string(),
+            is_delete: false,
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid tuple at index 5: type=document, relation=viewer, reason=type 'document' not defined in authorization model"
+        );
+    }
+
+    #[test]
+    fn test_tuple_validation_error_display_delete() {
+        let err = super::TupleValidationError {
+            index: 3,
+            object_type: "folder".to_string(),
+            relation: "editor".to_string(),
+            reason: "relation 'editor' not defined for type 'folder'".to_string(),
+            is_delete: true,
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid delete tuple at index 3: type=folder, relation=editor, reason=relation 'editor' not defined for type 'folder'"
+        );
+    }
+
+    #[test]
+    fn test_validate_tuples_batch_empty_succeeds() {
+        let model = AuthorizationModel::with_types("1.1", vec![]);
+        let tuples: Vec<(usize, &str, &str, Option<&str>)> = vec![];
+
+        let result = super::validate_tuples_batch(&model, tuples.into_iter(), false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_tuples_batch_valid_tuples_succeed() {
+        use rsfga_domain::model::{RelationDefinition, TypeDefinition};
+
+        let type_def = TypeDefinition {
+            type_name: "document".to_string(),
+            relations: vec![
+                RelationDefinition {
+                    name: "viewer".to_string(),
+                    rewrite: rsfga_domain::model::Userset::This,
+                    type_constraints: vec![],
+                },
+                RelationDefinition {
+                    name: "editor".to_string(),
+                    rewrite: rsfga_domain::model::Userset::This,
+                    type_constraints: vec![],
+                },
+            ],
+        };
+        let model = AuthorizationModel::with_types("1.1", vec![type_def]);
+
+        let tuples = vec![
+            (0, "document", "viewer", None),
+            (1, "document", "editor", None),
+        ];
+
+        let result = super::validate_tuples_batch(&model, tuples.into_iter(), false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_tuples_batch_invalid_type_fails() {
+        use rsfga_domain::model::{RelationDefinition, TypeDefinition};
+
+        let type_def = TypeDefinition {
+            type_name: "document".to_string(),
+            relations: vec![RelationDefinition {
+                name: "viewer".to_string(),
+                rewrite: rsfga_domain::model::Userset::This,
+                type_constraints: vec![],
+            }],
+        };
+        let model = AuthorizationModel::with_types("1.1", vec![type_def]);
+
+        let tuples = vec![
+            (0, "document", "viewer", None),
+            (1, "folder", "viewer", None), // Invalid type
+        ];
+
+        let result = super::validate_tuples_batch(&model, tuples.into_iter(), false);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert_eq!(err.index, 1);
+        assert_eq!(err.object_type, "folder");
+        assert!(err.reason.contains("not defined"));
+        assert!(!err.is_delete);
+    }
+
+    #[test]
+    fn test_validate_tuples_batch_invalid_relation_fails() {
+        use rsfga_domain::model::{RelationDefinition, TypeDefinition};
+
+        let type_def = TypeDefinition {
+            type_name: "document".to_string(),
+            relations: vec![RelationDefinition {
+                name: "viewer".to_string(),
+                rewrite: rsfga_domain::model::Userset::This,
+                type_constraints: vec![],
+            }],
+        };
+        let model = AuthorizationModel::with_types("1.1", vec![type_def]);
+
+        let tuples = vec![
+            (0, "document", "owner", None), // Invalid relation
+        ];
+
+        let result = super::validate_tuples_batch(&model, tuples.into_iter(), false);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert_eq!(err.index, 0);
+        assert_eq!(err.relation, "owner");
+        assert!(err.reason.contains("not defined"));
+    }
+
+    #[test]
+    fn test_validate_tuples_batch_invalid_condition_fails() {
+        use rsfga_domain::model::{RelationDefinition, TypeDefinition};
+
+        let type_def = TypeDefinition {
+            type_name: "document".to_string(),
+            relations: vec![RelationDefinition {
+                name: "viewer".to_string(),
+                rewrite: rsfga_domain::model::Userset::This,
+                type_constraints: vec![],
+            }],
+        };
+        let model = AuthorizationModel::with_types("1.1", vec![type_def]);
+
+        let tuples = vec![
+            (0, "document", "viewer", Some("nonexistent_condition")),
+        ];
+
+        let result = super::validate_tuples_batch(&model, tuples.into_iter(), false);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert_eq!(err.index, 0);
+        assert!(err.reason.contains("condition"));
+    }
+
+    #[test]
+    fn test_validate_tuples_batch_delete_flag_in_error() {
+        let model = AuthorizationModel::with_types("1.1", vec![]);
+
+        let tuples = vec![(2, "unknown_type", "relation", None)];
+
+        let result = super::validate_tuples_batch(&model, tuples.into_iter(), true);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(err.is_delete);
+        assert!(err.to_string().contains("delete tuple"));
     }
 }
