@@ -1335,10 +1335,20 @@ pub struct ExpandRequestBody {
 }
 
 /// Response for expand operation.
+///
+/// OpenFGA returns a nested structure with `tree.root` containing the expansion.
 #[derive(Debug, Serialize)]
 pub struct ExpandResponseBody {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tree: Option<ExpandNodeBody>,
+    pub tree: Option<ExpandTreeBody>,
+}
+
+/// Tree wrapper containing the root node.
+///
+/// This matches OpenFGA's response format where the tree has a `root` property.
+#[derive(Debug, Serialize)]
+pub struct ExpandTreeBody {
+    pub root: ExpandNodeBody,
 }
 
 /// A node in the expansion tree.
@@ -1518,8 +1528,11 @@ async fn expand<S: DataStore>(
     let result = state.resolver.expand(&expand_request).await?;
 
     // Convert domain result to HTTP response
+    // Wrap the root node in ExpandTreeBody to match OpenFGA's response format
     Ok(Json(ExpandResponseBody {
-        tree: Some(expand_node_to_body(result.tree.root)),
+        tree: Some(ExpandTreeBody {
+            root: expand_node_to_body(result.tree.root),
+        }),
     }))
 }
 
