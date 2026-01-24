@@ -671,6 +671,78 @@ pub fn validate_tuple_with_validator(
     Ok(())
 }
 
+/// Describes a tuple validation error with context.
+#[derive(Debug)]
+pub struct TupleValidationError {
+    /// Index of the tuple in the batch.
+    pub index: usize,
+    /// Object type that was invalid.
+    pub object_type: String,
+    /// Relation that was invalid.
+    pub relation: String,
+    /// Human-readable error message.
+    pub reason: String,
+    /// Whether this was a write or delete operation.
+    pub is_delete: bool,
+}
+
+impl std::fmt::Display for TupleValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let op = if self.is_delete { "delete " } else { "" };
+        write!(
+            f,
+            "invalid {op}tuple at index {}: type={}, relation={}, reason={}",
+            self.index, self.object_type, self.relation, self.reason
+        )
+    }
+}
+
+/// Validates a batch of tuples against an authorization model.
+///
+/// This shared helper reduces duplication between HTTP and gRPC layers by
+/// centralizing the tuple validation loop. Both layers can call this once
+/// for writes and once for deletes.
+///
+/// # Arguments
+///
+/// * `model` - The authorization model to validate against
+/// * `tuples` - Iterator over tuples to validate (object_type, relation, condition_name)
+/// * `is_delete` - Whether these are delete operations (affects error message)
+///
+/// # Returns
+///
+/// `Ok(())` if all tuples are valid, `Err(TupleValidationError)` for the first invalid tuple.
+pub fn validate_tuples_batch<'a, I>(
+    model: &AuthorizationModel,
+    tuples: I,
+    is_delete: bool,
+) -> Result<(), TupleValidationError>
+where
+    I: Iterator<Item = (usize, &'a str, &'a str, Option<&'a str>)>,
+{
+    let validator = create_model_validator(model);
+
+    for (index, object_type, relation, condition_name) in tuples {
+        if let Err(e) = validate_tuple_with_validator(
+            &validator,
+            model,
+            object_type,
+            relation,
+            condition_name,
+        ) {
+            return Err(TupleValidationError {
+                index,
+                object_type: object_type.to_string(),
+                relation: relation.to_string(),
+                reason: domain_error_to_validation_message(&e),
+                is_delete,
+            });
+        }
+    }
+
+    Ok(())
+}
+
 /// Parses a stored authorization model JSON into a domain AuthorizationModel.
 ///
 /// This is used for tuple validation to check that tuples reference valid types

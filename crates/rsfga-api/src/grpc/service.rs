@@ -503,44 +503,23 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         // Validate all tuples against the authorization model
         // OpenFGA returns INVALID_ARGUMENT if tuples reference undefined types, relations, or conditions
-        // Create validator once for batch efficiency
-        let validator = crate::adapters::create_model_validator(&model);
+        crate::adapters::validate_tuples_batch(
+            &model,
+            writes.iter().enumerate().map(|(i, t)| {
+                (i, t.object_type.as_str(), t.relation.as_str(), t.condition_name.as_deref())
+            }),
+            false,
+        )
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
-        for (i, tuple) in writes.iter().enumerate() {
-            crate::adapters::validate_tuple_with_validator(
-                &validator,
-                &model,
-                &tuple.object_type,
-                &tuple.relation,
-                tuple.condition_name.as_deref(),
-            )
-            .map_err(|e| {
-                Status::invalid_argument(format!(
-                    "invalid tuple at index {i}: type={}, relation={}, reason={}",
-                    tuple.object_type,
-                    tuple.relation,
-                    crate::adapters::domain_error_to_validation_message(&e)
-                ))
-            })?;
-        }
-
-        for (i, tuple) in deletes.iter().enumerate() {
-            crate::adapters::validate_tuple_with_validator(
-                &validator,
-                &model,
-                &tuple.object_type,
-                &tuple.relation,
-                tuple.condition_name.as_deref(),
-            )
-            .map_err(|e| {
-                Status::invalid_argument(format!(
-                    "invalid delete tuple at index {i}: type={}, relation={}, reason={}",
-                    tuple.object_type,
-                    tuple.relation,
-                    crate::adapters::domain_error_to_validation_message(&e)
-                ))
-            })?;
-        }
+        crate::adapters::validate_tuples_batch(
+            &model,
+            deletes.iter().enumerate().map(|(i, t)| {
+                (i, t.object_type.as_str(), t.relation.as_str(), t.condition_name.as_deref())
+            }),
+            true,
+        )
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         self.storage
             .write_tuples(&req.store_id, writes, deletes)

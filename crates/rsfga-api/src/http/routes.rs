@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::error;
 
+use rsfga_domain::cel::global_cache;
 use rsfga_domain::error::DomainError;
 use rsfga_domain::resolver::{CheckRequest as DomainCheckRequest, ContextualTuple};
 use rsfga_storage::{DataStore, PaginationOptions, StorageError, StoredAuthorizationModel, Utc};
@@ -631,6 +632,11 @@ async fn write_authorization_model<S: DataStore>(
         StoredAuthorizationModel::new(&model_id, &store_id, &body.schema_version, model_json_str);
 
     state.storage.write_authorization_model(model).await?;
+
+    // Invalidate CEL expression cache to ensure stale expressions from
+    // previous models are not reused. This is critical for security:
+    // old condition expressions must not be evaluated against new models.
+    global_cache().invalidate_all();
 
     Ok((
         StatusCode::CREATED,
@@ -1297,44 +1303,23 @@ async fn write_tuples<S: DataStore>(
 
     // Validate all tuples against the authorization model
     // OpenFGA returns 400 if tuples reference undefined types, relations, or conditions
-    // Create validator once for batch efficiency
-    let validator = crate::adapters::create_model_validator(&model);
+    crate::adapters::validate_tuples_batch(
+        &model,
+        writes.iter().enumerate().map(|(i, t)| {
+            (i, t.object_type.as_str(), t.relation.as_str(), t.condition_name.as_deref())
+        }),
+        false,
+    )
+    .map_err(|e| ApiError::invalid_input(e.to_string()))?;
 
-    for (i, tuple) in writes.iter().enumerate() {
-        crate::adapters::validate_tuple_with_validator(
-            &validator,
-            &model,
-            &tuple.object_type,
-            &tuple.relation,
-            tuple.condition_name.as_deref(),
-        )
-        .map_err(|e| {
-            ApiError::invalid_input(format!(
-                "invalid tuple at index {i}: type={}, relation={}, reason={}",
-                tuple.object_type,
-                tuple.relation,
-                crate::adapters::domain_error_to_validation_message(&e)
-            ))
-        })?;
-    }
-
-    for (i, tuple) in deletes.iter().enumerate() {
-        crate::adapters::validate_tuple_with_validator(
-            &validator,
-            &model,
-            &tuple.object_type,
-            &tuple.relation,
-            tuple.condition_name.as_deref(),
-        )
-        .map_err(|e| {
-            ApiError::invalid_input(format!(
-                "invalid delete tuple at index {i}: type={}, relation={}, reason={}",
-                tuple.object_type,
-                tuple.relation,
-                crate::adapters::domain_error_to_validation_message(&e)
-            ))
-        })?;
-    }
+    crate::adapters::validate_tuples_batch(
+        &model,
+        deletes.iter().enumerate().map(|(i, t)| {
+            (i, t.object_type.as_str(), t.relation.as_str(), t.condition_name.as_deref())
+        }),
+        true,
+    )
+    .map_err(|e| ApiError::invalid_input(e.to_string()))?;
 
     state
         .storage
