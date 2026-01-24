@@ -61,7 +61,7 @@ where
                 let error = if status == StatusCode::PAYLOAD_TOO_LARGE {
                     ApiError::new("payload_too_large", message)
                 } else {
-                    ApiError::invalid_input(message)
+                    ApiError::validation_error(message)
                 };
 
                 Err((status, Json(error)))
@@ -193,6 +193,42 @@ pub fn create_router_with_observability_and_limit<S: DataStore>(
 // Error Handling
 // ============================================================
 
+/// OpenFGA-compatible error codes.
+///
+/// These match the error codes defined in OpenFGA's protobuf specification.
+/// Using specific codes instead of generic ones ensures API compatibility.
+pub mod error_codes {
+    // 404 Not Found codes
+    pub const STORE_ID_NOT_FOUND: &str = "store_id_not_found";
+    pub const AUTHORIZATION_MODEL_NOT_FOUND: &str = "authorization_model_not_found";
+    pub const LATEST_AUTHORIZATION_MODEL_NOT_FOUND: &str = "latest_authorization_model_not_found";
+    pub const ASSERTION_NOT_FOUND: &str = "assertion_not_found";
+
+    // 400 Bad Request codes
+    pub const VALIDATION_ERROR: &str = "validation_error";
+    pub const INVALID_WRITE_INPUT: &str = "invalid_write_input";
+    pub const TYPE_DEFINITIONS_TOO_FEW_ITEMS: &str = "type_definitions_too_few_items";
+    pub const CANNOT_ALLOW_DUPLICATE_TUPLES_IN_ONE_REQUEST: &str =
+        "cannot_allow_duplicate_tuples_in_one_request";
+    pub const CANNOT_ALLOW_DUPLICATE_TYPES_IN_ONE_REQUEST: &str =
+        "cannot_allow_duplicate_types_in_one_request";
+    pub const INVALID_CONTINUATION_TOKEN: &str = "invalid_continuation_token";
+    pub const AUTHORIZATION_MODEL_RESOLUTION_TOO_COMPLEX: &str =
+        "authorization_model_resolution_too_complex";
+    pub const TYPE_NOT_FOUND: &str = "type_not_found";
+    pub const RELATION_NOT_FOUND: &str = "relation_not_found";
+
+    // 409 Conflict codes
+    pub const WRITE_FAILED_DUE_TO_INVALID_INPUT: &str = "write_failed_due_to_invalid_input";
+
+    // 5xx codes
+    pub const INTERNAL_ERROR: &str = "internal_error";
+    pub const TIMEOUT: &str = "timeout";
+    pub const SERVICE_UNAVAILABLE: &str = "service_unavailable";
+    pub const RESOURCE_EXHAUSTED: &str = "resource_exhausted";
+    pub const PAYLOAD_TOO_LARGE: &str = "payload_too_large";
+}
+
 /// API error response format matching OpenFGA.
 #[derive(Debug, Serialize)]
 pub struct ApiError {
@@ -208,53 +244,154 @@ impl ApiError {
         }
     }
 
-    pub fn not_found(message: impl Into<String>) -> Self {
-        Self::new("not_found", message)
+    /// Creates a store not found error (404).
+    pub fn store_not_found(message: impl Into<String>) -> Self {
+        Self::new(error_codes::STORE_ID_NOT_FOUND, message)
     }
 
-    pub fn invalid_input(message: impl Into<String>) -> Self {
-        Self::new("validation_error", message)
+    /// Creates an authorization model not found error (404).
+    pub fn authorization_model_not_found(message: impl Into<String>) -> Self {
+        Self::new(error_codes::AUTHORIZATION_MODEL_NOT_FOUND, message)
     }
 
+    /// Creates a latest authorization model not found error (404).
+    pub fn latest_authorization_model_not_found(message: impl Into<String>) -> Self {
+        Self::new(error_codes::LATEST_AUTHORIZATION_MODEL_NOT_FOUND, message)
+    }
+
+    /// Creates an assertion not found error (404).
+    pub fn assertion_not_found(message: impl Into<String>) -> Self {
+        Self::new(error_codes::ASSERTION_NOT_FOUND, message)
+    }
+
+    /// Creates a validation error (400).
+    pub fn validation_error(message: impl Into<String>) -> Self {
+        Self::new(error_codes::VALIDATION_ERROR, message)
+    }
+
+    /// Creates an invalid write input error (400).
+    pub fn invalid_write_input(message: impl Into<String>) -> Self {
+        Self::new(error_codes::INVALID_WRITE_INPUT, message)
+    }
+
+    /// Creates a type definitions too few items error (400).
+    pub fn type_definitions_too_few_items(message: impl Into<String>) -> Self {
+        Self::new(error_codes::TYPE_DEFINITIONS_TOO_FEW_ITEMS, message)
+    }
+
+    /// Creates a duplicate tuples error (400).
+    pub fn duplicate_tuples(message: impl Into<String>) -> Self {
+        Self::new(
+            error_codes::CANNOT_ALLOW_DUPLICATE_TUPLES_IN_ONE_REQUEST,
+            message,
+        )
+    }
+
+    /// Creates a duplicate types error (400).
+    pub fn duplicate_types(message: impl Into<String>) -> Self {
+        Self::new(
+            error_codes::CANNOT_ALLOW_DUPLICATE_TYPES_IN_ONE_REQUEST,
+            message,
+        )
+    }
+
+    /// Creates an authorization model resolution too complex error (400).
+    pub fn resolution_too_complex(message: impl Into<String>) -> Self {
+        Self::new(
+            error_codes::AUTHORIZATION_MODEL_RESOLUTION_TOO_COMPLEX,
+            message,
+        )
+    }
+
+    /// Creates a type not found error (400).
+    pub fn type_not_found(message: impl Into<String>) -> Self {
+        Self::new(error_codes::TYPE_NOT_FOUND, message)
+    }
+
+    /// Creates a relation not found error (400).
+    pub fn relation_not_found(message: impl Into<String>) -> Self {
+        Self::new(error_codes::RELATION_NOT_FOUND, message)
+    }
+
+    /// Creates an internal error (500).
     pub fn internal_error(message: impl Into<String>) -> Self {
-        Self::new("internal_error", message)
+        Self::new(error_codes::INTERNAL_ERROR, message)
     }
 
     /// Creates a conflict error (409 Conflict).
     /// Used for duplicate resources or condition conflicts.
     pub fn conflict(message: impl Into<String>) -> Self {
-        Self::new("conflict", message)
+        Self::new(error_codes::WRITE_FAILED_DUE_TO_INVALID_INPUT, message)
     }
 
     /// Creates a timeout error (504 Gateway Timeout).
     /// Used when an operation exceeds its time limit.
     pub fn gateway_timeout(message: impl Into<String>) -> Self {
-        Self::new("timeout", message)
+        Self::new(error_codes::TIMEOUT, message)
     }
 
     /// Creates a service unavailable error (503 Service Unavailable).
     /// Used when the service is temporarily unavailable.
     pub fn service_unavailable(message: impl Into<String>) -> Self {
-        Self::new("service_unavailable", message)
+        Self::new(error_codes::SERVICE_UNAVAILABLE, message)
     }
 
     /// Creates a resource exhausted error (429 Too Many Requests).
     /// Used when a resource limit has been reached.
     pub fn resource_exhausted(message: impl Into<String>) -> Self {
-        Self::new("resource_exhausted", message)
+        Self::new(error_codes::RESOURCE_EXHAUSTED, message)
+    }
+
+    // Legacy methods for backward compatibility - deprecated in favor of specific methods
+    #[deprecated(note = "Use store_not_found, authorization_model_not_found, etc. instead")]
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(error_codes::STORE_ID_NOT_FOUND, message)
+    }
+
+    #[deprecated(note = "Use validation_error instead")]
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self::new(error_codes::VALIDATION_ERROR, message)
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
+        use error_codes::*;
+
         let status = match self.code.as_str() {
-            "not_found" => StatusCode::NOT_FOUND,
-            "validation_error" => StatusCode::BAD_REQUEST,
-            "conflict" => StatusCode::CONFLICT,
-            "timeout" => StatusCode::GATEWAY_TIMEOUT,
-            "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
-            "service_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
-            "resource_exhausted" => StatusCode::TOO_MANY_REQUESTS,
+            // 404 Not Found
+            STORE_ID_NOT_FOUND
+            | AUTHORIZATION_MODEL_NOT_FOUND
+            | LATEST_AUTHORIZATION_MODEL_NOT_FOUND
+            | ASSERTION_NOT_FOUND => StatusCode::NOT_FOUND,
+
+            // 400 Bad Request
+            VALIDATION_ERROR
+            | INVALID_WRITE_INPUT
+            | TYPE_DEFINITIONS_TOO_FEW_ITEMS
+            | CANNOT_ALLOW_DUPLICATE_TUPLES_IN_ONE_REQUEST
+            | CANNOT_ALLOW_DUPLICATE_TYPES_IN_ONE_REQUEST
+            | INVALID_CONTINUATION_TOKEN
+            | AUTHORIZATION_MODEL_RESOLUTION_TOO_COMPLEX
+            | TYPE_NOT_FOUND
+            | RELATION_NOT_FOUND => StatusCode::BAD_REQUEST,
+
+            // 409 Conflict
+            WRITE_FAILED_DUE_TO_INVALID_INPUT => StatusCode::CONFLICT,
+
+            // 504 Gateway Timeout
+            TIMEOUT => StatusCode::GATEWAY_TIMEOUT,
+
+            // 413 Payload Too Large
+            PAYLOAD_TOO_LARGE => StatusCode::PAYLOAD_TOO_LARGE,
+
+            // 503 Service Unavailable
+            SERVICE_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
+
+            // 429 Too Many Requests
+            RESOURCE_EXHAUSTED => StatusCode::TOO_MANY_REQUESTS,
+
+            // Default: 500 Internal Server Error
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(self)).into_response()
@@ -264,10 +401,13 @@ impl IntoResponse for ApiError {
 impl From<StorageError> for ApiError {
     fn from(err: StorageError) -> Self {
         match &err {
-            StorageError::StoreNotFound { store_id } => {
-                ApiError::not_found(format!("store not found: {store_id}"))
+            // 404 Not Found: store or model doesn't exist
+            StorageError::StoreNotFound { .. } => ApiError::store_not_found("store not found"),
+            StorageError::ModelNotFound { .. } => {
+                ApiError::authorization_model_not_found("authorization model not found")
             }
-            StorageError::InvalidInput { message } => ApiError::invalid_input(message),
+            // 400 Bad Request: validation errors
+            StorageError::InvalidInput { message } => ApiError::validation_error(message),
             // 409 Conflict: duplicate tuple or condition conflict
             StorageError::DuplicateTuple { .. } => {
                 ApiError::conflict("cannot write a tuple which already exists")
@@ -295,18 +435,65 @@ impl From<StorageError> for ApiError {
 
 impl From<DomainError> for ApiError {
     fn from(err: DomainError) -> Self {
-        use crate::errors::{classify_domain_error, DomainErrorKind};
-
-        match classify_domain_error(&err) {
-            DomainErrorKind::InvalidInput(msg) => ApiError::invalid_input(msg),
-            DomainErrorKind::NotFound(msg) => ApiError::not_found(msg),
-            DomainErrorKind::Timeout(msg) => {
-                error!("{}", msg);
-                // 504 Gateway Timeout for timeout errors (matches gRPC DEADLINE_EXCEEDED)
+        // Map domain errors to specific OpenFGA error codes
+        match &err {
+            // Store not found errors
+            DomainError::StoreNotFound { .. } => ApiError::store_not_found("store not found"),
+            // Type not found in authorization model
+            DomainError::TypeNotFound { .. } => {
+                ApiError::type_not_found("type not found in authorization model")
+            }
+            // Relation not found on type
+            DomainError::RelationNotFound { .. } => {
+                ApiError::relation_not_found("relation not found on type")
+            }
+            // Depth limit exceeded - resolution too complex
+            DomainError::DepthLimitExceeded { .. } => {
+                ApiError::resolution_too_complex("authorization model resolution too complex")
+            }
+            // Cycle detected - resolution too complex
+            DomainError::CycleDetected { .. } => {
+                ApiError::resolution_too_complex("cycle detected in authorization model")
+            }
+            // Timeouts
+            DomainError::Timeout { .. } | DomainError::OperationTimeout { .. } => {
+                error!("Domain timeout: {}", err);
                 ApiError::gateway_timeout("authorization check timeout")
             }
-            DomainErrorKind::Internal(msg) => {
-                error!("Domain error: {}", msg);
+            // Invalid format errors - provide field-specific messages
+            DomainError::InvalidUserFormat { value } => {
+                ApiError::validation_error(format!("invalid user format: {}", value))
+            }
+            DomainError::InvalidObjectFormat { value } => {
+                ApiError::validation_error(format!("invalid object format: {}", value))
+            }
+            DomainError::InvalidRelationFormat { value } => {
+                ApiError::validation_error(format!("invalid relation format: {}", value))
+            }
+            // Resolver errors - need to parse the message for specific cases
+            DomainError::ResolverError { message } => {
+                if message.starts_with("store not found:") {
+                    ApiError::store_not_found("store not found")
+                } else if message.contains("model not found:") {
+                    ApiError::latest_authorization_model_not_found("no authorization model found")
+                } else if message.contains("No such key:") {
+                    ApiError::validation_error("missing required context parameter")
+                } else if message.starts_with("condition not found:") {
+                    ApiError::validation_error("condition not found")
+                } else if message.contains("condition evaluation failed:") {
+                    ApiError::validation_error("condition evaluation failed")
+                } else {
+                    error!("Domain error: {}", message);
+                    ApiError::internal_error("internal error during authorization check")
+                }
+            }
+            // Condition-related errors
+            DomainError::ConditionNotFound { .. } => {
+                ApiError::validation_error("condition not found in authorization model")
+            }
+            // All other errors are internal
+            _ => {
+                error!("Domain error: {}", err);
                 ApiError::internal_error("internal error during authorization check")
             }
         }
@@ -320,12 +507,12 @@ impl From<DomainError> for ApiError {
 fn batch_check_error_to_api_error(err: rsfga_server::handlers::batch::BatchCheckError) -> ApiError {
     use rsfga_server::handlers::batch::BatchCheckError;
     match err {
-        BatchCheckError::EmptyBatch => ApiError::invalid_input("batch request cannot be empty"),
+        BatchCheckError::EmptyBatch => ApiError::validation_error("batch request cannot be empty"),
         BatchCheckError::BatchTooLarge { size, max } => {
-            ApiError::invalid_input(format!("batch size {size} exceeds maximum allowed {max}"))
+            ApiError::validation_error(format!("batch size {size} exceeds maximum allowed {max}"))
         }
         BatchCheckError::InvalidCheck { index, message } => {
-            ApiError::invalid_input(format!("invalid check at index {index}: {message}"))
+            ApiError::validation_error(format!("invalid check at index {index}: {message}"))
         }
         BatchCheckError::DomainError(msg) => {
             // Log full error details for debugging - DO NOT expose to clients
@@ -434,7 +621,7 @@ async fn get_store<S: DataStore>(
     // Validate store ID format first (OpenFGA compatibility I2)
     // Invalid formats return 400, valid formats that don't exist return 404
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     let store = state.storage.get_store(&store_id).await?;
@@ -462,7 +649,7 @@ async fn update_store<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     let store = state.storage.update_store(&store_id, &body.name).await?;
@@ -496,7 +683,7 @@ async fn delete_store<S: DataStore>(
     // Validate store ID format first (OpenFGA compatibility I2)
     // Invalid formats return 400, valid formats that don't exist return 404
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Clean up assertions FIRST, before storage deletion.
@@ -615,12 +802,14 @@ async fn write_authorization_model<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Validate type_definitions is not empty (OpenFGA requirement)
     if body.type_definitions.is_empty() {
-        return Err(ApiError::invalid_input("type_definitions cannot be empty"));
+        return Err(ApiError::validation_error(
+            "type_definitions cannot be empty",
+        ));
     }
 
     // Serialize the model data to JSON for validation and storage
@@ -637,12 +826,12 @@ async fn write_authorization_model<S: DataStore>(
     // Validate model semantics (duplicates, undefined refs, CEL syntax, etc.)
     // This is critical for API compatibility - OpenFGA returns 400 for invalid models
     crate::adapters::validate_authorization_model_json(&model_json, &body.schema_version)
-        .map_err(|e| ApiError::invalid_input(e.to_string()))?;
+        .map_err(|e| ApiError::validation_error(e.to_string()))?;
 
     // Validate model size before storage
     let model_json_str = model_json.to_string();
     if model_json_str.len() > MAX_AUTHORIZATION_MODEL_SIZE {
-        return Err(ApiError::invalid_input(format!(
+        return Err(ApiError::validation_error(format!(
             "authorization model exceeds maximum size of {MAX_AUTHORIZATION_MODEL_SIZE} bytes"
         )));
     }
@@ -686,7 +875,7 @@ async fn get_authorization_model<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&path.store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     let model = state
@@ -694,8 +883,8 @@ async fn get_authorization_model<S: DataStore>(
         .get_authorization_model(&path.store_id, &path.authorization_model_id)
         .await
         .map_err(|e| match e {
-            StorageError::ModelNotFound { model_id } => {
-                ApiError::not_found(format!("authorization model not found: {model_id}"))
+            StorageError::ModelNotFound { .. } => {
+                ApiError::authorization_model_not_found("authorization model not found")
             }
             other => ApiError::from(other),
         })?;
@@ -727,7 +916,7 @@ async fn delete_authorization_model<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&path.store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Clean up assertions FIRST, before storage deletion.
@@ -741,8 +930,8 @@ async fn delete_authorization_model<S: DataStore>(
         .delete_authorization_model(&path.store_id, &path.authorization_model_id)
         .await
         .map_err(|e| match e {
-            StorageError::ModelNotFound { model_id } => {
-                ApiError::not_found(format!("authorization model not found: {model_id}"))
+            StorageError::ModelNotFound { .. } => {
+                ApiError::authorization_model_not_found("authorization model not found")
             }
             other => ApiError::from(other),
         })?;
@@ -760,7 +949,7 @@ async fn list_authorization_models<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Use OpenFGA default (50) when not specified, clamp to max 50 when provided
@@ -864,7 +1053,7 @@ async fn check<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // If a specific authorization_model_id is provided, validate it exists
@@ -875,7 +1064,7 @@ async fn check<S: DataStore>(
             .await
             .map_err(|e| match e {
                 rsfga_storage::StorageError::ModelNotFound { .. } => {
-                    ApiError::invalid_input(format!("authorization model not found: {model_id}"))
+                    ApiError::validation_error(format!("authorization model not found: {model_id}"))
                 }
                 other => ApiError::from(other),
             })?;
@@ -983,7 +1172,7 @@ async fn batch_check<S: DataStore>(
 
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Validate store exists
@@ -1236,7 +1425,7 @@ async fn expand<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     use rsfga_domain::resolver::ExpandRequest;
@@ -1296,7 +1485,7 @@ async fn write_tuples<S: DataStore>(
 
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Validate store exists
@@ -1309,7 +1498,7 @@ async fn write_tuples<S: DataStore>(
         .get_latest_authorization_model(&store_id)
         .await
         .map_err(|e| match e {
-            StorageError::ModelNotFound { .. } => ApiError::invalid_input(
+            StorageError::ModelNotFound { .. } => ApiError::validation_error(
                 "cannot write tuples: no authorization model exists for this store",
             ),
             other => ApiError::from(other),
@@ -1336,7 +1525,7 @@ async fn write_tuples<S: DataStore>(
                 .enumerate()
                 .map(|(i, tk)| {
                     parse_tuple_key(tk).map_err(|e| {
-                        ApiError::invalid_input(format!(
+                        ApiError::validation_error(format!(
                             "invalid tuple at index {i}: user={}, object={}, reason={}",
                             e.user, e.object, e.reason
                         ))
@@ -1357,7 +1546,7 @@ async fn write_tuples<S: DataStore>(
                 .map(|(i, tk)| {
                     // Use parse_tuple_fields directly to avoid cloning
                     parse_tuple_fields(&tk.user, &tk.relation, &tk.object).ok_or_else(|| {
-                        ApiError::invalid_input(format!(
+                        ApiError::validation_error(format!(
                             "invalid tuple at index {i}: user={}, object={}, reason=invalid format",
                             tk.user, tk.object
                         ))
@@ -1382,7 +1571,7 @@ async fn write_tuples<S: DataStore>(
         }),
         false,
     )
-    .map_err(|e| ApiError::invalid_input(e.to_string()))?;
+    .map_err(|e| ApiError::validation_error(e.to_string()))?;
 
     crate::adapters::validate_tuples_batch(
         &model,
@@ -1396,7 +1585,7 @@ async fn write_tuples<S: DataStore>(
         }),
         true,
     )
-    .map_err(|e| ApiError::invalid_input(e.to_string()))?;
+    .map_err(|e| ApiError::validation_error(e.to_string()))?;
 
     state
         .storage
@@ -1591,7 +1780,7 @@ async fn read_tuples<S: DataStore>(
 
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Validate store exists
@@ -1631,7 +1820,7 @@ async fn read_tuples<S: DataStore>(
     // Validate page_size is positive before casting to u32 (negative i32 wraps to huge u32)
     let page_size = match body.page_size {
         Some(s) if s > 0 => Some(s as u32),
-        Some(_) => return Err(ApiError::invalid_input("page_size must be positive")),
+        Some(_) => return Err(ApiError::validation_error("page_size must be positive")),
         None => None,
     };
     let pagination = rsfga_storage::PaginationOptions {
@@ -1708,7 +1897,7 @@ async fn read_changes<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Validate store exists
@@ -1726,7 +1915,7 @@ async fn read_changes<S: DataStore>(
     // Validate page_size is positive before casting to u32 (negative i32 wraps to huge u32)
     let page_size = match query.page_size {
         Some(s) if s > 0 => Some(s as u32),
-        Some(_) => return Err(ApiError::invalid_input("page_size must be positive")),
+        Some(_) => return Err(ApiError::validation_error("page_size must be positive")),
         None => None,
     };
     let pagination = rsfga_storage::PaginationOptions {
@@ -1818,7 +2007,7 @@ async fn write_assertions<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Validate store exists
@@ -1904,7 +2093,7 @@ async fn read_assertions<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Validate store exists
@@ -1994,7 +2183,7 @@ async fn list_objects<S: DataStore>(
 
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Validate input format (API layer validation)
@@ -2002,18 +2191,18 @@ async fn list_objects<S: DataStore>(
 
     // Validate user format
     if let Some(err) = validate_user_format(&body.user) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Validate relation format
     if let Some(err) = validate_relation_format(&body.relation) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Validate context if provided (DoS protection)
     if let Some(ctx) = &body.context {
         if estimate_context_size(ctx) > MAX_CONDITION_CONTEXT_SIZE {
-            return Err(ApiError::invalid_input(format!(
+            return Err(ApiError::validation_error(format!(
                 "context size exceeds maximum of {MAX_CONDITION_CONTEXT_SIZE} bytes"
             )));
         }
@@ -2023,7 +2212,7 @@ async fn list_objects<S: DataStore>(
         // so values start at depth 2. MAX_JSON_DEPTH (5) limits total nesting from the root.
         for value in ctx.values() {
             if json_exceeds_max_depth(value, 2) {
-                return Err(ApiError::invalid_input(format!(
+                return Err(ApiError::validation_error(format!(
                     "context nested too deeply (max depth {MAX_JSON_DEPTH})"
                 )));
             }
@@ -2184,7 +2373,7 @@ async fn list_users<S: DataStore>(
 
     // Validate store ID format first (OpenFGA compatibility I2)
     if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Validate object type format
@@ -2193,7 +2382,7 @@ async fn list_users<S: DataStore>(
     // Validate full object reference format (not just empty ID)
     let object_str = format!("{}:{}", body.object.r#type, body.object.id);
     if parse_object(&object_str).is_none() {
-        return Err(ApiError::invalid_input(format!(
+        return Err(ApiError::validation_error(format!(
             "object has invalid format: {}",
             object_str
         )));
@@ -2201,28 +2390,30 @@ async fn list_users<S: DataStore>(
 
     // Validate relation format
     if let Some(err) = validate_relation_format(&body.relation) {
-        return Err(ApiError::invalid_input(err));
+        return Err(ApiError::validation_error(err));
     }
 
     // Validate user_filters not empty
     if body.user_filters.is_empty() {
-        return Err(ApiError::invalid_input("user_filters cannot be empty"));
+        return Err(ApiError::validation_error("user_filters cannot be empty"));
     }
 
     // Validate user filter types and relations
     for filter in &body.user_filters {
         if filter.r#type.is_empty() {
-            return Err(ApiError::invalid_input("user_filters type cannot be empty"));
+            return Err(ApiError::validation_error(
+                "user_filters type cannot be empty",
+            ));
         }
         // If relation is provided, validate its format
         if let Some(ref rel) = filter.relation {
             if rel.is_empty() {
-                return Err(ApiError::invalid_input(
+                return Err(ApiError::validation_error(
                     "user_filters relation cannot be empty",
                 ));
             }
             if let Some(err) = validate_relation_format(rel) {
-                return Err(ApiError::invalid_input(err));
+                return Err(ApiError::validation_error(err));
             }
         }
     }
@@ -2230,14 +2421,14 @@ async fn list_users<S: DataStore>(
     // Validate context if provided (DoS protection)
     if let Some(ctx) = &body.context {
         if estimate_context_size(ctx) > MAX_CONDITION_CONTEXT_SIZE {
-            return Err(ApiError::invalid_input(format!(
+            return Err(ApiError::validation_error(format!(
                 "context size exceeds maximum of {MAX_CONDITION_CONTEXT_SIZE} bytes"
             )));
         }
 
         for value in ctx.values() {
             if json_exceeds_max_depth(value, 2) {
-                return Err(ApiError::invalid_input(format!(
+                return Err(ApiError::validation_error(format!(
                     "context nested too deeply (max depth {MAX_JSON_DEPTH})"
                 )));
             }
