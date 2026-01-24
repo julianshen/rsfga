@@ -1804,12 +1804,36 @@ fn parse_tuple_fields(
 // Read Operation
 // ============================================================
 
+/// Tuple key filter for read operations.
+///
+/// Unlike `TupleKeyWithoutConditionBody` used for writes (where all fields are required),
+/// the read filter allows partial matching - any field can be omitted to match all values.
+///
+/// This matches OpenFGA's behavior where:
+/// - `{}` returns all tuples
+/// - `{"user": "user:alice"}` returns all tuples for alice
+/// - `{"object": "document:"}` returns all tuples for documents (type prefix)
+/// - `{"user": "user:alice", "relation": "viewer"}` returns alice's viewer tuples
+#[derive(Debug, Default, Deserialize)]
+pub struct ReadTupleKeyFilter {
+    /// Optional user filter. If empty string, treated as no filter.
+    #[serde(default)]
+    pub user: String,
+    /// Optional relation filter. If empty string, treated as no filter.
+    #[serde(default)]
+    pub relation: String,
+    /// Optional object filter. Supports both full object ("type:id") and type prefix ("type:").
+    /// If empty string, treated as no filter.
+    #[serde(default)]
+    pub object: String,
+}
+
 /// Request body for read operation.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ReadRequestBody {
     #[serde(default)]
-    pub tuple_key: Option<TupleKeyWithoutConditionBody>,
+    pub tuple_key: Option<ReadTupleKeyFilter>,
     #[serde(default)]
     pub page_size: Option<i32>,
     #[serde(default)]
@@ -1866,20 +1890,35 @@ async fn read_tuples<S: DataStore>(
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
-    // Build filter from request - use parse_object for consistent validation
+    // Build filter from request
+    // For Read API, we support type-prefix filtering (e.g., "document:" matches all documents)
     // Invalid object format is treated as "no object filter" rather than an error
     // since read is a query operation, not a write
     let filter = if let Some(tk) = body.tuple_key {
-        let object_filter = if !tk.object.is_empty() {
-            // Use parse_object for consistent validation (rejects ":", ":id", "type:")
-            parse_object(&tk.object).map(|(t, i)| (t.to_string(), i.to_string()))
+        // Parse object filter - supports both full object ("type:id") and type prefix ("type:")
+        let (object_type, object_id) = if !tk.object.is_empty() {
+            if let Some((obj_type, obj_id)) = tk.object.split_once(':') {
+                if obj_type.is_empty() {
+                    // Invalid format like ":id" - treat as no filter
+                    (None, None)
+                } else if obj_id.is_empty() {
+                    // Type prefix like "document:" - filter by type only
+                    (Some(obj_type.to_string()), None)
+                } else {
+                    // Full object like "document:doc1"
+                    (Some(obj_type.to_string()), Some(obj_id.to_string()))
+                }
+            } else {
+                // No colon - invalid format, treat as no filter
+                (None, None)
+            }
         } else {
-            None
+            (None, None)
         };
 
         TupleFilter {
-            object_type: object_filter.as_ref().map(|(t, _)| t.clone()),
-            object_id: object_filter.map(|(_, i)| i),
+            object_type,
+            object_id,
             relation: if !tk.relation.is_empty() {
                 Some(tk.relation)
             } else {
