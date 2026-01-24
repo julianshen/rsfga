@@ -684,6 +684,26 @@ impl From<rsfga_storage::Store> for StoreResponse {
     }
 }
 
+/// Query parameters for listing stores.
+#[derive(Debug, Deserialize)]
+pub struct ListStoresQuery {
+    #[serde(default)]
+    pub page_size: Option<u32>,
+    #[serde(default)]
+    pub continuation_token: Option<String>,
+}
+
+/// Response for listing stores.
+#[derive(Debug, Serialize)]
+pub struct ListStoresResponse {
+    pub stores: Vec<StoreResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_token: Option<String>,
+}
+
+/// Default page size for listing stores.
+const DEFAULT_STORES_PAGE_SIZE: u32 = 50;
+
 async fn create_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     JsonBadRequest(body): JsonBadRequest<CreateStoreRequest>,
@@ -710,10 +730,20 @@ async fn get_store<S: DataStore>(
 
 async fn list_stores<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
+    axum::extract::Query(query): axum::extract::Query<ListStoresQuery>,
 ) -> ApiResult<impl IntoResponse> {
-    let stores = state.storage.list_stores().await?;
-    let response: Vec<StoreResponse> = stores.into_iter().map(StoreResponse::from).collect();
-    Ok(Json(serde_json::json!({ "stores": response })))
+    let pagination = PaginationOptions {
+        page_size: Some(query.page_size.unwrap_or(DEFAULT_STORES_PAGE_SIZE)),
+        continuation_token: query.continuation_token,
+    };
+
+    let result = state.storage.list_stores_paginated(&pagination).await?;
+    let stores: Vec<StoreResponse> = result.items.into_iter().map(StoreResponse::from).collect();
+
+    Ok(Json(ListStoresResponse {
+        stores,
+        continuation_token: result.continuation_token,
+    }))
 }
 
 /// Request body for updating a store.
