@@ -1867,34 +1867,21 @@ async fn test_read_endpoint_returns_conditions() {
 }
 
 // ============================================================================
-// From<DomainError> String Parsing Tests
+// From<DomainError> Structured Variant Tests
 // ============================================================================
-// These tests verify the string parsing logic in From<DomainError> for
-// ResolverError variants. This is critical to catch regressions if the
-// error message format changes in the domain layer.
-//
-// Related issue: #270 (Refactor DomainError::ResolverError to structured variants)
+// These tests verify that structured DomainError variants map to correct
+// OpenFGA error codes. The refactoring from string-based ResolverError to
+// structured variants (per #270) ensures type-safe error handling.
 
 use rsfga_domain::error::DomainError;
 
 use super::routes::{error_codes, ApiError};
 
-/// Test: ResolverError with "store not found:" prefix maps to store_not_found
+/// Test: AuthorizationModelNotFound maps to latest_authorization_model_not_found
 #[test]
-fn test_resolver_error_store_not_found_parsing() {
-    let error = DomainError::ResolverError {
-        message: "store not found: 01AAAAAAAAAAAAAAAAAAAAAA00".to_string(),
-    };
-    let api_error: ApiError = error.into();
-    assert_eq!(api_error.code, error_codes::STORE_ID_NOT_FOUND);
-    assert_eq!(api_error.message, "store not found");
-}
-
-/// Test: ResolverError containing "model not found:" maps to latest_authorization_model_not_found
-#[test]
-fn test_resolver_error_model_not_found_parsing() {
-    let error = DomainError::ResolverError {
-        message: "no authorization model not found: store 01AAAAAAAAAAAAAAAAAAAAAA00".to_string(),
+fn test_authorization_model_not_found_maps_correctly() {
+    let error = DomainError::AuthorizationModelNotFound {
+        store_id: "01AAAAAAAAAAAAAAAAAAAAAA00".to_string(),
     };
     let api_error: ApiError = error.into();
     assert_eq!(
@@ -1904,42 +1891,80 @@ fn test_resolver_error_model_not_found_parsing() {
     assert_eq!(api_error.message, "no authorization model found");
 }
 
-/// Test: ResolverError containing "No such key:" maps to validation_error
+/// Test: MissingContextKey maps to validation_error
 #[test]
-fn test_resolver_error_missing_context_key_parsing() {
-    let error = DomainError::ResolverError {
-        message: "CEL evaluation failed: No such key: 'allowed_ip'".to_string(),
+fn test_missing_context_key_maps_correctly() {
+    let error = DomainError::MissingContextKey {
+        key: "allowed_ip".to_string(),
     };
     let api_error: ApiError = error.into();
     assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
     assert_eq!(api_error.message, "missing required context parameter");
 }
 
-/// Test: ResolverError with "condition not found:" prefix maps to validation_error
+/// Test: ConditionParseError maps to validation_error
 #[test]
-fn test_resolver_error_condition_not_found_parsing() {
-    let error = DomainError::ResolverError {
-        message: "condition not found: ip_check".to_string(),
+fn test_condition_parse_error_maps_correctly() {
+    let error = DomainError::ConditionParseError {
+        expression: "invalid_expr".to_string(),
+        reason: "syntax error".to_string(),
     };
     let api_error: ApiError = error.into();
     assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
-    assert_eq!(api_error.message, "condition not found");
+    assert_eq!(api_error.message, "invalid condition expression");
 }
 
-/// Test: ResolverError containing "condition evaluation failed:" maps to validation_error
+/// Test: ConditionEvalError maps to validation_error
 #[test]
-fn test_resolver_error_condition_eval_failed_parsing() {
-    let error = DomainError::ResolverError {
-        message: "condition evaluation failed: type mismatch".to_string(),
+fn test_condition_eval_error_maps_correctly() {
+    let error = DomainError::ConditionEvalError {
+        reason: "type mismatch".to_string(),
     };
     let api_error: ApiError = error.into();
     assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
     assert_eq!(api_error.message, "condition evaluation failed");
 }
 
-/// Test: ResolverError with unrecognized message maps to internal_error
+/// Test: InvalidParameter maps to validation_error with message
 #[test]
-fn test_resolver_error_unknown_maps_to_internal_error() {
+fn test_invalid_parameter_maps_correctly() {
+    let error = DomainError::InvalidParameter {
+        parameter: "max_results".to_string(),
+        reason: "must be greater than 0".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert!(api_error.message.contains("max_results"));
+}
+
+/// Test: InvalidFilter maps to validation_error with message
+#[test]
+fn test_invalid_filter_maps_correctly() {
+    let error = DomainError::InvalidFilter {
+        reason: "user_filters cannot be empty".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert!(api_error.message.contains("user_filters"));
+}
+
+/// Test: StorageOperationFailed maps to internal_error
+#[test]
+fn test_storage_operation_failed_maps_correctly() {
+    let error = DomainError::StorageOperationFailed {
+        reason: "database connection failed".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::INTERNAL_ERROR);
+    assert_eq!(
+        api_error.message,
+        "internal error during authorization check"
+    );
+}
+
+/// Test: Legacy ResolverError (unstructured) maps to internal_error
+#[test]
+fn test_legacy_resolver_error_maps_to_internal_error() {
     let error = DomainError::ResolverError {
         message: "unexpected resolver state".to_string(),
     };

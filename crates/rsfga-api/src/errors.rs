@@ -180,29 +180,30 @@ fn classify_domain_error_detailed(err: &DomainError) -> DomainErrorKind {
         DomainError::StoreNotFound { store_id } => {
             DomainErrorKind::NotFound(format!("store not found: {store_id}"))
         }
-        DomainError::ResolverError { message } => {
-            // Check if this is a "store not found" error from the resolver
-            if message.starts_with("store not found:") {
-                DomainErrorKind::NotFound(message.clone())
-            } else if message.contains("model not found:") {
-                // No authorization model exists - client needs to create one
-                DomainErrorKind::InvalidInput(format!("no authorization model found: {}", message))
-            } else if message.contains("No such key:") {
-                // Missing context parameter - this is a client error
-                DomainErrorKind::InvalidInput(format!(
-                    "missing required context parameter: {}",
-                    message
-                ))
-            } else if message.starts_with("condition not found:") {
-                // Condition referenced in tuple doesn't exist in model
-                DomainErrorKind::InvalidInput(message.clone())
-            } else if message.contains("condition evaluation failed:") {
-                // CEL evaluation errors due to invalid context
-                DomainErrorKind::InvalidInput(message.clone())
-            } else {
-                DomainErrorKind::Internal(message.clone())
-            }
+        // Structured resolver error variants
+        DomainError::AuthorizationModelNotFound { store_id } => DomainErrorKind::InvalidInput(
+            format!("no authorization model found for store: {store_id}"),
+        ),
+        DomainError::MissingContextKey { key } => {
+            DomainErrorKind::InvalidInput(format!("missing required context parameter: {key}"))
         }
+        DomainError::ConditionParseError { expression, reason } => DomainErrorKind::InvalidInput(
+            format!("failed to parse condition '{expression}': {reason}"),
+        ),
+        DomainError::ConditionEvalError { reason } => {
+            DomainErrorKind::InvalidInput(format!("condition evaluation failed: {reason}"))
+        }
+        DomainError::InvalidParameter { parameter, reason } => {
+            DomainErrorKind::InvalidInput(format!("invalid parameter '{parameter}': {reason}"))
+        }
+        DomainError::InvalidFilter { reason } => {
+            DomainErrorKind::InvalidInput(format!("invalid filter: {reason}"))
+        }
+        DomainError::StorageOperationFailed { reason } => {
+            DomainErrorKind::Internal(format!("storage operation failed: {reason}"))
+        }
+        // Legacy resolver error - kept for backwards compatibility
+        DomainError::ResolverError { message } => DomainErrorKind::Internal(message.clone()),
         // All other errors are treated as internal errors
         _ => DomainErrorKind::Internal(err.to_string()),
     }
@@ -243,22 +244,31 @@ fn classify_domain_error_generic(err: &DomainError) -> DomainErrorKind {
         DomainError::StoreNotFound { .. } => {
             DomainErrorKind::NotFound("store not found".to_string())
         }
-        DomainError::ResolverError { message } => {
-            // In production mode, we still need to distinguish between client errors
-            // and internal errors, but we hide specific details
-            if message.starts_with("store not found:") {
-                DomainErrorKind::NotFound("store not found".to_string())
-            } else if message.contains("model not found:") {
-                DomainErrorKind::InvalidInput("no authorization model found".to_string())
-            } else if message.contains("No such key:") {
-                DomainErrorKind::InvalidInput("missing required context parameter".to_string())
-            } else if message.starts_with("condition not found:") {
-                DomainErrorKind::InvalidInput("condition not found".to_string())
-            } else if message.contains("condition evaluation failed:") {
-                DomainErrorKind::InvalidInput("condition evaluation failed".to_string())
-            } else {
-                DomainErrorKind::Internal("internal error".to_string())
-            }
+        // Structured resolver error variants (generic messages)
+        DomainError::AuthorizationModelNotFound { .. } => {
+            DomainErrorKind::InvalidInput("no authorization model found".to_string())
+        }
+        DomainError::MissingContextKey { .. } => {
+            DomainErrorKind::InvalidInput("missing required context parameter".to_string())
+        }
+        DomainError::ConditionParseError { .. } => {
+            DomainErrorKind::InvalidInput("invalid condition expression".to_string())
+        }
+        DomainError::ConditionEvalError { .. } => {
+            DomainErrorKind::InvalidInput("condition evaluation failed".to_string())
+        }
+        DomainError::InvalidParameter { .. } => {
+            DomainErrorKind::InvalidInput("invalid parameter".to_string())
+        }
+        DomainError::InvalidFilter { .. } => {
+            DomainErrorKind::InvalidInput("invalid filter".to_string())
+        }
+        DomainError::StorageOperationFailed { .. } => {
+            DomainErrorKind::Internal("internal error".to_string())
+        }
+        // Legacy resolver error - kept for backwards compatibility
+        DomainError::ResolverError { .. } => {
+            DomainErrorKind::Internal("internal error".to_string())
         }
         // All other errors are treated as internal errors with generic message
         _ => DomainErrorKind::Internal("internal error".to_string()),
@@ -324,24 +334,6 @@ mod tests {
     fn test_classify_store_not_found_uses_production_mode() {
         let err = DomainError::StoreNotFound {
             store_id: "xyz".to_string(),
-        };
-        match classify_domain_error(&err) {
-            DomainErrorKind::NotFound(msg) => {
-                assert!(msg.contains("store not found"));
-                // Production mode should NOT include specific store ID
-                assert!(
-                    !msg.contains("xyz"),
-                    "Production mode should hide store ID: {msg}"
-                );
-            }
-            _ => panic!("Expected NotFound"),
-        }
-    }
-
-    #[test]
-    fn test_classify_store_not_found_from_resolver_uses_production_mode() {
-        let err = DomainError::ResolverError {
-            message: "store not found: xyz".to_string(),
         };
         match classify_domain_error(&err) {
             DomainErrorKind::NotFound(msg) => {

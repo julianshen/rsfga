@@ -3499,13 +3499,13 @@ async fn test_check_without_required_context_returns_error() {
     let result = resolver.check(&request).await;
     let error = result.expect_err("Check should fail when required context variable is missing");
     match error {
-        DomainError::ResolverError { message } => {
+        DomainError::ConditionEvalError { reason } => {
             assert!(
-                message.contains("condition evaluation failed"),
-                "Error should indicate condition evaluation failed: {message}"
+                reason.contains("No such key"),
+                "Error should indicate missing context key: {reason}"
             );
         }
-        _ => panic!("Expected ResolverError but got: {error:?}"),
+        _ => panic!("Expected ConditionEvalError but got: {error:?}"),
     }
 }
 
@@ -4077,8 +4077,10 @@ async fn test_check_returns_error_for_nonexistent_condition() {
 
     let result = resolver.check(&request).await;
     let err = result.expect_err("Should return error when condition is not found in model");
+    // ConditionNotFound error message format: "condition '{name}' not defined in authorization model"
     assert!(
-        err.to_string().contains("condition not found"),
+        err.to_string()
+            .contains("not defined in authorization model"),
         "Error message should indicate condition not found: {err}"
     );
 }

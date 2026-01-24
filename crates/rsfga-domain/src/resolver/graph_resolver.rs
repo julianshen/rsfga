@@ -1203,8 +1203,8 @@ where
         let condition =
             model
                 .find_condition(condition_name)
-                .ok_or_else(|| DomainError::ResolverError {
-                    message: format!("condition not found: {condition_name}"),
+                .ok_or_else(|| DomainError::ConditionNotFound {
+                    condition_name: condition_name.to_string(),
                 })?;
 
         // Get the parsed CEL expression from cache (or parse and cache it)
@@ -1212,11 +1212,9 @@ where
         // See: https://github.com/julianshen/rsfga/issues/82
         let expr = global_cache()
             .get_or_parse(&condition.expression)
-            .map_err(|e| DomainError::ResolverError {
-                message: format!(
-                    "failed to parse condition expression '{}': {}",
-                    condition.expression, e
-                ),
+            .map_err(|e| DomainError::ConditionParseError {
+                expression: condition.expression.clone(),
+                reason: e.to_string(),
             })?;
 
         // Build the CEL context
@@ -1275,8 +1273,8 @@ where
         let result = expr
             .evaluate_bool_with_timeout(&cel_ctx, self.config.timeout)
             .await
-            .map_err(|e| DomainError::ResolverError {
-                message: format!("condition evaluation failed: {e}"),
+            .map_err(|e| DomainError::ConditionEvalError {
+                reason: e.to_string(),
             })?;
 
         Ok(result)
@@ -1488,8 +1486,9 @@ where
     ) -> DomainResult<super::types::ListUsersResult> {
         // Validate max_results is positive
         if max_results == 0 {
-            return Err(DomainError::ResolverError {
-                message: "max_results must be greater than 0".to_string(),
+            return Err(DomainError::InvalidParameter {
+                parameter: "max_results".to_string(),
+                reason: "must be greater than 0".to_string(),
             });
         }
 
@@ -1540,16 +1539,16 @@ where
 
         // Validate user_filters is not empty (OpenFGA requirement)
         if request.user_filters.is_empty() {
-            return Err(DomainError::ResolverError {
-                message: "user_filters cannot be empty".to_string(),
+            return Err(DomainError::InvalidFilter {
+                reason: "user_filters cannot be empty".to_string(),
             });
         }
 
         // Validate user_filter format: type_name must be non-empty and contain valid characters
         for filter in &request.user_filters {
             if filter.type_name.is_empty() {
-                return Err(DomainError::ResolverError {
-                    message: "user_filter type cannot be empty".to_string(),
+                return Err(DomainError::InvalidFilter {
+                    reason: "user_filter type cannot be empty".to_string(),
                 });
             }
             // Only allow alphanumeric, underscore, and dash (same as object type validation)
@@ -1558,8 +1557,8 @@ where
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
             {
-                return Err(DomainError::ResolverError {
-                    message: format!(
+                return Err(DomainError::InvalidFilter {
+                    reason: format!(
                         "user_filter type contains invalid characters: {}",
                         filter.type_name
                     ),
@@ -1568,16 +1567,16 @@ where
             // Also validate relation if provided
             if let Some(ref relation) = filter.relation {
                 if relation.is_empty() {
-                    return Err(DomainError::ResolverError {
-                        message: "user_filter relation cannot be empty when provided".to_string(),
+                    return Err(DomainError::InvalidFilter {
+                        reason: "user_filter relation cannot be empty when provided".to_string(),
                     });
                 }
                 if !relation
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
                 {
-                    return Err(DomainError::ResolverError {
-                        message: format!(
+                    return Err(DomainError::InvalidFilter {
+                        reason: format!(
                             "user_filter relation contains invalid characters: {}",
                             relation
                         ),

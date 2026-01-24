@@ -415,32 +415,6 @@ impl ApiError {
 
     // Legacy methods for backward compatibility - deprecated in favor of specific methods
     // TODO: Remove in v2.0.0 - tracked in issue #270
-    /// Creates a generic not found error (404).
-    ///
-    /// # Deprecated
-    /// This method always returns `STORE_ID_NOT_FOUND` which is semantically incorrect
-    /// for non-store resources. Use the specific constructors instead:
-    /// - [`Self::store_not_found`] for store not found
-    /// - [`Self::authorization_model_not_found`] for model not found
-    /// - [`Self::assertion_not_found`] for assertion not found
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use store_not_found, authorization_model_not_found, etc. instead. Will be removed in v2.0.0."
-    )]
-    pub fn not_found(message: impl Into<String>) -> Self {
-        // NOTE: This defaults to STORE_ID_NOT_FOUND because that's the most common
-        // 404 case. This is incorrect for other resources - use specific methods instead.
-        Self::new(error_codes::STORE_ID_NOT_FOUND, message)
-    }
-
-    // TODO: Remove in v2.0.0 - tracked in issue #270
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use validation_error instead. Will be removed in v2.0.0."
-    )]
-    pub fn invalid_input(message: impl Into<String>) -> Self {
-        Self::new(error_codes::VALIDATION_ERROR, message)
-    }
 }
 
 impl IntoResponse for ApiError {
@@ -566,45 +540,41 @@ impl From<DomainError> for ApiError {
             DomainError::InvalidRelationFormat { value } => {
                 ApiError::validation_error(format!("invalid relation format: {}", value))
             }
-            // Resolver errors - need to parse the message for specific cases
-            //
-            // TODO(#270): FRAGILE - This relies on string parsing of error messages.
-            // Risk: Changes to DomainError::ResolverError message format will silently
-            // break error code mapping, potentially returning incorrect codes to clients.
-            //
-            // Mitigation: Unit tests in http/tests.rs verify all parsing paths.
-            // Fix: Refactor DomainError::ResolverError to use structured variants:
-            //   - ResolverStoreNotFound { store_id }
-            //   - ResolverModelNotFound { store_id }
-            //   - ResolverMissingContextKey { key }
-            //   - ResolverConditionNotFound { condition }
-            //   - ResolverConditionEvalFailed { reason }
-            //
-            // Timeline: Should be addressed in v0.3.0 before production use.
+            // Structured resolver error variants (no string parsing required)
+            DomainError::AuthorizationModelNotFound { .. } => {
+                ApiError::latest_authorization_model_not_found("no authorization model found")
+            }
+            DomainError::MissingContextKey { .. } => {
+                ApiError::validation_error("missing required context parameter")
+            }
+            DomainError::ConditionParseError { .. } => {
+                ApiError::validation_error("invalid condition expression")
+            }
+            DomainError::ConditionEvalError { .. } => {
+                ApiError::validation_error("condition evaluation failed")
+            }
+            DomainError::InvalidParameter { .. } => ApiError::validation_error(err.to_string()),
+            DomainError::InvalidFilter { .. } => ApiError::validation_error(err.to_string()),
+            DomainError::StorageOperationFailed { reason } => {
+                error!("Storage operation failed: {}", reason);
+                ApiError::internal_error("internal error during authorization check")
+            }
+            // Legacy resolver error - kept for backwards compatibility during transition
+            // TODO: Remove in v1.0.0 when all usages are migrated to structured variants
             DomainError::ResolverError { message } => {
-                if message.starts_with("store not found:") {
-                    ApiError::store_not_found("store not found")
-                } else if message.contains("model not found:") {
-                    ApiError::latest_authorization_model_not_found("no authorization model found")
-                } else if message.contains("No such key:") {
-                    ApiError::validation_error("missing required context parameter")
-                } else if message.starts_with("condition not found:") {
-                    ApiError::validation_error("condition not found")
-                } else if message.contains("condition evaluation failed:") {
-                    ApiError::validation_error("condition evaluation failed")
-                } else {
-                    error!("Domain error: {}", message);
-                    ApiError::internal_error("internal error during authorization check")
-                }
+                error!("Legacy resolver error: {}", message);
+                ApiError::internal_error("internal error during authorization check")
             }
             // Condition-related errors
             DomainError::ConditionNotFound { .. } => {
                 ApiError::validation_error("condition not found in authorization model")
             }
-            // All other errors are internal
-            _ => {
-                error!("Domain error: {}", err);
-                ApiError::internal_error("internal error during authorization check")
+            // Model parse/validation errors
+            DomainError::ModelParseError { .. } => {
+                ApiError::validation_error("failed to parse authorization model")
+            }
+            DomainError::ModelValidationError { .. } => {
+                ApiError::validation_error("authorization model validation failed")
             }
         }
     }

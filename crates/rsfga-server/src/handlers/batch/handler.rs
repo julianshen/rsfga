@@ -371,7 +371,7 @@ where
 /// Classifies a domain error into an error kind for HTTP status code mapping.
 ///
 /// - Validation errors (type not found, relation not found, invalid input) → 400 Bad Request
-/// - Internal errors (resolver errors, timeout) → 500 Internal Server Error
+/// - Internal errors (resolver errors, timeout, storage failures) → 500 Internal Server Error
 fn classify_domain_error_kind(err: &rsfga_domain::error::DomainError) -> BatchCheckItemErrorKind {
     use rsfga_domain::error::DomainError;
 
@@ -387,11 +387,18 @@ fn classify_domain_error_kind(err: &rsfga_domain::error::DomainError) -> BatchCh
         | DomainError::InvalidRelationFormat { .. }
         | DomainError::DepthLimitExceeded { .. }
         | DomainError::CycleDetected { .. }
-        | DomainError::StoreNotFound { .. } => BatchCheckItemErrorKind::Validation,
+        | DomainError::StoreNotFound { .. }
+        | DomainError::AuthorizationModelNotFound { .. }
+        | DomainError::MissingContextKey { .. }
+        | DomainError::ConditionParseError { .. }
+        | DomainError::ConditionEvalError { .. }
+        | DomainError::InvalidParameter { .. }
+        | DomainError::InvalidFilter { .. } => BatchCheckItemErrorKind::Validation,
 
         // Server errors (500) - internal issues
         DomainError::Timeout { .. }
         | DomainError::OperationTimeout { .. }
+        | DomainError::StorageOperationFailed { .. }
         | DomainError::ResolverError { .. } => BatchCheckItemErrorKind::Internal,
     }
 }

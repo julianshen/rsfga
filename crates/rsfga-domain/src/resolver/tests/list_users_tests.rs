@@ -371,8 +371,8 @@ async fn test_list_users_returns_error_for_empty_user_filters() {
 
     let result = resolver.list_users(&request, 1000).await;
 
-    // This returns a generic ResolverError or InvalidInput
-    assert!(matches!(result, Err(DomainError::ResolverError { .. })));
+    // This returns InvalidFilter for empty user_filters
+    assert!(matches!(result, Err(DomainError::InvalidFilter { .. })));
 }
 
 #[tokio::test]
@@ -2262,8 +2262,8 @@ async fn test_list_users_rejects_zero_max_results() {
 
     let err = result.unwrap_err();
     assert!(
-        matches!(err, DomainError::ResolverError { .. }),
-        "Should return ResolverError for invalid max_results"
+        matches!(err, DomainError::InvalidParameter { .. }),
+        "Should return InvalidParameter for invalid max_results"
     );
 }
 
