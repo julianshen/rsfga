@@ -1995,3 +1995,78 @@ fn test_structured_domain_errors_map_correctly() {
     assert!(api_error.message.contains("object"));
     assert!(api_error.message.contains("missing-colon"));
 }
+
+// ============================================================================
+// From<StorageError> Tests
+// ============================================================================
+
+use rsfga_storage::StorageError;
+
+/// Test: StorageError::InvalidInput with continuation_token maps to invalid_continuation_token
+#[test]
+fn test_storage_error_invalid_continuation_token() {
+    let error = StorageError::InvalidInput {
+        message: "invalid continuation_token: 'abc' (must be a non-negative integer)".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::INVALID_CONTINUATION_TOKEN);
+    assert!(api_error.message.contains("continuation_token"));
+}
+
+/// Test: StorageError::InvalidInput without continuation_token maps to validation_error
+#[test]
+fn test_storage_error_generic_invalid_input() {
+    let error = StorageError::InvalidInput {
+        message: "invalid store name".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+}
+
+/// Test: ApiError constructors produce correct error codes
+#[test]
+fn test_api_error_constructors_produce_correct_codes() {
+    // 404 Not Found errors
+    assert_eq!(
+        ApiError::store_not_found("test").code,
+        error_codes::STORE_ID_NOT_FOUND
+    );
+    assert_eq!(
+        ApiError::authorization_model_not_found("test").code,
+        error_codes::AUTHORIZATION_MODEL_NOT_FOUND
+    );
+    assert_eq!(
+        ApiError::latest_authorization_model_not_found("test").code,
+        error_codes::LATEST_AUTHORIZATION_MODEL_NOT_FOUND
+    );
+    assert_eq!(
+        ApiError::assertion_not_found("test").code,
+        error_codes::ASSERTION_NOT_FOUND
+    );
+
+    // 400 Bad Request errors
+    assert_eq!(
+        ApiError::validation_error("test").code,
+        error_codes::VALIDATION_ERROR
+    );
+    assert_eq!(
+        ApiError::type_not_found("test").code,
+        error_codes::TYPE_NOT_FOUND
+    );
+    assert_eq!(
+        ApiError::relation_not_found("test").code,
+        error_codes::RELATION_NOT_FOUND
+    );
+    assert_eq!(
+        ApiError::invalid_continuation_token("test").code,
+        error_codes::INVALID_CONTINUATION_TOKEN
+    );
+    assert_eq!(
+        ApiError::type_definitions_too_few_items("test").code,
+        error_codes::TYPE_DEFINITIONS_TOO_FEW_ITEMS
+    );
+    assert_eq!(
+        ApiError::resolution_too_complex("test").code,
+        error_codes::AUTHORIZATION_MODEL_RESOLUTION_TOO_COMPLEX
+    );
+}

@@ -379,6 +379,11 @@ impl ApiError {
         Self::new(error_codes::RELATION_NOT_FOUND, message)
     }
 
+    /// Creates an invalid continuation token error (400).
+    pub fn invalid_continuation_token(message: impl Into<String>) -> Self {
+        Self::new(error_codes::INVALID_CONTINUATION_TOKEN, message)
+    }
+
     /// Creates an internal error (500).
     pub fn internal_error(message: impl Into<String>) -> Self {
         Self::new(error_codes::INTERNAL_ERROR, message)
@@ -410,11 +415,21 @@ impl ApiError {
 
     // Legacy methods for backward compatibility - deprecated in favor of specific methods
     // TODO: Remove in v2.0.0 - tracked in issue #270
+    /// Creates a generic not found error (404).
+    ///
+    /// # Deprecated
+    /// This method always returns `STORE_ID_NOT_FOUND` which is semantically incorrect
+    /// for non-store resources. Use the specific constructors instead:
+    /// - [`Self::store_not_found`] for store not found
+    /// - [`Self::authorization_model_not_found`] for model not found
+    /// - [`Self::assertion_not_found`] for assertion not found
     #[deprecated(
         since = "0.2.0",
         note = "Use store_not_found, authorization_model_not_found, etc. instead. Will be removed in v2.0.0."
     )]
     pub fn not_found(message: impl Into<String>) -> Self {
+        // NOTE: This defaults to STORE_ID_NOT_FOUND because that's the most common
+        // 404 case. This is incorrect for other resources - use specific methods instead.
         Self::new(error_codes::STORE_ID_NOT_FOUND, message)
     }
 
@@ -481,7 +496,14 @@ impl From<StorageError> for ApiError {
                 ApiError::authorization_model_not_found("authorization model not found")
             }
             // 400 Bad Request: validation errors
-            StorageError::InvalidInput { message } => ApiError::validation_error(message),
+            StorageError::InvalidInput { message } => {
+                // Check for specific error types that have dedicated error codes
+                if message.contains("continuation_token") {
+                    ApiError::invalid_continuation_token(message)
+                } else {
+                    ApiError::validation_error(message)
+                }
+            }
             // 409 Conflict: duplicate tuple or condition conflict
             StorageError::DuplicateTuple { .. } => {
                 ApiError::conflict("cannot write a tuple which already exists")
@@ -545,6 +567,20 @@ impl From<DomainError> for ApiError {
                 ApiError::validation_error(format!("invalid relation format: {}", value))
             }
             // Resolver errors - need to parse the message for specific cases
+            //
+            // TODO(#270): FRAGILE - This relies on string parsing of error messages.
+            // Risk: Changes to DomainError::ResolverError message format will silently
+            // break error code mapping, potentially returning incorrect codes to clients.
+            //
+            // Mitigation: Unit tests in http/tests.rs verify all parsing paths.
+            // Fix: Refactor DomainError::ResolverError to use structured variants:
+            //   - ResolverStoreNotFound { store_id }
+            //   - ResolverModelNotFound { store_id }
+            //   - ResolverMissingContextKey { key }
+            //   - ResolverConditionNotFound { condition }
+            //   - ResolverConditionEvalFailed { reason }
+            //
+            // Timeline: Should be addressed in v0.3.0 before production use.
             DomainError::ResolverError { message } => {
                 if message.starts_with("store not found:") {
                     ApiError::store_not_found("store not found")
