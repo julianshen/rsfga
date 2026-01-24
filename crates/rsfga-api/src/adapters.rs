@@ -837,8 +837,13 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
             .storage
             .read_tuples(store_id, &filter)
             .await
-            .map_err(|e| DomainError::StorageOperationFailed {
-                reason: e.to_string(),
+            .map_err(|e| match e {
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
             })?;
 
         // Convert StoredTuple to StoredTupleRef
@@ -875,8 +880,13 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
         self.storage
             .list_objects_by_type(store_id, object_type, max_count)
             .await
-            .map_err(|e| DomainError::StorageOperationFailed {
-                reason: e.to_string(),
+            .map_err(|e| match e {
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
             })
     }
 }
@@ -1036,17 +1046,21 @@ impl<S: DataStore> DataStoreModelReader<S> {
         let stored_model = storage
             .get_latest_authorization_model(store_id)
             .await
-            .map_err(|e| {
-                // Check if this is a "model not found" error
-                if matches!(e, rsfga_storage::StorageError::ModelNotFound { .. }) {
+            .map_err(|e| match e {
+                // Model not found - no authorization model exists for this store
+                rsfga_storage::StorageError::ModelNotFound { .. } => {
                     DomainError::AuthorizationModelNotFound {
                         store_id: store_id.to_string(),
                     }
-                } else {
-                    DomainError::StorageOperationFailed {
-                        reason: e.to_string(),
-                    }
                 }
+                // Store not found - preserve for 404 response
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                // All other storage errors
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
             })?;
 
         // Parse the stored model JSON

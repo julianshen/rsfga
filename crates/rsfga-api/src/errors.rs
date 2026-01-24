@@ -181,9 +181,9 @@ fn classify_domain_error_detailed(err: &DomainError) -> DomainErrorKind {
             DomainErrorKind::NotFound(format!("store not found: {store_id}"))
         }
         // Structured resolver error variants
-        DomainError::AuthorizationModelNotFound { store_id } => DomainErrorKind::InvalidInput(
-            format!("no authorization model found for store: {store_id}"),
-        ),
+        DomainError::AuthorizationModelNotFound { store_id } => DomainErrorKind::NotFound(format!(
+            "authorization model not found for store: {store_id}"
+        )),
         DomainError::MissingContextKey { key } => {
             DomainErrorKind::InvalidInput(format!("missing required context parameter: {key}"))
         }
@@ -246,7 +246,7 @@ fn classify_domain_error_generic(err: &DomainError) -> DomainErrorKind {
         }
         // Structured resolver error variants (generic messages)
         DomainError::AuthorizationModelNotFound { .. } => {
-            DomainErrorKind::InvalidInput("no authorization model found".to_string())
+            DomainErrorKind::NotFound("authorization model not found".to_string())
         }
         DomainError::MissingContextKey { .. } => {
             DomainErrorKind::InvalidInput("missing required context parameter".to_string())
