@@ -1318,7 +1318,12 @@ async fn write_tuples<S: DataStore>(
     let model =
         crate::adapters::parse_model_json(&stored_model.model_json, &stored_model.schema_version)
             .map_err(|e| {
-            ApiError::internal_error(format!("failed to parse authorization model: {e}"))
+            // Log full error for debugging but don't leak internal details to client
+            error!(
+                "Failed to parse stored authorization model for store {}: {e}",
+                store_id
+            );
+            ApiError::internal_error("failed to parse authorization model")
         })?;
 
     // Convert write tuples - fail if any tuple key is invalid

@@ -451,7 +451,14 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             &stored_model.model_json,
             &stored_model.schema_version,
         )
-        .map_err(|e| Status::internal(format!("failed to parse authorization model: {e}")))?;
+        .map_err(|e| {
+            // Log full error for debugging but don't leak internal details to client
+            tracing::error!(
+                "Failed to parse stored authorization model for store {}: {e}",
+                req.store_id
+            );
+            Status::internal("failed to parse authorization model")
+        })?;
 
         // Convert writes - fail if any tuple key is invalid
         // No clones in happy path - error contains user/object for messages
