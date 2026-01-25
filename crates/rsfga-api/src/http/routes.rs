@@ -1224,14 +1224,15 @@ async fn check<S: DataStore>(
         })
         .unwrap_or_default();
 
-    // Create domain check request with context (defaults to empty HashMap if not provided)
-    let check_request = DomainCheckRequest::with_context(
+    // Create domain check request with context and optional model ID
+    let check_request = DomainCheckRequest::with_model_id(
         store_id,
         body.tuple_key.user,
         body.tuple_key.relation,
         body.tuple_key.object,
         contextual_tuples,
         body.context.unwrap_or_default(),
+        body.authorization_model_id,
     );
 
     // Delegate to GraphResolver for full graph traversal

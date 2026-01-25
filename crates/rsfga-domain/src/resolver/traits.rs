@@ -42,8 +42,17 @@ pub trait TupleReader: Send + Sync {
 /// Trait for authorization model operations needed by the resolver.
 #[async_trait]
 pub trait ModelReader: Send + Sync {
-    /// Gets the authorization model for a store.
+    /// Gets the latest authorization model for a store.
     async fn get_model(&self, store_id: &str) -> DomainResult<AuthorizationModel>;
+
+    /// Gets a specific authorization model by its ID.
+    ///
+    /// Returns an error if the model with the given ID is not found.
+    async fn get_model_by_id(
+        &self,
+        store_id: &str,
+        authorization_model_id: &str,
+    ) -> DomainResult<AuthorizationModel>;
 
     /// Gets a type definition by name.
     async fn get_type_definition(

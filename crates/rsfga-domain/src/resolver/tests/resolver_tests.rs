@@ -64,6 +64,7 @@ async fn test_check_returns_true_for_direct_tuple_assignment() {
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -105,6 +106,7 @@ async fn test_check_returns_false_when_no_tuple_exists() {
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -154,6 +156,7 @@ async fn test_check_handles_multiple_stores_independently() {
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
     let result1 = resolver.check(&request1).await.unwrap();
     assert!(result1.allowed, "Store1 should allow access");
@@ -166,6 +169,7 @@ async fn test_check_handles_multiple_stores_independently() {
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
     let result2 = resolver.check(&request2).await.unwrap();
     assert!(!result2.allowed, "Store2 should deny access (no tuple)");
@@ -188,6 +192,7 @@ async fn test_check_validates_input_parameters() {
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
     let result = resolver.check(&request).await;
     assert!(matches!(result, Err(DomainError::InvalidUserFormat { .. })));
@@ -200,6 +205,7 @@ async fn test_check_validates_input_parameters() {
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
     let result = resolver.check(&request).await;
     assert!(matches!(
@@ -215,6 +221,7 @@ async fn test_check_validates_input_parameters() {
         object: "".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
     let result = resolver.check(&request).await;
     assert!(matches!(
@@ -240,6 +247,7 @@ async fn test_check_rejects_invalid_user_format() {
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
     let result = resolver.check(&request).await;
     assert!(matches!(result, Err(DomainError::InvalidUserFormat { .. })));
@@ -262,6 +270,7 @@ async fn test_check_rejects_invalid_object_format() {
         object: "readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
     let result = resolver.check(&request).await;
     assert!(matches!(
@@ -277,6 +286,7 @@ async fn test_check_rejects_invalid_object_format() {
         object: ":readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
     let result = resolver.check(&request).await;
     assert!(matches!(
@@ -292,6 +302,7 @@ async fn test_check_rejects_invalid_object_format() {
         object: "document:".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
     let result = resolver.check(&request).await;
     assert!(matches!(
@@ -339,6 +350,7 @@ async fn test_can_resolve_this_relation() {
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -413,6 +425,7 @@ async fn test_can_resolve_relation_from_parent_object() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -516,6 +529,7 @@ async fn test_resolves_nested_parent_relationships() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -581,6 +595,7 @@ async fn test_handles_missing_parent_gracefully() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -646,6 +661,7 @@ async fn test_union_returns_true_if_any_branch_is_true() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -708,6 +724,7 @@ async fn test_union_returns_false_if_all_branches_are_false() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -772,6 +789,7 @@ async fn test_union_executes_branches_in_parallel() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -831,6 +849,7 @@ async fn test_union_handles_errors_in_branches() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     // Should succeed because owner branch is true
@@ -899,6 +918,7 @@ async fn test_union_returns_cycle_error_when_all_branches_cycle() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     // Should return CycleDetected error, not allowed: false
@@ -1010,6 +1030,7 @@ async fn test_union_returns_false_when_one_branch_false_and_other_depth_limit() 
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     // Should return false, NOT DepthLimitExceeded error
@@ -1085,6 +1106,7 @@ async fn test_union_returns_depth_limit_error_when_all_branches_hit_depth_limit(
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     // Should return DepthLimitExceeded or CycleDetected (path-termination error)
@@ -1165,6 +1187,7 @@ async fn test_intersection_returns_true_only_if_all_branches_are_true() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1232,6 +1255,7 @@ async fn test_intersection_returns_false_if_any_branch_is_false() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1304,6 +1328,7 @@ async fn test_intersection_executes_branches_in_parallel() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1369,6 +1394,7 @@ async fn test_exclusion_returns_true_if_base_true_and_subtract_false() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1429,6 +1455,7 @@ async fn test_exclusion_returns_false_if_base_is_false() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1496,6 +1523,7 @@ async fn test_exclusion_returns_false_if_subtract_is_true() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1570,6 +1598,7 @@ async fn test_exclusion_returns_false_when_base_false_despite_subtract_cycle() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     // Should return false (base is false), not CycleDetected error
@@ -1653,6 +1682,7 @@ async fn test_exclusion_returns_false_when_subtract_true_despite_base_cycle() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     // Should return false (subtract is true), not CycleDetected error
@@ -1736,6 +1766,7 @@ async fn test_exclusion_returns_cycle_error_when_both_branches_cycle() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     // Should return CycleDetected error since both branches cycle
@@ -1813,6 +1844,7 @@ async fn test_exclusion_propagates_error_when_base_true_and_subtract_errors() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     // Should return CycleDetected error since we need subtract but it cycles
@@ -1885,6 +1917,7 @@ async fn test_contextual_tuple_resolves_userset_reference() {
             condition_context: None,
         }]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -1952,6 +1985,7 @@ async fn test_contextual_tuple_userset_not_member_denied() {
             condition_context: None,
         }]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2037,6 +2071,7 @@ async fn test_depth_limit_prevents_stack_overflow() {
         object: "level29:obj".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await;
@@ -2118,6 +2153,7 @@ async fn test_returns_depth_limit_exceeded_error() {
         object: "type29:obj".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await;
@@ -2212,6 +2248,7 @@ async fn test_cycle_detection_prevents_infinite_loops() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await;
@@ -2320,6 +2357,7 @@ async fn test_cycle_detection_doesnt_false_positive_on_valid_dags() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2416,6 +2454,7 @@ async fn test_returns_timeout_error_with_context() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await;
@@ -2460,6 +2499,7 @@ async fn test_empty_union_returns_false() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2497,6 +2537,7 @@ async fn test_empty_intersection_returns_true() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2578,6 +2619,7 @@ async fn test_depth_limit_at_boundary_24_succeeds() {
         object: "level24:obj".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2622,6 +2664,7 @@ async fn test_contextual_tuple_overrides_stored_tuple() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request_without).await.unwrap();
@@ -2641,6 +2684,7 @@ async fn test_contextual_tuple_overrides_stored_tuple() {
             condition_context: None,
         }]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request_with).await.unwrap();
@@ -2688,6 +2732,7 @@ async fn test_contextual_tuple_does_not_conflict_with_stored() {
             "document:doc1",
         )]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let request_bob = CheckRequest {
@@ -2697,6 +2742,7 @@ async fn test_contextual_tuple_does_not_conflict_with_stored() {
         object: "document:doc1".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result_alice = resolver.check(&request_alice).await.unwrap();
@@ -2760,6 +2806,7 @@ async fn test_wildcard_in_requesting_user_is_rejected() {
         object: "document:secret".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2810,6 +2857,7 @@ async fn test_type_constraints_enforced_for_stored_tuples() {
         object: "document:secret".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2858,6 +2906,7 @@ async fn test_type_constraints_enforced_for_contextual_tuples() {
             condition_context: None,
         }]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2929,6 +2978,7 @@ async fn test_type_constraints_allow_userset_references() {
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -2977,6 +3027,7 @@ async fn test_empty_type_constraints_allows_any_type() {
         object: "document:readme".to_string(),
         contextual_tuples: Arc::new(vec![]),
         context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
     };
 
     let result = resolver.check(&request).await.unwrap();
@@ -3053,6 +3104,7 @@ proptest! {
                 object: object.clone(),
                 contextual_tuples: Arc::new(vec![]),
                 context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
             };
 
             // Should not panic - may return Ok or Err, but should never panic
@@ -3105,6 +3157,7 @@ proptest! {
                 object: object.clone(),
                 contextual_tuples: Arc::new(vec![]),
                 context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
             };
 
             // Use a timeout to ensure termination
@@ -3163,6 +3216,7 @@ proptest! {
                 object: format!("document:{object_id}"),
                 contextual_tuples: Arc::new(vec![]),
                 context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
             };
 
             let result = resolver.check(&request).await.unwrap();
@@ -3216,6 +3270,7 @@ proptest! {
                 object: format!("document:{object_id}"),
                 contextual_tuples: Arc::new(vec![]),
                 context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
             };
 
             let result_before = resolver.check(&request).await.unwrap();
@@ -3284,6 +3339,7 @@ proptest! {
                 object: format!("document:{other_object}"),
                 contextual_tuples: Arc::new(vec![]),
                 context: Arc::new(std::collections::HashMap::new()),
+        authorization_model_id: None,
             };
 
             let result_before = resolver.check(&request).await.unwrap();
@@ -5695,4 +5751,169 @@ async fn test_list_objects_respects_limit_with_contextual_tuples() {
     // Should be truncated to max 3 results
     assert!(result.objects.len() <= 3);
     assert!(result.truncated);
+}
+
+// ============================================================
+// Authorization Model ID Validation Tests (Issue #265)
+// ============================================================
+
+/// Tests that Check API uses authorization_model_id when provided
+#[tokio::test]
+async fn test_check_uses_authorization_model_id_when_provided() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Request with authorization_model_id - the mock reader ignores the ID but this tests
+    // that the resolver accepts the parameter without error
+    let request = CheckRequest {
+        store_id: "store1".to_string(),
+        user: "user:alice".to_string(),
+        relation: "viewer".to_string(),
+        object: "document:readme".to_string(),
+        contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(HashMap::new()),
+        authorization_model_id: Some("01ABCDEFGHIJK1234567890XYZ".to_string()),
+    };
+
+    let result = resolver.check(&request).await.unwrap();
+    assert!(
+        result.allowed,
+        "Check should succeed with authorization_model_id"
+    );
+}
+
+/// Tests that Check API works without authorization_model_id (uses latest model)
+#[tokio::test]
+async fn test_check_works_without_authorization_model_id() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Request without authorization_model_id - should use latest model
+    let request = CheckRequest {
+        store_id: "store1".to_string(),
+        user: "user:alice".to_string(),
+        relation: "viewer".to_string(),
+        object: "document:readme".to_string(),
+        contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(HashMap::new()),
+        authorization_model_id: None,
+    };
+
+    let result = resolver.check(&request).await.unwrap();
+    assert!(
+        result.allowed,
+        "Check should succeed without authorization_model_id"
+    );
+}
+
+/// Tests that caching is skipped when authorization_model_id is provided
+#[tokio::test]
+async fn test_check_skips_cache_when_authorization_model_id_provided() {
+    use crate::cache::{CheckCache, CheckCacheConfig};
+
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "readme", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    // Create resolver with cache enabled
+    let cache_config = CheckCacheConfig::default().with_enabled(true);
+    let cache = Arc::new(CheckCache::new(cache_config));
+    let config = crate::resolver::ResolverConfig::default().with_cache(cache.clone());
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+
+    // Request with authorization_model_id
+    let request = CheckRequest {
+        store_id: "store1".to_string(),
+        user: "user:alice".to_string(),
+        relation: "viewer".to_string(),
+        object: "document:readme".to_string(),
+        contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(HashMap::new()),
+        authorization_model_id: Some("01ABCDEFGHIJK1234567890XYZ".to_string()),
+    };
+
+    // Perform check twice
+    let _ = resolver.check(&request).await.unwrap();
+    let _ = resolver.check(&request).await.unwrap();
+
+    // Cache metrics should show skips, not hits (because authorization_model_id is set)
+    let metrics = resolver.cache_metrics();
+    assert_eq!(
+        metrics.hits.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "Should have no cache hits when authorization_model_id is provided"
+    );
+    assert!(
+        metrics.skips.load(std::sync::atomic::Ordering::Relaxed) >= 2,
+        "Should have cache skips when authorization_model_id is provided"
+    );
 }

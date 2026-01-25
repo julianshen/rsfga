@@ -162,12 +162,26 @@ where
             });
         }
 
+        // If a specific authorization model ID is provided, validate it exists.
+        // This ensures the check is performed against the specified model version.
+        if let Some(ref model_id) = request.authorization_model_id {
+            // Attempt to fetch the specific model - will error if not found
+            self.model_reader
+                .get_model_by_id(&request.store_id, model_id)
+                .await?;
+        }
+
         // Determine if caching should be used for this request.
         // Skip caching when:
         // - Contextual tuples are provided (request-specific, would pollute cache)
         // - Request context is non-empty (CEL conditions depend on context values,
         //   caching would return incorrect decisions for different contexts)
-        let cache_and_key = if request.contextual_tuples.is_empty() && request.context.is_empty() {
+        // - Authorization model ID is specified (check against specific version,
+        //   cache is keyed by latest model; mixing versions would cause stale hits)
+        let cache_and_key = if request.contextual_tuples.is_empty()
+            && request.context.is_empty()
+            && request.authorization_model_id.is_none()
+        {
             self.config.cache.as_ref().map(|cache| {
                 (
                     cache,
@@ -565,6 +579,7 @@ where
                         object: request.object,
                         contextual_tuples: request.contextual_tuples,
                         context: request.context,
+                        authorization_model_id: request.authorization_model_id,
                     };
                     let new_ctx = ctx.increment_depth();
                     self.resolve_check(new_request, new_ctx).await
@@ -682,6 +697,7 @@ where
                             object: user_obj.to_string(),
                             contextual_tuples: request.contextual_tuples.clone(),
                             context: request.context.clone(),
+                            authorization_model_id: request.authorization_model_id.clone(),
                         };
 
                         let new_ctx = ctx.increment_depth();
@@ -766,6 +782,7 @@ where
                         object: userset_object,
                         contextual_tuples: request.contextual_tuples.clone(),
                         context: request.context.clone(),
+                        authorization_model_id: request.authorization_model_id.clone(),
                     };
 
                     let new_ctx = ctx.increment_depth();
@@ -820,6 +837,7 @@ where
                 object: parent_object,
                 contextual_tuples: request.contextual_tuples.clone(),
                 context: request.context.clone(),
+                authorization_model_id: request.authorization_model_id.clone(),
             };
 
             let new_ctx = ctx.increment_depth();

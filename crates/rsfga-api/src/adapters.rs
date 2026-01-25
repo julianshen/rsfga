@@ -1088,12 +1088,69 @@ impl<S: DataStore> DataStoreModelReader<S> {
             conditions,
         ))
     }
+
+    /// Fetches and parses a model by its ID from storage (no caching).
+    async fn fetch_and_parse_model_by_id(
+        storage: &S,
+        store_id: &str,
+        authorization_model_id: &str,
+    ) -> DomainResult<AuthorizationModel> {
+        let stored_model = storage
+            .get_authorization_model(store_id, authorization_model_id)
+            .await
+            .map_err(|e| match e {
+                rsfga_storage::StorageError::ModelNotFound { .. } => {
+                    DomainError::AuthorizationModelNotFound {
+                        store_id: store_id.to_string(),
+                    }
+                }
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
+            })?;
+
+        // Parse the stored model JSON
+        let model_json: serde_json::Value = serde_json::from_str(&stored_model.model_json)
+            .map_err(|e| DomainError::ModelParseError {
+                message: format!("failed to parse model JSON: {e}"),
+            })?;
+
+        // Extract and parse type_definitions using shared helper
+        let type_definitions = if let Some(type_defs) = model_json
+            .get("type_definitions")
+            .and_then(|v| v.as_array())
+        {
+            parse_type_definitions_from_json(type_defs)?
+        } else {
+            Vec::new()
+        };
+
+        // Parse conditions from the JSON
+        let conditions = parse_conditions(&model_json)?;
+
+        Ok(AuthorizationModel::with_types_and_conditions(
+            &stored_model.schema_version,
+            type_definitions,
+            conditions,
+        ))
+    }
 }
 
 #[async_trait]
 impl<S: DataStore> ModelReader for DataStoreModelReader<S> {
     async fn get_model(&self, store_id: &str) -> DomainResult<AuthorizationModel> {
         self.get_parsed_model(store_id).await
+    }
+
+    async fn get_model_by_id(
+        &self,
+        store_id: &str,
+        authorization_model_id: &str,
+    ) -> DomainResult<AuthorizationModel> {
+        Self::fetch_and_parse_model_by_id(&self.storage, store_id, authorization_model_id).await
     }
 
     async fn get_type_definition(

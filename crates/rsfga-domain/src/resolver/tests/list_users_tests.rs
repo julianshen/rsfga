@@ -1154,6 +1154,7 @@ proptest! {
                     object: format!("document:{object_id}"),
                     contextual_tuples: Arc::new(vec![]),
                     context: Arc::new(HashMap::new()),
+                    authorization_model_id: None,
                 };
 
                 let check_result = resolver.check(&check_request).await;

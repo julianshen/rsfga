@@ -302,13 +302,31 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .transpose()?
             .unwrap_or_default();
 
-        // Create domain check request
-        let check_request = DomainCheckRequest::new(
+        // Parse context from gRPC Struct if present
+        let context = if let Some(ctx) = req.context {
+            prost_struct_to_hashmap(ctx).map_err(|_| {
+                Status::invalid_argument("invalid context (NaN or Infinity values not allowed)")
+            })?
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        // Get authorization_model_id if provided (empty string means not provided)
+        let authorization_model_id = if req.authorization_model_id.is_empty() {
+            None
+        } else {
+            Some(req.authorization_model_id)
+        };
+
+        // Create domain check request with context and optional model ID
+        let check_request = DomainCheckRequest::with_model_id(
             req.store_id,
             tuple_key.user,
             tuple_key.relation,
             tuple_key.object,
             contextual_tuples,
+            context,
+            authorization_model_id,
         );
 
         // Delegate to GraphResolver for full graph traversal
