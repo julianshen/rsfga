@@ -1515,7 +1515,24 @@ fn expand_node_to_body(node: rsfga_domain::resolver::ExpandNode) -> ExpandNodeBo
                 } => {
                     // Extract object from leaf.name (format: "type:id#relation")
                     // The tupleset relation is on the same object being expanded
-                    let object_for_tupleset = leaf.name.split('#').next().unwrap_or("").to_string();
+                    let object_for_tupleset = if let Some(object_part) = leaf.name.split('#').next()
+                    {
+                        if object_part.is_empty() {
+                            tracing::warn!(
+                                leaf_name = %leaf.name,
+                                "Expand leaf.name has empty object part before '#'"
+                            );
+                        }
+                        object_part.to_string()
+                    } else {
+                        // This branch is unreachable since split always returns at least one element,
+                        // but we handle it for completeness
+                        tracing::warn!(
+                            leaf_name = %leaf.name,
+                            "Expand leaf.name format unexpected (expected 'type:id#relation')"
+                        );
+                        String::new()
+                    };
                     ExpandLeafBody::new_tuple_to_userset(
                         ExpandObjectRelationBody {
                             object: object_for_tupleset,
@@ -1523,6 +1540,8 @@ fn expand_node_to_body(node: rsfga_domain::resolver::ExpandNode) -> ExpandNodeBo
                         },
                         ExpandObjectRelationBody {
                             // computed_userset object is unknown without further resolution
+                            // This matches OpenFGA behavior where the target object is not known
+                            // until the tupleset is resolved
                             object: String::new(),
                             relation: computed_userset,
                         },

@@ -801,9 +801,30 @@ pub fn expand_node_to_proto(node: rsfga_domain::resolver::ExpandNode) -> Node {
 
     match node {
         DomainExpandNode::Leaf(leaf) => {
-            // Extract object from leaf.name (format: "type:id#relation") before moving name
-            // The tupleset relation is on the same object being expanded
-            let object_for_tupleset = leaf.name.split('#').next().unwrap_or("").to_string();
+            // We need to extract the object before moving leaf.name into the Node
+            // Only compute this for TupleToUserset, but we must do it before the move
+            let object_for_tupleset =
+                if matches!(leaf.value, ExpandLeafValue::TupleToUserset { .. }) {
+                    // Extract object from leaf.name (format: "type:id#relation")
+                    // The tupleset relation is on the same object being expanded
+                    if let Some(object_part) = leaf.name.split('#').next() {
+                        if object_part.is_empty() {
+                            tracing::warn!(
+                                leaf_name = %leaf.name,
+                                "Expand leaf.name has empty object part before '#'"
+                            );
+                        }
+                        object_part.to_string()
+                    } else {
+                        tracing::warn!(
+                            leaf_name = %leaf.name,
+                            "Expand leaf.name format unexpected (expected 'type:id#relation')"
+                        );
+                        String::new()
+                    }
+                } else {
+                    String::new() // Not used for other leaf types
+                };
             Node {
                 name: leaf.name,
                 value: Some(crate::proto::openfga::v1::node::Value::Leaf(
@@ -829,6 +850,8 @@ pub fn expand_node_to_proto(node: rsfga_domain::resolver::ExpandNode) -> Node {
                                         relation: tupleset,
                                     }),
                                     // computed_userset object is unknown without further resolution
+                                    // This matches OpenFGA behavior where the target object is not
+                                    // known until the tupleset is resolved
                                     computed_userset: Some(ObjectRelation {
                                         object: String::new(),
                                         relation: computed_userset,
