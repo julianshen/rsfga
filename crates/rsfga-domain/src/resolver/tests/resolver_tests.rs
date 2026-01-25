@@ -20,7 +20,7 @@ use crate::error::{DomainError, DomainResult};
 use crate::model::{Condition, RelationDefinition, TypeDefinition, Userset};
 use crate::resolver::{
     CheckRequest, CheckResult, ContextualTuple, ExpandLeafValue, ExpandNode, ExpandRequest,
-    GraphResolver, ResolverConfig, StoredTupleRef, TupleReader,
+    GraphResolver, ListObjectsRequest, ResolverConfig, StoredTupleRef, TupleReader,
 };
 
 // ========== Section 1: Direct Tuple Resolution ==========
@@ -5368,4 +5368,236 @@ async fn test_expand_userset_with_user_relation() {
         },
         _ => panic!("Expected Leaf node"),
     }
+}
+
+// ========== Section: ListObjects with Contextual Tuples ==========
+
+/// Tests that list_objects includes objects from contextual tuples.
+/// This is the fix for Issue #262: ListObjects API doesn't support contextual tuples.
+#[tokio::test]
+async fn test_list_objects_includes_objects_from_contextual_tuples() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    // Set up store
+    tuple_reader.add_store("store1").await;
+
+    // Add type definition with viewer relation
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Add a stored tuple for doc3 (this one is in storage)
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc3", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Create contextual tuples for doc1 and doc2 (not in storage)
+    let contextual_tuples = vec![
+        ContextualTuple::new("user:alice", "viewer", "document:doc1"),
+        ContextualTuple::new("user:alice", "viewer", "document:doc2"),
+    ];
+
+    // Create request with contextual tuples
+    let request = ListObjectsRequest::with_context(
+        "store1",
+        "user:alice",
+        "viewer",
+        "document",
+        contextual_tuples,
+        HashMap::new(),
+    );
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Should return all 3 documents: doc1 and doc2 from contextual tuples, doc3 from storage
+    assert_eq!(result.objects.len(), 3);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(result.objects.contains(&"document:doc2".to_string()));
+    assert!(result.objects.contains(&"document:doc3".to_string()));
+    assert!(!result.truncated);
+}
+
+/// Tests that list_objects with only contextual tuples (no stored tuples) works.
+#[tokio::test]
+async fn test_list_objects_with_only_contextual_tuples() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    // Set up store
+    tuple_reader.add_store("store1").await;
+
+    // Add type definition with viewer relation
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // No stored tuples - only contextual tuples
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Create contextual tuples
+    let contextual_tuples = vec![
+        ContextualTuple::new("user:alice", "viewer", "document:doc1"),
+        ContextualTuple::new("user:alice", "viewer", "document:doc2"),
+    ];
+
+    let request = ListObjectsRequest::with_context(
+        "store1",
+        "user:alice",
+        "viewer",
+        "document",
+        contextual_tuples,
+        HashMap::new(),
+    );
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Should return documents from contextual tuples
+    assert_eq!(result.objects.len(), 2);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(result.objects.contains(&"document:doc2".to_string()));
+}
+
+/// Tests that list_objects deduplicates objects that appear in both storage and contextual tuples.
+#[tokio::test]
+async fn test_list_objects_deduplicates_contextual_and_stored_tuples() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Add tuple for doc1 in storage
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Also provide doc1 as contextual tuple (duplicate)
+    let contextual_tuples = vec![
+        ContextualTuple::new("user:alice", "viewer", "document:doc1"),
+        ContextualTuple::new("user:alice", "viewer", "document:doc2"),
+    ];
+
+    let request = ListObjectsRequest::with_context(
+        "store1",
+        "user:alice",
+        "viewer",
+        "document",
+        contextual_tuples,
+        HashMap::new(),
+    );
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Should return 2 unique documents (doc1 should not be duplicated)
+    assert_eq!(result.objects.len(), 2);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(result.objects.contains(&"document:doc2".to_string()));
+}
+
+/// Tests that list_objects only includes contextual tuple objects of the requested type.
+#[tokio::test]
+async fn test_list_objects_filters_contextual_tuples_by_type() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Add type definitions for document and folder
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Contextual tuples for both document and folder types
+    let contextual_tuples = vec![
+        ContextualTuple::new("user:alice", "viewer", "document:doc1"),
+        ContextualTuple::new("user:alice", "viewer", "folder:folder1"),
+        ContextualTuple::new("user:alice", "viewer", "document:doc2"),
+    ];
+
+    // Request documents only
+    let request = ListObjectsRequest::with_context(
+        "store1",
+        "user:alice",
+        "viewer",
+        "document",
+        contextual_tuples,
+        HashMap::new(),
+    );
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Should only return documents, not folders
+    assert_eq!(result.objects.len(), 2);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(result.objects.contains(&"document:doc2".to_string()));
+    assert!(!result.objects.iter().any(|o| o.starts_with("folder:")));
 }

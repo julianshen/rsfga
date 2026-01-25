@@ -1357,9 +1357,23 @@ where
             .get_objects_of_type(&request.store_id, &request.object_type, limit)
             .await?;
 
+        // Also include objects from contextual tuples that match the requested type.
+        // Contextual tuples may reference objects that don't exist in storage yet.
+        // We need to check these objects for permissions as well.
+        for ct in request.contextual_tuples.iter() {
+            // Parse the object to get type and id (format: "type:id")
+            if let Some(colon_pos) = ct.object.find(':') {
+                let (obj_type, obj_id) = ct.object.split_at(colon_pos);
+                let obj_id = &obj_id[1..]; // Skip the colon
+                if obj_type == request.object_type && !candidates.contains(&obj_id.to_string()) {
+                    candidates.push(obj_id.to_string());
+                }
+            }
+        }
+
         // Check if we hit the limit (truncation detection)
         let truncated = if candidates.len() > max_candidates {
-            candidates.pop(); // Remove the extra candidate
+            candidates.truncate(max_candidates); // Truncate to max
             true
         } else {
             false
