@@ -733,12 +733,8 @@ async fn get_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store ID format first (OpenFGA compatibility I2)
-    // Invalid formats return 400, valid formats that don't exist return 404
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
+    // No format validation - just let storage return "not found" for invalid IDs.
     let store = state.storage.get_store(&store_id).await?;
     Ok(Json(StoreResponse::from(store)))
 }
@@ -779,11 +775,7 @@ async fn update_store<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<UpdateStoreRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     let store = state.storage.update_store(&store_id, &body.name).await?;
     Ok(Json(StoreResponse::from(store)))
 }
@@ -812,12 +804,7 @@ async fn delete_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store ID format first (OpenFGA compatibility I2)
-    // Invalid formats return 400, valid formats that don't exist return 404
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // Clean up assertions FIRST, before storage deletion.
     // This ensures we don't leak assertions if storage deletion fails.
     // Using retain for atomic cleanup - no race condition window.
@@ -932,11 +919,7 @@ async fn write_authorization_model<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<WriteAuthorizationModelRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // Validate type_definitions is not empty (OpenFGA requirement)
     if body.type_definitions.is_empty() {
         return Err(ApiError::type_definitions_too_few_items(
@@ -1005,11 +988,7 @@ async fn get_authorization_model<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(path): Path<AuthorizationModelPath>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&path.store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     let model = state
         .storage
         .get_authorization_model(&path.store_id, &path.authorization_model_id)
@@ -1046,11 +1025,7 @@ async fn delete_authorization_model<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(path): Path<AuthorizationModelPath>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&path.store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store/model, regardless of ID format.
     // Clean up assertions FIRST, before storage deletion.
     // Using atomic remove - O(1) operation on DashMap.
     let key = (path.store_id.clone(), path.authorization_model_id.clone());
@@ -1079,11 +1054,7 @@ async fn list_authorization_models<S: DataStore>(
     Path(store_id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<ListAuthorizationModelsQuery>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // Use OpenFGA default (50) when not specified, clamp to max 50 when provided
     let page_size = Some(
         query
@@ -1183,11 +1154,7 @@ async fn check<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<CheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // If a specific authorization_model_id is provided, validate it exists
     if let Some(ref model_id) = body.authorization_model_id {
         state
@@ -1303,11 +1270,7 @@ async fn batch_check<S: DataStore>(
         BatchCheckItem as ServerBatchCheckItem, BatchCheckRequest as ServerBatchCheckRequest,
     };
 
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
@@ -1566,11 +1529,7 @@ async fn expand<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<ExpandRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     use rsfga_domain::resolver::ExpandRequest;
 
     // Create domain expand request
@@ -1629,11 +1588,7 @@ async fn write_tuples<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     use rsfga_storage::StoredTuple;
 
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // Validate tuple count before processing (OpenFGA limit: 100 tuples per write)
     let write_count = body.writes.as_ref().map_or(0, |w| w.tuple_keys.len());
     let delete_count = body.deletes.as_ref().map_or(0, |d| d.tuple_keys.len());
@@ -1790,8 +1745,7 @@ async fn write_tuples<S: DataStore>(
 // Use shared validation functions from the validation module
 use crate::validation::{
     is_valid_condition_name, json_exceeds_max_depth, validate_object_id_length,
-    validate_store_id_format, validate_tuple_count, validate_user_id_length,
-    MAX_CONDITION_CONTEXT_SIZE,
+    validate_tuple_count, validate_user_id_length, MAX_CONDITION_CONTEXT_SIZE,
 };
 
 /// Error returned when tuple key parsing fails.
@@ -1991,11 +1945,7 @@ async fn read_tuples<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     use rsfga_storage::TupleFilter;
 
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
@@ -2123,11 +2073,7 @@ async fn read_changes<S: DataStore>(
     Path(store_id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<ReadChangesQuery>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
@@ -2229,11 +2175,7 @@ async fn write_assertions<S: DataStore>(
     Path((store_id, authorization_model_id)): Path<(String, String)>,
     JsonBadRequest(body): JsonBadRequest<WriteAssertionsRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
@@ -2315,11 +2257,7 @@ async fn read_assertions<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path((store_id, authorization_model_id)): Path<(String, String)>,
 ) -> ApiResult<impl IntoResponse> {
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
@@ -2405,11 +2343,7 @@ async fn list_objects<S: DataStore>(
     use rsfga_storage::traits::validate_object_type;
     use tracing::warn;
 
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // Validate input format (API layer validation)
     validate_object_type(&body.r#type)?;
 
@@ -2595,11 +2529,7 @@ async fn list_users<S: DataStore>(
     use rsfga_storage::traits::validate_object_type;
     use tracing::warn;
 
-    // Validate store ID format first (OpenFGA compatibility I2)
-    if let Some(err) = validate_store_id_format(&store_id) {
-        return Err(ApiError::validation_error(err));
-    }
-
+    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // Validate object type format
     validate_object_type(&body.object.r#type)?;
 
