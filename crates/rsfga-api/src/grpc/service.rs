@@ -27,6 +27,7 @@ use crate::http::{
     AssertionCondition, AssertionKey, AssertionTupleKey, ContextualTuplesWrapper, StoredAssertion,
 };
 use crate::utils::{format_user, parse_object, parse_user};
+use crate::validation::{validate_object_id_length, validate_tuple_count, validate_user_id_length};
 
 use crate::proto::openfga::v1::{
     open_fga_service_server::OpenFgaService, user, Assertion, AuthorizationModel,
@@ -433,6 +434,48 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .get_store(&req.store_id)
             .await
             .map_err(storage_error_to_status)?;
+
+        // Validate tuple count before processing (OpenFGA limit: 100 tuples per write)
+        let write_count = req.writes.as_ref().map_or(0, |w| w.tuple_keys.len());
+        let delete_count = req.deletes.as_ref().map_or(0, |d| d.tuple_keys.len());
+        let total_count = write_count + delete_count;
+        if let Some(err) = validate_tuple_count(total_count) {
+            return Err(Status::invalid_argument(err));
+        }
+
+        // Validate user/object ID lengths before processing (OpenFGA limits)
+        if let Some(ref writes) = req.writes {
+            for (i, tk) in writes.tuple_keys.iter().enumerate() {
+                if let Some(err) = validate_user_id_length(&tk.user) {
+                    return Err(Status::invalid_argument(format!(
+                        "write tuple at index {}: {}",
+                        i, err
+                    )));
+                }
+                if let Some(err) = validate_object_id_length(&tk.object) {
+                    return Err(Status::invalid_argument(format!(
+                        "write tuple at index {}: {}",
+                        i, err
+                    )));
+                }
+            }
+        }
+        if let Some(ref deletes) = req.deletes {
+            for (i, tk) in deletes.tuple_keys.iter().enumerate() {
+                if let Some(err) = validate_user_id_length(&tk.user) {
+                    return Err(Status::invalid_argument(format!(
+                        "delete tuple at index {}: {}",
+                        i, err
+                    )));
+                }
+                if let Some(err) = validate_object_id_length(&tk.object) {
+                    return Err(Status::invalid_argument(format!(
+                        "delete tuple at index {}: {}",
+                        i, err
+                    )));
+                }
+            }
+        }
 
         // Get the latest authorization model to validate tuples against
         // OpenFGA requires tuples to reference types/relations defined in the model
