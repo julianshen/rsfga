@@ -650,10 +650,9 @@ async fn test_get_model_with_nonexistent_id_returns_404() {
 
 /// Test: Model versioning behavior with different model IDs.
 ///
-/// Current behavior: The authorization_model_id parameter is accepted but the
-/// system uses the latest model for evaluation (model version isolation is not
-/// yet implemented). This test documents the current fallback behavior where
-/// both model IDs return the same result because the latest model is used.
+/// This test verifies that checks use the specified model version for validation.
+/// When checking a relation that doesn't exist in the specified model version,
+/// the check should fail with a relation not found error.
 #[tokio::test]
 async fn test_check_with_different_model_versions_accepted() {
     let storage = Arc::new(MemoryDataStore::new());
@@ -675,8 +674,8 @@ async fn test_check_with_different_model_versions_accepted() {
         .await
         .unwrap();
 
-    // Check editor with v1 model ID - request is accepted
-    let (status1, response1) = post_json(
+    // Check editor with v1 model ID - should fail because "editor" relation doesn't exist in v1
+    let (status1, _response1) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/check"),
         serde_json::json!({
@@ -690,7 +689,7 @@ async fn test_check_with_different_model_versions_accepted() {
     )
     .await;
 
-    // Check editor with v2 model ID - request is accepted
+    // Check editor with v2 model ID - should succeed because "editor" relation exists in v2
     let (status2, response2) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/check"),
@@ -705,25 +704,18 @@ async fn test_check_with_different_model_versions_accepted() {
     )
     .await;
 
-    // Both requests should be accepted (200 OK)
+    // v1 check should fail - "editor" relation doesn't exist in v1 model
     assert_eq!(
         status1,
-        StatusCode::OK,
-        "Check with v1 model_id should return 200 OK"
+        StatusCode::BAD_REQUEST,
+        "Check with v1 model_id should return 400 - relation not found in v1"
     );
+
+    // v2 check should succeed - "editor" relation exists in v2 model
     assert_eq!(
         status2,
         StatusCode::OK,
         "Check with v2 model_id should return 200 OK"
-    );
-
-    // Current behavior: Both checks use the latest model (v2), so both return allowed=true.
-    // Note: When model version isolation is implemented, the v1 check should return
-    // allowed=false because the "editor" relation doesn't exist in v1.
-    assert_eq!(
-        response1["allowed"].as_bool(),
-        Some(true),
-        "Check with v1 model_id returns allowed=true (uses latest model as fallback)"
     );
     assert_eq!(
         response2["allowed"].as_bool(),

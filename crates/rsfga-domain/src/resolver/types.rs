@@ -21,6 +21,9 @@ pub struct CheckRequest {
     /// These are passed to condition expressions during evaluation.
     /// Keys are variable names, values are JSON-compatible values.
     pub context: Arc<HashMap<String, serde_json::Value>>,
+    /// Optional authorization model ID to use for the check.
+    /// If not provided, the latest model for the store is used.
+    pub authorization_model_id: Option<String>,
 }
 
 impl CheckRequest {
@@ -39,6 +42,7 @@ impl CheckRequest {
             object,
             contextual_tuples: Arc::new(contextual_tuples),
             context: Arc::new(HashMap::new()),
+            authorization_model_id: None,
         }
     }
 
@@ -58,6 +62,28 @@ impl CheckRequest {
             object,
             contextual_tuples: Arc::new(contextual_tuples),
             context: Arc::new(context),
+            authorization_model_id: None,
+        }
+    }
+
+    /// Creates a new CheckRequest with all options including authorization model ID.
+    pub fn with_model_id(
+        store_id: String,
+        user: String,
+        relation: String,
+        object: String,
+        contextual_tuples: Vec<ContextualTuple>,
+        context: HashMap<String, serde_json::Value>,
+        authorization_model_id: Option<String>,
+    ) -> Self {
+        Self {
+            store_id,
+            user,
+            relation,
+            object,
+            contextual_tuples: Arc::new(contextual_tuples),
+            context: Arc::new(context),
+            authorization_model_id,
         }
     }
 }

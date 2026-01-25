@@ -1037,32 +1037,13 @@ impl<S: DataStore> DataStoreModelReader<S> {
             })
     }
 
-    /// Fetches and parses a model from storage (no caching).
-    /// This is a static method to allow use in async closures.
-    async fn fetch_and_parse_model(
-        storage: &S,
-        store_id: &str,
+    /// Parses a stored authorization model into a domain AuthorizationModel.
+    ///
+    /// This helper extracts the common parsing logic used by both
+    /// `fetch_and_parse_model` and `fetch_and_parse_model_by_id`.
+    fn parse_stored_model(
+        stored_model: &rsfga_storage::StoredAuthorizationModel,
     ) -> DomainResult<AuthorizationModel> {
-        let stored_model = storage
-            .get_latest_authorization_model(store_id)
-            .await
-            .map_err(|e| match e {
-                // Model not found - no authorization model exists for this store
-                rsfga_storage::StorageError::ModelNotFound { .. } => {
-                    DomainError::AuthorizationModelNotFound {
-                        store_id: store_id.to_string(),
-                    }
-                }
-                // Store not found - preserve for 404 response
-                rsfga_storage::StorageError::StoreNotFound { store_id } => {
-                    DomainError::StoreNotFound { store_id }
-                }
-                // All other storage errors
-                _ => DomainError::StorageOperationFailed {
-                    reason: e.to_string(),
-                },
-            })?;
-
         // Parse the stored model JSON
         let model_json: serde_json::Value = serde_json::from_str(&stored_model.model_json)
             .map_err(|e| DomainError::ModelParseError {
@@ -1088,12 +1069,75 @@ impl<S: DataStore> DataStoreModelReader<S> {
             conditions,
         ))
     }
+
+    /// Fetches and parses the latest model from storage (no caching).
+    /// This is a static method to allow use in async closures.
+    async fn fetch_and_parse_model(
+        storage: &S,
+        store_id: &str,
+    ) -> DomainResult<AuthorizationModel> {
+        let stored_model = storage
+            .get_latest_authorization_model(store_id)
+            .await
+            .map_err(|e| match e {
+                // Model not found - no authorization model exists for this store
+                rsfga_storage::StorageError::ModelNotFound { .. } => {
+                    DomainError::AuthorizationModelNotFound {
+                        store_id: store_id.to_string(),
+                    }
+                }
+                // Store not found - preserve for 404 response
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                // All other storage errors
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
+            })?;
+
+        Self::parse_stored_model(&stored_model)
+    }
+
+    /// Fetches and parses a model by its ID from storage (no caching).
+    async fn fetch_and_parse_model_by_id(
+        storage: &S,
+        store_id: &str,
+        authorization_model_id: &str,
+    ) -> DomainResult<AuthorizationModel> {
+        let stored_model = storage
+            .get_authorization_model(store_id, authorization_model_id)
+            .await
+            .map_err(|e| match e {
+                rsfga_storage::StorageError::ModelNotFound { .. } => {
+                    DomainError::AuthorizationModelNotFound {
+                        store_id: store_id.to_string(),
+                    }
+                }
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
+            })?;
+
+        Self::parse_stored_model(&stored_model)
+    }
 }
 
 #[async_trait]
 impl<S: DataStore> ModelReader for DataStoreModelReader<S> {
     async fn get_model(&self, store_id: &str) -> DomainResult<AuthorizationModel> {
         self.get_parsed_model(store_id).await
+    }
+
+    async fn get_model_by_id(
+        &self,
+        store_id: &str,
+        authorization_model_id: &str,
+    ) -> DomainResult<AuthorizationModel> {
+        Self::fetch_and_parse_model_by_id(&self.storage, store_id, authorization_model_id).await
     }
 
     async fn get_type_definition(

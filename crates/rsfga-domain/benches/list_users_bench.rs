@@ -200,6 +200,14 @@ impl ModelReader for BenchModelReader {
         Ok(model)
     }
 
+    async fn get_model_by_id(
+        &self,
+        store_id: &str,
+        _authorization_model_id: &str,
+    ) -> DomainResult<AuthorizationModel> {
+        self.get_model(store_id).await
+    }
+
     async fn get_type_definition(
         &self,
         store_id: &str,

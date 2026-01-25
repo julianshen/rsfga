@@ -196,6 +196,16 @@ impl ModelReader for MockModelReader {
         Ok(model)
     }
 
+    async fn get_model_by_id(
+        &self,
+        store_id: &str,
+        _authorization_model_id: &str,
+    ) -> DomainResult<AuthorizationModel> {
+        // Mock implementation: just return the same model as get_model
+        // In real tests, specific model versions would be handled differently
+        self.get_model(store_id).await
+    }
+
     async fn get_type_definition(
         &self,
         store_id: &str,
