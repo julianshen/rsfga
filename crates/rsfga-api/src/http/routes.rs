@@ -1515,27 +1515,17 @@ fn expand_node_to_body(node: rsfga_domain::resolver::ExpandNode) -> ExpandNodeBo
                 } => {
                     // Extract object from leaf.name (format: "type:id#relation")
                     // The tupleset relation is on the same object being expanded
-                    let object_for_tupleset = if let Some(object_part) = leaf.name.split('#').next()
-                    {
-                        if object_part.is_empty() {
-                            tracing::warn!(
-                                leaf_name = %leaf.name,
-                                "Expand leaf.name has empty object part before '#'"
-                            );
-                        }
-                        object_part.to_string()
-                    } else {
-                        // This branch is unreachable since split always returns at least one element,
-                        // but we handle it for completeness
+                    // Note: split('#').next() always returns Some since split returns at least one element
+                    let object_part = leaf.name.split('#').next().unwrap_or_default();
+                    if object_part.is_empty() && !leaf.name.is_empty() {
                         tracing::warn!(
                             leaf_name = %leaf.name,
-                            "Expand leaf.name format unexpected (expected 'type:id#relation')"
+                            "Expand leaf.name has empty object part before '#'"
                         );
-                        String::new()
-                    };
+                    }
                     ExpandLeafBody::new_tuple_to_userset(
                         ExpandObjectRelationBody {
-                            object: object_for_tupleset,
+                            object: object_part.to_string(),
                             relation: tupleset,
                         },
                         ExpandObjectRelationBody {

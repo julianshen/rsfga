@@ -803,25 +803,19 @@ pub fn expand_node_to_proto(node: rsfga_domain::resolver::ExpandNode) -> Node {
         DomainExpandNode::Leaf(leaf) => {
             // We need to extract the object before moving leaf.name into the Node
             // Only compute this for TupleToUserset, but we must do it before the move
+            // Note: split('#').next() always returns Some since split returns at least one element
             let object_for_tupleset =
                 if matches!(leaf.value, ExpandLeafValue::TupleToUserset { .. }) {
                     // Extract object from leaf.name (format: "type:id#relation")
                     // The tupleset relation is on the same object being expanded
-                    if let Some(object_part) = leaf.name.split('#').next() {
-                        if object_part.is_empty() {
-                            tracing::warn!(
-                                leaf_name = %leaf.name,
-                                "Expand leaf.name has empty object part before '#'"
-                            );
-                        }
-                        object_part.to_string()
-                    } else {
+                    let object_part = leaf.name.split('#').next().unwrap_or_default();
+                    if object_part.is_empty() && !leaf.name.is_empty() {
                         tracing::warn!(
                             leaf_name = %leaf.name,
-                            "Expand leaf.name format unexpected (expected 'type:id#relation')"
+                            "Expand leaf.name has empty object part before '#'"
                         );
-                        String::new()
                     }
+                    object_part.to_string()
                 } else {
                     String::new() // Not used for other leaf types
                 };
