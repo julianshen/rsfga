@@ -177,7 +177,7 @@ async fn create_postgres_store() -> PostgresDataStore {
         .await
         .expect("Failed to run migrations");
 
-    cleanup_test_stores(&store, "parity-").await;
+    cleanup_test_stores(&store, "par").await; // Matches both "par-" and "parity-" prefixes
     store
 }
 
@@ -199,7 +199,7 @@ async fn create_mysql_store() -> MySQLDataStore {
         .await
         .expect("Failed to run migrations");
 
-    cleanup_test_stores(&store, "parity-").await;
+    cleanup_test_stores(&store, "par").await; // Matches both "par-" and "parity-" prefixes
     store
 }
 
@@ -221,7 +221,7 @@ async fn create_cockroachdb_store() -> PostgresDataStore {
         .await
         .expect("Failed to run migrations on CockroachDB");
 
-    cleanup_test_stores(&store, "parity-").await;
+    cleanup_test_stores(&store, "par").await; // Matches both "par-" and "parity-" prefixes
     store
 }
 
@@ -384,7 +384,7 @@ async fn test_authorization_model_parity_mysql() {
 #[ignore = "requires running CockroachDB"]
 async fn test_authorization_model_parity_cockroachdb() {
     let store = create_cockroachdb_store().await;
-    run_authorization_model_parity_test(&store, "parity-auth-model-cockroachdb").await;
+    run_authorization_model_parity_test(&store, "par-auth-model-crdb").await;
 }
 
 // ============================================================================
@@ -587,7 +587,7 @@ async fn test_pagination_integrity_mysql() {
 #[ignore = "requires running CockroachDB"]
 async fn test_pagination_integrity_cockroachdb() {
     let store = create_cockroachdb_store().await;
-    run_pagination_integrity_test(&store, "parity-pagination-cockroachdb").await;
+    run_pagination_integrity_test(&store, "par-pagination-crdb").await;
 }
 
 #[tokio::test]
@@ -614,7 +614,7 @@ async fn test_pagination_with_filter_integrity_mysql() {
 #[ignore = "requires running CockroachDB"]
 async fn test_pagination_with_filter_integrity_cockroachdb() {
     let store = create_cockroachdb_store().await;
-    run_pagination_with_filter_integrity_test(&store, "parity-pag-filter-cockroachdb").await;
+    run_pagination_with_filter_integrity_test(&store, "par-pag-filter-crdb").await;
 }
 
 /// Generic helper: Test invalid continuation token handling
@@ -679,14 +679,14 @@ async fn run_invalid_continuation_token_test<S: DataStore>(store: &S, store_id: 
 #[tokio::test]
 async fn test_invalid_continuation_token_memory() {
     let store = create_memory_store();
-    run_invalid_continuation_token_test(&store, "parity-invalid-token-memory").await;
+    run_invalid_continuation_token_test(&store, "par-inv-token-mem").await;
 }
 
 #[tokio::test]
 #[ignore = "requires running PostgreSQL"]
 async fn test_invalid_continuation_token_postgres() {
     let store = create_postgres_store().await;
-    run_invalid_continuation_token_test(&store, "parity-invalid-token-postgres").await;
+    run_invalid_continuation_token_test(&store, "par-inv-token-pg").await;
 }
 
 #[tokio::test]
@@ -700,7 +700,7 @@ async fn test_invalid_continuation_token_mysql() {
 #[ignore = "requires running CockroachDB"]
 async fn test_invalid_continuation_token_cockroachdb() {
     let store = create_cockroachdb_store().await;
-    run_invalid_continuation_token_test(&store, "parity-invalid-token-cockroachdb").await;
+    run_invalid_continuation_token_test(&store, "par-inv-token-crdb").await;
 }
 
 // ============================================================================
@@ -915,34 +915,34 @@ async fn test_concurrent_write_consistency_mysql() {
 #[ignore = "requires running CockroachDB"]
 async fn test_concurrent_write_consistency_cockroachdb() {
     let store = Arc::new(create_cockroachdb_store().await);
-    run_concurrent_write_consistency_test(store, "parity-concurrent-cockroachdb").await;
+    run_concurrent_write_consistency_test(store, "par-concurrent-crdb").await;
 }
 
 #[tokio::test]
 async fn test_concurrent_batch_write_memory() {
     let store = Arc::new(create_memory_store());
-    run_concurrent_batch_write_test(store, "parity-batch-concurrent-memory").await;
+    run_concurrent_batch_write_test(store, "par-batch-conc-mem").await;
 }
 
 #[tokio::test]
 #[ignore = "requires running PostgreSQL"]
 async fn test_concurrent_batch_write_postgres() {
     let store = Arc::new(create_postgres_store().await);
-    run_concurrent_batch_write_test(store, "parity-batch-concurrent-postgres").await;
+    run_concurrent_batch_write_test(store, "par-batch-conc-pg").await;
 }
 
 #[tokio::test]
 #[ignore = "requires running MySQL"]
 async fn test_concurrent_batch_write_mysql() {
     let store = Arc::new(create_mysql_store().await);
-    run_concurrent_batch_write_test(store, "parity-batch-concurrent-mysql").await;
+    run_concurrent_batch_write_test(store, "par-batch-conc-sql").await;
 }
 
 #[tokio::test]
 #[ignore = "requires running CockroachDB"]
 async fn test_concurrent_batch_write_cockroachdb() {
     let store = Arc::new(create_cockroachdb_store().await);
-    run_concurrent_batch_write_test(store, "parity-batch-concurrent-cockroachdb").await;
+    run_concurrent_batch_write_test(store, "par-batch-conc-crdb").await;
 }
 
 // ============================================================================
@@ -1199,14 +1199,14 @@ async fn test_error_handling_parity_cockroachdb() {
 #[tokio::test]
 async fn test_invalid_tuple_field_memory() {
     let store = create_memory_store();
-    run_invalid_tuple_field_test(&store, "parity-invalid-tuple-memory").await;
+    run_invalid_tuple_field_test(&store, "par-inv-tuple-mem").await;
 }
 
 #[tokio::test]
 #[ignore = "requires running PostgreSQL"]
 async fn test_invalid_tuple_field_postgres() {
     let store = create_postgres_store().await;
-    run_invalid_tuple_field_test(&store, "parity-invalid-tuple-postgres").await;
+    run_invalid_tuple_field_test(&store, "par-inv-tuple-pg").await;
 }
 
 #[tokio::test]
@@ -1220,7 +1220,7 @@ async fn test_invalid_tuple_field_mysql() {
 #[ignore = "requires running CockroachDB"]
 async fn test_invalid_tuple_field_cockroachdb() {
     let store = create_cockroachdb_store().await;
-    run_invalid_tuple_field_test(&store, "parity-invalid-tuple-cockroachdb").await;
+    run_invalid_tuple_field_test(&store, "par-inv-tuple-crdb").await;
 }
 
 // ============================================================================
@@ -1309,7 +1309,7 @@ async fn run_tuple_without_condition_test<S: DataStore>(store: &S, store_id: &st
 #[ignore = "requires running PostgreSQL"]
 async fn test_conditional_tuple_postgres() {
     let store = create_postgres_store().await;
-    run_conditional_tuple_test_postgres(&store, "parity-conditional-postgres").await;
+    run_conditional_tuple_test_postgres(&store, "par-conditional-pg").await;
 }
 
 #[tokio::test]
@@ -1462,34 +1462,34 @@ async fn test_list_stores_parity_mysql() {
 #[ignore = "requires running CockroachDB"]
 async fn test_list_stores_parity_cockroachdb() {
     let store = create_cockroachdb_store().await;
-    run_list_stores_parity_test(&store, "parity-list-cockroachdb").await;
+    run_list_stores_parity_test(&store, "par-list-crdb").await;
 }
 
 #[tokio::test]
 async fn test_list_stores_paginated_parity_memory() {
     let store = create_memory_store();
-    run_list_stores_paginated_parity_test(&store, "parity-lstpag-memory").await;
+    run_list_stores_paginated_parity_test(&store, "par-lp-m").await;
 }
 
 #[tokio::test]
 #[ignore = "requires running PostgreSQL"]
 async fn test_list_stores_paginated_parity_postgres() {
     let store = create_postgres_store().await;
-    run_list_stores_paginated_parity_test(&store, "parity-lstpag-postgres").await;
+    run_list_stores_paginated_parity_test(&store, "par-lp-pg").await;
 }
 
 #[tokio::test]
 #[ignore = "requires running MySQL"]
 async fn test_list_stores_paginated_parity_mysql() {
     let store = create_mysql_store().await;
-    run_list_stores_paginated_parity_test(&store, "parity-lstpag-mysql").await;
+    run_list_stores_paginated_parity_test(&store, "par-lp-sql").await;
 }
 
 #[tokio::test]
 #[ignore = "requires running CockroachDB"]
 async fn test_list_stores_paginated_parity_cockroachdb() {
     let store = create_cockroachdb_store().await;
-    run_list_stores_paginated_parity_test(&store, "parity-lstpag-cockroachdb").await;
+    run_list_stores_paginated_parity_test(&store, "par-lp-crdb").await;
 }
 
 // ============================================================================
@@ -1606,7 +1606,7 @@ async fn test_delete_nonexistent_tuple_memory() {
 #[ignore = "requires running PostgreSQL"]
 async fn test_delete_nonexistent_tuple_postgres() {
     let store = create_postgres_store().await;
-    run_delete_nonexistent_tuple_test(&store, "parity-del-nonexist-postgres").await;
+    run_delete_nonexistent_tuple_test(&store, "par-del-noex-pg").await;
 }
 
 #[tokio::test]
@@ -1620,7 +1620,7 @@ async fn test_delete_nonexistent_tuple_mysql() {
 #[ignore = "requires running CockroachDB"]
 async fn test_delete_nonexistent_tuple_cockroachdb() {
     let store = create_cockroachdb_store().await;
-    run_delete_nonexistent_tuple_test(&store, "parity-del-nonexist-cockroachdb").await;
+    run_delete_nonexistent_tuple_test(&store, "par-del-noex-crdb").await;
 }
 
 // ============================================================================
@@ -1814,7 +1814,7 @@ async fn test_user_filter_parity_memory() {
 #[ignore = "requires running PostgreSQL"]
 async fn test_user_filter_parity_postgres() {
     let store = create_postgres_store().await;
-    run_user_filter_parity_test(&store, "parity-user-filter-postgres").await;
+    run_user_filter_parity_test(&store, "par-user-filter-pg").await;
 }
 
 #[tokio::test]
@@ -1828,7 +1828,7 @@ async fn test_user_filter_parity_mysql() {
 #[ignore = "requires running CockroachDB"]
 async fn test_user_filter_parity_cockroachdb() {
     let store = create_cockroachdb_store().await;
-    run_user_filter_parity_test(&store, "parity-user-filter-cockroachdb").await;
+    run_user_filter_parity_test(&store, "par-user-filter-crdb").await;
 }
 
 // ============================================================================

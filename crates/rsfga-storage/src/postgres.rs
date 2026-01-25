@@ -501,11 +501,13 @@ impl PostgresDataStore {
         debug!("Running database migrations");
 
         // Create stores table
+        // - id: 26 chars (ULID format)
+        // - name: 256 chars (store name limit)
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS stores (
-                id VARCHAR(255) PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
+                id VARCHAR(26) PRIMARY KEY,
+                name VARCHAR(256) NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
             )
@@ -520,18 +522,28 @@ impl PostgresDataStore {
         // Create tuples table
         // Note: We use a surrogate primary key and a unique index instead of a composite
         // PRIMARY KEY with COALESCE, since PostgreSQL doesn't allow expressions in PKs.
+        //
+        // Field size limits per OpenFGA specification:
+        // - store_id: 26 chars (ULID format)
+        // - object_type: 254 chars (type name limit)
+        // - object_id: 256 chars (object identifier limit)
+        // - relation: 50 chars (relation name limit)
+        // - user_type: 254 chars (type name limit)
+        // - user_id: 512 chars (user identifier limit)
+        // - user_relation: 50 chars (relation name limit)
+        // - condition_name: 256 chars (condition name limit)
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS tuples (
                 id BIGSERIAL PRIMARY KEY,
-                store_id VARCHAR(255) NOT NULL,
-                object_type VARCHAR(255) NOT NULL,
-                object_id VARCHAR(255) NOT NULL,
-                relation VARCHAR(255) NOT NULL,
-                user_type VARCHAR(255) NOT NULL,
-                user_id VARCHAR(255) NOT NULL,
-                user_relation VARCHAR(255),
-                condition_name VARCHAR(255),
+                store_id VARCHAR(26) NOT NULL,
+                object_type VARCHAR(254) NOT NULL,
+                object_id VARCHAR(256) NOT NULL,
+                relation VARCHAR(50) NOT NULL,
+                user_type VARCHAR(254) NOT NULL,
+                user_id VARCHAR(512) NOT NULL,
+                user_relation VARCHAR(50),
+                condition_name VARCHAR(256),
                 condition_context JSONB,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                 FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
@@ -561,7 +573,7 @@ impl PostgresDataStore {
             // Tested with CockroachDB v23.x - v25.x.
             sqlx::query(
                 "ALTER TABLE tuples \
-                 ADD COLUMN IF NOT EXISTS condition_name VARCHAR(255), \
+                 ADD COLUMN IF NOT EXISTS condition_name VARCHAR(256), \
                  ADD COLUMN IF NOT EXISTS condition_context JSONB",
             )
             .execute(&self.pool)
@@ -587,7 +599,7 @@ impl PostgresDataStore {
                         AND table_name = 'tuples'
                         AND column_name = 'condition_name'
                     ) THEN
-                        ALTER TABLE tuples ADD COLUMN condition_name VARCHAR(255);
+                        ALTER TABLE tuples ADD COLUMN condition_name VARCHAR(256);
                     END IF;
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
@@ -669,11 +681,13 @@ impl PostgresDataStore {
         }
 
         // Create authorization_models table
+        // - id: 26 chars (ULID format)
+        // - store_id: 26 chars (ULID format)
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS authorization_models (
-                id VARCHAR(255) PRIMARY KEY,
-                store_id VARCHAR(255) NOT NULL,
+                id VARCHAR(26) PRIMARY KEY,
+                store_id VARCHAR(26) NOT NULL,
                 schema_version VARCHAR(50) NOT NULL,
                 model_json TEXT NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
@@ -708,18 +722,19 @@ impl PostgresDataStore {
 
         // Create changelog table for tracking tuple changes (writes and deletes)
         // This enables the ReadChanges API to return a chronological history of changes.
+        // Field sizes match the tuples table for consistency.
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS changelog (
                 id BIGSERIAL PRIMARY KEY,
-                store_id VARCHAR(255) NOT NULL,
-                object_type VARCHAR(255) NOT NULL,
-                object_id VARCHAR(255) NOT NULL,
-                relation VARCHAR(255) NOT NULL,
-                user_type VARCHAR(255) NOT NULL,
-                user_id VARCHAR(255) NOT NULL,
-                user_relation VARCHAR(255),
-                condition_name VARCHAR(255),
+                store_id VARCHAR(26) NOT NULL,
+                object_type VARCHAR(254) NOT NULL,
+                object_id VARCHAR(256) NOT NULL,
+                relation VARCHAR(50) NOT NULL,
+                user_type VARCHAR(254) NOT NULL,
+                user_id VARCHAR(512) NOT NULL,
+                user_relation VARCHAR(50),
+                condition_name VARCHAR(256),
                 condition_context JSONB,
                 operation VARCHAR(50) NOT NULL,
                 timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
@@ -751,7 +766,151 @@ impl PostgresDataStore {
                 })?;
         }
 
+        // Apply column size migrations for existing databases
+        // This widens columns from old sizes to new OpenFGA-compliant sizes.
+        self.apply_column_size_migration().await?;
+
         debug!("Database migrations completed successfully");
+        Ok(())
+    }
+
+    /// Apply column size migrations for existing databases.
+    ///
+    /// This function adjusts column sizes from old defaults to OpenFGA-compliant sizes.
+    /// PostgreSQL's ALTER TABLE ... TYPE is idempotent - running it on a column that
+    /// already has the target size has no effect.
+    ///
+    /// # Column Size Changes
+    ///
+    /// | Table | Column | Old Size | New Size | Notes |
+    /// |-------|--------|----------|----------|-------|
+    /// | stores | id | 255 | 26 | ULID format, shrinking |
+    /// | stores | name | 255 | 256 | |
+    /// | authorization_models | id | 255 | 26 | ULID format, shrinking |
+    /// | authorization_models | store_id | 255 | 26 | FK to stores.id |
+    /// | tuples | store_id | 255 | 26 | FK to stores.id |
+    /// | tuples | object_type | 255 | 254 | |
+    /// | tuples | object_id | 255 | 256 | |
+    /// | tuples | relation | 255 | 50 | |
+    /// | tuples | user_type | 255 | 254 | |
+    /// | tuples | user_id | 255 | 512 | Expanding |
+    /// | tuples | user_relation | 255 | 50 | |
+    /// | changelog | (same as tuples) | | | |
+    /// | assertions | store_id | 255 | 26 | FK to stores.id |
+    /// | assertions | authorization_model_id | 255 | 26 | FK to auth_models.id |
+    ///
+    /// # Warning
+    ///
+    /// Some columns are being SHRUNK (255→26). This will fail if existing data
+    /// exceeds the new limit. Store IDs should always be ULIDs (26 chars).
+    async fn apply_column_size_migration(&self) -> StorageResult<()> {
+        // PostgreSQL ALTER TABLE ... TYPE is idempotent, so we can run these
+        // unconditionally. Unlike MySQL, there's no need to check current sizes.
+        //
+        // Note: Both PostgreSQL and CockroachDB support the same ALTER COLUMN syntax.
+        //
+        // IMPORTANT: Some columns are being SHRUNK (255→26 for store_id fields).
+        // This will fail if existing data exceeds the new limit. In practice,
+        // store IDs should always be ULIDs (26 chars), so this should be safe.
+        // If migration fails, manually verify data lengths before retrying.
+
+        // 1. stores table - must be migrated first (parent table for FKs)
+        let stores_alterations = [
+            // Note: Shrinking id from 255 to 26 - will fail if data > 26 chars
+            "ALTER TABLE stores ALTER COLUMN id TYPE VARCHAR(26)",
+            "ALTER TABLE stores ALTER COLUMN name TYPE VARCHAR(256)",
+        ];
+
+        for sql in stores_alterations {
+            sqlx::query(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to alter stores table: {e}"),
+                })?;
+        }
+
+        // 2. authorization_models table - references stores.id
+        let auth_models_alterations = [
+            "ALTER TABLE authorization_models ALTER COLUMN id TYPE VARCHAR(26)",
+            "ALTER TABLE authorization_models ALTER COLUMN store_id TYPE VARCHAR(26)",
+        ];
+
+        for sql in auth_models_alterations {
+            sqlx::query(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to alter authorization_models table: {e}"),
+                })?;
+        }
+
+        // 3. tuples table - references stores.id
+        let tuples_alterations = [
+            "ALTER TABLE tuples ALTER COLUMN store_id TYPE VARCHAR(26)",
+            "ALTER TABLE tuples ALTER COLUMN object_type TYPE VARCHAR(254)",
+            "ALTER TABLE tuples ALTER COLUMN object_id TYPE VARCHAR(256)",
+            "ALTER TABLE tuples ALTER COLUMN relation TYPE VARCHAR(50)",
+            "ALTER TABLE tuples ALTER COLUMN user_type TYPE VARCHAR(254)",
+            "ALTER TABLE tuples ALTER COLUMN user_id TYPE VARCHAR(512)",
+            "ALTER TABLE tuples ALTER COLUMN user_relation TYPE VARCHAR(50)",
+        ];
+
+        for sql in tuples_alterations {
+            sqlx::query(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to alter tuples table: {e}"),
+                })?;
+        }
+
+        // 4. changelog table - references stores.id (same fields as tuples)
+        let changelog_alterations = [
+            "ALTER TABLE changelog ALTER COLUMN store_id TYPE VARCHAR(26)",
+            "ALTER TABLE changelog ALTER COLUMN object_type TYPE VARCHAR(254)",
+            "ALTER TABLE changelog ALTER COLUMN object_id TYPE VARCHAR(256)",
+            "ALTER TABLE changelog ALTER COLUMN relation TYPE VARCHAR(50)",
+            "ALTER TABLE changelog ALTER COLUMN user_type TYPE VARCHAR(254)",
+            "ALTER TABLE changelog ALTER COLUMN user_id TYPE VARCHAR(512)",
+            "ALTER TABLE changelog ALTER COLUMN user_relation TYPE VARCHAR(50)",
+        ];
+
+        for sql in changelog_alterations {
+            sqlx::query(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to alter changelog table: {e}"),
+                })?;
+        }
+
+        // 5. assertions table - references stores.id and authorization_models.id
+        // Check if assertions table exists before altering
+        let assertions_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'assertions')",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check assertions table existence: {e}"),
+        })?;
+
+        if assertions_exists {
+            let assertions_alterations = [
+                "ALTER TABLE assertions ALTER COLUMN store_id TYPE VARCHAR(26)",
+                "ALTER TABLE assertions ALTER COLUMN authorization_model_id TYPE VARCHAR(26)",
+            ];
+
+            for sql in assertions_alterations {
+                sqlx::query(sql).execute(&self.pool).await.map_err(|e| {
+                    StorageError::QueryError {
+                        message: format!("Failed to alter assertions table: {e}"),
+                    }
+                })?;
+            }
+        }
+
         Ok(())
     }
 
