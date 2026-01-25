@@ -11,10 +11,23 @@
 //! ```text
 //! gRPC Request → OpenFgaGrpcService → Storage → Response
 //! ```
+//!
+//! # Server Setup
+//!
+//! Use the `server` module to start the gRPC transport layer:
+//!
+//! ```ignore
+//! use rsfga_api::grpc::server::{run_grpc_server, GrpcServerConfig};
+//!
+//! let config = GrpcServerConfig::default();
+//! run_grpc_server(storage, addr, config).await?;
+//! ```
 
 pub mod conversion;
+pub mod server;
 mod service;
 
+pub use server::{run_grpc_server, run_grpc_server_with_shutdown, GrpcServerConfig};
 pub use service::OpenFgaGrpcService;
 
 // Re-export the generated server trait for service registration

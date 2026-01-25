@@ -33,6 +33,10 @@ pub struct ServerConfig {
     #[serde(default)]
     pub server: ServerSettings,
 
+    /// gRPC settings
+    #[serde(default)]
+    pub grpc: GrpcSettings,
+
     /// Storage settings
     #[serde(default)]
     pub storage: StorageSettings,
@@ -95,6 +99,41 @@ fn default_request_timeout() -> u64 {
 
 fn default_max_connections() -> usize {
     10000
+}
+
+/// gRPC server settings.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct GrpcSettings {
+    /// Enable gRPC server
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// gRPC port (default: 50051)
+    #[serde(default = "default_grpc_port")]
+    pub port: u16,
+
+    /// Enable gRPC reflection for service discovery
+    #[serde(default = "default_true")]
+    pub reflection: bool,
+
+    /// Enable gRPC health check service
+    #[serde(default = "default_true")]
+    pub health_check: bool,
+}
+
+impl Default for GrpcSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: default_grpc_port(),
+            reflection: true,
+            health_check: true,
+        }
+    }
+}
+
+fn default_grpc_port() -> u16 {
+    50051
 }
 
 /// Storage backend settings.

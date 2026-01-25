@@ -17,13 +17,15 @@ use std::sync::Arc;
 
 use clap::Parser;
 use tokio::signal;
+use tokio::sync::broadcast;
 use tracing::{error, info, Level};
 
+use rsfga_api::grpc::{run_grpc_server_with_shutdown, GrpcServerConfig};
 use rsfga_api::http::{create_router_with_observability, AppState};
 use rsfga_api::observability::{init_metrics, init_observability, LoggingConfig, TracingConfig};
 use rsfga_server::ServerConfig;
 use rsfga_storage::{
-    MemoryDataStore, MySQLConfig, MySQLDataStore, PostgresConfig, PostgresDataStore,
+    DataStore, MemoryDataStore, MySQLConfig, MySQLDataStore, PostgresConfig, PostgresDataStore,
 };
 
 /// RSFGA - High-Performance OpenFGA-Compatible Authorization Server
@@ -76,15 +78,14 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Create storage backend based on configuration
-    let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
+    let http_addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
+    let grpc_addr: SocketAddr = format!("{}:{}", config.server.host, config.grpc.port).parse()?;
 
     match config.storage.backend.as_str() {
         "memory" => {
             info!("Using in-memory storage backend");
             let storage = Arc::new(MemoryDataStore::new());
-            let state = AppState::new(storage);
-            let router = create_router_with_observability(state, metrics_state);
-            run_server(router, addr).await
+            run_servers(storage, http_addr, grpc_addr, &config, metrics_state).await
         }
         "postgres" | "cockroachdb" => {
             let database_url = config.storage.database_url.as_ref().ok_or_else(|| {
@@ -118,10 +119,7 @@ async fn main() -> anyhow::Result<()> {
             info!("Database migrations complete");
 
             let storage = Arc::new(storage);
-
-            let state = AppState::new(storage);
-            let router = create_router_with_observability(state, metrics_state);
-            run_server(router, addr).await
+            run_servers(storage, http_addr, grpc_addr, &config, metrics_state).await
         }
         "mysql" => {
             let database_url = config.storage.database_url.as_ref().ok_or_else(|| {
@@ -149,10 +147,7 @@ async fn main() -> anyhow::Result<()> {
             info!("Database migrations complete");
 
             let storage = Arc::new(storage);
-
-            let state = AppState::new(storage);
-            let router = create_router_with_observability(state, metrics_state);
-            run_server(router, addr).await
+            run_servers(storage, http_addr, grpc_addr, &config, metrics_state).await
         }
         _ => {
             error!("Unknown storage backend: {}", config.storage.backend);
@@ -161,17 +156,98 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+/// Run both HTTP and gRPC servers with shared storage.
+async fn run_servers<S>(
+    storage: Arc<S>,
+    http_addr: SocketAddr,
+    grpc_addr: SocketAddr,
+    config: &ServerConfig,
+    metrics_state: rsfga_api::observability::MetricsState,
+) -> anyhow::Result<()>
+where
+    S: DataStore + Send + Sync + 'static,
+{
+    // Create shutdown broadcast channel
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
+
+    // Start HTTP server
+    let http_storage = Arc::clone(&storage);
+    let http_shutdown_rx = shutdown_tx.subscribe();
+    let http_handle = tokio::spawn(async move {
+        let state = AppState::new(http_storage);
+        let router = create_router_with_observability(state, metrics_state);
+        run_http_server(router, http_addr, http_shutdown_rx).await
+    });
+
+    // Start gRPC server if enabled
+    let grpc_handle = if config.grpc.enabled {
+        let grpc_storage = Arc::clone(&storage);
+        let grpc_config = GrpcServerConfig {
+            reflection_enabled: config.grpc.reflection,
+            health_check_enabled: config.grpc.health_check,
+        };
+        let grpc_shutdown_rx = shutdown_tx.subscribe();
+
+        info!(%grpc_addr, "gRPC server enabled");
+
+        Some(tokio::spawn(async move {
+            // Create a future that completes when shutdown is signaled
+            let shutdown_future = async move {
+                let mut rx = grpc_shutdown_rx;
+                let _ = rx.recv().await;
+            };
+
+            if let Err(e) =
+                run_grpc_server_with_shutdown(grpc_storage, grpc_addr, grpc_config, shutdown_future)
+                    .await
+            {
+                error!("gRPC server error: {}", e);
+            }
+        }))
+    } else {
+        info!("gRPC server disabled");
+        None
+    };
+
+    // Wait for shutdown signal
+    shutdown_signal().await;
+
+    // Signal all servers to shutdown
+    let _ = shutdown_tx.send(());
+
+    // Wait for servers to finish
+    if let Err(e) = http_handle.await {
+        error!("HTTP server task error: {}", e);
+    }
+
+    if let Some(handle) = grpc_handle {
+        if let Err(e) = handle.await {
+            error!("gRPC server task error: {}", e);
+        }
+    }
+
+    info!("All servers shutdown complete");
+    Ok(())
+}
+
 /// Run the HTTP server with graceful shutdown.
-async fn run_server(router: axum::Router, addr: SocketAddr) -> anyhow::Result<()> {
-    info!(%addr, "Server listening");
+async fn run_http_server(
+    router: axum::Router,
+    addr: SocketAddr,
+    mut shutdown_rx: broadcast::Receiver<()>,
+) -> anyhow::Result<()> {
+    info!(%addr, "HTTP server listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.recv().await;
+            info!("HTTP server received shutdown signal");
+        })
         .await?;
 
-    info!("Server shutdown complete");
+    info!("HTTP server shutdown complete");
     Ok(())
 }
 
