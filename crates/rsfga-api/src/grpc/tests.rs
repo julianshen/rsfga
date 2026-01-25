@@ -2146,3 +2146,264 @@ async fn test_grpc_read_changes_includes_conditions() {
     assert_eq!(condition.name, "ip_allowlist");
     assert!(condition.context.is_some(), "Condition should have context");
 }
+
+// ============================================================================
+// Read Pagination Tests (Issue #282)
+// ============================================================================
+
+/// Test: Read RPC respects page_size and returns continuation_token
+///
+/// Verifies that the Read RPC properly paginates results when page_size is specified.
+#[tokio::test]
+async fn test_read_rpc_pagination_returns_continuation_token() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write more tuples than page_size
+    for i in 0..10 {
+        storage
+            .write_tuple(
+                "test-store",
+                StoredTuple::new(
+                    "document",
+                    &format!("doc{i}"),
+                    "viewer",
+                    "user",
+                    "alice",
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+    }
+
+    let service = test_service_with_storage(storage);
+
+    // Request with page_size = 3
+    let request = Request::new(ReadRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: None,
+        page_size: Some(3),
+        continuation_token: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.read(request).await;
+    assert!(response.is_ok());
+
+    let result = response.unwrap().into_inner();
+    assert!(
+        result.tuples.len() <= 3,
+        "Should return at most page_size tuples, got {}",
+        result.tuples.len()
+    );
+    assert!(
+        !result.continuation_token.is_empty(),
+        "Should return continuation_token when more data exists"
+    );
+}
+
+/// Test: Read RPC rejects negative page_size
+///
+/// Verifies that negative page_size values are rejected with appropriate error.
+#[tokio::test]
+async fn test_read_rpc_rejects_negative_page_size() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(ReadRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: None,
+        page_size: Some(-1),
+        continuation_token: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.read(request).await;
+    assert!(response.is_err());
+
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("negative"));
+}
+
+/// Test: Read RPC treats zero page_size as server default
+///
+/// Verifies that page_size of 0 is treated as "use server default" (returns all).
+#[tokio::test]
+async fn test_read_rpc_zero_page_size_uses_default() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write a few tuples
+    for i in 0..5 {
+        storage
+            .write_tuple(
+                "test-store",
+                StoredTuple::new(
+                    "document",
+                    &format!("doc{i}"),
+                    "viewer",
+                    "user",
+                    "alice",
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+    }
+
+    let service = test_service_with_storage(storage);
+
+    // Request with page_size = 0 (should use server default)
+    let request = Request::new(ReadRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: None,
+        page_size: Some(0),
+        continuation_token: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.read(request).await;
+    assert!(response.is_ok(), "Zero page_size should not cause error");
+
+    let result = response.unwrap().into_inner();
+    // With server default, should return results (exact count depends on default)
+    assert!(
+        !result.tuples.is_empty(),
+        "Should return tuples with zero page_size"
+    );
+}
+
+/// Test: Read RPC caps page_size at DEFAULT_PAGE_SIZE for DoS protection
+///
+/// Verifies that excessively large page_size values are capped.
+#[tokio::test]
+async fn test_read_rpc_caps_page_size_at_max() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write more tuples than DEFAULT_PAGE_SIZE (50)
+    for i in 0..60 {
+        storage
+            .write_tuple(
+                "test-store",
+                StoredTuple::new(
+                    "document",
+                    &format!("doc{i}"),
+                    "viewer",
+                    "user",
+                    "alice",
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+    }
+
+    let service = test_service_with_storage(storage);
+
+    // Request with very large page_size
+    let request = Request::new(ReadRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: None,
+        page_size: Some(1000),
+        continuation_token: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.read(request).await;
+    assert!(response.is_ok());
+
+    let result = response.unwrap().into_inner();
+    // Should be capped at DEFAULT_PAGE_SIZE (50)
+    assert!(
+        result.tuples.len() <= 50,
+        "Should cap page_size at DEFAULT_PAGE_SIZE (50), got {}",
+        result.tuples.len()
+    );
+}
+
+/// Test: Read RPC pagination with continuation_token
+///
+/// Verifies that continuation_token can be used to fetch subsequent pages.
+#[tokio::test]
+async fn test_read_rpc_pagination_with_continuation_token() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+
+    // Write enough tuples to require multiple pages
+    for i in 0..10 {
+        storage
+            .write_tuple(
+                "test-store",
+                StoredTuple::new(
+                    "document",
+                    &format!("doc{i:02}"),
+                    "viewer",
+                    "user",
+                    "alice",
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+    }
+
+    let service = test_service_with_storage(storage.clone());
+
+    // First page
+    let request = Request::new(ReadRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: None,
+        page_size: Some(3),
+        continuation_token: String::new(),
+        consistency: 0,
+    });
+
+    let response = service.read(request).await.unwrap().into_inner();
+    let first_page_count = response.tuples.len();
+    let continuation_token = response.continuation_token.clone();
+
+    assert!(
+        !continuation_token.is_empty(),
+        "First page should have continuation token"
+    );
+
+    // Second page using continuation_token
+    let service = test_service_with_storage(storage);
+    let request = Request::new(ReadRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: None,
+        page_size: Some(3),
+        continuation_token,
+        consistency: 0,
+    });
+
+    let response = service.read(request).await.unwrap().into_inner();
+    let second_page_count = response.tuples.len();
+
+    // Should get more results on second page
+    assert!(second_page_count > 0, "Second page should return results");
+    assert!(
+        first_page_count + second_page_count <= 10,
+        "Total results should not exceed written tuples"
+    );
+}

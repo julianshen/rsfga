@@ -2734,3 +2734,203 @@ async fn list_users<S: DataStore>(
         excluded_users,
     }))
 }
+
+// ============================================================================
+// Unit Tests (Issue #282 - Expand API response format)
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rsfga_domain::resolver::{ExpandLeaf, ExpandLeafValue, ExpandNode};
+
+    /// Test: expand_node_to_body correctly formats TupleToUserset with ObjectRelation
+    ///
+    /// Verifies that the expand response uses the correct structure with object and relation fields.
+    #[test]
+    fn test_expand_node_to_body_tuple_to_userset_format() {
+        let node = ExpandNode::Leaf(ExpandLeaf {
+            name: "document:doc1#viewer".to_string(),
+            value: ExpandLeafValue::TupleToUserset {
+                tupleset: "parent".to_string(),
+                computed_userset: "viewer".to_string(),
+            },
+        });
+
+        let body = expand_node_to_body(node);
+
+        // Verify the structure
+        assert!(body.leaf.is_some());
+        let leaf = body.leaf.unwrap();
+        assert!(leaf.tuple_to_userset.is_some());
+
+        let ttu = leaf.tuple_to_userset.unwrap();
+
+        // Tupleset should have object extracted from leaf.name
+        assert_eq!(ttu.tupleset.object, "document:doc1");
+        assert_eq!(ttu.tupleset.relation, "parent");
+
+        // Computed userset object is unknown, should be empty
+        assert_eq!(ttu.computed_userset.object, "");
+        assert_eq!(ttu.computed_userset.relation, "viewer");
+    }
+
+    /// Test: expand_node_to_body handles empty leaf.name gracefully
+    ///
+    /// Verifies that malformed leaf.name (empty) doesn't cause panic.
+    #[test]
+    fn test_expand_node_to_body_empty_leaf_name() {
+        let node = ExpandNode::Leaf(ExpandLeaf {
+            name: String::new(), // Empty name
+            value: ExpandLeafValue::TupleToUserset {
+                tupleset: "parent".to_string(),
+                computed_userset: "viewer".to_string(),
+            },
+        });
+
+        let body = expand_node_to_body(node);
+
+        let leaf = body.leaf.unwrap();
+        let ttu = leaf.tuple_to_userset.unwrap();
+
+        // Should handle empty name gracefully
+        assert_eq!(ttu.tupleset.object, "");
+        assert_eq!(ttu.tupleset.relation, "parent");
+    }
+
+    /// Test: expand_node_to_body handles leaf.name without hash gracefully
+    ///
+    /// Verifies that leaf.name without '#' separator is handled correctly.
+    #[test]
+    fn test_expand_node_to_body_name_without_hash() {
+        let node = ExpandNode::Leaf(ExpandLeaf {
+            name: "document:doc1".to_string(), // No hash separator
+            value: ExpandLeafValue::TupleToUserset {
+                tupleset: "parent".to_string(),
+                computed_userset: "viewer".to_string(),
+            },
+        });
+
+        let body = expand_node_to_body(node);
+
+        let leaf = body.leaf.unwrap();
+        let ttu = leaf.tuple_to_userset.unwrap();
+
+        // Should use the entire name as object when no hash present
+        assert_eq!(ttu.tupleset.object, "document:doc1");
+        assert_eq!(ttu.tupleset.relation, "parent");
+    }
+
+    /// Test: ExpandTupleToUsersetBody serializes with correct camelCase field names
+    ///
+    /// Verifies that JSON serialization uses 'tupleToUserset' and 'computedUserset'.
+    #[test]
+    fn test_expand_tuple_to_userset_serializes_camel_case() {
+        let leaf = ExpandLeafBody {
+            users: None,
+            computed: None,
+            tuple_to_userset: Some(ExpandTupleToUsersetBody {
+                tupleset: ExpandObjectRelationBody {
+                    object: "document:doc1".to_string(),
+                    relation: "parent".to_string(),
+                },
+                computed_userset: ExpandObjectRelationBody {
+                    object: String::new(),
+                    relation: "viewer".to_string(),
+                },
+            }),
+        };
+
+        let json = serde_json::to_string(&leaf).unwrap();
+
+        // Verify camelCase field names
+        assert!(
+            json.contains("tupleToUserset"),
+            "Should serialize as tupleToUserset, got: {}",
+            json
+        );
+        assert!(
+            json.contains("computedUserset"),
+            "Should serialize as computedUserset, got: {}",
+            json
+        );
+
+        // Verify ObjectRelation structure
+        assert!(
+            json.contains(r#""object":"document:doc1""#),
+            "Should include object field"
+        );
+        assert!(
+            json.contains(r#""relation":"parent""#),
+            "Should include relation field"
+        );
+    }
+
+    /// Test: ExpandLeafBody with users serializes correctly
+    #[test]
+    fn test_expand_leaf_users_format() {
+        let node = ExpandNode::Leaf(ExpandLeaf {
+            name: "document:doc1#viewer".to_string(),
+            value: ExpandLeafValue::Users(vec!["user:alice".to_string(), "user:bob".to_string()]),
+        });
+
+        let body = expand_node_to_body(node);
+
+        assert!(body.leaf.is_some());
+        let leaf = body.leaf.unwrap();
+        assert!(leaf.users.is_some());
+        assert!(leaf.tuple_to_userset.is_none());
+
+        let users = leaf.users.unwrap();
+        assert_eq!(users.users.len(), 2);
+        assert!(users.users.contains(&"user:alice".to_string()));
+        assert!(users.users.contains(&"user:bob".to_string()));
+    }
+
+    /// Test: ExpandLeafBody with computed userset serializes correctly
+    #[test]
+    fn test_expand_leaf_computed_format() {
+        let node = ExpandNode::Leaf(ExpandLeaf {
+            name: "document:doc1#viewer".to_string(),
+            value: ExpandLeafValue::Computed {
+                userset: "document:doc1#editor".to_string(),
+            },
+        });
+
+        let body = expand_node_to_body(node);
+
+        assert!(body.leaf.is_some());
+        let leaf = body.leaf.unwrap();
+        assert!(leaf.computed.is_some());
+        assert!(leaf.tuple_to_userset.is_none());
+
+        let computed = leaf.computed.unwrap();
+        assert_eq!(computed.userset, "document:doc1#editor");
+    }
+
+    /// Test: Union node serializes correctly
+    #[test]
+    fn test_expand_union_node_format() {
+        let node = ExpandNode::Union {
+            name: "document:doc1#viewer".to_string(),
+            nodes: vec![
+                ExpandNode::Leaf(ExpandLeaf {
+                    name: "document:doc1#viewer".to_string(),
+                    value: ExpandLeafValue::Users(vec!["user:alice".to_string()]),
+                }),
+                ExpandNode::Leaf(ExpandLeaf {
+                    name: "document:doc1#editor".to_string(),
+                    value: ExpandLeafValue::Users(vec!["user:bob".to_string()]),
+                }),
+            ],
+        };
+
+        let body = expand_node_to_body(node);
+
+        assert!(body.union.is_some());
+        assert_eq!(body.name.as_deref(), Some("document:doc1#viewer"));
+
+        let union = body.union.unwrap();
+        assert_eq!(union.nodes.len(), 2);
+    }
+}
