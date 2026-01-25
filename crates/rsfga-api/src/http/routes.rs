@@ -1439,7 +1439,7 @@ pub struct ExpandLeafBody {
     pub users: Option<ExpandUsersBody>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub computed: Option<ExpandComputedBody>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "tupleToUserset", skip_serializing_if = "Option::is_none")]
     pub tuple_to_userset: Option<ExpandTupleToUsersetBody>,
 }
 
@@ -1458,7 +1458,10 @@ impl ExpandLeafBody {
         }
     }
 
-    fn new_tuple_to_userset(tupleset: String, computed_userset: String) -> Self {
+    fn new_tuple_to_userset(
+        tupleset: ExpandObjectRelationBody,
+        computed_userset: ExpandObjectRelationBody,
+    ) -> Self {
         Self {
             tuple_to_userset: Some(ExpandTupleToUsersetBody {
                 tupleset,
@@ -1482,10 +1485,19 @@ pub struct ExpandComputedBody {
 }
 
 /// Tuple-to-userset reference.
+/// Note: Uses ObjectRelation-like structure to match OpenFGA's format.
 #[derive(Debug, Serialize)]
 pub struct ExpandTupleToUsersetBody {
-    pub tupleset: String,
-    pub computed_userset: String,
+    pub tupleset: ExpandObjectRelationBody,
+    #[serde(rename = "computedUserset")]
+    pub computed_userset: ExpandObjectRelationBody,
+}
+
+/// Object relation reference (matches OpenFGA's ObjectRelation).
+#[derive(Debug, Serialize)]
+pub struct ExpandObjectRelationBody {
+    pub object: String,
+    pub relation: String,
 }
 
 /// Converts a domain ExpandNode to an HTTP response body.
@@ -1500,7 +1512,23 @@ fn expand_node_to_body(node: rsfga_domain::resolver::ExpandNode) -> ExpandNodeBo
                 ExpandLeafValue::TupleToUserset {
                     tupleset,
                     computed_userset,
-                } => ExpandLeafBody::new_tuple_to_userset(tupleset, computed_userset),
+                } => {
+                    // Extract object from leaf.name (format: "type:id#relation")
+                    // The tupleset relation is on the same object being expanded
+                    let object_for_tupleset =
+                        leaf.name.split('#').next().unwrap_or("").to_string();
+                    ExpandLeafBody::new_tuple_to_userset(
+                        ExpandObjectRelationBody {
+                            object: object_for_tupleset,
+                            relation: tupleset,
+                        },
+                        ExpandObjectRelationBody {
+                            // computed_userset object is unknown without further resolution
+                            object: String::new(),
+                            relation: computed_userset,
+                        },
+                    )
+                }
             };
             ExpandNodeBody::new_leaf(leaf.name, leaf_body)
         }

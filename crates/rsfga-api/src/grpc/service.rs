@@ -674,14 +674,31 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             TupleFilter::default()
         };
 
-        let tuples = self
+        // Build pagination options from request
+        // Validate page_size is positive before casting to u32 (negative i32 wraps to huge u32)
+        let page_size = match req.page_size {
+            Some(s) if s > 0 => Some(s as u32),
+            Some(_) => return Err(Status::invalid_argument("page_size must be positive")),
+            None => None,
+        };
+        let pagination = PaginationOptions {
+            page_size,
+            continuation_token: if req.continuation_token.is_empty() {
+                None
+            } else {
+                Some(req.continuation_token)
+            },
+        };
+
+        let result = self
             .storage
-            .read_tuples(&req.store_id, &filter)
+            .read_tuples_paginated(&req.store_id, &filter, &pagination)
             .await
             .map_err(storage_error_to_status)?;
 
         // Convert to response format, including conditions (OpenFGA compatibility I2)
-        let response_tuples: Vec<Tuple> = tuples
+        let response_tuples: Vec<Tuple> = result
+            .items
             .into_iter()
             .map(|t| Tuple {
                 key: Some(TupleKey {
@@ -699,7 +716,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         Ok(Response::new(ReadResponse {
             tuples: response_tuples,
-            continuation_token: String::new(),
+            continuation_token: result.continuation_token.unwrap_or_default(),
         }))
     }
 
