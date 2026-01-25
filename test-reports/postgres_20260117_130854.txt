@@ -1,0 +1,2442 @@
+============================================================
+RSFGA Compatibility Test Report - postgres
+URL: http://localhost:30081
+Timestamp: 2026年 1月17日 星期六 13時08分54秒 CST
+============================================================
+
+
+--- test_section_1 ---
+
+running 6 tests
+test test_can_clean_up_test_stores ... FAILED
+test test_can_connect_to_openfga_grpc_api ... FAILED
+test test_can_connect_to_openfga_http_api ... FAILED
+test test_can_create_store_via_api ... FAILED
+test test_can_start_openfga_via_docker_compose ... FAILED
+test test_environment_teardown_is_idempotent ... FAILED
+
+failures:
+
+---- test_can_clean_up_test_stores stdout ----
+
+thread 'test_can_clean_up_test_stores' (2570930) panicked at crates/compatibility-tests/tests/test_section_1.rs:62:58:
+CARGO_MANIFEST_DIR not set: NotPresent
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_can_connect_to_openfga_grpc_api stdout ----
+
+thread 'test_can_connect_to_openfga_grpc_api' (2570931) panicked at crates/compatibility-tests/tests/test_section_1.rs:62:58:
+CARGO_MANIFEST_DIR not set: NotPresent
+
+---- test_can_connect_to_openfga_http_api stdout ----
+
+thread 'test_can_connect_to_openfga_http_api' (2570932) panicked at crates/compatibility-tests/tests/test_section_1.rs:62:58:
+CARGO_MANIFEST_DIR not set: NotPresent
+
+---- test_can_create_store_via_api stdout ----
+
+thread 'test_can_create_store_via_api' (2570933) panicked at crates/compatibility-tests/tests/test_section_1.rs:62:58:
+CARGO_MANIFEST_DIR not set: NotPresent
+
+---- test_can_start_openfga_via_docker_compose stdout ----
+
+thread 'test_can_start_openfga_via_docker_compose' (2570934) panicked at crates/compatibility-tests/tests/test_section_1.rs:62:58:
+CARGO_MANIFEST_DIR not set: NotPresent
+
+---- test_environment_teardown_is_idempotent stdout ----
+
+thread 'test_environment_teardown_is_idempotent' (2570935) panicked at crates/compatibility-tests/tests/test_section_1.rs:62:58:
+CARGO_MANIFEST_DIR not set: NotPresent
+
+
+failures:
+    test_can_clean_up_test_stores
+    test_can_connect_to_openfga_grpc_api
+    test_can_connect_to_openfga_http_api
+    test_can_create_store_via_api
+    test_can_start_openfga_via_docker_compose
+    test_environment_teardown_is_idempotent
+
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--- test_section_1 ---
+
+running 6 tests
+test test_can_clean_up_test_stores ... FAILED
+test test_can_connect_to_openfga_grpc_api ... FAILED
+test test_can_connect_to_openfga_http_api ... FAILED
+test test_can_create_store_via_api ... FAILED
+test test_can_start_openfga_via_docker_compose ... FAILED
+test test_environment_teardown_is_idempotent ... FAILED
+
+failures:
+
+---- test_can_clean_up_test_stores stdout ----
+
+thread 'test_can_clean_up_test_stores' (2570960) panicked at crates/compatibility-tests/tests/test_section_1.rs:62:58:
+CARGO_MANIFEST_DIR not set: NotPresent
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_can_connect_to_openfga_grpc_api stdout ----
+
+thread 'test_can_connect_to_openfga_grpc_api' (2570961) panicked at crates/compatibility-tests/tests/test_section_1.rs:62:58:
+CARGO_MANIFEST_DIR not set: NotPresent
+
+---- test_can_connect_to_openfga_http_api stdout ----
+
+thread 'test_can_connect_to_openfga_http_api' (2570962) panicked at crates/compatibility-tests/tests/test_section_1.rs:62:58:
+CARGO_MANIFEST_DIR not set: NotPresent
+
+---- test_can_create_store_via_api stdout ----
+
+thread 'test_can_create_store_via_api' (2570963) panicked at crates/compatibility-tests/tests/test_section_1.rs:62:58:
+CARGO_MANIFEST_DIR not set: NotPresent
+
+---- test_can_start_openfga_via_docker_compose stdout ----
+
+thread 'test_can_start_openfga_via_docker_compose' (2570964) panicked at crates/compatibility-tests/tests/test_section_1.rs:62:58:
+CARGO_MANIFEST_DIR not set: NotPresent
+
+---- test_environment_teardown_is_idempotent stdout ----
+
+thread 'test_environment_teardown_is_idempotent' (2570965) panicked at crates/compatibility-tests/tests/test_section_1.rs:62:58:
+CARGO_MANIFEST_DIR not set: NotPresent
+
+
+failures:
+    test_can_clean_up_test_stores
+    test_can_connect_to_openfga_grpc_api
+    test_can_connect_to_openfga_http_api
+    test_can_create_store_via_api
+    test_can_start_openfga_via_docker_compose
+    test_environment_teardown_is_idempotent
+
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--- test_section_10_check_basic ---
+
+running 10 tests
+test test_check_direct_relation ... ok
+test test_check_follows_computed_exclusion ... ok
+test test_check_follows_computed_intersection ... ok
+test test_check_follows_computed_union ... ok
+test test_check_resolves_this_keyword ... ok
+test test_check_returns_false_when_tuple_does_not_exist ... ok
+test test_check_returns_true_when_tuple_exists ... ok
+test test_check_with_contextual_tuples ... ok
+test test_check_with_invalid_format ... ok
+test test_check_with_nonexistent_store ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.29s
+
+--- test_section_10_check_basic ---
+
+running 10 tests
+test test_check_direct_relation ... ok
+test test_check_follows_computed_exclusion ... ok
+test test_check_follows_computed_intersection ... ok
+test test_check_follows_computed_union ... ok
+test test_check_resolves_this_keyword ... ok
+test test_check_returns_false_when_tuple_does_not_exist ... ok
+test test_check_returns_true_when_tuple_exists ... ok
+test test_check_with_contextual_tuples ... ok
+test test_check_with_invalid_format ... ok
+test test_check_with_nonexistent_store ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.31s
+
+--- test_section_11_check_complex ---
+
+running 8 tests
+test test_check_cycle_detection ... ok
+test test_check_deeply_nested_relations ... ok
+test test_check_exclusion_but_not ... ok
+test test_check_intersection_all_required ... ok
+test test_check_multi_hop_relations ... ok
+test test_check_respects_model_version ... FAILED
+test test_check_union_multiple_relations ... ok
+test test_check_with_wildcards ... ok
+
+failures:
+
+---- test_check_respects_model_version stdout ----
+
+thread 'test_check_respects_model_version' (2571139) panicked at crates/compatibility-tests/tests/test_section_11_check_complex.rs:813:5:
+Check with old model version should fail for new relation type
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_check_respects_model_version
+
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.31s
+
+--- test_section_11_check_complex ---
+
+running 8 tests
+test test_check_cycle_detection ... ok
+test test_check_deeply_nested_relations ... ok
+test test_check_exclusion_but_not ... ok
+test test_check_intersection_all_required ... ok
+test test_check_multi_hop_relations ... ok
+test test_check_respects_model_version ... FAILED
+test test_check_union_multiple_relations ... ok
+test test_check_with_wildcards ... ok
+
+failures:
+
+---- test_check_respects_model_version stdout ----
+
+thread 'test_check_respects_model_version' (2571213) panicked at crates/compatibility-tests/tests/test_section_11_check_complex.rs:813:5:
+Check with old model version should fail for new relation type
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_check_respects_model_version
+
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.34s
+
+--- test_section_12_batch_check ---
+
+running 6 tests
+test test_batch_check_deduplication ... ok
+test test_batch_check_empty_array ... ok
+test test_batch_check_large_batch ... ok
+test test_batch_check_mixed_results ... ok
+test test_batch_check_multiple_tuples ... ok
+test test_batch_check_preserves_order ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.31s
+
+--- test_section_12_batch_check ---
+
+running 6 tests
+test test_batch_check_deduplication ... ok
+test test_batch_check_empty_array ... ok
+test test_batch_check_large_batch ... ok
+test test_batch_check_mixed_results ... ok
+test test_batch_check_multiple_tuples ... ok
+test test_batch_check_preserves_order ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.32s
+
+--- test_section_13_check_performance ---
+
+running 5 tests
+test test_check_consistency_after_delete ... ok
+test test_check_consistency_after_write ... ok
+test test_check_latency_computed_union ... ok
+test test_check_latency_deep_nested ... ok
+test test_check_latency_direct_relation ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.33s
+
+--- test_section_13_check_performance ---
+
+running 5 tests
+test test_check_consistency_after_delete ... ok
+test test_check_consistency_after_write ... ok
+test test_check_latency_computed_union ... ok
+test test_check_latency_deep_nested ... ok
+test test_check_latency_direct_relation ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.33s
+
+--- test_section_14_expand_api ---
+
+running 9 tests
+test test_expand_includes_difference_branches ... FAILED
+test test_expand_includes_intersection_branches ... FAILED
+test test_expand_includes_union_branches ... FAILED
+test test_expand_returns_relation_tree ... ok
+test test_expand_shows_computed_relations ... FAILED
+test test_expand_shows_direct_relations_as_leaf ... ok
+test test_expand_tree_is_deterministic ... ok
+test test_expand_with_invalid_store ... ok
+test test_expand_with_nonexistent_object ... ok
+
+failures:
+
+---- test_expand_includes_difference_branches stdout ----
+
+thread 'test_expand_includes_difference_branches' (2571477) panicked at crates/compatibility-tests/tests/test_section_14_expand_api.rs:481:10:
+Root should have 'difference' node for difference relation
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_expand_includes_intersection_branches stdout ----
+
+thread 'test_expand_includes_intersection_branches' (2571484) panicked at crates/compatibility-tests/tests/test_section_14_expand_api.rs:371:5:
+Root should have 'intersection' node for intersection relation
+
+---- test_expand_includes_union_branches stdout ----
+
+thread 'test_expand_includes_union_branches' (2571486) panicked at crates/compatibility-tests/tests/test_section_14_expand_api.rs:262:5:
+Root should have 'union' node for union relation
+
+---- test_expand_shows_computed_relations stdout ----
+
+thread 'test_expand_shows_computed_relations' (2571490) panicked at crates/compatibility-tests/tests/test_section_14_expand_api.rs:169:10:
+Root should have leaf node with 'computed' field for computed relation
+
+
+failures:
+    test_expand_includes_difference_branches
+    test_expand_includes_intersection_branches
+    test_expand_includes_union_branches
+    test_expand_shows_computed_relations
+
+test result: FAILED. 5 passed; 4 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.31s
+
+--- test_section_14_expand_api ---
+
+running 9 tests
+test test_expand_includes_difference_branches ... FAILED
+test test_expand_includes_intersection_branches ... FAILED
+test test_expand_includes_union_branches ... FAILED
+test test_expand_returns_relation_tree ... ok
+test test_expand_shows_computed_relations ... FAILED
+test test_expand_shows_direct_relations_as_leaf ... ok
+test test_expand_tree_is_deterministic ... ok
+test test_expand_with_invalid_store ... ok
+test test_expand_with_nonexistent_object ... ok
+
+failures:
+
+---- test_expand_includes_difference_branches stdout ----
+
+thread 'test_expand_includes_difference_branches' (2571525) panicked at crates/compatibility-tests/tests/test_section_14_expand_api.rs:481:10:
+Root should have 'difference' node for difference relation
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_expand_includes_intersection_branches stdout ----
+
+thread 'test_expand_includes_intersection_branches' (2571530) panicked at crates/compatibility-tests/tests/test_section_14_expand_api.rs:371:5:
+Root should have 'intersection' node for intersection relation
+
+---- test_expand_includes_union_branches stdout ----
+
+thread 'test_expand_includes_union_branches' (2571532) panicked at crates/compatibility-tests/tests/test_section_14_expand_api.rs:262:5:
+Root should have 'union' node for union relation
+
+---- test_expand_shows_computed_relations stdout ----
+
+thread 'test_expand_shows_computed_relations' (2571537) panicked at crates/compatibility-tests/tests/test_section_14_expand_api.rs:169:10:
+Root should have leaf node with 'computed' field for computed relation
+
+
+failures:
+    test_expand_includes_difference_branches
+    test_expand_includes_intersection_branches
+    test_expand_includes_union_branches
+    test_expand_shows_computed_relations
+
+test result: FAILED. 5 passed; 4 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.30s
+
+--- test_section_15_listobjects_api ---
+
+running 7 tests
+test test_listobjects_returns_accessible_objects ... FAILED
+test test_listobjects_with_computed_relations ... FAILED
+test test_listobjects_with_contextual_tuples ... FAILED
+test test_listobjects_with_direct_relations ... FAILED
+test test_listobjects_with_no_accessible_objects ... ok
+test test_listobjects_with_type_filter ... FAILED
+test test_listobjects_with_wildcards ... FAILED
+
+failures:
+
+---- test_listobjects_returns_accessible_objects stdout ----
+
+thread 'test_listobjects_returns_accessible_objects' (2571577) panicked at crates/compatibility-tests/tests/test_section_15_listobjects_api.rs:72:5:
+assertion `left == right` failed: Alice should have access to exactly doc1 and doc2
+  left: {}
+ right: {"document:doc1", "document:doc2"}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_listobjects_with_computed_relations stdout ----
+
+thread 'test_listobjects_with_computed_relations' (2571589) panicked at crates/compatibility-tests/tests/test_section_15_listobjects_api.rs:244:5:
+assertion `left == right` failed: Eve should have access to exactly doc1 and doc2 via union
+  left: {}
+ right: {"document:doc2", "document:doc1"}
+
+---- test_listobjects_with_contextual_tuples stdout ----
+
+thread 'test_listobjects_with_contextual_tuples' (2571591) panicked at crates/compatibility-tests/tests/test_section_15_listobjects_api.rs:477:5:
+assertion `left == right` failed: Should return exactly the objects from contextual tuples
+  left: {}
+ right: {"document:doc2", "document:doc1"}
+
+---- test_listobjects_with_direct_relations stdout ----
+
+thread 'test_listobjects_with_direct_relations' (2571593) panicked at crates/compatibility-tests/tests/test_section_15_listobjects_api.rs:134:5:
+assertion `left == right` failed: Charlie should have access to exactly doc1 and doc2 as editor
+  left: {}
+ right: {"document:doc1", "document:doc2"}
+
+---- test_listobjects_with_type_filter stdout ----
+
+thread 'test_listobjects_with_type_filter' (2571597) panicked at crates/compatibility-tests/tests/test_section_15_listobjects_api.rs:357:5:
+assertion `left == right` failed: Should return exactly doc1 and doc2 (filtered by type)
+  left: {}
+ right: {"document:doc2", "document:doc1"}
+
+---- test_listobjects_with_wildcards stdout ----
+
+thread 'test_listobjects_with_wildcards' (2571599) panicked at crates/compatibility-tests/tests/test_section_15_listobjects_api.rs:573:5:
+assertion `left == right` failed: User 'judy' should have access to exactly 2 wildcard-granted objects (public1 and public2)
+  left: {}
+ right: {"document:public2", "document:public1"}
+
+
+failures:
+    test_listobjects_returns_accessible_objects
+    test_listobjects_with_computed_relations
+    test_listobjects_with_contextual_tuples
+    test_listobjects_with_direct_relations
+    test_listobjects_with_type_filter
+    test_listobjects_with_wildcards
+
+test result: FAILED. 1 passed; 6 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.28s
+
+--- test_section_15_listobjects_api ---
+
+running 7 tests
+test test_listobjects_returns_accessible_objects ... FAILED
+test test_listobjects_with_computed_relations ... FAILED
+test test_listobjects_with_contextual_tuples ... FAILED
+test test_listobjects_with_direct_relations ... FAILED
+test test_listobjects_with_no_accessible_objects ... ok
+test test_listobjects_with_type_filter ... FAILED
+test test_listobjects_with_wildcards ... FAILED
+
+failures:
+
+---- test_listobjects_returns_accessible_objects stdout ----
+
+thread 'test_listobjects_returns_accessible_objects' (2571625) panicked at crates/compatibility-tests/tests/test_section_15_listobjects_api.rs:72:5:
+assertion `left == right` failed: Alice should have access to exactly doc1 and doc2
+  left: {}
+ right: {"document:doc2", "document:doc1"}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_listobjects_with_computed_relations stdout ----
+
+thread 'test_listobjects_with_computed_relations' (2571675) panicked at crates/compatibility-tests/tests/test_section_15_listobjects_api.rs:244:5:
+assertion `left == right` failed: Eve should have access to exactly doc1 and doc2 via union
+  left: {}
+ right: {"document:doc2", "document:doc1"}
+
+---- test_listobjects_with_contextual_tuples stdout ----
+
+thread 'test_listobjects_with_contextual_tuples' (2571677) panicked at crates/compatibility-tests/tests/test_section_15_listobjects_api.rs:477:5:
+assertion `left == right` failed: Should return exactly the objects from contextual tuples
+  left: {}
+ right: {"document:doc2", "document:doc1"}
+
+---- test_listobjects_with_direct_relations stdout ----
+
+thread 'test_listobjects_with_direct_relations' (2571679) panicked at crates/compatibility-tests/tests/test_section_15_listobjects_api.rs:134:5:
+assertion `left == right` failed: Charlie should have access to exactly doc1 and doc2 as editor
+  left: {}
+ right: {"document:doc1", "document:doc2"}
+
+---- test_listobjects_with_type_filter stdout ----
+
+thread 'test_listobjects_with_type_filter' (2571683) panicked at crates/compatibility-tests/tests/test_section_15_listobjects_api.rs:357:5:
+assertion `left == right` failed: Should return exactly doc1 and doc2 (filtered by type)
+  left: {}
+ right: {"document:doc1", "document:doc2"}
+
+---- test_listobjects_with_wildcards stdout ----
+
+thread 'test_listobjects_with_wildcards' (2571685) panicked at crates/compatibility-tests/tests/test_section_15_listobjects_api.rs:573:5:
+assertion `left == right` failed: User 'judy' should have access to exactly 2 wildcard-granted objects (public1 and public2)
+  left: {}
+ right: {"document:public2", "document:public1"}
+
+
+failures:
+    test_listobjects_returns_accessible_objects
+    test_listobjects_with_computed_relations
+    test_listobjects_with_contextual_tuples
+    test_listobjects_with_direct_relations
+    test_listobjects_with_type_filter
+    test_listobjects_with_wildcards
+
+test result: FAILED. 1 passed; 6 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.26s
+
+--- test_section_16_edge_cases ---
+
+running 4 tests
+test test_complex_nested_computed_relations ... FAILED
+test test_expand_with_circular_relations ... ok
+test test_expand_with_deep_relation_tree ... ok
+test test_listobjects_with_large_result_set ... FAILED
+
+failures:
+
+---- test_complex_nested_computed_relations stdout ----
+
+thread 'test_complex_nested_computed_relations' (2571711) panicked at crates/compatibility-tests/tests/test_section_16_edge_cases.rs:429:5:
+Root should have union node for computed relation
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_listobjects_with_large_result_set stdout ----
+
+thread 'test_listobjects_with_large_result_set' (2571722) panicked at crates/compatibility-tests/tests/test_section_16_edge_cases.rs:314:5:
+assertion `left == right` failed: Should return all 1000 documents
+  left: 0
+ right: 1000
+
+
+failures:
+    test_complex_nested_computed_relations
+    test_listobjects_with_large_result_set
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.30s
+
+--- test_section_16_edge_cases ---
+
+running 4 tests
+test test_complex_nested_computed_relations ... FAILED
+test test_expand_with_circular_relations ... ok
+test test_expand_with_deep_relation_tree ... ok
+test test_listobjects_with_large_result_set ... FAILED
+
+failures:
+
+---- test_complex_nested_computed_relations stdout ----
+
+thread 'test_complex_nested_computed_relations' (2571750) panicked at crates/compatibility-tests/tests/test_section_16_edge_cases.rs:429:5:
+Root should have union node for computed relation
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_listobjects_with_large_result_set stdout ----
+
+thread 'test_listobjects_with_large_result_set' (2571761) panicked at crates/compatibility-tests/tests/test_section_16_edge_cases.rs:314:5:
+assertion `left == right` failed: Should return all 1000 documents
+  left: 0
+ right: 1000
+
+
+failures:
+    test_complex_nested_computed_relations
+    test_listobjects_with_large_result_set
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.31s
+
+--- test_section_17_error_format ---
+
+running 6 tests
+test test_400_bad_request_format ... FAILED
+test test_404_not_found_format ... FAILED
+test test_500_error_format_documentation ... ok
+test test_error_codes_match_openfga_enum ... FAILED
+test test_error_response_consistent_across_endpoints ... FAILED
+test test_validation_errors_include_field_details ... FAILED
+
+failures:
+
+---- test_400_bad_request_format stdout ----
+
+thread 'test_400_bad_request_format' (2571790) panicked at crates/compatibility-tests/tests/test_section_17_error_format.rs:36:5:
+assertion `left == right` failed: Invalid store ID format should return 400
+  left: 404
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_404_not_found_format stdout ----
+
+thread 'test_404_not_found_format' (2571807) panicked at crates/compatibility-tests/tests/test_section_17_error_format.rs:108:5:
+assertion `left == right` failed: Non-existent store should return store_id_not_found code
+  left: "not_found"
+ right: "store_id_not_found"
+
+---- test_error_codes_match_openfga_enum stdout ----
+
+thread 'test_error_codes_match_openfga_enum' (2571810) panicked at crates/compatibility-tests/tests/test_section_17_error_format.rs:279:5:
+assertion `left == right` failed
+  left: "not_found"
+ right: "validation_error"
+
+---- test_error_response_consistent_across_endpoints stdout ----
+Error: error decoding response body
+
+Caused by:
+    missing field `code` at line 1 column 2
+
+---- test_validation_errors_include_field_details stdout ----
+
+thread 'test_validation_errors_include_field_details' (2571814) panicked at crates/compatibility-tests/tests/test_section_17_error_format.rs:353:5:
+Error should mention missing object field: Failed to deserialize the JSON body into the target type: tuple_key: missing field `relation` at line 1 column 33
+
+
+failures:
+    test_400_bad_request_format
+    test_404_not_found_format
+    test_error_codes_match_openfga_enum
+    test_error_response_consistent_across_endpoints
+    test_validation_errors_include_field_details
+
+test result: FAILED. 1 passed; 5 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.23s
+
+--- test_section_17_error_format ---
+
+running 6 tests
+test test_400_bad_request_format ... FAILED
+test test_404_not_found_format ... FAILED
+test test_500_error_format_documentation ... ok
+test test_error_codes_match_openfga_enum ... FAILED
+test test_error_response_consistent_across_endpoints ... FAILED
+test test_validation_errors_include_field_details ... FAILED
+
+failures:
+
+---- test_400_bad_request_format stdout ----
+
+thread 'test_400_bad_request_format' (2571840) panicked at crates/compatibility-tests/tests/test_section_17_error_format.rs:36:5:
+assertion `left == right` failed: Invalid store ID format should return 400
+  left: 404
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_404_not_found_format stdout ----
+
+thread 'test_404_not_found_format' (2571845) panicked at crates/compatibility-tests/tests/test_section_17_error_format.rs:108:5:
+assertion `left == right` failed: Non-existent store should return store_id_not_found code
+  left: "not_found"
+ right: "store_id_not_found"
+
+---- test_error_codes_match_openfga_enum stdout ----
+
+thread 'test_error_codes_match_openfga_enum' (2571848) panicked at crates/compatibility-tests/tests/test_section_17_error_format.rs:279:5:
+assertion `left == right` failed
+  left: "not_found"
+ right: "validation_error"
+
+---- test_error_response_consistent_across_endpoints stdout ----
+Error: error decoding response body
+
+Caused by:
+    missing field `code` at line 1 column 2
+
+---- test_validation_errors_include_field_details stdout ----
+
+thread 'test_validation_errors_include_field_details' (2571853) panicked at crates/compatibility-tests/tests/test_section_17_error_format.rs:353:5:
+Error should mention missing object field: Failed to deserialize the JSON body into the target type: tuple_key: missing field `relation` at line 1 column 33
+
+
+failures:
+    test_400_bad_request_format
+    test_404_not_found_format
+    test_error_codes_match_openfga_enum
+    test_error_response_consistent_across_endpoints
+    test_validation_errors_include_field_details
+
+test result: FAILED. 1 passed; 5 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.22s
+
+--- test_section_18_rate_limiting ---
+
+running 3 tests
+test test_api_rate_limiting_behavior ... ok
+test test_rate_limit_headers ... ok
+test test_retry_after_header_format ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.24s
+
+--- test_section_18_rate_limiting ---
+
+running 3 tests
+test test_api_rate_limiting_behavior ... ok
+test test_rate_limit_headers ... ok
+test test_retry_after_header_format ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.24s
+
+--- test_section_19_consistency ---
+
+running 4 tests
+test test_check_during_model_update ... ok
+test test_check_with_stale_model_id ... ok
+test test_concurrent_writes_to_same_tuple ... ok
+test test_read_after_write_consistency ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.30s
+
+--- test_section_19_consistency ---
+
+running 4 tests
+test test_check_during_model_update ... ok
+test test_check_with_stale_model_id ... ok
+test test_concurrent_writes_to_same_tuple ... ok
+test test_read_after_write_consistency ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.35s
+
+--- test_section_2 ---
+
+running 9 tests
+test test_can_generate_authorization_models_with_computed_relations ... ok
+test test_can_generate_authorization_models_with_direct_relations ... ok
+test test_can_generate_authorization_models_with_intersection_relations ... ok
+test test_can_generate_authorization_models_with_union_relations ... ok
+test test_can_generate_models_with_deeply_nested_relations ... ok
+test test_can_generate_valid_object_identifiers ... ok
+test test_can_generate_valid_relation_names ... ok
+test test_can_generate_valid_tuples ... ok
+test test_can_generate_valid_user_identifiers ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- test_section_2 ---
+
+running 9 tests
+test test_can_generate_authorization_models_with_computed_relations ... ok
+test test_can_generate_authorization_models_with_direct_relations ... ok
+test test_can_generate_authorization_models_with_intersection_relations ... ok
+test test_can_generate_authorization_models_with_union_relations ... ok
+test test_can_generate_models_with_deeply_nested_relations ... ok
+test test_can_generate_valid_object_identifiers ... ok
+test test_can_generate_valid_relation_names ... ok
+test test_can_generate_valid_tuples ... ok
+test test_can_generate_valid_user_identifiers ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- test_section_20_limits ---
+
+running 6 tests
+test test_maximum_authorization_model_size ... FAILED
+test test_maximum_checks_in_batch ... ok
+test test_maximum_relation_depth ... FAILED
+test test_maximum_tuple_size ... FAILED
+test test_maximum_tuples_in_single_write ... FAILED
+test test_request_timeout_behavior ... ok
+
+failures:
+
+---- test_maximum_authorization_model_size stdout ----
+
+thread 'test_maximum_authorization_model_size' (2572183) panicked at crates/compatibility-tests/tests/test_section_20_limits.rs:409:5:
+assertion `left == right` failed
+  left: "validation_error"
+ right: "type_definitions_too_few_items"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_maximum_relation_depth stdout ----
+
+thread 'test_maximum_relation_depth' (2572201) panicked at crates/compatibility-tests/tests/test_section_20_limits.rs:508:5:
+assertion `left == right` failed: Alice should be viewer at level 24 via hierarchy
+  left: Some(Bool(false))
+ right: Some(Bool(true))
+
+---- test_maximum_tuple_size stdout ----
+
+thread 'test_maximum_tuple_size' (2572203) panicked at crates/compatibility-tests/tests/test_section_20_limits.rs:98:5:
+assertion `left == right` failed: Object exceeding 256 chars should be rejected
+  left: 200
+ right: 400
+
+---- test_maximum_tuples_in_single_write stdout ----
+
+thread 'test_maximum_tuples_in_single_write' (2572205) panicked at crates/compatibility-tests/tests/test_section_20_limits.rs:197:5:
+assertion `left == right` failed: Writing 101 tuples should fail
+  left: 200
+ right: 400
+
+
+failures:
+    test_maximum_authorization_model_size
+    test_maximum_relation_depth
+    test_maximum_tuple_size
+    test_maximum_tuples_in_single_write
+
+test result: FAILED. 2 passed; 4 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.34s
+
+--- test_section_20_limits ---
+
+running 6 tests
+test test_maximum_authorization_model_size ... FAILED
+test test_maximum_checks_in_batch ... ok
+test test_maximum_relation_depth ... FAILED
+test test_maximum_tuple_size ... FAILED
+test test_maximum_tuples_in_single_write ... FAILED
+test test_request_timeout_behavior ... ok
+
+failures:
+
+---- test_maximum_authorization_model_size stdout ----
+
+thread 'test_maximum_authorization_model_size' (2572234) panicked at crates/compatibility-tests/tests/test_section_20_limits.rs:409:5:
+assertion `left == right` failed
+  left: "validation_error"
+ right: "type_definitions_too_few_items"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_maximum_relation_depth stdout ----
+
+thread 'test_maximum_relation_depth' (2572245) panicked at crates/compatibility-tests/tests/test_section_20_limits.rs:508:5:
+assertion `left == right` failed: Alice should be viewer at level 24 via hierarchy
+  left: Some(Bool(false))
+ right: Some(Bool(true))
+
+---- test_maximum_tuple_size stdout ----
+
+thread 'test_maximum_tuple_size' (2572247) panicked at crates/compatibility-tests/tests/test_section_20_limits.rs:98:5:
+assertion `left == right` failed: Object exceeding 256 chars should be rejected
+  left: 200
+ right: 400
+
+---- test_maximum_tuples_in_single_write stdout ----
+
+thread 'test_maximum_tuples_in_single_write' (2572249) panicked at crates/compatibility-tests/tests/test_section_20_limits.rs:197:5:
+assertion `left == right` failed: Writing 101 tuples should fail
+  left: 200
+ right: 400
+
+
+failures:
+    test_maximum_authorization_model_size
+    test_maximum_relation_depth
+    test_maximum_tuple_size
+    test_maximum_tuples_in_single_write
+
+test result: FAILED. 2 passed; 4 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.32s
+
+--- test_section_21_grpc_setup ---
+
+running 6 tests
+test test_can_call_authorization_model_service_methods ... FAILED
+test test_can_call_check_service_methods ... FAILED
+test test_can_call_store_service_methods ... FAILED
+test test_can_call_tuple_service_methods ... FAILED
+test test_can_connect_to_openfga_grpc_service ... FAILED
+test test_grpc_reflection_works ... FAILED
+
+failures:
+
+---- test_can_call_authorization_model_service_methods stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_can_call_check_service_methods stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_can_call_store_service_methods stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_can_call_tuple_service_methods stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_can_connect_to_openfga_grpc_service stdout ----
+Error: grpcurl list failed: Failed to list services: server does not support the reflection API
+
+
+---- test_grpc_reflection_works stdout ----
+Error: grpcurl describe failed: Failed to resolve symbol "openfga.v1.OpenFGAService": server does not support the reflection API
+
+
+
+failures:
+    test_can_call_authorization_model_service_methods
+    test_can_call_check_service_methods
+    test_can_call_store_service_methods
+    test_can_call_tuple_service_methods
+    test_can_connect_to_openfga_grpc_service
+    test_grpc_reflection_works
+
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.16s
+
+--- test_section_21_grpc_setup ---
+
+running 6 tests
+test test_can_call_authorization_model_service_methods ... FAILED
+test test_can_call_check_service_methods ... FAILED
+test test_can_call_store_service_methods ... FAILED
+test test_can_call_tuple_service_methods ... FAILED
+test test_can_connect_to_openfga_grpc_service ... FAILED
+test test_grpc_reflection_works ... FAILED
+
+failures:
+
+---- test_can_call_authorization_model_service_methods stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_can_call_check_service_methods stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_can_call_store_service_methods stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_can_call_tuple_service_methods stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_can_connect_to_openfga_grpc_service stdout ----
+Error: grpcurl list failed: Failed to list services: server does not support the reflection API
+
+
+---- test_grpc_reflection_works stdout ----
+Error: grpcurl describe failed: Failed to resolve symbol "openfga.v1.OpenFGAService": server does not support the reflection API
+
+
+
+failures:
+    test_can_call_authorization_model_service_methods
+    test_can_call_check_service_methods
+    test_can_call_store_service_methods
+    test_can_call_tuple_service_methods
+    test_can_connect_to_openfga_grpc_service
+    test_grpc_reflection_works
+
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.08s
+
+--- test_section_22_grpc_parity ---
+
+running 9 tests
+test test_grpc_batch_check_matches_rest ... FAILED
+test test_grpc_check_matches_rest ... FAILED
+test test_grpc_expand_matches_rest ... FAILED
+test test_grpc_listobjects_matches_rest ... FAILED
+test test_grpc_read_matches_rest ... FAILED
+test test_grpc_store_create_matches_rest ... FAILED
+test test_grpc_store_delete_matches_rest ... FAILED
+test test_grpc_store_get_matches_rest ... FAILED
+test test_grpc_write_matches_rest ... FAILED
+
+failures:
+
+---- test_grpc_batch_check_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/BatchCheck": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_check_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/Check": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_expand_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/Expand": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_listobjects_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/ListObjects": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_read_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/Read": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_store_create_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_store_delete_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_store_get_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/GetStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_write_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/Write": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+
+failures:
+    test_grpc_batch_check_matches_rest
+    test_grpc_check_matches_rest
+    test_grpc_expand_matches_rest
+    test_grpc_listobjects_matches_rest
+    test_grpc_read_matches_rest
+    test_grpc_store_create_matches_rest
+    test_grpc_store_delete_matches_rest
+    test_grpc_store_get_matches_rest
+    test_grpc_write_matches_rest
+
+test result: FAILED. 0 passed; 9 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.38s
+
+--- test_section_22_grpc_parity ---
+
+running 9 tests
+test test_grpc_batch_check_matches_rest ... FAILED
+test test_grpc_check_matches_rest ... FAILED
+test test_grpc_expand_matches_rest ... FAILED
+test test_grpc_listobjects_matches_rest ... FAILED
+test test_grpc_read_matches_rest ... FAILED
+test test_grpc_store_create_matches_rest ... FAILED
+test test_grpc_store_delete_matches_rest ... FAILED
+test test_grpc_store_get_matches_rest ... FAILED
+test test_grpc_write_matches_rest ... FAILED
+
+failures:
+
+---- test_grpc_batch_check_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/BatchCheck": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_check_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/Check": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_expand_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/Expand": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_listobjects_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/ListObjects": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_read_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/Read": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_store_create_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_store_delete_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_store_get_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/GetStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+---- test_grpc_write_matches_rest stdout ----
+Error: grpcurl failed: Error invoking method "openfga.v1.OpenFGAService/Write": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+ 
+
+
+failures:
+    test_grpc_batch_check_matches_rest
+    test_grpc_check_matches_rest
+    test_grpc_expand_matches_rest
+    test_grpc_listobjects_matches_rest
+    test_grpc_read_matches_rest
+    test_grpc_store_create_matches_rest
+    test_grpc_store_delete_matches_rest
+    test_grpc_store_get_matches_rest
+    test_grpc_write_matches_rest
+
+test result: FAILED. 0 passed; 9 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.35s
+
+--- test_section_23_grpc_features ---
+
+running 4 tests
+test test_grpc_error_codes_match_http ... FAILED
+test test_grpc_error_details_format ... FAILED
+test test_grpc_metadata_headers ... FAILED
+test test_grpc_streaming_not_supported ... FAILED
+
+failures:
+
+---- test_grpc_error_codes_match_http stdout ----
+
+thread 'test_grpc_error_codes_match_http' (2572773) panicked at crates/compatibility-tests/tests/test_section_23_grpc_features.rs:236:5:
+gRPC error should be InvalidArgument: Error invoking method "openfga.v1.OpenFGAService/GetStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_grpc_error_details_format stdout ----
+
+thread 'test_grpc_error_details_format' (2572792) panicked at crates/compatibility-tests/tests/test_section_23_grpc_features.rs:333:5:
+Error should contain error code: Error invoking method "openfga.v1.OpenFGAService/WriteAuthorizationModel": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+
+
+---- test_grpc_metadata_headers stdout ----
+
+thread 'test_grpc_metadata_headers' (2572806) panicked at crates/compatibility-tests/tests/test_section_23_grpc_features.rs:170:5:
+Request with custom headers should succeed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+
+
+---- test_grpc_streaming_not_supported stdout ----
+Error: grpcurl describe failed: Failed to resolve symbol "openfga.v1.OpenFGAService": server does not support the reflection API
+
+
+
+failures:
+    test_grpc_error_codes_match_http
+    test_grpc_error_details_format
+    test_grpc_metadata_headers
+    test_grpc_streaming_not_supported
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.24s
+
+--- test_section_23_grpc_features ---
+
+running 4 tests
+test test_grpc_error_codes_match_http ... FAILED
+test test_grpc_error_details_format ... FAILED
+test test_grpc_metadata_headers ... FAILED
+test test_grpc_streaming_not_supported ... FAILED
+
+failures:
+
+---- test_grpc_error_codes_match_http stdout ----
+
+thread 'test_grpc_error_codes_match_http' (2572850) panicked at crates/compatibility-tests/tests/test_section_23_grpc_features.rs:236:5:
+gRPC error should be InvalidArgument: Error invoking method "openfga.v1.OpenFGAService/GetStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_grpc_error_details_format stdout ----
+
+thread 'test_grpc_error_details_format' (2572867) panicked at crates/compatibility-tests/tests/test_section_23_grpc_features.rs:333:5:
+Error should contain error code: Error invoking method "openfga.v1.OpenFGAService/WriteAuthorizationModel": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+
+
+---- test_grpc_metadata_headers stdout ----
+
+thread 'test_grpc_metadata_headers' (2572876) panicked at crates/compatibility-tests/tests/test_section_23_grpc_features.rs:170:5:
+Request with custom headers should succeed: Error invoking method "openfga.v1.OpenFGAService/CreateStore": failed to query for service descriptor "openfga.v1.OpenFGAService": server does not support the reflection API
+
+
+---- test_grpc_streaming_not_supported stdout ----
+Error: grpcurl describe failed: Failed to resolve symbol "openfga.v1.OpenFGAService": server does not support the reflection API
+
+
+
+failures:
+    test_grpc_error_codes_match_http
+    test_grpc_error_details_format
+    test_grpc_metadata_headers
+    test_grpc_streaming_not_supported
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.24s
+
+--- test_section_24_model_conditions ---
+
+running 8 tests
+test test_can_create_model_with_conditions ... ok
+test test_can_retrieve_model_with_conditions ... ok
+test test_condition_parameter_types ... ok
+test test_condition_structure_name_expression_parameters ... ok
+test test_condition_uses_cel_syntax ... ok
+test test_invalid_condition_expression_returns_400 ... FAILED
+test test_relation_references_condition ... ok
+test test_undefined_condition_reference_returns_400 ... FAILED
+
+failures:
+
+---- test_invalid_condition_expression_returns_400 stdout ----
+
+thread 'test_invalid_condition_expression_returns_400' (2572933) panicked at crates/compatibility-tests/tests/test_section_24_model_conditions.rs:463:5:
+assertion `left == right` failed: Invalid CEL expression should return 400
+  left: 201
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_undefined_condition_reference_returns_400 stdout ----
+
+thread 'test_undefined_condition_reference_returns_400' (2572937) panicked at crates/compatibility-tests/tests/test_section_24_model_conditions.rs:519:5:
+assertion `left == right` failed: Undefined condition reference should return 400
+  left: 201
+ right: 400
+
+
+failures:
+    test_invalid_condition_expression_returns_400
+    test_undefined_condition_reference_returns_400
+
+test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.28s
+
+--- test_section_24_model_conditions ---
+
+running 8 tests
+test test_can_create_model_with_conditions ... ok
+test test_can_retrieve_model_with_conditions ... ok
+test test_condition_parameter_types ... ok
+test test_condition_structure_name_expression_parameters ... ok
+test test_condition_uses_cel_syntax ... ok
+test test_invalid_condition_expression_returns_400 ... FAILED
+test test_relation_references_condition ... ok
+test test_undefined_condition_reference_returns_400 ... FAILED
+
+failures:
+
+---- test_invalid_condition_expression_returns_400 stdout ----
+
+thread 'test_invalid_condition_expression_returns_400' (2572976) panicked at crates/compatibility-tests/tests/test_section_24_model_conditions.rs:463:5:
+assertion `left == right` failed: Invalid CEL expression should return 400
+  left: 201
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_undefined_condition_reference_returns_400 stdout ----
+
+thread 'test_undefined_condition_reference_returns_400' (2572980) panicked at crates/compatibility-tests/tests/test_section_24_model_conditions.rs:519:5:
+assertion `left == right` failed: Undefined condition reference should return 400
+  left: 201
+ right: 400
+
+
+failures:
+    test_invalid_condition_expression_returns_400
+    test_undefined_condition_reference_returns_400
+
+test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.27s
+
+--- test_section_25_tuple_conditions ---
+
+running 7 tests
+test test_can_delete_tuple_with_condition ... ok
+test test_can_write_multiple_tuples_with_different_conditions ... ok
+test test_can_write_tuple_with_condition_context ... ok
+test test_can_write_tuple_with_condition_name ... ok
+test test_condition_context_values_match_types ... ok
+test test_writing_tuple_with_mismatched_context_types_returns_400 ... ok
+test test_writing_tuple_with_undefined_condition_returns_400 ... FAILED
+
+failures:
+
+---- test_writing_tuple_with_undefined_condition_returns_400 stdout ----
+
+thread 'test_writing_tuple_with_undefined_condition_returns_400' (2573023) panicked at crates/compatibility-tests/tests/test_section_25_tuple_conditions.rs:240:5:
+assertion `left == right` failed: Writing tuple with undefined condition should return 400
+  left: 200
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_writing_tuple_with_undefined_condition_returns_400
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.30s
+
+--- test_section_25_tuple_conditions ---
+
+running 7 tests
+test test_can_delete_tuple_with_condition ... ok
+test test_can_write_multiple_tuples_with_different_conditions ... ok
+test test_can_write_tuple_with_condition_context ... ok
+test test_can_write_tuple_with_condition_name ... ok
+test test_condition_context_values_match_types ... ok
+test test_writing_tuple_with_mismatched_context_types_returns_400 ... ok
+test test_writing_tuple_with_undefined_condition_returns_400 ... FAILED
+
+failures:
+
+---- test_writing_tuple_with_undefined_condition_returns_400 stdout ----
+
+thread 'test_writing_tuple_with_undefined_condition_returns_400' (2573067) panicked at crates/compatibility-tests/tests/test_section_25_tuple_conditions.rs:240:5:
+assertion `left == right` failed: Writing tuple with undefined condition should return 400
+  left: 200
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_writing_tuple_with_undefined_condition_returns_400
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.29s
+
+--- test_section_26_read_conditions ---
+
+running 4 tests
+test test_read_filter_tuples_by_condition ... FAILED
+test test_read_returns_tuple_with_condition_context ... ok
+test test_read_returns_tuple_with_condition_name ... ok
+test test_tuple_response_format_matches_spec ... ok
+
+failures:
+
+---- test_read_filter_tuples_by_condition stdout ----
+
+thread 'test_read_filter_tuples_by_condition' (2573093) panicked at crates/compatibility-tests/tests/test_section_26_read_conditions.rs:246:5:
+Reading tuples should succeed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_read_filter_tuples_by_condition
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.25s
+
+--- test_section_26_read_conditions ---
+
+running 4 tests
+test test_read_filter_tuples_by_condition ... FAILED
+test test_read_returns_tuple_with_condition_context ... ok
+test test_read_returns_tuple_with_condition_name ... ok
+test test_tuple_response_format_matches_spec ... ok
+
+failures:
+
+---- test_read_filter_tuples_by_condition stdout ----
+
+thread 'test_read_filter_tuples_by_condition' (2573165) panicked at crates/compatibility-tests/tests/test_section_26_read_conditions.rs:246:5:
+Reading tuples should succeed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_read_filter_tuples_by_condition
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.24s
+
+--- test_section_27_check_conditions ---
+
+running 12 tests
+test test_batch_check_evaluates_conditions ... FAILED
+test test_check_accepts_context_parameter ... FAILED
+test test_check_returns_false_when_condition_evaluates_false ... FAILED
+test test_check_returns_true_when_condition_evaluates_true ... FAILED
+test test_check_with_partial_context_returns_error ... FAILED
+test test_check_with_wrong_context_type_returns_error ... FAILED
+test test_check_without_required_context_returns_error ... FAILED
+test test_condition_evaluation_with_list_membership ... FAILED
+test test_condition_evaluation_with_logical_operators ... FAILED
+test test_condition_evaluation_with_string_operations ... FAILED
+test test_condition_evaluation_with_timestamp_comparison ... FAILED
+test test_contextual_tuples_with_conditions ... FAILED
+
+failures:
+
+---- test_batch_check_evaluates_conditions stdout ----
+
+thread 'test_batch_check_evaluates_conditions' (2573202) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:929:5:
+assertion `left == right` failed: Conditional check with valid context should return true
+  left: Some(false)
+ right: Some(true)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_check_accepts_context_parameter stdout ----
+
+thread 'test_check_accepts_context_parameter' (2573209) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:194:5:
+Check API should accept context parameter, got: 500 Internal Server Error
+
+---- test_check_returns_false_when_condition_evaluates_false stdout ----
+
+thread 'test_check_returns_false_when_condition_evaluates_false' (2573211) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:314:5:
+assertion `left == right` failed: Check should return allowed: false when condition evaluates to false
+  left: None
+ right: Some(false)
+
+---- test_check_returns_true_when_condition_evaluates_true stdout ----
+
+thread 'test_check_returns_true_when_condition_evaluates_true' (2573213) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:254:5:
+assertion `left == right` failed: Check should return allowed: true when condition evaluates to true
+  left: None
+ right: Some(true)
+
+---- test_check_with_partial_context_returns_error stdout ----
+
+thread 'test_check_with_partial_context_returns_error' (2573215) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:433:5:
+Check with partial context should return error or false, got status: 500 Internal Server Error, body: Object {"code": String("internal_error"), "message": String("internal error during authorization check")}
+
+---- test_check_with_wrong_context_type_returns_error stdout ----
+
+thread 'test_check_with_wrong_context_type_returns_error' (2573218) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:493:5:
+Check with wrong context type should return error or false, got status: 500 Internal Server Error, body: Object {"code": String("internal_error"), "message": String("internal error during authorization check")}
+
+---- test_check_without_required_context_returns_error stdout ----
+
+thread 'test_check_without_required_context_returns_error' (2573220) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:373:5:
+Check without required context should return error or false, got status: 500 Internal Server Error, body: Object {"code": String("internal_error"), "message": String("internal error during authorization check")}
+
+---- test_condition_evaluation_with_list_membership stdout ----
+
+thread 'test_condition_evaluation_with_list_membership' (2573222) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:697:5:
+assertion `left == right` failed: List membership check should return true when role is in list
+  left: None
+ right: Some(true)
+
+---- test_condition_evaluation_with_logical_operators stdout ----
+
+thread 'test_condition_evaluation_with_logical_operators' (2573224) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:783:5:
+assertion `left == right` failed: Admin user should pass via OR condition
+  left: None
+ right: Some(true)
+
+---- test_condition_evaluation_with_string_operations stdout ----
+
+thread 'test_condition_evaluation_with_string_operations' (2573226) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:613:5:
+assertion `left == right` failed: String equality should evaluate correctly
+  left: None
+ right: Some(true)
+
+---- test_condition_evaluation_with_timestamp_comparison stdout ----
+
+thread 'test_condition_evaluation_with_timestamp_comparison' (2573228) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:549:5:
+Timestamp comparison should work
+
+---- test_contextual_tuples_with_conditions stdout ----
+
+thread 'test_contextual_tuples_with_conditions' (2573230) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:997:9:
+If not supported, should return 400, got: 500 Internal Server Error
+
+
+failures:
+    test_batch_check_evaluates_conditions
+    test_check_accepts_context_parameter
+    test_check_returns_false_when_condition_evaluates_false
+    test_check_returns_true_when_condition_evaluates_true
+    test_check_with_partial_context_returns_error
+    test_check_with_wrong_context_type_returns_error
+    test_check_without_required_context_returns_error
+    test_condition_evaluation_with_list_membership
+    test_condition_evaluation_with_logical_operators
+    test_condition_evaluation_with_string_operations
+    test_condition_evaluation_with_timestamp_comparison
+    test_contextual_tuples_with_conditions
+
+test result: FAILED. 0 passed; 12 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.36s
+
+--- test_section_27_check_conditions ---
+
+running 12 tests
+test test_batch_check_evaluates_conditions ... FAILED
+test test_check_accepts_context_parameter ... FAILED
+test test_check_returns_false_when_condition_evaluates_false ... FAILED
+test test_check_returns_true_when_condition_evaluates_true ... FAILED
+test test_check_with_partial_context_returns_error ... FAILED
+test test_check_with_wrong_context_type_returns_error ... FAILED
+test test_check_without_required_context_returns_error ... FAILED
+test test_condition_evaluation_with_list_membership ... FAILED
+test test_condition_evaluation_with_logical_operators ... FAILED
+test test_condition_evaluation_with_string_operations ... FAILED
+test test_condition_evaluation_with_timestamp_comparison ... FAILED
+test test_contextual_tuples_with_conditions ... FAILED
+
+failures:
+
+---- test_batch_check_evaluates_conditions stdout ----
+
+thread 'test_batch_check_evaluates_conditions' (2573259) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:929:5:
+assertion `left == right` failed: Conditional check with valid context should return true
+  left: Some(false)
+ right: Some(true)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_check_accepts_context_parameter stdout ----
+
+thread 'test_check_accepts_context_parameter' (2573263) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:194:5:
+Check API should accept context parameter, got: 500 Internal Server Error
+
+---- test_check_returns_false_when_condition_evaluates_false stdout ----
+
+thread 'test_check_returns_false_when_condition_evaluates_false' (2573265) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:314:5:
+assertion `left == right` failed: Check should return allowed: false when condition evaluates to false
+  left: None
+ right: Some(false)
+
+---- test_check_returns_true_when_condition_evaluates_true stdout ----
+
+thread 'test_check_returns_true_when_condition_evaluates_true' (2573267) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:254:5:
+assertion `left == right` failed: Check should return allowed: true when condition evaluates to true
+  left: None
+ right: Some(true)
+
+---- test_check_with_partial_context_returns_error stdout ----
+
+thread 'test_check_with_partial_context_returns_error' (2573269) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:433:5:
+Check with partial context should return error or false, got status: 500 Internal Server Error, body: Object {"code": String("internal_error"), "message": String("internal error during authorization check")}
+
+---- test_check_with_wrong_context_type_returns_error stdout ----
+
+thread 'test_check_with_wrong_context_type_returns_error' (2573271) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:493:5:
+Check with wrong context type should return error or false, got status: 500 Internal Server Error, body: Object {"code": String("internal_error"), "message": String("internal error during authorization check")}
+
+---- test_check_without_required_context_returns_error stdout ----
+
+thread 'test_check_without_required_context_returns_error' (2573275) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:373:5:
+Check without required context should return error or false, got status: 500 Internal Server Error, body: Object {"code": String("internal_error"), "message": String("internal error during authorization check")}
+
+---- test_condition_evaluation_with_list_membership stdout ----
+
+thread 'test_condition_evaluation_with_list_membership' (2573277) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:697:5:
+assertion `left == right` failed: List membership check should return true when role is in list
+  left: None
+ right: Some(true)
+
+---- test_condition_evaluation_with_logical_operators stdout ----
+
+thread 'test_condition_evaluation_with_logical_operators' (2573279) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:783:5:
+assertion `left == right` failed: Admin user should pass via OR condition
+  left: None
+ right: Some(true)
+
+---- test_condition_evaluation_with_string_operations stdout ----
+
+thread 'test_condition_evaluation_with_string_operations' (2573281) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:613:5:
+assertion `left == right` failed: String equality should evaluate correctly
+  left: None
+ right: Some(true)
+
+---- test_condition_evaluation_with_timestamp_comparison stdout ----
+
+thread 'test_condition_evaluation_with_timestamp_comparison' (2573283) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:549:5:
+Timestamp comparison should work
+
+---- test_contextual_tuples_with_conditions stdout ----
+
+thread 'test_contextual_tuples_with_conditions' (2573285) panicked at crates/compatibility-tests/tests/test_section_27_check_conditions.rs:997:9:
+If not supported, should return 400, got: 500 Internal Server Error
+
+
+failures:
+    test_batch_check_evaluates_conditions
+    test_check_accepts_context_parameter
+    test_check_returns_false_when_condition_evaluates_false
+    test_check_returns_true_when_condition_evaluates_true
+    test_check_with_partial_context_returns_error
+    test_check_with_wrong_context_type_returns_error
+    test_check_without_required_context_returns_error
+    test_condition_evaluation_with_list_membership
+    test_condition_evaluation_with_logical_operators
+    test_condition_evaluation_with_string_operations
+    test_condition_evaluation_with_timestamp_comparison
+    test_contextual_tuples_with_conditions
+
+test result: FAILED. 0 passed; 12 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.39s
+
+--- test_section_28_cel_edge_cases ---
+
+running 8 tests
+test test_cel_expression_division_by_zero ... ok
+test test_cel_expression_timeout_behavior ... FAILED
+test test_cel_expression_undefined_variable ... FAILED
+test test_deeply_nested_map_values_in_context ... FAILED
+test test_empty_context_no_required_params ... FAILED
+test test_large_list_values_in_context ... FAILED
+test test_null_values_in_context ... FAILED
+test test_very_long_string_values_in_context ... FAILED
+
+failures:
+
+---- test_cel_expression_timeout_behavior stdout ----
+
+thread 'test_cel_expression_timeout_behavior' (2573320) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:643:5:
+Complex CEL expression should succeed, got: 500 Internal Server Error
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_cel_expression_undefined_variable stdout ----
+
+thread 'test_cel_expression_undefined_variable' (2573322) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:744:5:
+Undefined variable access should error or return false, got status: 500 Internal Server Error, body: Object {"code": String("internal_error"), "message": String("internal error during authorization check")}
+
+---- test_deeply_nested_map_values_in_context stdout ----
+
+thread 'test_deeply_nested_map_values_in_context' (2573325) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:530:5:
+Nested map should be handled, got: 500 Internal Server Error
+
+---- test_empty_context_no_required_params stdout ----
+
+thread 'test_empty_context_no_required_params' (2573327) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:100:5:
+Check with no required params should return allowed: true
+
+---- test_large_list_values_in_context stdout ----
+
+thread 'test_large_list_values_in_context' (2573330) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:409:5:
+Large list should be handled gracefully, got: 500 Internal Server Error
+
+---- test_null_values_in_context stdout ----
+
+thread 'test_null_values_in_context' (2573332) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:202:5:
+Null value in context should be handled, got status: 500 Internal Server Error, body: Object {"code": String("internal_error"), "message": String("internal error during authorization check")}
+
+---- test_very_long_string_values_in_context stdout ----
+
+thread 'test_very_long_string_values_in_context' (2573334) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:302:5:
+Very long string should be handled gracefully, got: 500 Internal Server Error
+
+
+failures:
+    test_cel_expression_timeout_behavior
+    test_cel_expression_undefined_variable
+    test_deeply_nested_map_values_in_context
+    test_empty_context_no_required_params
+    test_large_list_values_in_context
+    test_null_values_in_context
+    test_very_long_string_values_in_context
+
+test result: FAILED. 1 passed; 7 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.32s
+
+--- test_section_28_cel_edge_cases ---
+
+running 8 tests
+test test_cel_expression_division_by_zero ... ok
+test test_cel_expression_timeout_behavior ... FAILED
+test test_cel_expression_undefined_variable ... FAILED
+test test_deeply_nested_map_values_in_context ... FAILED
+test test_empty_context_no_required_params ... FAILED
+test test_large_list_values_in_context ... FAILED
+test test_null_values_in_context ... FAILED
+test test_very_long_string_values_in_context ... FAILED
+
+failures:
+
+---- test_cel_expression_timeout_behavior stdout ----
+
+thread 'test_cel_expression_timeout_behavior' (2573374) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:643:5:
+Complex CEL expression should succeed, got: 500 Internal Server Error
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_cel_expression_undefined_variable stdout ----
+
+thread 'test_cel_expression_undefined_variable' (2573379) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:744:5:
+Undefined variable access should error or return false, got status: 500 Internal Server Error, body: Object {"code": String("internal_error"), "message": String("internal error during authorization check")}
+
+---- test_deeply_nested_map_values_in_context stdout ----
+
+thread 'test_deeply_nested_map_values_in_context' (2573381) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:530:5:
+Nested map should be handled, got: 500 Internal Server Error
+
+---- test_empty_context_no_required_params stdout ----
+
+thread 'test_empty_context_no_required_params' (2573383) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:100:5:
+Check with no required params should return allowed: true
+
+---- test_large_list_values_in_context stdout ----
+
+thread 'test_large_list_values_in_context' (2573385) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:409:5:
+Large list should be handled gracefully, got: 500 Internal Server Error
+
+---- test_null_values_in_context stdout ----
+
+thread 'test_null_values_in_context' (2573387) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:202:5:
+Null value in context should be handled, got status: 500 Internal Server Error, body: Object {"code": String("internal_error"), "message": String("internal error during authorization check")}
+
+---- test_very_long_string_values_in_context stdout ----
+
+thread 'test_very_long_string_values_in_context' (2573389) panicked at crates/compatibility-tests/tests/test_section_28_cel_edge_cases.rs:302:5:
+Very long string should be handled gracefully, got: 500 Internal Server Error
+
+
+failures:
+    test_cel_expression_timeout_behavior
+    test_cel_expression_undefined_variable
+    test_deeply_nested_map_values_in_context
+    test_empty_context_no_required_params
+    test_large_list_values_in_context
+    test_null_values_in_context
+    test_very_long_string_values_in_context
+
+test result: FAILED. 1 passed; 7 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.27s
+
+--- test_section_29_condition_performance ---
+
+running 4 tests
+test test_compare_conditional_vs_non_conditional_latency ... FAILED
+test test_measure_batch_check_with_conditions ... ok
+test test_measure_check_latency_complex_condition ... FAILED
+test test_measure_check_latency_simple_condition ... FAILED
+
+failures:
+
+---- test_compare_conditional_vs_non_conditional_latency stdout ----
+
+thread 'test_compare_conditional_vs_non_conditional_latency' (2573415) panicked at crates/compatibility-tests/tests/test_section_29_condition_performance.rs:531:9:
+assertion failed: response.status().is_success()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_measure_check_latency_complex_condition stdout ----
+
+thread 'test_measure_check_latency_complex_condition' (2573469) panicked at crates/compatibility-tests/tests/test_section_29_condition_performance.rs:293:9:
+assertion failed: response.status().is_success()
+
+---- test_measure_check_latency_simple_condition stdout ----
+
+thread 'test_measure_check_latency_simple_condition' (2573471) panicked at crates/compatibility-tests/tests/test_section_29_condition_performance.rs:153:9:
+assertion failed: response.status().is_success()
+
+
+failures:
+    test_compare_conditional_vs_non_conditional_latency
+    test_measure_check_latency_complex_condition
+    test_measure_check_latency_simple_condition
+
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.31s
+
+--- test_section_29_condition_performance ---
+
+running 4 tests
+test test_compare_conditional_vs_non_conditional_latency ... FAILED
+test test_measure_batch_check_with_conditions ... ok
+test test_measure_check_latency_complex_condition ... FAILED
+test test_measure_check_latency_simple_condition ... FAILED
+
+failures:
+
+---- test_compare_conditional_vs_non_conditional_latency stdout ----
+
+thread 'test_compare_conditional_vs_non_conditional_latency' (2573497) panicked at crates/compatibility-tests/tests/test_section_29_condition_performance.rs:531:9:
+assertion failed: response.status().is_success()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_measure_check_latency_complex_condition stdout ----
+
+thread 'test_measure_check_latency_complex_condition' (2573513) panicked at crates/compatibility-tests/tests/test_section_29_condition_performance.rs:293:9:
+assertion failed: response.status().is_success()
+
+---- test_measure_check_latency_simple_condition stdout ----
+
+thread 'test_measure_check_latency_simple_condition' (2573515) panicked at crates/compatibility-tests/tests/test_section_29_condition_performance.rs:153:9:
+assertion failed: response.status().is_success()
+
+
+failures:
+    test_compare_conditional_vs_non_conditional_latency
+    test_measure_check_latency_complex_condition
+    test_measure_check_latency_simple_condition
+
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.31s
+
+--- test_section_3 ---
+
+running 8 tests
+test test_can_capture_grpc_request_response_pairs ... ok
+test test_can_capture_http_request_response_pairs ... ok
+test test_can_compare_two_responses_for_equality ... ok
+test test_can_detect_breaking_changes_in_arrays ... ok
+test test_can_detect_breaking_changes_in_nested_objects ... ok
+test test_can_detect_breaking_changes_in_response_format ... ok
+test test_can_load_captured_test_cases_from_disk ... ok
+test test_can_serialize_captured_data_to_json ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- test_section_3 ---
+
+running 8 tests
+test test_can_capture_grpc_request_response_pairs ... ok
+test test_can_capture_http_request_response_pairs ... ok
+test test_can_compare_two_responses_for_equality ... ok
+test test_can_detect_breaking_changes_in_arrays ... ok
+test test_can_detect_breaking_changes_in_nested_objects ... ok
+test test_can_detect_breaking_changes_in_response_format ... ok
+test test_can_load_captured_test_cases_from_disk ... ok
+test test_can_serialize_captured_data_to_json ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- test_section_30_listusers_api ---
+
+running 8 tests
+test test_listusers_empty_result ... ok
+test test_listusers_invalid_type_error ... ok
+test test_listusers_nonexistent_store_error ... ok
+test test_listusers_returns_users_with_direct_relation ... ok
+test test_listusers_returns_wildcard ... ok
+test test_listusers_with_computed_relations ... ok
+test test_listusers_with_contextual_tuples ... ok
+test test_listusers_with_userset_filter ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.24s
+
+--- test_section_30_listusers_api ---
+
+running 8 tests
+test test_listusers_empty_result ... ok
+test test_listusers_invalid_type_error ... ok
+test test_listusers_nonexistent_store_error ... ok
+test test_listusers_returns_users_with_direct_relation ... ok
+test test_listusers_returns_wildcard ... ok
+test test_listusers_with_computed_relations ... ok
+test test_listusers_with_contextual_tuples ... ok
+test test_listusers_with_userset_filter ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.26s
+
+--- test_section_31_readchanges_api ---
+
+running 10 tests
+test test_readchanges_chronological_order ... FAILED
+test test_readchanges_continuation_token ... ok
+test test_readchanges_empty_for_new_store ... ok
+test test_readchanges_nonexistent_store_error ... ok
+test test_readchanges_pagination_page_size ... ok
+test test_readchanges_returns_tuple_writes ... ok
+test test_readchanges_returns_writes_and_deletes ... FAILED
+test test_readchanges_same_token_when_no_changes ... ok
+test test_readchanges_type_filter_mismatch_with_token ... ok
+test test_readchanges_with_type_filter ... ok
+
+failures:
+
+---- test_readchanges_chronological_order stdout ----
+
+thread 'test_readchanges_chronological_order' (2573695) panicked at crates/compatibility-tests/tests/test_section_31_readchanges_api.rs:695:9:
+Changes should be in chronological order: 2026-01-17T05:09:09.878144+00:00 should come after 2026-01-17T05:09:09.937149+00:00
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_readchanges_returns_writes_and_deletes stdout ----
+
+thread 'test_readchanges_returns_writes_and_deletes' (2573713) panicked at crates/compatibility-tests/tests/test_section_31_readchanges_api.rs:164:5:
+Should have WRITE operation
+
+
+failures:
+    test_readchanges_chronological_order
+    test_readchanges_returns_writes_and_deletes
+
+test result: FAILED. 8 passed; 2 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.53s
+
+--- test_section_31_readchanges_api ---
+
+running 10 tests
+test test_readchanges_chronological_order ... FAILED
+test test_readchanges_continuation_token ... ok
+test test_readchanges_empty_for_new_store ... ok
+test test_readchanges_nonexistent_store_error ... ok
+test test_readchanges_pagination_page_size ... ok
+test test_readchanges_returns_tuple_writes ... ok
+test test_readchanges_returns_writes_and_deletes ... FAILED
+test test_readchanges_same_token_when_no_changes ... ok
+test test_readchanges_type_filter_mismatch_with_token ... ok
+test test_readchanges_with_type_filter ... ok
+
+failures:
+
+---- test_readchanges_chronological_order stdout ----
+
+thread 'test_readchanges_chronological_order' (2573748) panicked at crates/compatibility-tests/tests/test_section_31_readchanges_api.rs:695:9:
+Changes should be in chronological order: 2026-01-17T05:09:10.425149+00:00 should come after 2026-01-17T05:09:10.484882+00:00
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_readchanges_returns_writes_and_deletes stdout ----
+
+thread 'test_readchanges_returns_writes_and_deletes' (2573807) panicked at crates/compatibility-tests/tests/test_section_31_readchanges_api.rs:164:5:
+Should have WRITE operation
+
+
+failures:
+    test_readchanges_chronological_order
+    test_readchanges_returns_writes_and_deletes
+
+test result: FAILED. 8 passed; 2 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.50s
+
+--- test_section_32_assertions_api ---
+
+running 9 tests
+test test_assertions_invalid_model_id_error ... FAILED
+test test_assertions_mixed_expectations ... ok
+test test_assertions_nonexistent_store_error ... ok
+test test_assertions_with_contextual_tuples ... ok
+test test_read_assertions_returns_assertions ... ok
+test test_read_assertions_when_none_exist ... ok
+test test_write_assertions_creates_assertions ... ok
+test test_write_assertions_replaces_existing ... ok
+test test_write_empty_assertions ... ok
+
+failures:
+
+---- test_assertions_invalid_model_id_error stdout ----
+
+thread 'test_assertions_invalid_model_id_error' (2573839) panicked at crates/compatibility-tests/tests/test_section_32_assertions_api.rs:692:5:
+WriteAssertions with invalid model_id should return 404 or 400, got: 500 Internal Server Error
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_assertions_invalid_model_id_error
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.28s
+
+--- test_section_32_assertions_api ---
+
+running 9 tests
+test test_assertions_invalid_model_id_error ... FAILED
+test test_assertions_mixed_expectations ... ok
+test test_assertions_nonexistent_store_error ... ok
+test test_assertions_with_contextual_tuples ... ok
+test test_read_assertions_returns_assertions ... ok
+test test_read_assertions_when_none_exist ... ok
+test test_write_assertions_creates_assertions ... ok
+test test_write_assertions_replaces_existing ... ok
+test test_write_empty_assertions ... ok
+
+failures:
+
+---- test_assertions_invalid_model_id_error stdout ----
+
+thread 'test_assertions_invalid_model_id_error' (2573886) panicked at crates/compatibility-tests/tests/test_section_32_assertions_api.rs:692:5:
+WriteAssertions with invalid model_id should return 404 or 400, got: 500 Internal Server Error
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_assertions_invalid_model_id_error
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.28s
+
+--- test_section_33_consistency_preference ---
+
+running 9 tests
+test test_batchcheck_accepts_consistency_parameter ... ok
+test test_check_accepts_consistency_parameter ... ok
+test test_check_with_higher_consistency ... ok
+test test_check_with_unspecified_consistency ... ok
+test test_consistency_modes_return_same_results ... ok
+test test_expand_accepts_consistency_parameter ... ok
+test test_invalid_consistency_value_error ... ok
+test test_listobjects_accepts_consistency_parameter ... FAILED
+test test_listusers_accepts_consistency_parameter ... ok
+
+failures:
+
+---- test_listobjects_accepts_consistency_parameter stdout ----
+
+thread 'test_listobjects_accepts_consistency_parameter' (2573964) panicked at crates/compatibility-tests/tests/test_section_33_consistency_preference.rs:218:5:
+assertion `left == right` failed: Should return 2 objects
+  left: 0
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_listobjects_accepts_consistency_parameter
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.34s
+
+--- test_section_33_consistency_preference ---
+
+running 9 tests
+test test_batchcheck_accepts_consistency_parameter ... ok
+test test_check_accepts_consistency_parameter ... ok
+test test_check_with_higher_consistency ... ok
+test test_check_with_unspecified_consistency ... ok
+test test_consistency_modes_return_same_results ... ok
+test test_expand_accepts_consistency_parameter ... ok
+test test_invalid_consistency_value_error ... ok
+test test_listobjects_accepts_consistency_parameter ... FAILED
+test test_listusers_accepts_consistency_parameter ... ok
+
+failures:
+
+---- test_listobjects_accepts_consistency_parameter stdout ----
+
+thread 'test_listobjects_accepts_consistency_parameter' (2574011) panicked at crates/compatibility-tests/tests/test_section_33_consistency_preference.rs:218:5:
+assertion `left == right` failed: Should return 2 objects
+  left: 0
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_listobjects_accepts_consistency_parameter
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.30s
+
+--- test_section_34_streamed_listobjects ---
+
+running 5 tests
+test test_streamed_listobjects_empty_results ... ok
+test test_streamed_listobjects_error_handling ... ok
+test test_streamed_listobjects_large_result_set ... ok
+test test_streamed_listobjects_returns_same_as_listobjects ... ok
+test test_streamed_listobjects_with_contextual_tuples ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.09s
+
+--- test_section_34_streamed_listobjects ---
+
+running 5 tests
+test test_streamed_listobjects_empty_results ... ok
+test test_streamed_listobjects_error_handling ... ok
+test test_streamed_listobjects_large_result_set ... ok
+test test_streamed_listobjects_returns_same_as_listobjects ... ok
+test test_streamed_listobjects_with_contextual_tuples ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.09s
+
+--- test_section_35_modular_models ---
+
+running 7 tests
+test test_create_model_schema_1_2 ... ok
+test test_invalid_schema_version_error ... FAILED
+test test_model_retrieval_includes_schema_version ... ok
+test test_schema_1_2_backwards_compatible ... ok
+test test_schema_1_2_computed_relation_compatibility ... ok
+test test_schema_1_2_multi_type_model_compatibility ... ok
+test test_schema_1_2_with_organization_type ... ok
+
+failures:
+
+---- test_invalid_schema_version_error stdout ----
+
+thread 'test_invalid_schema_version_error' (2574254) panicked at crates/compatibility-tests/tests/test_section_35_modular_models.rs:340:5:
+Creating model with invalid schema version should fail
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_invalid_schema_version_error
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.28s
+
+--- test_section_35_modular_models ---
+
+running 7 tests
+test test_create_model_schema_1_2 ... ok
+test test_invalid_schema_version_error ... FAILED
+test test_model_retrieval_includes_schema_version ... ok
+test test_schema_1_2_backwards_compatible ... ok
+test test_schema_1_2_computed_relation_compatibility ... ok
+test test_schema_1_2_multi_type_model_compatibility ... ok
+test test_schema_1_2_with_organization_type ... ok
+
+failures:
+
+---- test_invalid_schema_version_error stdout ----
+
+thread 'test_invalid_schema_version_error' (2574343) panicked at crates/compatibility-tests/tests/test_section_35_modular_models.rs:340:5:
+Creating model with invalid schema version should fail
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    test_invalid_schema_version_error
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.29s
+
+--- test_section_4 ---
+
+running 9 tests
+test test_delete_store_deletes_store ... ok
+test test_delete_store_returns_400_for_nonexistent_store ... FAILED
+test test_get_store_retrieves_store_by_id ... ok
+test test_get_store_returns_400_for_nonexistent_store ... FAILED
+test test_list_stores_continuation_token_works ... FAILED
+test test_list_stores_respects_page_size_parameter ... FAILED
+test test_list_stores_returns_paginated_results ... ok
+test test_post_stores_creates_store_with_generated_id ... ok
+test test_post_stores_returns_created_store_in_response ... ok
+
+failures:
+
+---- test_delete_store_returns_400_for_nonexistent_store stdout ----
+
+thread 'test_delete_store_returns_400_for_nonexistent_store' (2574387) panicked at crates/compatibility-tests/tests/test_section_4.rs:244:5:
+assertion `left == right` failed: DELETE non-existent store should return 400, got: 404 Not Found
+  left: 404
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_get_store_returns_400_for_nonexistent_store stdout ----
+
+thread 'test_get_store_returns_400_for_nonexistent_store' (2574393) panicked at crates/compatibility-tests/tests/test_section_4.rs:171:5:
+assertion `left == right` failed: GET non-existent store should return 400, got: 404 Not Found
+  left: 404
+ right: 400
+
+---- test_list_stores_continuation_token_works stdout ----
+
+thread 'test_list_stores_continuation_token_works' (2574398) panicked at crates/compatibility-tests/tests/test_section_4.rs:380:10:
+continuation_token should be present when more results exist
+
+---- test_list_stores_respects_page_size_parameter stdout ----
+
+thread 'test_list_stores_respects_page_size_parameter' (2574456) panicked at crates/compatibility-tests/tests/test_section_4.rs:335:5:
+assertion `left == right` failed: Page size=3 should return exactly 3 stores, got: 3646
+  left: 3646
+ right: 3
+
+
+failures:
+    test_delete_store_returns_400_for_nonexistent_store
+    test_get_store_returns_400_for_nonexistent_store
+    test_list_stores_continuation_token_works
+    test_list_stores_respects_page_size_parameter
+
+test result: FAILED. 5 passed; 4 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.36s
+
+--- test_section_4 ---
+
+running 9 tests
+test test_delete_store_deletes_store ... ok
+test test_delete_store_returns_400_for_nonexistent_store ... FAILED
+test test_get_store_retrieves_store_by_id ... ok
+test test_get_store_returns_400_for_nonexistent_store ... FAILED
+test test_list_stores_continuation_token_works ... FAILED
+test test_list_stores_respects_page_size_parameter ... FAILED
+test test_list_stores_returns_paginated_results ... ok
+test test_post_stores_creates_store_with_generated_id ... ok
+test test_post_stores_returns_created_store_in_response ... ok
+
+failures:
+
+---- test_delete_store_returns_400_for_nonexistent_store stdout ----
+
+thread 'test_delete_store_returns_400_for_nonexistent_store' (2574497) panicked at crates/compatibility-tests/tests/test_section_4.rs:244:5:
+assertion `left == right` failed: DELETE non-existent store should return 400, got: 404 Not Found
+  left: 404
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_get_store_returns_400_for_nonexistent_store stdout ----
+
+thread 'test_get_store_returns_400_for_nonexistent_store' (2574501) panicked at crates/compatibility-tests/tests/test_section_4.rs:171:5:
+assertion `left == right` failed: GET non-existent store should return 400, got: 404 Not Found
+  left: 404
+ right: 400
+
+---- test_list_stores_continuation_token_works stdout ----
+
+thread 'test_list_stores_continuation_token_works' (2574503) panicked at crates/compatibility-tests/tests/test_section_4.rs:380:10:
+continuation_token should be present when more results exist
+
+---- test_list_stores_respects_page_size_parameter stdout ----
+
+thread 'test_list_stores_respects_page_size_parameter' (2574506) panicked at crates/compatibility-tests/tests/test_section_4.rs:335:5:
+assertion `left == right` failed: Page size=3 should return exactly 3 stores, got: 3674
+  left: 3674
+ right: 3
+
+
+failures:
+    test_delete_store_returns_400_for_nonexistent_store
+    test_get_store_returns_400_for_nonexistent_store
+    test_list_stores_continuation_token_works
+    test_list_stores_respects_page_size_parameter
+
+test result: FAILED. 5 passed; 4 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.36s
+
+--- test_section_5 ---
+
+running 9 tests
+test test_can_create_model_with_computed_relations ... ok
+test test_can_create_model_with_direct_relations ... ok
+test test_can_create_model_with_this_keyword ... ok
+test test_can_create_model_with_wildcards ... ok
+test test_duplicate_type_definitions_return_error ... FAILED
+test test_invalid_model_syntax_returns_400 ... ok
+test test_model_creation_returns_generated_model_id ... ok
+test test_post_authorization_model_creates_model ... ok
+test test_undefined_relation_references_return_error ... FAILED
+
+failures:
+
+---- test_duplicate_type_definitions_return_error stdout ----
+
+thread 'test_duplicate_type_definitions_return_error' (2574549) panicked at crates/compatibility-tests/tests/test_section_5.rs:493:5:
+assertion `left == right` failed: Duplicate type definitions should return 400, got: 201 Created
+  left: 201
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_undefined_relation_references_return_error stdout ----
+
+thread 'test_undefined_relation_references_return_error' (2574557) panicked at crates/compatibility-tests/tests/test_section_5.rs:545:5:
+assertion `left == right` failed: Undefined relation reference should return 400, got: 201 Created
+  left: 201
+ right: 400
+
+
+failures:
+    test_duplicate_type_definitions_return_error
+    test_undefined_relation_references_return_error
+
+test result: FAILED. 7 passed; 2 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.29s
+
+--- test_section_5 ---
+
+running 9 tests
+test test_can_create_model_with_computed_relations ... ok
+test test_can_create_model_with_direct_relations ... ok
+test test_can_create_model_with_this_keyword ... ok
+test test_can_create_model_with_wildcards ... ok
+test test_duplicate_type_definitions_return_error ... FAILED
+test test_invalid_model_syntax_returns_400 ... ok
+test test_model_creation_returns_generated_model_id ... ok
+test test_post_authorization_model_creates_model ... ok
+test test_undefined_relation_references_return_error ... FAILED
+
+failures:
+
+---- test_duplicate_type_definitions_return_error stdout ----
+
+thread 'test_duplicate_type_definitions_return_error' (2574596) panicked at crates/compatibility-tests/tests/test_section_5.rs:493:5:
+assertion `left == right` failed: Duplicate type definitions should return 400, got: 201 Created
+  left: 201
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_undefined_relation_references_return_error stdout ----
+
+thread 'test_undefined_relation_references_return_error' (2574604) panicked at crates/compatibility-tests/tests/test_section_5.rs:545:5:
+assertion `left == right` failed: Undefined relation reference should return 400, got: 201 Created
+  left: 201
+ right: 400
+
+
+failures:
+    test_duplicate_type_definitions_return_error
+    test_undefined_relation_references_return_error
+
+test result: FAILED. 7 passed; 2 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.28s
+
+--- test_section_6 ---
+
+running 6 tests
+test test_can_retrieve_latest_model ... ok
+test test_get_authorization_model_retrieves_model ... ok
+test test_get_nonexistent_model_returns_error ... ok
+test test_list_authorization_models ... ok
+test test_model_response_includes_schema_version ... ok
+test test_model_response_includes_type_definitions ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.26s
+
+--- test_section_6 ---
+
+running 6 tests
+test test_can_retrieve_latest_model ... ok
+test test_get_authorization_model_retrieves_model ... ok
+test test_get_nonexistent_model_returns_error ... ok
+test test_list_authorization_models ... ok
+test test_model_response_includes_schema_version ... ok
+test test_model_response_includes_type_definitions ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.26s
+
+--- test_section_7_tuple_write ---
+
+running 10 tests
+test test_can_delete_tuple ... ok
+test test_conditional_writes ... ok
+test test_write_invalid_format_returns_400 ... ok
+test test_write_multiple_tuples ... ok
+test test_write_nonexistent_relation_returns_error ... FAILED
+test test_write_nonexistent_type_returns_error ... FAILED
+test test_write_returns_empty_response ... ok
+test test_write_single_tuple ... ok
+test test_write_without_store_returns_error ... ok
+test test_writes_are_idempotent ... ok
+
+failures:
+
+---- test_write_nonexistent_relation_returns_error stdout ----
+
+thread 'test_write_nonexistent_relation_returns_error' (2574766) panicked at crates/compatibility-tests/tests/test_section_7_tuple_write.rs:409:5:
+assertion `left == right` failed: Writing tuple with non-existent relation should return 400, got: 200 OK
+  left: 200
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_write_nonexistent_type_returns_error stdout ----
+
+thread 'test_write_nonexistent_type_returns_error' (2574768) panicked at crates/compatibility-tests/tests/test_section_7_tuple_write.rs:370:5:
+assertion `left == right` failed: Writing tuple with non-existent type should return 400, got: 200 OK
+  left: 200
+ right: 400
+
+
+failures:
+    test_write_nonexistent_relation_returns_error
+    test_write_nonexistent_type_returns_error
+
+test result: FAILED. 8 passed; 2 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.33s
+
+--- test_section_7_tuple_write ---
+
+running 10 tests
+test test_can_delete_tuple ... ok
+test test_conditional_writes ... ok
+test test_write_invalid_format_returns_400 ... ok
+test test_write_multiple_tuples ... ok
+test test_write_nonexistent_relation_returns_error ... FAILED
+test test_write_nonexistent_type_returns_error ... FAILED
+test test_write_returns_empty_response ... ok
+test test_write_single_tuple ... ok
+test test_write_without_store_returns_error ... ok
+test test_writes_are_idempotent ... ok
+
+failures:
+
+---- test_write_nonexistent_relation_returns_error stdout ----
+
+thread 'test_write_nonexistent_relation_returns_error' (2574831) panicked at crates/compatibility-tests/tests/test_section_7_tuple_write.rs:409:5:
+assertion `left == right` failed: Writing tuple with non-existent relation should return 400, got: 200 OK
+  left: 200
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_write_nonexistent_type_returns_error stdout ----
+
+thread 'test_write_nonexistent_type_returns_error' (2574833) panicked at crates/compatibility-tests/tests/test_section_7_tuple_write.rs:370:5:
+assertion `left == right` failed: Writing tuple with non-existent type should return 400, got: 200 OK
+  left: 200
+ right: 400
+
+
+failures:
+    test_write_nonexistent_relation_returns_error
+    test_write_nonexistent_type_returns_error
+
+test result: FAILED. 8 passed; 2 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.35s
+
+--- test_section_8_tuple_read ---
+
+running 9 tests
+test test_read_continuation_token ... ok
+test test_read_respects_page_size ... ok
+test test_read_returns_empty_when_no_matches ... FAILED
+test test_read_tuples_by_filter ... ok
+test test_read_with_empty_filter ... ok
+test test_read_with_multiple_filters ... ok
+test test_read_with_object_filter ... FAILED
+test test_read_with_relation_filter ... FAILED
+test test_read_with_user_filter ... FAILED
+
+failures:
+
+---- test_read_returns_empty_when_no_matches stdout ----
+
+thread 'test_read_returns_empty_when_no_matches' (2574874) panicked at crates/compatibility-tests/tests/test_section_8_tuple_read.rs:493:10:
+tuples field should be an array
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_read_with_object_filter stdout ----
+
+thread 'test_read_with_object_filter' (2574882) panicked at crates/compatibility-tests/tests/test_section_8_tuple_read.rs:215:10:
+tuples field should be an array
+
+---- test_read_with_relation_filter stdout ----
+
+thread 'test_read_with_relation_filter' (2574884) panicked at crates/compatibility-tests/tests/test_section_8_tuple_read.rs:156:10:
+tuples field should be an array
+
+---- test_read_with_user_filter stdout ----
+
+thread 'test_read_with_user_filter' (2574887) panicked at crates/compatibility-tests/tests/test_section_8_tuple_read.rs:94:10:
+tuples field should be an array
+
+
+failures:
+    test_read_returns_empty_when_no_matches
+    test_read_with_object_filter
+    test_read_with_relation_filter
+    test_read_with_user_filter
+
+test result: FAILED. 5 passed; 4 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.33s
+
+--- test_section_8_tuple_read ---
+
+running 9 tests
+test test_read_continuation_token ... ok
+test test_read_respects_page_size ... ok
+test test_read_returns_empty_when_no_matches ... FAILED
+test test_read_tuples_by_filter ... ok
+test test_read_with_empty_filter ... ok
+test test_read_with_multiple_filters ... ok
+test test_read_with_object_filter ... FAILED
+test test_read_with_relation_filter ... FAILED
+test test_read_with_user_filter ... FAILED
+
+failures:
+
+---- test_read_returns_empty_when_no_matches stdout ----
+
+thread 'test_read_returns_empty_when_no_matches' (2574921) panicked at crates/compatibility-tests/tests/test_section_8_tuple_read.rs:493:10:
+tuples field should be an array
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_read_with_object_filter stdout ----
+
+thread 'test_read_with_object_filter' (2574930) panicked at crates/compatibility-tests/tests/test_section_8_tuple_read.rs:215:10:
+tuples field should be an array
+
+---- test_read_with_relation_filter stdout ----
+
+thread 'test_read_with_relation_filter' (2574932) panicked at crates/compatibility-tests/tests/test_section_8_tuple_read.rs:156:10:
+tuples field should be an array
+
+---- test_read_with_user_filter stdout ----
+
+thread 'test_read_with_user_filter' (2574934) panicked at crates/compatibility-tests/tests/test_section_8_tuple_read.rs:94:10:
+tuples field should be an array
+
+
+failures:
+    test_read_returns_empty_when_no_matches
+    test_read_with_object_filter
+    test_read_with_relation_filter
+    test_read_with_user_filter
+
+test result: FAILED. 5 passed; 4 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.31s
+
+--- test_section_9_tuple_edge_cases ---
+
+running 6 tests
+test test_identifiers_at_size_limit ... FAILED
+test test_identifiers_over_size_limit ... ok
+test test_read_tuple_with_userset ... FAILED
+test test_special_characters_in_identifiers ... ok
+test test_unicode_in_identifiers ... FAILED
+test test_write_tuple_with_wildcard ... ok
+
+failures:
+
+---- test_identifiers_at_size_limit stdout ----
+
+thread 'test_identifiers_at_size_limit' (2574960) panicked at crates/compatibility-tests/tests/test_section_9_tuple_edge_cases.rs:158:5:
+Write with IDs at size limits should succeed, got: 400 Bad Request
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_read_tuple_with_userset stdout ----
+
+thread 'test_read_tuple_with_userset' (2574968) panicked at crates/compatibility-tests/tests/test_section_9_tuple_edge_cases.rs:100:10:
+tuples field should be an array
+
+---- test_unicode_in_identifiers stdout ----
+
+thread 'test_unicode_in_identifiers' (2574973) panicked at crates/compatibility-tests/tests/test_section_9_tuple_edge_cases.rs:321:9:
+Read should succeed for Unicode tuple (user:用户123, document:文档), got: 400 Bad Request
+
+
+failures:
+    test_identifiers_at_size_limit
+    test_read_tuple_with_userset
+    test_unicode_in_identifiers
+
+test result: FAILED. 3 passed; 3 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.29s
+
+--- test_section_9_tuple_edge_cases ---
+
+running 6 tests
+test test_identifiers_at_size_limit ... FAILED
+test test_identifiers_over_size_limit ... ok
+test test_read_tuple_with_userset ... FAILED
+test test_special_characters_in_identifiers ... ok
+test test_unicode_in_identifiers ... FAILED
+test test_write_tuple_with_wildcard ... ok
+
+failures:
+
+---- test_identifiers_at_size_limit stdout ----
+
+thread 'test_identifiers_at_size_limit' (2575001) panicked at crates/compatibility-tests/tests/test_section_9_tuple_edge_cases.rs:158:5:
+Write with IDs at size limits should succeed, got: 400 Bad Request
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_read_tuple_with_userset stdout ----
+
+thread 'test_read_tuple_with_userset' (2575051) panicked at crates/compatibility-tests/tests/test_section_9_tuple_edge_cases.rs:100:10:
+tuples field should be an array
+
+---- test_unicode_in_identifiers stdout ----
+
+thread 'test_unicode_in_identifiers' (2575055) panicked at crates/compatibility-tests/tests/test_section_9_tuple_edge_cases.rs:321:9:
+Read should succeed for Unicode tuple (user:用户123, document:文档), got: 400 Bad Request
+
+
+failures:
+    test_identifiers_at_size_limit
+    test_read_tuple_with_userset
+    test_unicode_in_identifiers
+
+test result: FAILED. 3 passed; 3 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.28s
+
+============================================================
+TOTAL: 314 passed, 186 failed
+============================================================

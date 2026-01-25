@@ -1,0 +1,2873 @@
+   Compiling smallvec v1.15.1
+   Compiling futures-channel v0.3.31
+   Compiling futures-util v0.3.31
+   Compiling tracing v0.1.44
+   Compiling serde v1.0.228
+   Compiling zerocopy v0.8.33
+   Compiling getrandom v0.3.4
+   Compiling system-configuration v0.6.1
+   Compiling security-framework v2.11.1
+   Compiling prost-derive v0.12.6
+   Compiling serde_with v3.16.1
+   Compiling num-traits v0.2.19
+   Compiling tempfile v3.24.0
+   Compiling uuid v1.19.0
+   Compiling parking_lot_core v0.9.12
+   Compiling icu_normalizer v2.1.1
+   Compiling serde_urlencoded v0.7.1
+   Compiling chrono v0.4.43
+   Compiling ppv-lite86 v0.2.21
+   Compiling native-tls v0.2.14
+   Compiling parking_lot v0.12.5
+   Compiling bollard-stubs v1.49.1-rc.28.4.0
+   Compiling axum-core v0.3.4
+   Compiling idna_adapter v1.2.1
+   Compiling prost v0.12.6
+   Compiling rand_chacha v0.3.1
+   Compiling tokio v1.49.0
+   Compiling idna v1.1.0
+   Compiling rand v0.8.5
+   Compiling url v2.5.8
+   Compiling tokio-util v0.7.18
+   Compiling tokio-io-timeout v1.2.1
+   Compiling tokio-stream v0.1.18
+   Compiling tower v0.5.3
+   Compiling tokio-native-tls v0.3.1
+   Compiling tower-http v0.6.8
+   Compiling h2 v0.4.13
+   Compiling h2 v0.3.27
+   Compiling tower v0.4.13
+   Compiling hyper v0.14.32
+   Compiling hyper v1.8.1
+   Compiling hyper-util v0.1.19
+   Compiling axum v0.6.20
+   Compiling hyper-timeout v0.4.1
+   Compiling hyperlocal v0.9.1
+   Compiling hyper-tls v0.6.0
+   Compiling reqwest v0.12.28
+   Compiling bollard v0.19.4
+   Compiling tonic v0.11.0
+   Compiling tonic-health v0.11.0
+   Compiling compatibility-tests v0.1.0 (/Users/julianshen/prj/rsfga/crates/compatibility-tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.44s
+     Running unittests src/lib.rs (target/debug/deps/compatibility_tests-1e40f1a9f2db01b5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_section_1.rs (target/debug/deps/test_section_1-370a1be5cb9958b5)
+
+running 6 tests
+test test_can_clean_up_test_stores ... ok
+test test_can_connect_to_openfga_grpc_api ... ok
+test test_can_connect_to_openfga_http_api ... ok
+test test_can_create_store_via_api ... ok
+test test_can_start_openfga_via_docker_compose ... ok
+test test_environment_teardown_is_idempotent ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 168.34s
+
+     Running tests/test_section_10_check_basic.rs (target/debug/deps/test_section_10_check_basic-97da86e13fe4a0de)
+
+running 16 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_check_direct_relation ... FAILED
+test test_check_follows_computed_exclusion ... FAILED
+test test_check_follows_computed_intersection ... FAILED
+test test_check_follows_computed_union ... FAILED
+test test_check_resolves_this_keyword ... FAILED
+test test_check_returns_false_when_tuple_does_not_exist ... FAILED
+test test_check_returns_true_when_tuple_exists ... FAILED
+test test_check_with_contextual_tuples ... FAILED
+test test_check_with_invalid_format ... FAILED
+test test_check_with_nonexistent_store ... FAILED
+
+failures:
+
+---- test_check_direct_relation stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_follows_computed_exclusion stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_follows_computed_intersection stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_follows_computed_union stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_resolves_this_keyword stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_returns_false_when_tuple_does_not_exist stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_returns_true_when_tuple_exists stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_with_contextual_tuples stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_with_invalid_format stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_with_nonexistent_store stdout ----
+Error: error sending request for url (http://localhost:18080/stores/7bf447a0-3e3c-44a2-a59a-398ccb9390e4/check)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_check_direct_relation
+    test_check_follows_computed_exclusion
+    test_check_follows_computed_intersection
+    test_check_follows_computed_union
+    test_check_resolves_this_keyword
+    test_check_returns_false_when_tuple_does_not_exist
+    test_check_returns_true_when_tuple_exists
+    test_check_with_contextual_tuples
+    test_check_with_invalid_format
+    test_check_with_nonexistent_store
+
+test result: FAILED. 6 passed; 10 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_10_check_basic`
+     Running tests/test_section_11_check_complex.rs (target/debug/deps/test_section_11_check_complex-9e0f8c9b8a3f3d79)
+
+running 14 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_check_cycle_detection ... FAILED
+test test_check_deeply_nested_relations ... FAILED
+test test_check_exclusion_but_not ... FAILED
+test test_check_intersection_all_required ... FAILED
+test test_check_multi_hop_relations ... FAILED
+test test_check_respects_model_version ... FAILED
+test test_check_union_multiple_relations ... FAILED
+test test_check_with_wildcards ... FAILED
+
+failures:
+
+---- test_check_cycle_detection stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_deeply_nested_relations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_exclusion_but_not stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_intersection_all_required stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_multi_hop_relations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_respects_model_version stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_union_multiple_relations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_with_wildcards stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_check_cycle_detection
+    test_check_deeply_nested_relations
+    test_check_exclusion_but_not
+    test_check_intersection_all_required
+    test_check_multi_hop_relations
+    test_check_respects_model_version
+    test_check_union_multiple_relations
+    test_check_with_wildcards
+
+test result: FAILED. 6 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_11_check_complex`
+     Running tests/test_section_12_batch_check.rs (target/debug/deps/test_section_12_batch_check-d3b3c4ba3e6917a1)
+
+running 12 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_batch_check_deduplication ... FAILED
+test test_batch_check_empty_array ... FAILED
+test test_batch_check_large_batch ... FAILED
+test test_batch_check_mixed_results ... FAILED
+test test_batch_check_multiple_tuples ... FAILED
+test test_batch_check_preserves_order ... FAILED
+
+failures:
+
+---- test_batch_check_deduplication stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_batch_check_empty_array stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_batch_check_large_batch stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_batch_check_mixed_results stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_batch_check_multiple_tuples stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_batch_check_preserves_order stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_batch_check_deduplication
+    test_batch_check_empty_array
+    test_batch_check_large_batch
+    test_batch_check_mixed_results
+    test_batch_check_multiple_tuples
+    test_batch_check_preserves_order
+
+test result: FAILED. 6 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_12_batch_check`
+     Running tests/test_section_13_check_performance.rs (target/debug/deps/test_section_13_check_performance-8db1c2a5edffa17c)
+
+running 11 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_check_consistency_after_delete ... FAILED
+test test_check_consistency_after_write ... FAILED
+test test_check_latency_computed_union ... FAILED
+test test_check_latency_deep_nested ... FAILED
+test test_check_latency_direct_relation ... FAILED
+
+failures:
+
+---- test_check_consistency_after_delete stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_consistency_after_write stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_latency_computed_union stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_latency_deep_nested stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_latency_direct_relation stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_check_consistency_after_delete
+    test_check_consistency_after_write
+    test_check_latency_computed_union
+    test_check_latency_deep_nested
+    test_check_latency_direct_relation
+
+test result: FAILED. 6 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_13_check_performance`
+     Running tests/test_section_14_expand_api.rs (target/debug/deps/test_section_14_expand_api-f4ca3eefc140f601)
+
+running 15 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_expand_includes_difference_branches ... FAILED
+test test_expand_includes_intersection_branches ... FAILED
+test test_expand_includes_union_branches ... FAILED
+test test_expand_returns_relation_tree ... FAILED
+test test_expand_shows_computed_relations ... FAILED
+test test_expand_shows_direct_relations_as_leaf ... FAILED
+test test_expand_tree_is_deterministic ... FAILED
+test test_expand_with_invalid_store ... FAILED
+test test_expand_with_nonexistent_object ... FAILED
+
+failures:
+
+---- test_expand_includes_difference_branches stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_expand_includes_intersection_branches stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_expand_includes_union_branches stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_expand_returns_relation_tree stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_expand_shows_computed_relations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_expand_shows_direct_relations_as_leaf stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_expand_tree_is_deterministic stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_expand_with_invalid_store stdout ----
+Error: error sending request for url (http://localhost:18080/stores/fa052707-ebc4-43a3-b3b1-d26cdb0e23f4/expand)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_expand_with_nonexistent_object stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_expand_includes_difference_branches
+    test_expand_includes_intersection_branches
+    test_expand_includes_union_branches
+    test_expand_returns_relation_tree
+    test_expand_shows_computed_relations
+    test_expand_shows_direct_relations_as_leaf
+    test_expand_tree_is_deterministic
+    test_expand_with_invalid_store
+    test_expand_with_nonexistent_object
+
+test result: FAILED. 6 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_14_expand_api`
+     Running tests/test_section_15_listobjects_api.rs (target/debug/deps/test_section_15_listobjects_api-96ec020a6b67fc9f)
+
+running 13 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_listobjects_returns_accessible_objects ... FAILED
+test test_listobjects_with_computed_relations ... FAILED
+test test_listobjects_with_contextual_tuples ... FAILED
+test test_listobjects_with_direct_relations ... FAILED
+test test_listobjects_with_no_accessible_objects ... FAILED
+test test_listobjects_with_type_filter ... FAILED
+test test_listobjects_with_wildcards ... FAILED
+
+failures:
+
+---- test_listobjects_returns_accessible_objects stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listobjects_with_computed_relations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listobjects_with_contextual_tuples stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listobjects_with_direct_relations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listobjects_with_no_accessible_objects stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listobjects_with_type_filter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listobjects_with_wildcards stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_listobjects_returns_accessible_objects
+    test_listobjects_with_computed_relations
+    test_listobjects_with_contextual_tuples
+    test_listobjects_with_direct_relations
+    test_listobjects_with_no_accessible_objects
+    test_listobjects_with_type_filter
+    test_listobjects_with_wildcards
+
+test result: FAILED. 6 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_15_listobjects_api`
+     Running tests/test_section_16_edge_cases.rs (target/debug/deps/test_section_16_edge_cases-41a03715db6626f1)
+
+running 10 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_complex_nested_computed_relations ... FAILED
+test test_expand_with_circular_relations ... FAILED
+test test_expand_with_deep_relation_tree ... FAILED
+test test_listobjects_with_large_result_set ... FAILED
+
+failures:
+
+---- test_complex_nested_computed_relations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_expand_with_circular_relations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_expand_with_deep_relation_tree stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listobjects_with_large_result_set stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_complex_nested_computed_relations
+    test_expand_with_circular_relations
+    test_expand_with_deep_relation_tree
+    test_listobjects_with_large_result_set
+
+test result: FAILED. 6 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_16_edge_cases`
+     Running tests/test_section_17_error_format.rs (target/debug/deps/test_section_17_error_format-ce420ac1efe4137f)
+
+running 12 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_400_bad_request_format ... FAILED
+test test_404_not_found_format ... FAILED
+test test_500_error_format_documentation ... ok
+test test_error_codes_match_openfga_enum ... FAILED
+test test_error_response_consistent_across_endpoints ... FAILED
+test test_validation_errors_include_field_details ... FAILED
+
+failures:
+
+---- test_400_bad_request_format stdout ----
+Error: error sending request for url (http://localhost:18080/stores/invalid-store-id)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_404_not_found_format stdout ----
+Error: error sending request for url (http://localhost:18080/stores/01AAAAAAAAAAAAAAAAAAAAAA00)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_error_codes_match_openfga_enum stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_error_response_consistent_across_endpoints stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_validation_errors_include_field_details stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_400_bad_request_format
+    test_404_not_found_format
+    test_error_codes_match_openfga_enum
+    test_error_response_consistent_across_endpoints
+    test_validation_errors_include_field_details
+
+test result: FAILED. 7 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_17_error_format`
+     Running tests/test_section_18_rate_limiting.rs (target/debug/deps/test_section_18_rate_limiting-452ad887371d969a)
+
+running 9 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_api_rate_limiting_behavior ... FAILED
+test test_rate_limit_headers ... FAILED
+test test_retry_after_header_format ... ok
+
+failures:
+
+---- test_api_rate_limiting_behavior stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_rate_limit_headers stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_api_rate_limiting_behavior
+    test_rate_limit_headers
+
+test result: FAILED. 7 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_18_rate_limiting`
+     Running tests/test_section_19_consistency.rs (target/debug/deps/test_section_19_consistency-fccd5131ab257239)
+
+running 10 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_check_during_model_update ... FAILED
+test test_check_with_stale_model_id ... FAILED
+test test_concurrent_writes_to_same_tuple ... FAILED
+test test_read_after_write_consistency ... FAILED
+
+failures:
+
+---- test_check_during_model_update stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_with_stale_model_id stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_concurrent_writes_to_same_tuple stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_after_write_consistency stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_check_during_model_update
+    test_check_with_stale_model_id
+    test_concurrent_writes_to_same_tuple
+    test_read_after_write_consistency
+
+test result: FAILED. 6 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_19_consistency`
+     Running tests/test_section_2.rs (target/debug/deps/test_section_2-2cda44ac0ce12527)
+
+running 9 tests
+test test_can_generate_authorization_models_with_computed_relations ... ok
+test test_can_generate_authorization_models_with_direct_relations ... ok
+test test_can_generate_authorization_models_with_intersection_relations ... ok
+test test_can_generate_authorization_models_with_union_relations ... ok
+test test_can_generate_models_with_deeply_nested_relations ... ok
+test test_can_generate_valid_object_identifiers ... ok
+test test_can_generate_valid_relation_names ... ok
+test test_can_generate_valid_tuples ... ok
+test test_can_generate_valid_user_identifiers ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_section_20_limits.rs (target/debug/deps/test_section_20_limits-9f420ca7d23ef7ea)
+
+running 12 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_maximum_authorization_model_size ... FAILED
+test test_maximum_checks_in_batch ... FAILED
+test test_maximum_relation_depth ... FAILED
+test test_maximum_tuple_size ... FAILED
+test test_maximum_tuples_in_single_write ... FAILED
+test test_request_timeout_behavior ... FAILED
+
+failures:
+
+---- test_maximum_authorization_model_size stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_maximum_checks_in_batch stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_maximum_relation_depth stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_maximum_tuple_size stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_maximum_tuples_in_single_write stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_request_timeout_behavior stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_maximum_authorization_model_size
+    test_maximum_checks_in_batch
+    test_maximum_relation_depth
+    test_maximum_tuple_size
+    test_maximum_tuples_in_single_write
+    test_request_timeout_behavior
+
+test result: FAILED. 6 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_20_limits`
+     Running tests/test_section_21_grpc_setup.rs (target/debug/deps/test_section_21_grpc_setup-26b1d652dab0faf1)
+
+running 12 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_can_call_authorization_model_service_methods ... FAILED
+test test_can_call_check_service_methods ... FAILED
+test test_can_call_store_service_methods ... FAILED
+test test_can_call_tuple_service_methods ... FAILED
+test test_can_connect_to_openfga_grpc_service ... FAILED
+test test_grpc_reflection_works ... FAILED
+
+failures:
+
+---- test_can_call_authorization_model_service_methods stdout ----
+Error: grpcurl failed: Failed to dial target host "localhost:18081": connection error: desc = "transport: error while dialing: dial tcp [::1]:18081: connect: connection refused"
+ 
+
+---- test_can_call_check_service_methods stdout ----
+Error: grpcurl failed: Failed to dial target host "localhost:18081": connection error: desc = "transport: error while dialing: dial tcp [::1]:18081: connect: connection refused"
+ 
+
+---- test_can_call_store_service_methods stdout ----
+Error: grpcurl failed: Failed to dial target host "localhost:18081": connection error: desc = "transport: error while dialing: dial tcp [::1]:18081: connect: connection refused"
+ 
+
+---- test_can_call_tuple_service_methods stdout ----
+Error: grpcurl failed: Failed to dial target host "localhost:18081": connection error: desc = "transport: error while dialing: dial tcp [::1]:18081: connect: connection refused"
+ 
+
+---- test_can_connect_to_openfga_grpc_service stdout ----
+Error: grpcurl list failed: Failed to dial target host "localhost:18081": connection error: desc = "transport: error while dialing: dial tcp [::1]:18081: connect: connection refused"
+
+
+---- test_grpc_reflection_works stdout ----
+Error: grpcurl describe failed: Failed to dial target host "localhost:18081": connection error: desc = "transport: error while dialing: dial tcp [::1]:18081: connect: connection refused"
+
+
+
+failures:
+    test_can_call_authorization_model_service_methods
+    test_can_call_check_service_methods
+    test_can_call_store_service_methods
+    test_can_call_tuple_service_methods
+    test_can_connect_to_openfga_grpc_service
+    test_grpc_reflection_works
+
+test result: FAILED. 6 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_21_grpc_setup`
+     Running tests/test_section_22_grpc_parity.rs (target/debug/deps/test_section_22_grpc_parity-d8b28bf0266b39be)
+
+running 15 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_grpc_batch_check_matches_rest ... FAILED
+test test_grpc_check_matches_rest ... FAILED
+test test_grpc_expand_matches_rest ... FAILED
+test test_grpc_listobjects_matches_rest ... FAILED
+test test_grpc_read_matches_rest ... FAILED
+test test_grpc_store_create_matches_rest ... FAILED
+test test_grpc_store_delete_matches_rest ... FAILED
+test test_grpc_store_get_matches_rest ... FAILED
+test test_grpc_write_matches_rest ... FAILED
+
+failures:
+
+---- test_grpc_batch_check_matches_rest stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_grpc_check_matches_rest stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_grpc_expand_matches_rest stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_grpc_listobjects_matches_rest stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_grpc_read_matches_rest stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_grpc_store_create_matches_rest stdout ----
+Error: grpcurl failed: Failed to dial target host "localhost:18081": connection error: desc = "transport: error while dialing: dial tcp [::1]:18081: connect: connection refused"
+ 
+
+---- test_grpc_store_delete_matches_rest stdout ----
+Error: grpcurl failed: Failed to dial target host "localhost:18081": connection error: desc = "transport: error while dialing: dial tcp [::1]:18081: connect: connection refused"
+ 
+
+---- test_grpc_store_get_matches_rest stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_grpc_write_matches_rest stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_grpc_batch_check_matches_rest
+    test_grpc_check_matches_rest
+    test_grpc_expand_matches_rest
+    test_grpc_listobjects_matches_rest
+    test_grpc_read_matches_rest
+    test_grpc_store_create_matches_rest
+    test_grpc_store_delete_matches_rest
+    test_grpc_store_get_matches_rest
+    test_grpc_write_matches_rest
+
+test result: FAILED. 6 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_22_grpc_parity`
+     Running tests/test_section_23_grpc_features.rs (target/debug/deps/test_section_23_grpc_features-db999f3abd9689a0)
+
+running 10 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_grpc_error_codes_match_http ... FAILED
+test test_grpc_error_details_format ... FAILED
+test test_grpc_metadata_headers ... FAILED
+test test_grpc_streaming_not_supported ... FAILED
+
+failures:
+
+---- test_grpc_error_codes_match_http stdout ----
+
+thread 'test_grpc_error_codes_match_http' (1552210) panicked at crates/compatibility-tests/tests/test_section_23_grpc_features.rs:236:5:
+gRPC error should be InvalidArgument: Failed to dial target host "localhost:18081": connection error: desc = "transport: error while dialing: dial tcp [::1]:18081: connect: connection refused"
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_grpc_error_details_format stdout ----
+
+thread 'test_grpc_error_details_format' (1552219) panicked at crates/compatibility-tests/tests/test_section_23_grpc_features.rs:333:5:
+Error should contain error code: Failed to dial target host "localhost:18081": connection error: desc = "transport: error while dialing: dial tcp [::1]:18081: connect: connection refused"
+
+
+---- test_grpc_metadata_headers stdout ----
+
+thread 'test_grpc_metadata_headers' (1552227) panicked at crates/compatibility-tests/tests/test_section_23_grpc_features.rs:170:5:
+Request with custom headers should succeed: Failed to dial target host "localhost:18081": connection error: desc = "transport: error while dialing: dial tcp [::1]:18081: connect: connection refused"
+
+
+---- test_grpc_streaming_not_supported stdout ----
+Error: grpcurl describe failed: Failed to dial target host "localhost:18081": connection error: desc = "transport: error while dialing: dial tcp [::1]:18081: connect: connection refused"
+
+
+
+failures:
+    test_grpc_error_codes_match_http
+    test_grpc_error_details_format
+    test_grpc_metadata_headers
+    test_grpc_streaming_not_supported
+
+test result: FAILED. 6 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_23_grpc_features`
+     Running tests/test_section_24_model_conditions.rs (target/debug/deps/test_section_24_model_conditions-ca8ac4479e69b4fa)
+
+running 14 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_can_create_model_with_conditions ... FAILED
+test test_can_retrieve_model_with_conditions ... FAILED
+test test_condition_parameter_types ... FAILED
+test test_condition_structure_name_expression_parameters ... FAILED
+test test_condition_uses_cel_syntax ... FAILED
+test test_invalid_condition_expression_returns_400 ... FAILED
+test test_relation_references_condition ... FAILED
+test test_undefined_condition_reference_returns_400 ... FAILED
+
+failures:
+
+---- test_can_create_model_with_conditions stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_can_retrieve_model_with_conditions stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_condition_parameter_types stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_condition_structure_name_expression_parameters stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_condition_uses_cel_syntax stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_invalid_condition_expression_returns_400 stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_relation_references_condition stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_undefined_condition_reference_returns_400 stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_can_create_model_with_conditions
+    test_can_retrieve_model_with_conditions
+    test_condition_parameter_types
+    test_condition_structure_name_expression_parameters
+    test_condition_uses_cel_syntax
+    test_invalid_condition_expression_returns_400
+    test_relation_references_condition
+    test_undefined_condition_reference_returns_400
+
+test result: FAILED. 6 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_24_model_conditions`
+     Running tests/test_section_25_tuple_conditions.rs (target/debug/deps/test_section_25_tuple_conditions-9d2c1102b291b663)
+
+running 13 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_can_delete_tuple_with_condition ... FAILED
+test test_can_write_multiple_tuples_with_different_conditions ... FAILED
+test test_can_write_tuple_with_condition_context ... FAILED
+test test_can_write_tuple_with_condition_name ... FAILED
+test test_condition_context_values_match_types ... FAILED
+test test_writing_tuple_with_mismatched_context_types_returns_400 ... FAILED
+test test_writing_tuple_with_undefined_condition_returns_400 ... FAILED
+
+failures:
+
+---- test_can_delete_tuple_with_condition stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_can_write_multiple_tuples_with_different_conditions stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_can_write_tuple_with_condition_context stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_can_write_tuple_with_condition_name stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_condition_context_values_match_types stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_writing_tuple_with_mismatched_context_types_returns_400 stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_writing_tuple_with_undefined_condition_returns_400 stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_can_delete_tuple_with_condition
+    test_can_write_multiple_tuples_with_different_conditions
+    test_can_write_tuple_with_condition_context
+    test_can_write_tuple_with_condition_name
+    test_condition_context_values_match_types
+    test_writing_tuple_with_mismatched_context_types_returns_400
+    test_writing_tuple_with_undefined_condition_returns_400
+
+test result: FAILED. 6 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_25_tuple_conditions`
+     Running tests/test_section_26_read_conditions.rs (target/debug/deps/test_section_26_read_conditions-d47e24143b8f40cb)
+
+running 10 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_read_filter_tuples_by_condition ... FAILED
+test test_read_returns_tuple_with_condition_context ... FAILED
+test test_read_returns_tuple_with_condition_name ... FAILED
+test test_tuple_response_format_matches_spec ... FAILED
+
+failures:
+
+---- test_read_filter_tuples_by_condition stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_returns_tuple_with_condition_context stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_returns_tuple_with_condition_name stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_tuple_response_format_matches_spec stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_read_filter_tuples_by_condition
+    test_read_returns_tuple_with_condition_context
+    test_read_returns_tuple_with_condition_name
+    test_tuple_response_format_matches_spec
+
+test result: FAILED. 6 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_26_read_conditions`
+     Running tests/test_section_27_check_conditions.rs (target/debug/deps/test_section_27_check_conditions-4be5d83b45174978)
+
+running 18 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_batch_check_evaluates_conditions ... FAILED
+test test_check_accepts_context_parameter ... FAILED
+test test_check_returns_false_when_condition_evaluates_false ... FAILED
+test test_check_returns_true_when_condition_evaluates_true ... FAILED
+test test_check_with_partial_context_returns_error ... FAILED
+test test_check_with_wrong_context_type_returns_error ... FAILED
+test test_check_without_required_context_returns_error ... FAILED
+test test_condition_evaluation_with_list_membership ... FAILED
+test test_condition_evaluation_with_logical_operators ... FAILED
+test test_condition_evaluation_with_string_operations ... FAILED
+test test_condition_evaluation_with_timestamp_comparison ... FAILED
+test test_contextual_tuples_with_conditions ... FAILED
+
+failures:
+
+---- test_batch_check_evaluates_conditions stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_accepts_context_parameter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_returns_false_when_condition_evaluates_false stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_returns_true_when_condition_evaluates_true stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_with_partial_context_returns_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_with_wrong_context_type_returns_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_without_required_context_returns_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_condition_evaluation_with_list_membership stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_condition_evaluation_with_logical_operators stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_condition_evaluation_with_string_operations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_condition_evaluation_with_timestamp_comparison stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_contextual_tuples_with_conditions stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_batch_check_evaluates_conditions
+    test_check_accepts_context_parameter
+    test_check_returns_false_when_condition_evaluates_false
+    test_check_returns_true_when_condition_evaluates_true
+    test_check_with_partial_context_returns_error
+    test_check_with_wrong_context_type_returns_error
+    test_check_without_required_context_returns_error
+    test_condition_evaluation_with_list_membership
+    test_condition_evaluation_with_logical_operators
+    test_condition_evaluation_with_string_operations
+    test_condition_evaluation_with_timestamp_comparison
+    test_contextual_tuples_with_conditions
+
+test result: FAILED. 6 passed; 12 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_27_check_conditions`
+     Running tests/test_section_28_cel_edge_cases.rs (target/debug/deps/test_section_28_cel_edge_cases-f08d8cc77b4128e5)
+
+running 14 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_cel_expression_division_by_zero ... FAILED
+test test_cel_expression_timeout_behavior ... FAILED
+test test_cel_expression_undefined_variable ... FAILED
+test test_deeply_nested_map_values_in_context ... FAILED
+test test_empty_context_no_required_params ... FAILED
+test test_large_list_values_in_context ... FAILED
+test test_null_values_in_context ... FAILED
+test test_very_long_string_values_in_context ... FAILED
+
+failures:
+
+---- test_cel_expression_division_by_zero stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_cel_expression_timeout_behavior stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_cel_expression_undefined_variable stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_deeply_nested_map_values_in_context stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_empty_context_no_required_params stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_large_list_values_in_context stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_null_values_in_context stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_very_long_string_values_in_context stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_cel_expression_division_by_zero
+    test_cel_expression_timeout_behavior
+    test_cel_expression_undefined_variable
+    test_deeply_nested_map_values_in_context
+    test_empty_context_no_required_params
+    test_large_list_values_in_context
+    test_null_values_in_context
+    test_very_long_string_values_in_context
+
+test result: FAILED. 6 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_28_cel_edge_cases`
+     Running tests/test_section_29_condition_performance.rs (target/debug/deps/test_section_29_condition_performance-5c653bc4a1416f2e)
+
+running 10 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_compare_conditional_vs_non_conditional_latency ... FAILED
+test test_measure_batch_check_with_conditions ... FAILED
+test test_measure_check_latency_complex_condition ... FAILED
+test test_measure_check_latency_simple_condition ... FAILED
+
+failures:
+
+---- test_compare_conditional_vs_non_conditional_latency stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_measure_batch_check_with_conditions stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_measure_check_latency_complex_condition stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_measure_check_latency_simple_condition stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_compare_conditional_vs_non_conditional_latency
+    test_measure_batch_check_with_conditions
+    test_measure_check_latency_complex_condition
+    test_measure_check_latency_simple_condition
+
+test result: FAILED. 6 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_29_condition_performance`
+     Running tests/test_section_3.rs (target/debug/deps/test_section_3-d8a3c12991006f7f)
+
+running 8 tests
+test test_can_capture_grpc_request_response_pairs ... ok
+test test_can_capture_http_request_response_pairs ... ok
+test test_can_compare_two_responses_for_equality ... ok
+test test_can_detect_breaking_changes_in_arrays ... ok
+test test_can_detect_breaking_changes_in_nested_objects ... ok
+test test_can_detect_breaking_changes_in_response_format ... ok
+test test_can_load_captured_test_cases_from_disk ... ok
+test test_can_serialize_captured_data_to_json ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_section_30_listusers_api.rs (target/debug/deps/test_section_30_listusers_api-adbf4dc6dd692bba)
+
+running 14 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_listusers_empty_result ... FAILED
+test test_listusers_invalid_type_error ... FAILED
+test test_listusers_nonexistent_store_error ... FAILED
+test test_listusers_returns_users_with_direct_relation ... FAILED
+test test_listusers_returns_wildcard ... FAILED
+test test_listusers_with_computed_relations ... FAILED
+test test_listusers_with_contextual_tuples ... FAILED
+test test_listusers_with_userset_filter ... FAILED
+
+failures:
+
+---- test_listusers_empty_result stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listusers_invalid_type_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listusers_nonexistent_store_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores/01ARZ3NDEKTSV4RRFFQ69G5FAV/list-users)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listusers_returns_users_with_direct_relation stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listusers_returns_wildcard stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listusers_with_computed_relations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listusers_with_contextual_tuples stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listusers_with_userset_filter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_listusers_empty_result
+    test_listusers_invalid_type_error
+    test_listusers_nonexistent_store_error
+    test_listusers_returns_users_with_direct_relation
+    test_listusers_returns_wildcard
+    test_listusers_with_computed_relations
+    test_listusers_with_contextual_tuples
+    test_listusers_with_userset_filter
+
+test result: FAILED. 6 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_30_listusers_api`
+     Running tests/test_section_31_readchanges_api.rs (target/debug/deps/test_section_31_readchanges_api-a5addd1b25e12072)
+
+running 16 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_readchanges_chronological_order ... FAILED
+test test_readchanges_continuation_token ... FAILED
+test test_readchanges_empty_for_new_store ... FAILED
+test test_readchanges_nonexistent_store_error ... FAILED
+test test_readchanges_pagination_page_size ... FAILED
+test test_readchanges_returns_tuple_writes ... FAILED
+test test_readchanges_returns_writes_and_deletes ... FAILED
+test test_readchanges_same_token_when_no_changes ... FAILED
+test test_readchanges_type_filter_mismatch_with_token ... FAILED
+test test_readchanges_with_type_filter ... FAILED
+
+failures:
+
+---- test_readchanges_chronological_order stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_readchanges_continuation_token stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_readchanges_empty_for_new_store stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_readchanges_nonexistent_store_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores/01ARZ3NDEKTSV4RRFFQ69G5FAV/changes)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_readchanges_pagination_page_size stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_readchanges_returns_tuple_writes stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_readchanges_returns_writes_and_deletes stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_readchanges_same_token_when_no_changes stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_readchanges_type_filter_mismatch_with_token stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_readchanges_with_type_filter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_readchanges_chronological_order
+    test_readchanges_continuation_token
+    test_readchanges_empty_for_new_store
+    test_readchanges_nonexistent_store_error
+    test_readchanges_pagination_page_size
+    test_readchanges_returns_tuple_writes
+    test_readchanges_returns_writes_and_deletes
+    test_readchanges_same_token_when_no_changes
+    test_readchanges_type_filter_mismatch_with_token
+    test_readchanges_with_type_filter
+
+test result: FAILED. 6 passed; 10 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_31_readchanges_api`
+     Running tests/test_section_32_assertions_api.rs (target/debug/deps/test_section_32_assertions_api-e26538ebc0a7486e)
+
+running 15 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_assertions_invalid_model_id_error ... FAILED
+test test_assertions_mixed_expectations ... FAILED
+test test_assertions_nonexistent_store_error ... FAILED
+test test_assertions_with_contextual_tuples ... FAILED
+test test_read_assertions_returns_assertions ... FAILED
+test test_read_assertions_when_none_exist ... FAILED
+test test_write_assertions_creates_assertions ... FAILED
+test test_write_assertions_replaces_existing ... FAILED
+test test_write_empty_assertions ... FAILED
+
+failures:
+
+---- test_assertions_invalid_model_id_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_assertions_mixed_expectations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_assertions_nonexistent_store_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores/01ARZ3NDEKTSV4RRFFQ69G5FAV/assertions/01ARZ3NDEKTSV4RRFFQ69G5FAW)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_assertions_with_contextual_tuples stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_assertions_returns_assertions stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_assertions_when_none_exist stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_write_assertions_creates_assertions stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_write_assertions_replaces_existing stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_write_empty_assertions stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_assertions_invalid_model_id_error
+    test_assertions_mixed_expectations
+    test_assertions_nonexistent_store_error
+    test_assertions_with_contextual_tuples
+    test_read_assertions_returns_assertions
+    test_read_assertions_when_none_exist
+    test_write_assertions_creates_assertions
+    test_write_assertions_replaces_existing
+    test_write_empty_assertions
+
+test result: FAILED. 6 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_32_assertions_api`
+     Running tests/test_section_33_consistency_preference.rs (target/debug/deps/test_section_33_consistency_preference-71147af7788f985d)
+
+running 15 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_batchcheck_accepts_consistency_parameter ... FAILED
+test test_check_accepts_consistency_parameter ... FAILED
+test test_check_with_higher_consistency ... FAILED
+test test_check_with_unspecified_consistency ... FAILED
+test test_consistency_modes_return_same_results ... FAILED
+test test_expand_accepts_consistency_parameter ... FAILED
+test test_invalid_consistency_value_error ... FAILED
+test test_listobjects_accepts_consistency_parameter ... FAILED
+test test_listusers_accepts_consistency_parameter ... FAILED
+
+failures:
+
+---- test_batchcheck_accepts_consistency_parameter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_accepts_consistency_parameter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_with_higher_consistency stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_check_with_unspecified_consistency stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_consistency_modes_return_same_results stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_expand_accepts_consistency_parameter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_invalid_consistency_value_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listobjects_accepts_consistency_parameter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_listusers_accepts_consistency_parameter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_batchcheck_accepts_consistency_parameter
+    test_check_accepts_consistency_parameter
+    test_check_with_higher_consistency
+    test_check_with_unspecified_consistency
+    test_consistency_modes_return_same_results
+    test_expand_accepts_consistency_parameter
+    test_invalid_consistency_value_error
+    test_listobjects_accepts_consistency_parameter
+    test_listusers_accepts_consistency_parameter
+
+test result: FAILED. 6 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_33_consistency_preference`
+     Running tests/test_section_34_streamed_listobjects.rs (target/debug/deps/test_section_34_streamed_listobjects-3bfa1e818762ebec)
+
+running 11 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_streamed_listobjects_empty_results ... ok
+test test_streamed_listobjects_error_handling ... ok
+test test_streamed_listobjects_large_result_set ... ok
+test test_streamed_listobjects_returns_same_as_listobjects ... ok
+test test_streamed_listobjects_with_contextual_tuples ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/test_section_35_modular_models.rs (target/debug/deps/test_section_35_modular_models-5148049119d84d5c)
+
+running 13 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_create_model_schema_1_2 ... FAILED
+test test_invalid_schema_version_error ... FAILED
+test test_model_retrieval_includes_schema_version ... FAILED
+test test_schema_1_2_backwards_compatible ... FAILED
+test test_schema_1_2_computed_relation_compatibility ... FAILED
+test test_schema_1_2_multi_type_model_compatibility ... FAILED
+test test_schema_1_2_with_organization_type ... FAILED
+
+failures:
+
+---- test_create_model_schema_1_2 stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_invalid_schema_version_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_model_retrieval_includes_schema_version stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_schema_1_2_backwards_compatible stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_schema_1_2_computed_relation_compatibility stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_schema_1_2_multi_type_model_compatibility stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_schema_1_2_with_organization_type stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_create_model_schema_1_2
+    test_invalid_schema_version_error
+    test_model_retrieval_includes_schema_version
+    test_schema_1_2_backwards_compatible
+    test_schema_1_2_computed_relation_compatibility
+    test_schema_1_2_multi_type_model_compatibility
+    test_schema_1_2_with_organization_type
+
+test result: FAILED. 6 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_35_modular_models`
+     Running tests/test_section_4.rs (target/debug/deps/test_section_4-3190a53c4a9f3fcb)
+
+running 15 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_delete_store_deletes_store ... FAILED
+test test_delete_store_returns_400_for_nonexistent_store ... FAILED
+test test_get_store_retrieves_store_by_id ... FAILED
+test test_get_store_returns_400_for_nonexistent_store ... FAILED
+test test_list_stores_continuation_token_works ... FAILED
+test test_list_stores_respects_page_size_parameter ... FAILED
+test test_list_stores_returns_paginated_results ... FAILED
+test test_post_stores_creates_store_with_generated_id ... FAILED
+test test_post_stores_returns_created_store_in_response ... FAILED
+
+failures:
+
+---- test_delete_store_deletes_store stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_delete_store_returns_400_for_nonexistent_store stdout ----
+Error: error sending request for url (http://localhost:18080/stores/fd87ad64-fe68-495a-b5a9-0c3577a54255)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_get_store_retrieves_store_by_id stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_get_store_returns_400_for_nonexistent_store stdout ----
+Error: error sending request for url (http://localhost:18080/stores/9114b4fd-7ca6-4ea4-a371-02081c88a7e5)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_list_stores_continuation_token_works stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_list_stores_respects_page_size_parameter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_list_stores_returns_paginated_results stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_post_stores_creates_store_with_generated_id stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_post_stores_returns_created_store_in_response stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_delete_store_deletes_store
+    test_delete_store_returns_400_for_nonexistent_store
+    test_get_store_retrieves_store_by_id
+    test_get_store_returns_400_for_nonexistent_store
+    test_list_stores_continuation_token_works
+    test_list_stores_respects_page_size_parameter
+    test_list_stores_returns_paginated_results
+    test_post_stores_creates_store_with_generated_id
+    test_post_stores_returns_created_store_in_response
+
+test result: FAILED. 6 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_4`
+     Running tests/test_section_5.rs (target/debug/deps/test_section_5-1cd8fafad2b94b59)
+
+running 15 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_can_create_model_with_computed_relations ... FAILED
+test test_can_create_model_with_direct_relations ... FAILED
+test test_can_create_model_with_this_keyword ... FAILED
+test test_can_create_model_with_wildcards ... FAILED
+test test_duplicate_type_definitions_return_error ... FAILED
+test test_invalid_model_syntax_returns_400 ... FAILED
+test test_model_creation_returns_generated_model_id ... FAILED
+test test_post_authorization_model_creates_model ... FAILED
+test test_undefined_relation_references_return_error ... FAILED
+
+failures:
+
+---- test_can_create_model_with_computed_relations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_can_create_model_with_direct_relations stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_can_create_model_with_this_keyword stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_can_create_model_with_wildcards stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_duplicate_type_definitions_return_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_invalid_model_syntax_returns_400 stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_model_creation_returns_generated_model_id stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_post_authorization_model_creates_model stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_undefined_relation_references_return_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_can_create_model_with_computed_relations
+    test_can_create_model_with_direct_relations
+    test_can_create_model_with_this_keyword
+    test_can_create_model_with_wildcards
+    test_duplicate_type_definitions_return_error
+    test_invalid_model_syntax_returns_400
+    test_model_creation_returns_generated_model_id
+    test_post_authorization_model_creates_model
+    test_undefined_relation_references_return_error
+
+test result: FAILED. 6 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_5`
+     Running tests/test_section_6.rs (target/debug/deps/test_section_6-7a82511b137b7152)
+
+running 12 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_can_retrieve_latest_model ... FAILED
+test test_get_authorization_model_retrieves_model ... FAILED
+test test_get_nonexistent_model_returns_error ... FAILED
+test test_list_authorization_models ... FAILED
+test test_model_response_includes_schema_version ... FAILED
+test test_model_response_includes_type_definitions ... FAILED
+
+failures:
+
+---- test_can_retrieve_latest_model stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_get_authorization_model_retrieves_model stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_get_nonexistent_model_returns_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_list_authorization_models stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_model_response_includes_schema_version stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_model_response_includes_type_definitions stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_can_retrieve_latest_model
+    test_get_authorization_model_retrieves_model
+    test_get_nonexistent_model_returns_error
+    test_list_authorization_models
+    test_model_response_includes_schema_version
+    test_model_response_includes_type_definitions
+
+test result: FAILED. 6 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_6`
+     Running tests/test_section_7_tuple_write.rs (target/debug/deps/test_section_7_tuple_write-4ef4ff56998f2498)
+
+running 16 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_can_delete_tuple ... FAILED
+test test_conditional_writes ... FAILED
+test test_write_invalid_format_returns_400 ... FAILED
+test test_write_multiple_tuples ... FAILED
+test test_write_nonexistent_relation_returns_error ... FAILED
+test test_write_nonexistent_type_returns_error ... FAILED
+test test_write_returns_empty_response ... FAILED
+test test_write_single_tuple ... FAILED
+test test_write_without_store_returns_error ... FAILED
+test test_writes_are_idempotent ... FAILED
+
+failures:
+
+---- test_can_delete_tuple stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_conditional_writes stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_write_invalid_format_returns_400 stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_write_multiple_tuples stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_write_nonexistent_relation_returns_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_write_nonexistent_type_returns_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_write_returns_empty_response stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_write_single_tuple stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_write_without_store_returns_error stdout ----
+Error: error sending request for url (http://localhost:18080/stores/09e9355c-6aaf-4789-bd4b-be4f61afb2ca/write)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_writes_are_idempotent stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_can_delete_tuple
+    test_conditional_writes
+    test_write_invalid_format_returns_400
+    test_write_multiple_tuples
+    test_write_nonexistent_relation_returns_error
+    test_write_nonexistent_type_returns_error
+    test_write_returns_empty_response
+    test_write_single_tuple
+    test_write_without_store_returns_error
+    test_writes_are_idempotent
+
+test result: FAILED. 6 passed; 10 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_7_tuple_write`
+     Running tests/test_section_8_tuple_read.rs (target/debug/deps/test_section_8_tuple_read-7b7d3f26a43f0021)
+
+running 15 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_read_continuation_token ... FAILED
+test test_read_respects_page_size ... FAILED
+test test_read_returns_empty_when_no_matches ... FAILED
+test test_read_tuples_by_filter ... FAILED
+test test_read_with_empty_filter ... FAILED
+test test_read_with_multiple_filters ... FAILED
+test test_read_with_object_filter ... FAILED
+test test_read_with_relation_filter ... FAILED
+test test_read_with_user_filter ... FAILED
+
+failures:
+
+---- test_read_continuation_token stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_respects_page_size stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_returns_empty_when_no_matches stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_tuples_by_filter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_with_empty_filter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_with_multiple_filters stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_with_object_filter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_with_relation_filter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_with_user_filter stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_read_continuation_token
+    test_read_respects_page_size
+    test_read_returns_empty_when_no_matches
+    test_read_tuples_by_filter
+    test_read_with_empty_filter
+    test_read_with_multiple_filters
+    test_read_with_object_filter
+    test_read_with_relation_filter
+    test_read_with_user_filter
+
+test result: FAILED. 6 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_8_tuple_read`
+     Running tests/test_section_9_tuple_edge_cases.rs (target/debug/deps/test_section_9_tuple_edge_cases-4f5bf7ed96265bdb)
+
+running 12 tests
+test common::tests::test_get_grpc_url_derives_from_custom_http_url ... ok
+test common::tests::test_get_grpc_url_derives_port_from_http ... ok
+test common::tests::test_get_grpc_url_handles_https ... ok
+test common::tests::test_get_grpc_url_handles_url_without_port ... ok
+test common::tests::test_get_grpc_url_respects_grpc_url_env_var ... ok
+test common::tests::test_get_grpc_url_strips_path ... ok
+test test_identifiers_at_size_limit ... FAILED
+test test_identifiers_over_size_limit ... FAILED
+test test_read_tuple_with_userset ... FAILED
+test test_special_characters_in_identifiers ... FAILED
+test test_unicode_in_identifiers ... FAILED
+test test_write_tuple_with_wildcard ... FAILED
+
+failures:
+
+---- test_identifiers_at_size_limit stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_identifiers_over_size_limit stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_read_tuple_with_userset stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_special_characters_in_identifiers stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_unicode_in_identifiers stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+---- test_write_tuple_with_wildcard stdout ----
+Error: error sending request for url (http://localhost:18080/stores)
+
+Caused by:
+    0: client error (Connect)
+    1: tcp connect error
+    2: Connection refused (os error 61)
+
+
+failures:
+    test_identifiers_at_size_limit
+    test_identifiers_over_size_limit
+    test_read_tuple_with_userset
+    test_special_characters_in_identifiers
+    test_unicode_in_identifiers
+    test_write_tuple_with_wildcard
+
+test result: FAILED. 6 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+error: test failed, to rerun pass `-p compatibility-tests --test test_section_9_tuple_edge_cases`
+   Doc-tests compatibility_tests
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 31 targets failed:
+    `-p compatibility-tests --test test_section_10_check_basic`
+    `-p compatibility-tests --test test_section_11_check_complex`
+    `-p compatibility-tests --test test_section_12_batch_check`
+    `-p compatibility-tests --test test_section_13_check_performance`
+    `-p compatibility-tests --test test_section_14_expand_api`
+    `-p compatibility-tests --test test_section_15_listobjects_api`
+    `-p compatibility-tests --test test_section_16_edge_cases`
+    `-p compatibility-tests --test test_section_17_error_format`
+    `-p compatibility-tests --test test_section_18_rate_limiting`
+    `-p compatibility-tests --test test_section_19_consistency`
+    `-p compatibility-tests --test test_section_20_limits`
+    `-p compatibility-tests --test test_section_21_grpc_setup`
+    `-p compatibility-tests --test test_section_22_grpc_parity`
+    `-p compatibility-tests --test test_section_23_grpc_features`
+    `-p compatibility-tests --test test_section_24_model_conditions`
+    `-p compatibility-tests --test test_section_25_tuple_conditions`
+    `-p compatibility-tests --test test_section_26_read_conditions`
+    `-p compatibility-tests --test test_section_27_check_conditions`
+    `-p compatibility-tests --test test_section_28_cel_edge_cases`
+    `-p compatibility-tests --test test_section_29_condition_performance`
+    `-p compatibility-tests --test test_section_30_listusers_api`
+    `-p compatibility-tests --test test_section_31_readchanges_api`
+    `-p compatibility-tests --test test_section_32_assertions_api`
+    `-p compatibility-tests --test test_section_33_consistency_preference`
+    `-p compatibility-tests --test test_section_35_modular_models`
+    `-p compatibility-tests --test test_section_4`
+    `-p compatibility-tests --test test_section_5`
+    `-p compatibility-tests --test test_section_6`
+    `-p compatibility-tests --test test_section_7_tuple_write`
+    `-p compatibility-tests --test test_section_8_tuple_read`
+    `-p compatibility-tests --test test_section_9_tuple_edge_cases`

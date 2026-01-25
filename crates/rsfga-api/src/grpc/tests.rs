@@ -2169,7 +2169,7 @@ async fn test_read_rpc_pagination_returns_continuation_token() {
                 "test-store",
                 StoredTuple::new(
                     "document",
-                    &format!("doc{i}"),
+                    format!("doc{i}"),
                     "viewer",
                     "user",
                     "alice",
@@ -2253,7 +2253,7 @@ async fn test_read_rpc_zero_page_size_uses_default() {
                 "test-store",
                 StoredTuple::new(
                     "document",
-                    &format!("doc{i}"),
+                    format!("doc{i}"),
                     "viewer",
                     "user",
                     "alice",
@@ -2304,7 +2304,7 @@ async fn test_read_rpc_caps_page_size_at_max() {
                 "test-store",
                 StoredTuple::new(
                     "document",
-                    &format!("doc{i}"),
+                    format!("doc{i}"),
                     "viewer",
                     "user",
                     "alice",
@@ -2356,7 +2356,7 @@ async fn test_read_rpc_pagination_with_continuation_token() {
                 "test-store",
                 StoredTuple::new(
                     "document",
-                    &format!("doc{i:02}"),
+                    format!("doc{i:02}"),
                     "viewer",
                     "user",
                     "alice",

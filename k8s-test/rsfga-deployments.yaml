@@ -1,0 +1,235 @@
+# RSFGA with PostgreSQL backend
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rsfga-postgres
+  namespace: rsfga-test
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30081
+  selector:
+    app: rsfga-postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsfga-postgres
+  namespace: rsfga-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rsfga-postgres
+  template:
+    metadata:
+      labels:
+        app: rsfga-postgres
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done']
+      containers:
+        - name: rsfga
+          image: rsfga-rsfga:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: RSFGA_STORAGE__BACKEND
+              value: postgres
+            - name: RSFGA_STORAGE__DATABASE_URL
+              value: postgres://rsfga:rsfga@postgres:5432/rsfga
+            - name: RSFGA_STORAGE__POOL_SIZE
+              value: "10"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+# RSFGA with CockroachDB backend (uses postgres driver)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rsfga-cockroachdb
+  namespace: rsfga-test
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30082
+  selector:
+    app: rsfga-cockroachdb
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsfga-cockroachdb
+  namespace: rsfga-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rsfga-cockroachdb
+  template:
+    metadata:
+      labels:
+        app: rsfga-cockroachdb
+    spec:
+      initContainers:
+        - name: wait-for-cockroachdb
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z cockroachdb 26257; do echo waiting for cockroachdb; sleep 2; done']
+        - name: create-database
+          image: cockroachdb/cockroach:latest
+          command:
+            - cockroach
+            - sql
+            - --insecure
+            - --host=cockroachdb:26257
+            - -e
+            - CREATE DATABASE IF NOT EXISTS rsfga
+      containers:
+        - name: rsfga
+          image: rsfga-rsfga:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: RSFGA_STORAGE__BACKEND
+              value: postgres
+            - name: RSFGA_STORAGE__DATABASE_URL
+              value: postgresql://root@cockroachdb:26257/rsfga
+            - name: RSFGA_STORAGE__POOL_SIZE
+              value: "10"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+# RSFGA with MariaDB backend
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rsfga-mariadb
+  namespace: rsfga-test
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30083
+  selector:
+    app: rsfga-mariadb
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsfga-mariadb
+  namespace: rsfga-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rsfga-mariadb
+  template:
+    metadata:
+      labels:
+        app: rsfga-mariadb
+    spec:
+      initContainers:
+        - name: wait-for-mariadb
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z mariadb 3306; do echo waiting for mariadb; sleep 2; done']
+      containers:
+        - name: rsfga
+          image: rsfga-rsfga:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: RSFGA_STORAGE__BACKEND
+              value: mysql
+            - name: RSFGA_STORAGE__DATABASE_URL
+              value: mysql://rsfga:rsfga@mariadb:3306/rsfga
+            - name: RSFGA_STORAGE__POOL_SIZE
+              value: "10"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+# RSFGA with TiDB backend (uses mysql driver)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rsfga-tidb
+  namespace: rsfga-test
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30084
+  selector:
+    app: rsfga-tidb
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsfga-tidb
+  namespace: rsfga-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rsfga-tidb
+  template:
+    metadata:
+      labels:
+        app: rsfga-tidb
+    spec:
+      initContainers:
+        - name: wait-for-tidb
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z tidb 4000; do echo waiting for tidb; sleep 2; done']
+        - name: create-database
+          image: mysql:8.0
+          command:
+            - sh
+            - -c
+            - |
+              mysql -h tidb -P 4000 -u root -e "CREATE DATABASE IF NOT EXISTS rsfga; CREATE USER IF NOT EXISTS 'rsfga'@'%' IDENTIFIED BY 'rsfga'; GRANT ALL ON rsfga.* TO 'rsfga'@'%';" || true
+      containers:
+        - name: rsfga
+          image: rsfga-rsfga:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: RSFGA_STORAGE__BACKEND
+              value: mysql
+            - name: RSFGA_STORAGE__DATABASE_URL
+              value: mysql://rsfga:rsfga@tidb:4000/rsfga
+            - name: RSFGA_STORAGE__POOL_SIZE
+              value: "10"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 5
