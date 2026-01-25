@@ -5601,3 +5601,98 @@ async fn test_list_objects_filters_contextual_tuples_by_type() {
     assert!(result.objects.contains(&"document:doc2".to_string()));
     assert!(!result.objects.iter().any(|o| o.starts_with("folder:")));
 }
+
+/// Tests that list_objects silently skips malformed contextual tuple objects.
+#[tokio::test]
+async fn test_list_objects_skips_malformed_contextual_tuple_objects() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Mix of valid and malformed contextual tuples
+    let contextual_tuples = vec![
+        ContextualTuple::new("user:alice", "viewer", "document:doc1"), // valid
+        ContextualTuple::new("user:alice", "viewer", "malformed_no_colon"), // malformed - no colon
+        ContextualTuple::new("user:alice", "viewer", "document:doc2"), // valid
+        ContextualTuple::new("user:alice", "viewer", ""),              // malformed - empty
+    ];
+
+    let request = ListObjectsRequest::with_context(
+        "store1",
+        "user:alice",
+        "viewer",
+        "document",
+        contextual_tuples,
+        HashMap::new(),
+    );
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Should only return valid documents, silently skipping malformed ones
+    assert_eq!(result.objects.len(), 2);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(result.objects.contains(&"document:doc2".to_string()));
+}
+
+/// Tests that list_objects respects max_candidates limit with contextual tuples.
+#[tokio::test]
+async fn test_list_objects_respects_limit_with_contextual_tuples() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Create many contextual tuples (more than typical max_candidates)
+    let contextual_tuples: Vec<_> = (1..=10)
+        .map(|i| ContextualTuple::new("user:alice", "viewer", format!("document:doc{}", i)))
+        .collect();
+
+    let request = ListObjectsRequest::with_context(
+        "store1",
+        "user:alice",
+        "viewer",
+        "document",
+        contextual_tuples,
+        HashMap::new(),
+    );
+
+    // Request with a small limit
+    let result = resolver.list_objects(&request, 3).await.unwrap();
+
+    // Should be truncated to max 3 results
+    assert!(result.objects.len() <= 3);
+    assert!(result.truncated);
+}
