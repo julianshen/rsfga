@@ -10,8 +10,9 @@ use tracing::{debug, instrument};
 use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_user_filter, validate_object_type, validate_store_id,
-    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store,
-    StoredAuthorizationModel, StoredTuple, TupleFilter,
+    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions,
+    ReadChangesFilter, Store, StoredAuthorizationModel, StoredTuple, TupleChange, TupleFilter,
+    TupleOperation,
 };
 
 /// Maximum size of condition_context JSON in bytes (64 KB).
@@ -705,6 +706,51 @@ impl PostgresDataStore {
             message: format!("Failed to create authorization_models index: {e}"),
         })?;
 
+        // Create changelog table for tracking tuple changes (writes and deletes)
+        // This enables the ReadChanges API to return a chronological history of changes.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS changelog (
+                id BIGSERIAL PRIMARY KEY,
+                store_id VARCHAR(255) NOT NULL,
+                object_type VARCHAR(255) NOT NULL,
+                object_id VARCHAR(255) NOT NULL,
+                relation VARCHAR(255) NOT NULL,
+                user_type VARCHAR(255) NOT NULL,
+                user_id VARCHAR(255) NOT NULL,
+                user_relation VARCHAR(255),
+                condition_name VARCHAR(255),
+                condition_context JSONB,
+                operation VARCHAR(50) NOT NULL,
+                timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to create changelog table: {e}"),
+        })?;
+
+        // Changelog indexes:
+        // - idx_changelog_store_timestamp: Primary index for ReadChanges API queries.
+        //   Supports chronological ordering (timestamp ASC) and store filtering.
+        // - idx_changelog_store_type: Supports type filtering in ReadChanges queries.
+        let changelog_indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_changelog_store_timestamp ON changelog(store_id, timestamp ASC, id ASC)",
+            "CREATE INDEX IF NOT EXISTS idx_changelog_store_type ON changelog(store_id, object_type, timestamp ASC, id ASC)",
+        ];
+
+        for index_sql in changelog_indexes {
+            sqlx::query(index_sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to create changelog index: {e}"),
+                })?;
+        }
+
         debug!("Database migrations completed successfully");
         Ok(())
     }
@@ -1309,6 +1355,89 @@ impl DataStore for PostgresDataStore {
                 }
             }
 
+            // Record changes in changelog for ReadChanges API
+            // Insert delete records
+            if !deletes.is_empty() {
+                let object_types: Vec<&str> = deletes.iter().map(|t| t.object_type.as_str()).collect();
+                let object_ids: Vec<&str> = deletes.iter().map(|t| t.object_id.as_str()).collect();
+                let relations: Vec<&str> = deletes.iter().map(|t| t.relation.as_str()).collect();
+                let user_types: Vec<&str> = deletes.iter().map(|t| t.user_type.as_str()).collect();
+                let user_ids: Vec<&str> = deletes.iter().map(|t| t.user_id.as_str()).collect();
+                let user_relations: Vec<Option<&str>> =
+                    deletes.iter().map(|t| t.user_relation.as_deref()).collect();
+                let condition_names: Vec<Option<&str>> =
+                    deletes.iter().map(|t| t.condition_name.as_deref()).collect();
+                let condition_contexts: Vec<Option<serde_json::Value>> = deletes
+                    .iter()
+                    .map(|t| t.condition_context.as_ref().map(|ctx| serde_json::json!(ctx)))
+                    .collect();
+
+                let unnest_clause = build_insert_unnest(use_rows_from_syntax, "t");
+                let changelog_delete_query = format!(
+                    r#"
+                    INSERT INTO changelog (store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context, operation)
+                    SELECT $1, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context, 'TUPLE_OPERATION_DELETE'
+                    FROM {unnest_clause}
+                    "#
+                );
+                sqlx::query(&changelog_delete_query)
+                    .bind(store_id)
+                    .bind(&object_types)
+                    .bind(&object_ids)
+                    .bind(&relations)
+                    .bind(&user_types)
+                    .bind(&user_ids)
+                    .bind(&user_relations)
+                    .bind(&condition_names)
+                    .bind(&condition_contexts)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to record delete changelog: {e}"),
+                    })?;
+            }
+
+            // Insert write records
+            if !writes.is_empty() {
+                let object_types: Vec<&str> = writes.iter().map(|t| t.object_type.as_str()).collect();
+                let object_ids: Vec<&str> = writes.iter().map(|t| t.object_id.as_str()).collect();
+                let relations: Vec<&str> = writes.iter().map(|t| t.relation.as_str()).collect();
+                let user_types: Vec<&str> = writes.iter().map(|t| t.user_type.as_str()).collect();
+                let user_ids: Vec<&str> = writes.iter().map(|t| t.user_id.as_str()).collect();
+                let user_relations: Vec<Option<&str>> =
+                    writes.iter().map(|t| t.user_relation.as_deref()).collect();
+                let condition_names: Vec<Option<&str>> =
+                    writes.iter().map(|t| t.condition_name.as_deref()).collect();
+                let condition_contexts: Vec<Option<serde_json::Value>> = writes
+                    .iter()
+                    .map(|t| t.condition_context.as_ref().map(|ctx| serde_json::json!(ctx)))
+                    .collect();
+
+                let unnest_clause = build_insert_unnest(use_rows_from_syntax, "t");
+                let changelog_write_query = format!(
+                    r#"
+                    INSERT INTO changelog (store_id, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context, operation)
+                    SELECT $1, object_type, object_id, relation, user_type, user_id, user_relation, condition_name, condition_context, 'TUPLE_OPERATION_WRITE'
+                    FROM {unnest_clause}
+                    "#
+                );
+                sqlx::query(&changelog_write_query)
+                    .bind(store_id)
+                    .bind(&object_types)
+                    .bind(&object_ids)
+                    .bind(&relations)
+                    .bind(&user_types)
+                    .bind(&user_ids)
+                    .bind(&user_relations)
+                    .bind(&condition_names)
+                    .bind(&condition_contexts)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to record write changelog: {e}"),
+                    })?;
+            }
+
             // Commit the transaction
             tx.commit()
                 .await
@@ -1902,6 +2031,112 @@ impl DataStore for PostgresDataStore {
         }
 
         Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn read_changes(
+        &self,
+        store_id: &str,
+        filter: &ReadChangesFilter,
+        pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<TupleChange>> {
+        // Validate store exists
+        let store_exists: bool =
+            sqlx::query_scalar(r#"SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)"#)
+                .bind(store_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Parse continuation token as offset
+        let offset = parse_continuation_token(&pagination.continuation_token)?;
+        let page_size = i64::from(pagination.page_size.unwrap_or(50));
+
+        // Build query with optional type filter
+        let mut builder: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "SELECT object_type, object_id, relation, user_type, user_id, user_relation, \
+             condition_name, condition_context, operation, timestamp \
+             FROM changelog WHERE store_id = ",
+        );
+        builder.push_bind(store_id);
+
+        if let Some(ref object_type) = filter.object_type {
+            builder.push(" AND object_type = ");
+            builder.push_bind(object_type);
+        }
+
+        // Order by timestamp ASC for chronological order, with id as tiebreaker
+        builder.push(" ORDER BY timestamp ASC, id ASC");
+
+        // Pagination: fetch one extra to detect if there are more results
+        builder.push(" LIMIT ");
+        builder.push_bind(page_size + 1);
+        builder.push(" OFFSET ");
+        builder.push_bind(offset);
+
+        let rows =
+            builder
+                .build()
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to read changes: {e}"),
+                })?;
+
+        let has_more = rows.len() > page_size as usize;
+        let items: Vec<TupleChange> = rows
+            .into_iter()
+            .take(page_size as usize)
+            .map(|row| {
+                let operation_str: String = row.get("operation");
+                let operation = if operation_str == "TUPLE_OPERATION_DELETE" {
+                    TupleOperation::Delete
+                } else {
+                    TupleOperation::Write
+                };
+
+                let condition_context: Option<serde_json::Value> = row.get("condition_context");
+                let condition_context_map = condition_context.and_then(|v| {
+                    v.as_object()
+                        .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                });
+
+                TupleChange {
+                    tuple: StoredTuple {
+                        object_type: row.get("object_type"),
+                        object_id: row.get("object_id"),
+                        relation: row.get("relation"),
+                        user_type: row.get("user_type"),
+                        user_id: row.get("user_id"),
+                        user_relation: row.get("user_relation"),
+                        condition_name: row.get("condition_name"),
+                        condition_context: condition_context_map,
+                        created_at: Some(row.get("timestamp")),
+                    },
+                    operation,
+                    timestamp: row.get("timestamp"),
+                }
+            })
+            .collect();
+
+        let continuation_token = if has_more {
+            Some((offset + page_size).to_string())
+        } else {
+            None
+        };
+
+        Ok(PaginatedResult {
+            items,
+            continuation_token,
+        })
     }
 
     #[instrument(skip(self))]

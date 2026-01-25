@@ -545,6 +545,69 @@ pub struct PaginationOptions {
     pub continuation_token: Option<String>,
 }
 
+/// Operation type for tuple changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TupleOperation {
+    /// Tuple was written (added).
+    Write,
+    /// Tuple was deleted.
+    Delete,
+}
+
+impl TupleOperation {
+    /// Returns the OpenFGA-compatible string representation.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TupleOperation::Write => "TUPLE_OPERATION_WRITE",
+            TupleOperation::Delete => "TUPLE_OPERATION_DELETE",
+        }
+    }
+}
+
+impl std::fmt::Display for TupleOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// A tuple change entry in the changelog.
+#[derive(Debug, Clone)]
+pub struct TupleChange {
+    /// The tuple that was changed.
+    pub tuple: StoredTuple,
+    /// The operation performed (write or delete).
+    pub operation: TupleOperation,
+    /// When the change occurred.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+impl TupleChange {
+    /// Creates a new write change entry.
+    pub fn write(tuple: StoredTuple, timestamp: chrono::DateTime<chrono::Utc>) -> Self {
+        Self {
+            tuple,
+            operation: TupleOperation::Write,
+            timestamp,
+        }
+    }
+
+    /// Creates a new delete change entry.
+    pub fn delete(tuple: StoredTuple, timestamp: chrono::DateTime<chrono::Utc>) -> Self {
+        Self {
+            tuple,
+            operation: TupleOperation::Delete,
+            timestamp,
+        }
+    }
+}
+
+/// Filter options for reading changes.
+#[derive(Debug, Clone, Default)]
+pub struct ReadChangesFilter {
+    /// Filter by object type.
+    pub object_type: Option<String>,
+}
+
 /// Paginated query result.
 #[derive(Debug, Clone)]
 pub struct PaginatedResult<T> {
@@ -812,6 +875,29 @@ pub trait DataStore: Send + Sync + 'static {
     /// Returns `StorageError::ModelNotFound` if the model doesn't exist.
     async fn delete_authorization_model(&self, store_id: &str, model_id: &str)
         -> StorageResult<()>;
+
+    // Changelog operations
+
+    /// Reads tuple changes from the changelog.
+    ///
+    /// Returns changes in chronological order (ascending by timestamp).
+    /// Each change includes the tuple, operation type (write/delete), and timestamp.
+    ///
+    /// # Parameters
+    ///
+    /// - `store_id`: The store to read changes from.
+    /// - `filter`: Optional filter by object type.
+    /// - `pagination`: Pagination options (page_size, continuation_token).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
+    async fn read_changes(
+        &self,
+        store_id: &str,
+        filter: &ReadChangesFilter,
+        pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<TupleChange>>;
 
     // Health check operations
 

@@ -24,8 +24,9 @@ use tracing::{debug, instrument};
 use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_user_filter, validate_object_type, validate_store_id,
-    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions, Store,
-    StoredAuthorizationModel, StoredTuple, TupleFilter,
+    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions,
+    ReadChangesFilter, Store, StoredAuthorizationModel, StoredTuple, TupleChange, TupleFilter,
+    TupleOperation,
 };
 
 /// Parse a database row into a StoredTuple.
@@ -558,6 +559,50 @@ impl MySQLDataStore {
         // Check if we need to migrate column sizes for MariaDB/TiDB compatibility
         // This handles existing databases created with older VARCHAR(255) columns
         self.migrate_column_sizes_if_needed().await?;
+
+        // Create changelog table for tracking tuple changes (writes and deletes)
+        // This enables the ReadChanges API to return a chronological history of changes.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS changelog (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                store_id CHAR(26) NOT NULL,
+                object_type VARCHAR(128) NOT NULL,
+                object_id VARCHAR(255) NOT NULL,
+                relation VARCHAR(50) NOT NULL,
+                user_type VARCHAR(128) NOT NULL,
+                user_id VARCHAR(128) NOT NULL,
+                user_relation VARCHAR(50),
+                condition_name VARCHAR(128),
+                condition_context JSON,
+                operation VARCHAR(50) NOT NULL,
+                timestamp TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+                FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to create changelog table: {e}"),
+        })?;
+
+        // Changelog indexes
+        self.create_index_if_not_exists(
+            "idx_changelog_store_timestamp",
+            "changelog",
+            "(store_id, timestamp, id)",
+            false,
+        )
+        .await?;
+
+        self.create_index_if_not_exists(
+            "idx_changelog_store_type",
+            "changelog",
+            "(store_id, object_type, timestamp, id)",
+            false,
+        )
+        .await?;
 
         debug!("MySQL database migrations completed successfully");
         Ok(())
@@ -1333,6 +1378,73 @@ impl DataStore for MySQLDataStore {
                     })?;
             }
 
+            // Record changes in changelog for ReadChanges API
+            // Insert delete records
+            for chunk in deletes.chunks(self.write_batch_size) {
+                let mut query = String::from(
+                    "INSERT INTO changelog (store_id, object_type, object_id, relation, user_type, user_id, user_relation, operation) VALUES ",
+                );
+
+                let placeholders: Vec<String> = chunk
+                    .iter()
+                    .map(|_| "(?, ?, ?, ?, ?, ?, ?, 'TUPLE_OPERATION_DELETE')".to_string())
+                    .collect();
+                query.push_str(&placeholders.join(", "));
+
+                let mut query_builder = sqlx::query(&query);
+
+                for tuple in chunk {
+                    query_builder = query_builder
+                        .bind(store_id)
+                        .bind(&tuple.object_type)
+                        .bind(&tuple.object_id)
+                        .bind(&tuple.relation)
+                        .bind(&tuple.user_type)
+                        .bind(&tuple.user_id)
+                        .bind(&tuple.user_relation);
+                }
+
+                query_builder
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to record delete changelog: {e}"),
+                    })?;
+            }
+
+            // Insert write records
+            for chunk in writes.chunks(self.write_batch_size) {
+                let mut query = String::from(
+                    "INSERT INTO changelog (store_id, object_type, object_id, relation, user_type, user_id, user_relation, operation) VALUES ",
+                );
+
+                let placeholders: Vec<String> = chunk
+                    .iter()
+                    .map(|_| "(?, ?, ?, ?, ?, ?, ?, 'TUPLE_OPERATION_WRITE')".to_string())
+                    .collect();
+                query.push_str(&placeholders.join(", "));
+
+                let mut query_builder = sqlx::query(&query);
+
+                for tuple in chunk {
+                    query_builder = query_builder
+                        .bind(store_id)
+                        .bind(&tuple.object_type)
+                        .bind(&tuple.object_id)
+                        .bind(&tuple.relation)
+                        .bind(&tuple.user_type)
+                        .bind(&tuple.user_id)
+                        .bind(&tuple.user_relation);
+                }
+
+                query_builder
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to record write changelog: {e}"),
+                    })?;
+            }
+
             // Commit the transaction
             tx.commit()
                 .await
@@ -1952,6 +2064,112 @@ impl DataStore for MySQLDataStore {
         }
 
         Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn read_changes(
+        &self,
+        store_id: &str,
+        filter: &ReadChangesFilter,
+        pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<TupleChange>> {
+        // Validate store exists
+        let store_exists: bool =
+            sqlx::query_scalar(r#"SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)"#)
+                .bind(store_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Parse continuation token as offset
+        let offset = parse_continuation_token(&pagination.continuation_token)?;
+        let page_size = i64::from(pagination.page_size.unwrap_or(50));
+
+        // Build query with optional type filter
+        let mut builder: sqlx::QueryBuilder<sqlx::MySql> = sqlx::QueryBuilder::new(
+            "SELECT object_type, object_id, relation, user_type, user_id, user_relation, \
+             condition_name, condition_context, operation, timestamp \
+             FROM changelog WHERE store_id = ",
+        );
+        builder.push_bind(store_id);
+
+        if let Some(ref object_type) = filter.object_type {
+            builder.push(" AND object_type = ");
+            builder.push_bind(object_type);
+        }
+
+        // Order by timestamp ASC for chronological order, with id as tiebreaker
+        builder.push(" ORDER BY timestamp ASC, id ASC");
+
+        // Pagination: fetch one extra to detect if there are more results
+        builder.push(" LIMIT ");
+        builder.push_bind(page_size + 1);
+        builder.push(" OFFSET ");
+        builder.push_bind(offset);
+
+        let rows =
+            builder
+                .build()
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to read changes: {e}"),
+                })?;
+
+        let has_more = rows.len() > page_size as usize;
+        let items: Vec<TupleChange> = rows
+            .into_iter()
+            .take(page_size as usize)
+            .map(|row| {
+                let operation_str: String = row.get("operation");
+                let operation = if operation_str == "TUPLE_OPERATION_DELETE" {
+                    TupleOperation::Delete
+                } else {
+                    TupleOperation::Write
+                };
+
+                let condition_context: Option<serde_json::Value> = row.get("condition_context");
+                let condition_context_map = condition_context.and_then(|v| {
+                    v.as_object()
+                        .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                });
+
+                TupleChange {
+                    tuple: StoredTuple {
+                        object_type: row.get("object_type"),
+                        object_id: row.get("object_id"),
+                        relation: row.get("relation"),
+                        user_type: row.get("user_type"),
+                        user_id: row.get("user_id"),
+                        user_relation: row.get("user_relation"),
+                        condition_name: row.get("condition_name"),
+                        condition_context: condition_context_map,
+                        created_at: Some(row.get("timestamp")),
+                    },
+                    operation,
+                    timestamp: row.get("timestamp"),
+                }
+            })
+            .collect();
+
+        let continuation_token = if has_more {
+            Some((offset + page_size).to_string())
+        } else {
+            None
+        };
+
+        Ok(PaginatedResult {
+            items,
+            continuation_token,
+        })
     }
 
     #[instrument(skip(self))]

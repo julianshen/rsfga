@@ -15,7 +15,8 @@ use crate::error::{HealthStatus, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_tuple_cursor, parse_user_filter, validate_object_type,
     validate_store_id, validate_store_name, validate_tuple, DataStore, PaginatedResult,
-    PaginationOptions, Store, StoredAuthorizationModel, StoredTuple, TupleCursor, TupleFilter,
+    PaginationOptions, ReadChangesFilter, Store, StoredAuthorizationModel, StoredTuple,
+    TupleChange, TupleCursor, TupleFilter,
 };
 
 /// In-memory implementation of DataStore.
@@ -39,6 +40,9 @@ pub struct MemoryDataStore {
     /// Models are stored in insertion order (newest at the end), but list methods
     /// return them newest-first (reversed) for API consistency.
     authorization_models: DashMap<String, Vec<StoredAuthorizationModel>>,
+    /// Changelog for tracking tuple changes (writes and deletes).
+    /// Entries are stored in chronological order (oldest first).
+    changelog: DashMap<String, Vec<TupleChange>>,
 }
 
 impl MemoryDataStore {
@@ -193,16 +197,22 @@ impl DataStore for MemoryDataStore {
         }
 
         let mut tuples = self.tuples.entry(store_id.to_string()).or_default();
+        let mut changelog = self.changelog.entry(store_id.to_string()).or_default();
+        let now = chrono::Utc::now();
 
         // Process deletes - O(1) per tuple with HashSet
+        // Record delete in changelog before removing from tuples
         for tuple in deletes {
             tuples.remove(&tuple);
+            changelog.push(TupleChange::delete(tuple, now));
         }
 
         // Process writes - O(1) per tuple with HashSet
         // HashSet::insert automatically handles duplicates (idempotent)
+        // Record write in changelog
         for tuple in writes {
-            tuples.insert(tuple);
+            tuples.insert(tuple.clone());
+            changelog.push(TupleChange::write(tuple, now));
         }
 
         Ok(())
@@ -619,6 +629,62 @@ impl DataStore for MemoryDataStore {
         }
 
         Ok(unique_ids)
+    }
+
+    async fn read_changes(
+        &self,
+        store_id: &str,
+        filter: &ReadChangesFilter,
+        pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<TupleChange>> {
+        // Validate store exists
+        if !self.stores.contains_key(store_id) {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Parse continuation token as offset
+        let offset = parse_continuation_token(&pagination.continuation_token)? as usize;
+        let page_size = pagination.page_size.unwrap_or(50) as usize;
+
+        // Get all changes for this store (already in chronological order)
+        let changes: Vec<TupleChange> = self
+            .changelog
+            .get(store_id)
+            .map(|changelog| {
+                changelog
+                    .iter()
+                    .filter(|change| {
+                        // Apply type filter if provided
+                        if let Some(ref object_type) = filter.object_type {
+                            change.tuple.object_type == *object_type
+                        } else {
+                            true
+                        }
+                    })
+                    .skip(offset)
+                    .take(page_size + 1) // Take one extra to check if there are more
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Check if there are more results
+        let has_more = changes.len() > page_size;
+        let items: Vec<TupleChange> = changes.into_iter().take(page_size).collect();
+
+        // Generate continuation token for next page
+        let continuation_token = if has_more {
+            Some((offset + page_size).to_string())
+        } else {
+            None
+        };
+
+        Ok(PaginatedResult {
+            items,
+            continuation_token,
+        })
     }
 }
 
