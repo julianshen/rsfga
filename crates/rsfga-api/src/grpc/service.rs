@@ -302,11 +302,34 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .transpose()?
             .unwrap_or_default();
 
-        // Parse context from gRPC Struct if present
+        // Parse and validate context from gRPC Struct if present
         let context = if let Some(ctx) = req.context {
-            prost_struct_to_hashmap(ctx).map_err(|_| {
+            use crate::validation::{
+                estimate_context_size, json_exceeds_max_depth, MAX_CONDITION_CONTEXT_SIZE,
+                MAX_JSON_DEPTH,
+            };
+
+            let context_map = prost_struct_to_hashmap(ctx).map_err(|_| {
                 Status::invalid_argument("invalid context (NaN or Infinity values not allowed)")
-            })?
+            })?;
+
+            // Validate context size to prevent DoS
+            if estimate_context_size(&context_map) > MAX_CONDITION_CONTEXT_SIZE {
+                return Err(Status::invalid_argument(format!(
+                    "context size exceeds maximum of {MAX_CONDITION_CONTEXT_SIZE} bytes"
+                )));
+            }
+
+            // Validate context depth
+            for value in context_map.values() {
+                if json_exceeds_max_depth(value, 2) {
+                    return Err(Status::invalid_argument(format!(
+                        "context nested too deeply (max depth {MAX_JSON_DEPTH})"
+                    )));
+                }
+            }
+
+            context_map
         } else {
             std::collections::HashMap::new()
         };
