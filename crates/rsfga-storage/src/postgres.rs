@@ -776,31 +776,50 @@ impl PostgresDataStore {
 
     /// Apply column size migrations for existing databases.
     ///
-    /// This function widens columns from old sizes (e.g., VARCHAR(255)) to new
-    /// OpenFGA-compliant sizes. PostgreSQL's ALTER TABLE ... TYPE is idempotent -
-    /// running it on a column that already has the target size has no effect.
+    /// This function adjusts column sizes from old defaults to OpenFGA-compliant sizes.
+    /// PostgreSQL's ALTER TABLE ... TYPE is idempotent - running it on a column that
+    /// already has the target size has no effect.
     ///
     /// # Column Size Changes
     ///
-    /// | Table | Column | Old Size | New Size |
-    /// |-------|--------|----------|----------|
-    /// | stores | id | 255 | 26 |
-    /// | stores | name | 255 | 256 |
-    /// | tuples | store_id | 255 | 26 |
-    /// | tuples | object_type | 255 | 254 |
-    /// | tuples | object_id | 255 | 256 |
-    /// | tuples | relation | 255 | 50 |
-    /// | tuples | user_type | 255 | 254 |
-    /// | tuples | user_id | 255 | 512 |
-    /// | tuples | user_relation | 255 | 50 |
-    /// | tuples | condition_name | - | 256 |
-    /// | changelog | (same as tuples) | | |
+    /// | Table | Column | Old Size | New Size | Notes |
+    /// |-------|--------|----------|----------|-------|
+    /// | stores | id | 255 | 26 | ULID format, shrinking |
+    /// | stores | name | 255 | 256 | |
+    /// | authorization_models | id | 255 | 26 | ULID format, shrinking |
+    /// | authorization_models | store_id | 255 | 26 | FK to stores.id |
+    /// | tuples | store_id | 255 | 26 | FK to stores.id |
+    /// | tuples | object_type | 255 | 254 | |
+    /// | tuples | object_id | 255 | 256 | |
+    /// | tuples | relation | 255 | 50 | |
+    /// | tuples | user_type | 255 | 254 | |
+    /// | tuples | user_id | 255 | 512 | Expanding |
+    /// | tuples | user_relation | 255 | 50 | |
+    /// | changelog | (same as tuples) | | | |
+    /// | assertions | store_id | 255 | 26 | FK to stores.id |
+    /// | assertions | authorization_model_id | 255 | 26 | FK to auth_models.id |
+    ///
+    /// # Warning
+    ///
+    /// Some columns are being SHRUNK (255→26). This will fail if existing data
+    /// exceeds the new limit. Store IDs should always be ULIDs (26 chars).
     async fn apply_column_size_migration(&self) -> StorageResult<()> {
         // PostgreSQL ALTER TABLE ... TYPE is idempotent, so we can run these
         // unconditionally. Unlike MySQL, there's no need to check current sizes.
         //
         // Note: Both PostgreSQL and CockroachDB support the same ALTER COLUMN syntax.
-        let stores_alterations = ["ALTER TABLE stores ALTER COLUMN name TYPE VARCHAR(256)"];
+        //
+        // IMPORTANT: Some columns are being SHRUNK (255→26 for store_id fields).
+        // This will fail if existing data exceeds the new limit. In practice,
+        // store IDs should always be ULIDs (26 chars), so this should be safe.
+        // If migration fails, manually verify data lengths before retrying.
+
+        // 1. stores table - must be migrated first (parent table for FKs)
+        let stores_alterations = [
+            // Note: Shrinking id from 255 to 26 - will fail if data > 26 chars
+            "ALTER TABLE stores ALTER COLUMN id TYPE VARCHAR(26)",
+            "ALTER TABLE stores ALTER COLUMN name TYPE VARCHAR(256)",
+        ];
 
         for sql in stores_alterations {
             sqlx::query(sql)
@@ -811,8 +830,24 @@ impl PostgresDataStore {
                 })?;
         }
 
-        // tuples table migrations
+        // 2. authorization_models table - references stores.id
+        let auth_models_alterations = [
+            "ALTER TABLE authorization_models ALTER COLUMN id TYPE VARCHAR(26)",
+            "ALTER TABLE authorization_models ALTER COLUMN store_id TYPE VARCHAR(26)",
+        ];
+
+        for sql in auth_models_alterations {
+            sqlx::query(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to alter authorization_models table: {e}"),
+                })?;
+        }
+
+        // 3. tuples table - references stores.id
         let tuples_alterations = [
+            "ALTER TABLE tuples ALTER COLUMN store_id TYPE VARCHAR(26)",
             "ALTER TABLE tuples ALTER COLUMN object_type TYPE VARCHAR(254)",
             "ALTER TABLE tuples ALTER COLUMN object_id TYPE VARCHAR(256)",
             "ALTER TABLE tuples ALTER COLUMN relation TYPE VARCHAR(50)",
@@ -830,8 +865,9 @@ impl PostgresDataStore {
                 })?;
         }
 
-        // changelog table migrations (same as tuples)
+        // 4. changelog table - references stores.id (same fields as tuples)
         let changelog_alterations = [
+            "ALTER TABLE changelog ALTER COLUMN store_id TYPE VARCHAR(26)",
             "ALTER TABLE changelog ALTER COLUMN object_type TYPE VARCHAR(254)",
             "ALTER TABLE changelog ALTER COLUMN object_id TYPE VARCHAR(256)",
             "ALTER TABLE changelog ALTER COLUMN relation TYPE VARCHAR(50)",
@@ -847,6 +883,33 @@ impl PostgresDataStore {
                 .map_err(|e| StorageError::QueryError {
                     message: format!("Failed to alter changelog table: {e}"),
                 })?;
+        }
+
+        // 5. assertions table - references stores.id and authorization_models.id
+        // Check if assertions table exists before altering
+        let assertions_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'assertions')",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryError {
+            message: format!("Failed to check assertions table existence: {e}"),
+        })?;
+
+        if assertions_exists {
+            let assertions_alterations = [
+                "ALTER TABLE assertions ALTER COLUMN store_id TYPE VARCHAR(26)",
+                "ALTER TABLE assertions ALTER COLUMN authorization_model_id TYPE VARCHAR(26)",
+            ];
+
+            for sql in assertions_alterations {
+                sqlx::query(sql)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to alter assertions table: {e}"),
+                    })?;
+            }
         }
 
         Ok(())
