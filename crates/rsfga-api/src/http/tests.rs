@@ -2048,6 +2048,17 @@ fn test_storage_error_generic_invalid_input() {
     assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
 }
 
+/// Test: StorageError::InvalidFilter maps to validation_error (400 Bad Request)
+#[test]
+fn test_storage_error_invalid_filter() {
+    let error = StorageError::InvalidFilter {
+        message: "Invalid user filter format: 'invalid'. Expected 'type:id'".to_string(),
+    };
+    let api_error: ApiError = error.into();
+    assert_eq!(api_error.code, error_codes::VALIDATION_ERROR);
+    assert!(api_error.message.contains("Invalid user filter format"));
+}
+
 /// Test: ApiError constructors produce correct error codes
 #[test]
 fn test_api_error_constructors_produce_correct_codes() {

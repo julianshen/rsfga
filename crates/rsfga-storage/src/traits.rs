@@ -1090,4 +1090,44 @@ mod tests {
         assert_eq!(result.items.len(), 2);
         assert_eq!(result.continuation_token, Some("next-page".to_string()));
     }
+
+    // Test: parse_user_filter works with Unicode characters
+    #[test]
+    fn test_parse_user_filter_unicode() {
+        // Chinese characters
+        let (user_type, user_id, relation) = parse_user_filter("user:用户123").unwrap();
+        assert_eq!(user_type, "user");
+        assert_eq!(user_id, "用户123");
+        assert!(relation.is_none());
+
+        // Japanese characters
+        let (user_type, user_id, relation) = parse_user_filter("user:ユーザー").unwrap();
+        assert_eq!(user_type, "user");
+        assert_eq!(user_id, "ユーザー");
+        assert!(relation.is_none());
+
+        // Emoji
+        let (user_type, user_id, relation) = parse_user_filter("user:👤").unwrap();
+        assert_eq!(user_type, "user");
+        assert_eq!(user_id, "👤");
+        assert!(relation.is_none());
+
+        // Arabic characters
+        let (user_type, user_id, relation) = parse_user_filter("user:مستخدم").unwrap();
+        assert_eq!(user_type, "user");
+        assert_eq!(user_id, "مستخدم");
+        assert!(relation.is_none());
+
+        // Accented Latin characters
+        let (user_type, user_id, relation) = parse_user_filter("user:Müller").unwrap();
+        assert_eq!(user_type, "user");
+        assert_eq!(user_id, "Müller");
+        assert!(relation.is_none());
+
+        // Unicode in userset format
+        let (user_type, user_id, relation) = parse_user_filter("group:团队#成员").unwrap();
+        assert_eq!(user_type, "group");
+        assert_eq!(user_id, "团队");
+        assert_eq!(relation, Some("成员".to_string()));
+    }
 }

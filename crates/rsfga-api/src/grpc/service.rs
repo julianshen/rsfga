@@ -182,6 +182,7 @@ fn storage_error_to_status(err: StorageError) -> Status {
         }
         StorageError::TupleNotFound { .. } => Status::not_found(err.to_string()),
         StorageError::InvalidInput { message } => Status::invalid_argument(message),
+        StorageError::InvalidFilter { message } => Status::invalid_argument(message),
         // ALREADY_EXISTS (6): duplicate tuple or condition conflict
         StorageError::DuplicateTuple { .. } => Status::already_exists(err.to_string()),
         StorageError::ConditionConflict(conflict) => {

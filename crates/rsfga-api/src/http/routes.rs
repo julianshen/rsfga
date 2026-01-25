@@ -478,6 +478,7 @@ impl From<StorageError> for ApiError {
                     ApiError::validation_error(message)
                 }
             }
+            StorageError::InvalidFilter { message } => ApiError::validation_error(message),
             // 409 Conflict: duplicate tuple or condition conflict
             StorageError::DuplicateTuple { .. } => {
                 ApiError::conflict("cannot write a tuple which already exists")
