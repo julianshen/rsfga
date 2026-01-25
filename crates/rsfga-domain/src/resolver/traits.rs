@@ -68,4 +68,39 @@ pub trait ModelReader: Send + Sync {
         type_name: &str,
         relation: &str,
     ) -> DomainResult<RelationDefinition>;
+
+    /// Gets a relation definition from a specific model version.
+    ///
+    /// If `authorization_model_id` is `None`, uses the latest model.
+    /// Otherwise, fetches the specific model version and extracts the relation.
+    async fn get_relation_definition_with_model_id(
+        &self,
+        store_id: &str,
+        type_name: &str,
+        relation: &str,
+        authorization_model_id: Option<&str>,
+    ) -> DomainResult<RelationDefinition> {
+        // Default implementation: fetch model and extract relation
+        let model = match authorization_model_id {
+            Some(model_id) => self.get_model_by_id(store_id, model_id).await?,
+            None => self.get_model(store_id).await?,
+        };
+
+        let type_def = model
+            .type_definitions
+            .into_iter()
+            .find(|td| td.type_name == type_name)
+            .ok_or_else(|| crate::error::DomainError::TypeNotFound {
+                type_name: type_name.to_string(),
+            })?;
+
+        type_def
+            .relations
+            .into_iter()
+            .find(|r| r.name == relation)
+            .ok_or_else(|| crate::error::DomainError::RelationNotFound {
+                type_name: type_name.to_string(),
+                relation: relation.to_string(),
+            })
+    }
 }

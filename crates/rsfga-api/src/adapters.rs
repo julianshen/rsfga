@@ -1037,32 +1037,13 @@ impl<S: DataStore> DataStoreModelReader<S> {
             })
     }
 
-    /// Fetches and parses a model from storage (no caching).
-    /// This is a static method to allow use in async closures.
-    async fn fetch_and_parse_model(
-        storage: &S,
-        store_id: &str,
+    /// Parses a stored authorization model into a domain AuthorizationModel.
+    ///
+    /// This helper extracts the common parsing logic used by both
+    /// `fetch_and_parse_model` and `fetch_and_parse_model_by_id`.
+    fn parse_stored_model(
+        stored_model: &rsfga_storage::StoredAuthorizationModel,
     ) -> DomainResult<AuthorizationModel> {
-        let stored_model = storage
-            .get_latest_authorization_model(store_id)
-            .await
-            .map_err(|e| match e {
-                // Model not found - no authorization model exists for this store
-                rsfga_storage::StorageError::ModelNotFound { .. } => {
-                    DomainError::AuthorizationModelNotFound {
-                        store_id: store_id.to_string(),
-                    }
-                }
-                // Store not found - preserve for 404 response
-                rsfga_storage::StorageError::StoreNotFound { store_id } => {
-                    DomainError::StoreNotFound { store_id }
-                }
-                // All other storage errors
-                _ => DomainError::StorageOperationFailed {
-                    reason: e.to_string(),
-                },
-            })?;
-
         // Parse the stored model JSON
         let model_json: serde_json::Value = serde_json::from_str(&stored_model.model_json)
             .map_err(|e| DomainError::ModelParseError {
@@ -1089,6 +1070,35 @@ impl<S: DataStore> DataStoreModelReader<S> {
         ))
     }
 
+    /// Fetches and parses the latest model from storage (no caching).
+    /// This is a static method to allow use in async closures.
+    async fn fetch_and_parse_model(
+        storage: &S,
+        store_id: &str,
+    ) -> DomainResult<AuthorizationModel> {
+        let stored_model = storage
+            .get_latest_authorization_model(store_id)
+            .await
+            .map_err(|e| match e {
+                // Model not found - no authorization model exists for this store
+                rsfga_storage::StorageError::ModelNotFound { .. } => {
+                    DomainError::AuthorizationModelNotFound {
+                        store_id: store_id.to_string(),
+                    }
+                }
+                // Store not found - preserve for 404 response
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                // All other storage errors
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
+            })?;
+
+        Self::parse_stored_model(&stored_model)
+    }
+
     /// Fetches and parses a model by its ID from storage (no caching).
     async fn fetch_and_parse_model_by_id(
         storage: &S,
@@ -1112,30 +1122,7 @@ impl<S: DataStore> DataStoreModelReader<S> {
                 },
             })?;
 
-        // Parse the stored model JSON
-        let model_json: serde_json::Value = serde_json::from_str(&stored_model.model_json)
-            .map_err(|e| DomainError::ModelParseError {
-                message: format!("failed to parse model JSON: {e}"),
-            })?;
-
-        // Extract and parse type_definitions using shared helper
-        let type_definitions = if let Some(type_defs) = model_json
-            .get("type_definitions")
-            .and_then(|v| v.as_array())
-        {
-            parse_type_definitions_from_json(type_defs)?
-        } else {
-            Vec::new()
-        };
-
-        // Parse conditions from the JSON
-        let conditions = parse_conditions(&model_json)?;
-
-        Ok(AuthorizationModel::with_types_and_conditions(
-            &stored_model.schema_version,
-            type_definitions,
-            conditions,
-        ))
+        Self::parse_stored_model(&stored_model)
     }
 }
 

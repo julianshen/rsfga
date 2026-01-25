@@ -530,10 +530,15 @@ where
             let object_type = object_type.to_string();
             let object_id = object_id.to_string();
 
-            // Get the relation definition
+            // Get the relation definition from the specified model version (or latest if not specified)
             let relation_def = self
                 .model_reader
-                .get_relation_definition(&request.store_id, &object_type, &request.relation)
+                .get_relation_definition_with_model_id(
+                    &request.store_id,
+                    &object_type,
+                    &request.relation,
+                    request.authorization_model_id.as_deref(),
+                )
                 .await?;
 
             // Add current node to visited set
