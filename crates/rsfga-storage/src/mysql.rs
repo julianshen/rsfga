@@ -393,11 +393,12 @@ impl MySQLDataStore {
 
         // Create stores table
         // Note: id is CHAR(26) for ULID format (matches OpenFGA schema)
+        // name: 256 chars to match OpenFGA store name limit
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS stores (
                 id CHAR(26) PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
+                name VARCHAR(256) NOT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -413,27 +414,39 @@ impl MySQLDataStore {
         // Note: MySQL requires a generated column to use COALESCE in a unique index.
         // The `user_relation_key` column is generated as COALESCE(user_relation, '').
         //
-        // Column sizes match OpenFGA's MySQL schema to ensure index key length fits
-        // within MariaDB/TiDB's 3072-byte limit (see issues #175, #176):
-        //   - store_id: CHAR(26) for ULID format
-        //   - object_type/user_type: VARCHAR(128) for type names
-        //   - object_id: VARCHAR(255) for maximum flexibility
-        //   - relation/user_relation: VARCHAR(50) for relation names
-        //   - user_id: VARCHAR(128) for user identifiers
+        // OpenFGA per-field limits vs MySQL index constraints:
+        // OpenFGA spec requires: object_type/user_type (254), object_id (256),
+        // relation (50), user_id (512). However, MariaDB/TiDB have a 3072-byte
+        // index key limit. With utf8mb4 (4 bytes/char), we must use smaller sizes.
         //
-        // Unique index size: 26×4 + 128×4 + 255×4 + 50×4 + 128×4 + 128×4 + 50×4 = 3060 bytes
+        // Column sizes optimized for 3072-byte index limit:
+        //   - store_id: CHAR(26) for ULID format = 104 bytes
+        //   - object_type: VARCHAR(128) = 512 bytes (OpenFGA: 254)
+        //   - object_id: VARCHAR(256) = 1024 bytes (OpenFGA: 256) ✓
+        //   - relation: VARCHAR(50) = 200 bytes (OpenFGA: 50) ✓
+        //   - user_type: VARCHAR(128) = 512 bytes (OpenFGA: 254)
+        //   - user_id: VARCHAR(128) = 512 bytes (OpenFGA: 512 - constrained)
+        //   - user_relation_key: VARCHAR(50) = 200 bytes (OpenFGA: 50) ✓
+        //
+        // Note: user_id is constrained to 128 chars for MySQL/MariaDB/TiDB
+        // index compatibility. Applications requiring 512-char user IDs
+        // should use PostgreSQL or CockroachDB.
+        //
+        // Unique index size: 104 + 512 + 1024 + 200 + 512 + 512 + 200 = 3064 bytes < 3072 ✓
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS tuples (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 store_id CHAR(26) NOT NULL,
                 object_type VARCHAR(128) NOT NULL,
-                object_id VARCHAR(255) NOT NULL,
+                object_id VARCHAR(256) NOT NULL,
                 relation VARCHAR(50) NOT NULL,
                 user_type VARCHAR(128) NOT NULL,
                 user_id VARCHAR(128) NOT NULL,
                 user_relation VARCHAR(50) DEFAULT NULL,
                 user_relation_key VARCHAR(50) AS (COALESCE(user_relation, '')) STORED,
+                condition_name VARCHAR(256),
+                condition_context JSON,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -562,18 +575,19 @@ impl MySQLDataStore {
 
         // Create changelog table for tracking tuple changes (writes and deletes)
         // This enables the ReadChanges API to return a chronological history of changes.
+        // Field sizes match the tuples table for consistency.
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS changelog (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 store_id CHAR(26) NOT NULL,
                 object_type VARCHAR(128) NOT NULL,
-                object_id VARCHAR(255) NOT NULL,
+                object_id VARCHAR(256) NOT NULL,
                 relation VARCHAR(50) NOT NULL,
                 user_type VARCHAR(128) NOT NULL,
                 user_id VARCHAR(128) NOT NULL,
                 user_relation VARCHAR(50),
-                condition_name VARCHAR(128),
+                condition_name VARCHAR(256),
                 condition_context JSON,
                 operation VARCHAR(50) NOT NULL,
                 timestamp TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
@@ -629,12 +643,13 @@ impl MySQLDataStore {
         // This handles partial migrations where some columns were updated but not others.
         // We check for any column still at VARCHAR(255) or any size mismatch from target sizes.
         //
-        // Target sizes (from design doc):
+        // Target sizes (OpenFGA spec with MySQL index constraints):
         // - store_id: CHAR(26) in tuples, stores, authorization_models
-        // - object_type, user_type: VARCHAR(128)
-        // - object_id: VARCHAR(255) (unchanged)
-        // - relation, user_relation: VARCHAR(50)
-        // - user_id: VARCHAR(128)
+        // - object_type, user_type: VARCHAR(128) (OpenFGA: 254, constrained for index)
+        // - object_id: VARCHAR(256) (OpenFGA: 256)
+        // - relation, user_relation: VARCHAR(50) (OpenFGA: 50)
+        // - user_id: VARCHAR(128) (OpenFGA: 512, constrained for index)
+        // - condition_name: VARCHAR(256) (OpenFGA: 256)
         let needs_migration: bool = sqlx::query_scalar(
             r#"
             SELECT COUNT(*) > 0
@@ -644,12 +659,15 @@ impl MySQLDataStore {
                 -- Check tuples table columns
                 (table_name = 'tuples' AND column_name = 'store_id' AND NOT (data_type = 'char' AND character_maximum_length = 26))
                 OR (table_name = 'tuples' AND column_name = 'object_type' AND character_maximum_length != 128)
+                OR (table_name = 'tuples' AND column_name = 'object_id' AND character_maximum_length != 256)
                 OR (table_name = 'tuples' AND column_name = 'relation' AND character_maximum_length != 50)
                 OR (table_name = 'tuples' AND column_name = 'user_type' AND character_maximum_length != 128)
                 OR (table_name = 'tuples' AND column_name = 'user_id' AND character_maximum_length != 128)
                 OR (table_name = 'tuples' AND column_name = 'user_relation' AND character_maximum_length != 50)
+                OR (table_name = 'tuples' AND column_name = 'condition_name' AND character_maximum_length != 256)
                 -- Check stores table
                 OR (table_name = 'stores' AND column_name = 'id' AND NOT (data_type = 'char' AND character_maximum_length = 26))
+                OR (table_name = 'stores' AND column_name = 'name' AND character_maximum_length != 256)
                 -- Check authorization_models table
                 OR (table_name = 'authorization_models' AND column_name = 'id' AND NOT (data_type = 'char' AND character_maximum_length = 26))
                 OR (table_name = 'authorization_models' AND column_name = 'store_id' AND NOT (data_type = 'char' AND character_maximum_length = 26))
@@ -682,11 +700,13 @@ impl MySQLDataStore {
     ///
     /// Checks the following columns:
     /// - store_id: max 26 chars (ULID format)
-    /// - object_type: max 128 chars
-    /// - relation: max 50 chars
-    /// - user_type: max 128 chars
-    /// - user_id: max 128 chars
-    /// - user_relation: max 50 chars
+    /// - object_type: max 128 chars (OpenFGA: 254, constrained for MySQL index)
+    /// - object_id: max 256 chars (OpenFGA: 256)
+    /// - relation: max 50 chars (OpenFGA: 50)
+    /// - user_type: max 128 chars (OpenFGA: 254, constrained for MySQL index)
+    /// - user_id: max 128 chars (OpenFGA: 512, constrained for MySQL index)
+    /// - user_relation: max 50 chars (OpenFGA: 50)
+    /// - condition_name: max 256 chars (OpenFGA: 256)
     ///
     /// # Errors
     ///
@@ -701,6 +721,8 @@ impl MySQLDataStore {
             UNION ALL
             SELECT 'object_type', COUNT(*) FROM tuples WHERE CHAR_LENGTH(object_type) > 128
             UNION ALL
+            SELECT 'object_id', COUNT(*) FROM tuples WHERE CHAR_LENGTH(object_id) > 256
+            UNION ALL
             SELECT 'relation', COUNT(*) FROM tuples WHERE CHAR_LENGTH(relation) > 50
             UNION ALL
             SELECT 'user_type', COUNT(*) FROM tuples WHERE CHAR_LENGTH(user_type) > 128
@@ -708,6 +730,8 @@ impl MySQLDataStore {
             SELECT 'user_id', COUNT(*) FROM tuples WHERE CHAR_LENGTH(user_id) > 128
             UNION ALL
             SELECT 'user_relation', COUNT(*) FROM tuples WHERE user_relation IS NOT NULL AND CHAR_LENGTH(user_relation) > 50
+            UNION ALL
+            SELECT 'condition_name', COUNT(*) FROM tuples WHERE condition_name IS NOT NULL AND CHAR_LENGTH(condition_name) > 256
             "#,
         )
         .fetch_all(&self.pool)
@@ -730,6 +754,7 @@ impl MySQLDataStore {
                 let limit = match field.as_str() {
                     "store_id" => 26,
                     "object_type" | "user_type" | "user_id" => 128,
+                    "object_id" | "condition_name" => 256,
                     "relation" | "user_relation" => 50,
                     _ => 255,
                 };
@@ -740,6 +765,7 @@ impl MySQLDataStore {
                 let limit = match field.as_str() {
                     "store_id" => 26,
                     "object_type" | "user_type" | "user_id" => 128,
+                    "object_id" | "condition_name" => 256,
                     "relation" | "user_relation" => 50,
                     _ => 255,
                 };
@@ -826,12 +852,19 @@ impl MySQLDataStore {
     /// recovery safe: if migration fails partway, re-running will complete it.
     async fn apply_column_size_migration(&self) -> StorageResult<()> {
         // 1. Migrate stores table first (parent table for FK constraints)
-        sqlx::query("ALTER TABLE stores MODIFY id CHAR(26) NOT NULL")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to alter stores table: {e}"),
-            })?;
+        let stores_alterations = [
+            "ALTER TABLE stores MODIFY id CHAR(26) NOT NULL",
+            "ALTER TABLE stores MODIFY name VARCHAR(256) NOT NULL",
+        ];
+
+        for sql in stores_alterations {
+            sqlx::query(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to alter stores table: {e}"),
+                })?;
+        }
 
         // 2. Migrate authorization_models table (references stores.id)
         let model_alterations = [
@@ -849,9 +882,11 @@ impl MySQLDataStore {
         }
 
         // 3. Migrate tuples table last (references stores.id)
+        // Note: object_id increased from 255 to 256, condition_name added at 256
         let tuples_alterations = [
             "ALTER TABLE tuples MODIFY store_id CHAR(26) NOT NULL",
             "ALTER TABLE tuples MODIFY object_type VARCHAR(128) NOT NULL",
+            "ALTER TABLE tuples MODIFY object_id VARCHAR(256) NOT NULL",
             "ALTER TABLE tuples MODIFY relation VARCHAR(50) NOT NULL",
             "ALTER TABLE tuples MODIFY user_type VARCHAR(128) NOT NULL",
             "ALTER TABLE tuples MODIFY user_id VARCHAR(128) NOT NULL",

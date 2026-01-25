@@ -4,8 +4,34 @@ use async_trait::async_trait;
 
 use crate::error::{HealthStatus, StorageError, StorageResult};
 
-/// Maximum length for string fields.
-const MAX_FIELD_LENGTH: usize = 255;
+// Per-field maximum lengths matching OpenFGA specification.
+// These limits ensure API compatibility (Invariant I2).
+
+/// Maximum length for type names (object_type, user_type).
+/// OpenFGA spec: 254 characters.
+pub const MAX_TYPE_LENGTH: usize = 254;
+
+/// Maximum length for object IDs.
+/// OpenFGA spec: 256 characters.
+pub const MAX_OBJECT_ID_LENGTH: usize = 256;
+
+/// Maximum length for relation names.
+/// OpenFGA spec: 50 characters.
+pub const MAX_RELATION_LENGTH: usize = 50;
+
+/// Maximum length for user identifiers.
+/// OpenFGA spec: 512 bytes (for full "type:id" or "type:id#relation" format).
+/// This applies to user_id field which holds just the ID part.
+pub const MAX_USER_ID_LENGTH: usize = 512;
+
+/// Maximum length for store IDs (ULID format is 26 chars).
+pub const MAX_STORE_ID_LENGTH: usize = 26;
+
+/// Maximum length for store names.
+pub const MAX_STORE_NAME_LENGTH: usize = 256;
+
+/// Maximum length for condition names.
+pub const MAX_CONDITION_NAME_LENGTH: usize = 256;
 
 /// Validate a store ID.
 ///
@@ -17,9 +43,9 @@ pub fn validate_store_id(store_id: &str) -> StorageResult<()> {
             message: "store_id cannot be empty".to_string(),
         });
     }
-    if store_id.len() > MAX_FIELD_LENGTH {
+    if store_id.len() > MAX_STORE_ID_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!("store_id exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
+            message: format!("store_id exceeds maximum length of {MAX_STORE_ID_LENGTH} characters"),
         });
     }
     Ok(())
@@ -141,9 +167,11 @@ pub fn validate_store_name(name: &str) -> StorageResult<()> {
             message: "store name cannot be empty".to_string(),
         });
     }
-    if name.len() > MAX_FIELD_LENGTH {
+    if name.len() > MAX_STORE_NAME_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!("store name exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
+            message: format!(
+                "store name exceeds maximum length of {MAX_STORE_NAME_LENGTH} characters"
+            ),
         });
     }
     Ok(())
@@ -159,9 +187,9 @@ pub fn validate_object_type(object_type: &str) -> StorageResult<()> {
             message: "object_type cannot be empty".to_string(),
         });
     }
-    if object_type.len() > MAX_FIELD_LENGTH {
+    if object_type.len() > MAX_TYPE_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!("object_type exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
+            message: format!("object_type exceeds maximum length of {MAX_TYPE_LENGTH} characters"),
         });
     }
     // SQL Injection prevention: ensure no colons or special characters
@@ -182,7 +210,19 @@ pub fn validate_object_type(object_type: &str) -> StorageResult<()> {
 ///
 /// This performs **structural validation** only:
 /// - Field presence (required fields must not be empty)
-/// - Field length (no field exceeds MAX_FIELD_LENGTH)
+/// - Field length (per-field limits matching OpenFGA specification)
+///
+/// # Per-Field Limits (OpenFGA Specification)
+///
+/// | Field          | Max Length | Notes                        |
+/// |----------------|------------|------------------------------|
+/// | object_type    | 254        | Type name limit              |
+/// | object_id      | 256        | Object identifier limit      |
+/// | relation       | 50         | Relation name limit          |
+/// | user_type      | 254        | Type name limit              |
+/// | user_id        | 512        | User identifier limit        |
+/// | user_relation  | 50         | Relation name limit          |
+/// | condition_name | 256        | Condition name limit         |
 ///
 /// # Validation Strategy
 ///
@@ -213,9 +253,11 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
             message: "object_id cannot be empty".to_string(),
         });
     }
-    if tuple.object_id.len() > MAX_FIELD_LENGTH {
+    if tuple.object_id.len() > MAX_OBJECT_ID_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!("object_id exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
+            message: format!(
+                "object_id exceeds maximum length of {MAX_OBJECT_ID_LENGTH} characters"
+            ),
         });
     }
     if tuple.relation.is_empty() {
@@ -223,9 +265,9 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
             message: "relation cannot be empty".to_string(),
         });
     }
-    if tuple.relation.len() > MAX_FIELD_LENGTH {
+    if tuple.relation.len() > MAX_RELATION_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!("relation exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
+            message: format!("relation exceeds maximum length of {MAX_RELATION_LENGTH} characters"),
         });
     }
     if tuple.user_type.is_empty() {
@@ -233,9 +275,9 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
             message: "user_type cannot be empty".to_string(),
         });
     }
-    if tuple.user_type.len() > MAX_FIELD_LENGTH {
+    if tuple.user_type.len() > MAX_TYPE_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!("user_type exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
+            message: format!("user_type exceeds maximum length of {MAX_TYPE_LENGTH} characters"),
         });
     }
     if tuple.user_id.is_empty() {
@@ -243,9 +285,9 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
             message: "user_id cannot be empty".to_string(),
         });
     }
-    if tuple.user_id.len() > MAX_FIELD_LENGTH {
+    if tuple.user_id.len() > MAX_USER_ID_LENGTH {
         return Err(StorageError::InvalidInput {
-            message: format!("user_id exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
+            message: format!("user_id exceeds maximum length of {MAX_USER_ID_LENGTH} characters"),
         });
     }
     if let Some(ref user_relation) = tuple.user_relation {
@@ -254,10 +296,10 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
                 message: "user_relation cannot be empty if provided".to_string(),
             });
         }
-        if user_relation.len() > MAX_FIELD_LENGTH {
+        if user_relation.len() > MAX_RELATION_LENGTH {
             return Err(StorageError::InvalidInput {
                 message: format!(
-                    "user_relation exceeds maximum length of {MAX_FIELD_LENGTH} characters"
+                    "user_relation exceeds maximum length of {MAX_RELATION_LENGTH} characters"
                 ),
             });
         }
@@ -268,10 +310,10 @@ pub fn validate_tuple(tuple: &StoredTuple) -> StorageResult<()> {
                 message: "condition_name cannot be empty if provided".to_string(),
             });
         }
-        if condition_name.len() > MAX_FIELD_LENGTH {
+        if condition_name.len() > MAX_CONDITION_NAME_LENGTH {
             return Err(StorageError::InvalidInput {
                 message: format!(
-                    "condition_name exceeds maximum length of {MAX_FIELD_LENGTH} characters"
+                    "condition_name exceeds maximum length of {MAX_CONDITION_NAME_LENGTH} characters"
                 ),
             });
         }

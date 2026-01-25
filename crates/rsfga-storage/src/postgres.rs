@@ -501,11 +501,13 @@ impl PostgresDataStore {
         debug!("Running database migrations");
 
         // Create stores table
+        // - id: 26 chars (ULID format)
+        // - name: 256 chars (store name limit)
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS stores (
-                id VARCHAR(255) PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
+                id VARCHAR(26) PRIMARY KEY,
+                name VARCHAR(256) NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
             )
@@ -520,18 +522,28 @@ impl PostgresDataStore {
         // Create tuples table
         // Note: We use a surrogate primary key and a unique index instead of a composite
         // PRIMARY KEY with COALESCE, since PostgreSQL doesn't allow expressions in PKs.
+        //
+        // Field size limits per OpenFGA specification:
+        // - store_id: 26 chars (ULID format)
+        // - object_type: 254 chars (type name limit)
+        // - object_id: 256 chars (object identifier limit)
+        // - relation: 50 chars (relation name limit)
+        // - user_type: 254 chars (type name limit)
+        // - user_id: 512 chars (user identifier limit)
+        // - user_relation: 50 chars (relation name limit)
+        // - condition_name: 256 chars (condition name limit)
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS tuples (
                 id BIGSERIAL PRIMARY KEY,
-                store_id VARCHAR(255) NOT NULL,
-                object_type VARCHAR(255) NOT NULL,
-                object_id VARCHAR(255) NOT NULL,
-                relation VARCHAR(255) NOT NULL,
-                user_type VARCHAR(255) NOT NULL,
-                user_id VARCHAR(255) NOT NULL,
-                user_relation VARCHAR(255),
-                condition_name VARCHAR(255),
+                store_id VARCHAR(26) NOT NULL,
+                object_type VARCHAR(254) NOT NULL,
+                object_id VARCHAR(256) NOT NULL,
+                relation VARCHAR(50) NOT NULL,
+                user_type VARCHAR(254) NOT NULL,
+                user_id VARCHAR(512) NOT NULL,
+                user_relation VARCHAR(50),
+                condition_name VARCHAR(256),
                 condition_context JSONB,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                 FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
@@ -561,7 +573,7 @@ impl PostgresDataStore {
             // Tested with CockroachDB v23.x - v25.x.
             sqlx::query(
                 "ALTER TABLE tuples \
-                 ADD COLUMN IF NOT EXISTS condition_name VARCHAR(255), \
+                 ADD COLUMN IF NOT EXISTS condition_name VARCHAR(256), \
                  ADD COLUMN IF NOT EXISTS condition_context JSONB",
             )
             .execute(&self.pool)
@@ -587,7 +599,7 @@ impl PostgresDataStore {
                         AND table_name = 'tuples'
                         AND column_name = 'condition_name'
                     ) THEN
-                        ALTER TABLE tuples ADD COLUMN condition_name VARCHAR(255);
+                        ALTER TABLE tuples ADD COLUMN condition_name VARCHAR(256);
                     END IF;
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
@@ -669,11 +681,13 @@ impl PostgresDataStore {
         }
 
         // Create authorization_models table
+        // - id: 26 chars (ULID format)
+        // - store_id: 26 chars (ULID format)
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS authorization_models (
-                id VARCHAR(255) PRIMARY KEY,
-                store_id VARCHAR(255) NOT NULL,
+                id VARCHAR(26) PRIMARY KEY,
+                store_id VARCHAR(26) NOT NULL,
                 schema_version VARCHAR(50) NOT NULL,
                 model_json TEXT NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
@@ -708,18 +722,19 @@ impl PostgresDataStore {
 
         // Create changelog table for tracking tuple changes (writes and deletes)
         // This enables the ReadChanges API to return a chronological history of changes.
+        // Field sizes match the tuples table for consistency.
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS changelog (
                 id BIGSERIAL PRIMARY KEY,
-                store_id VARCHAR(255) NOT NULL,
-                object_type VARCHAR(255) NOT NULL,
-                object_id VARCHAR(255) NOT NULL,
-                relation VARCHAR(255) NOT NULL,
-                user_type VARCHAR(255) NOT NULL,
-                user_id VARCHAR(255) NOT NULL,
-                user_relation VARCHAR(255),
-                condition_name VARCHAR(255),
+                store_id VARCHAR(26) NOT NULL,
+                object_type VARCHAR(254) NOT NULL,
+                object_id VARCHAR(256) NOT NULL,
+                relation VARCHAR(50) NOT NULL,
+                user_type VARCHAR(254) NOT NULL,
+                user_id VARCHAR(512) NOT NULL,
+                user_relation VARCHAR(50),
+                condition_name VARCHAR(256),
                 condition_context JSONB,
                 operation VARCHAR(50) NOT NULL,
                 timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
