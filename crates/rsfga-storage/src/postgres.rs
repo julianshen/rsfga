@@ -903,12 +903,11 @@ impl PostgresDataStore {
             ];
 
             for sql in assertions_alterations {
-                sqlx::query(sql)
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| StorageError::QueryError {
+                sqlx::query(sql).execute(&self.pool).await.map_err(|e| {
+                    StorageError::QueryError {
                         message: format!("Failed to alter assertions table: {e}"),
-                    })?;
+                    }
+                })?;
             }
         }
 
