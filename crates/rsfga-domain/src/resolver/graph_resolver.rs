@@ -1360,13 +1360,16 @@ where
         // Also include objects from contextual tuples that match the requested type.
         // Contextual tuples may reference objects that don't exist in storage yet.
         // We need to check these objects for permissions as well.
+        // Use HashSet for O(1) deduplication instead of O(n) Vec::contains.
+        let mut seen: std::collections::HashSet<String> =
+            candidates.iter().cloned().collect();
         for ct in request.contextual_tuples.iter() {
-            // Parse the object to get type and id (format: "type:id")
-            if let Some(colon_pos) = ct.object.find(':') {
-                let (obj_type, obj_id) = ct.object.split_at(colon_pos);
-                let obj_id = &obj_id[1..]; // Skip the colon
-                if obj_type == request.object_type && !candidates.contains(&obj_id.to_string()) {
-                    candidates.push(obj_id.to_string());
+            // Parse the object using split_once (more idiomatic than find + split_at)
+            if let Some((obj_type, obj_id)) = ct.object.split_once(':') {
+                if obj_type == request.object_type && !seen.contains(obj_id) {
+                    let obj_id_string = obj_id.to_string();
+                    seen.insert(obj_id_string.clone());
+                    candidates.push(obj_id_string);
                 }
             }
         }
