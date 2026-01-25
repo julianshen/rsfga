@@ -1494,9 +1494,12 @@ pub struct ExpandTupleToUsersetBody {
 }
 
 /// Object relation reference (matches OpenFGA's ObjectRelation).
+/// The object field is optional because computedUserset in tupleToUserset
+/// doesn't know its target object until the tupleset is resolved.
 #[derive(Debug, Serialize)]
 pub struct ExpandObjectRelationBody {
-    pub object: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object: Option<String>,
     pub relation: String,
 }
 
@@ -1525,14 +1528,14 @@ fn expand_node_to_body(node: rsfga_domain::resolver::ExpandNode) -> ExpandNodeBo
                     }
                     ExpandLeafBody::new_tuple_to_userset(
                         ExpandObjectRelationBody {
-                            object: object_part.to_string(),
+                            object: Some(object_part.to_string()),
                             relation: tupleset,
                         },
                         ExpandObjectRelationBody {
                             // computed_userset object is unknown without further resolution
                             // This matches OpenFGA behavior where the target object is not known
-                            // until the tupleset is resolved
-                            object: String::new(),
+                            // until the tupleset is resolved - omit object field
+                            object: None,
                             relation: computed_userset,
                         },
                     )
@@ -2776,11 +2779,11 @@ mod tests {
         let ttu = leaf.tuple_to_userset.unwrap();
 
         // Tupleset should have object extracted from leaf.name
-        assert_eq!(ttu.tupleset.object, "document:doc1");
+        assert_eq!(ttu.tupleset.object, Some("document:doc1".to_string()));
         assert_eq!(ttu.tupleset.relation, "parent");
 
-        // Computed userset object is unknown, should be empty
-        assert_eq!(ttu.computed_userset.object, "");
+        // Computed userset object is unknown, should be None (omitted in JSON)
+        assert_eq!(ttu.computed_userset.object, None);
         assert_eq!(ttu.computed_userset.relation, "viewer");
     }
 
@@ -2802,8 +2805,8 @@ mod tests {
         let leaf = body.leaf.unwrap();
         let ttu = leaf.tuple_to_userset.unwrap();
 
-        // Should handle empty name gracefully
-        assert_eq!(ttu.tupleset.object, "");
+        // Should handle empty name gracefully (empty becomes Some(""))
+        assert_eq!(ttu.tupleset.object, Some(String::new()));
         assert_eq!(ttu.tupleset.relation, "parent");
     }
 
@@ -2826,7 +2829,7 @@ mod tests {
         let ttu = leaf.tuple_to_userset.unwrap();
 
         // Should use the entire name as object when no hash present
-        assert_eq!(ttu.tupleset.object, "document:doc1");
+        assert_eq!(ttu.tupleset.object, Some("document:doc1".to_string()));
         assert_eq!(ttu.tupleset.relation, "parent");
     }
 
@@ -2840,11 +2843,11 @@ mod tests {
             computed: None,
             tuple_to_userset: Some(ExpandTupleToUsersetBody {
                 tupleset: ExpandObjectRelationBody {
-                    object: "document:doc1".to_string(),
+                    object: Some("document:doc1".to_string()),
                     relation: "parent".to_string(),
                 },
                 computed_userset: ExpandObjectRelationBody {
-                    object: String::new(),
+                    object: None,
                     relation: "viewer".to_string(),
                 },
             }),
