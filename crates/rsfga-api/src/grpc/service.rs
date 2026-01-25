@@ -675,10 +675,16 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         };
 
         // Build pagination options from request
-        // Validate page_size is positive before casting to u32 (negative i32 wraps to huge u32)
+        // Validate and parse page_size:
+        // - Reject negative values (invalid input)
+        // - Treat zero as "use server default" (OpenFGA compatibility)
+        // - Cap positive values at DEFAULT_PAGE_SIZE to prevent DoS
         let page_size = match req.page_size {
-            Some(s) if s > 0 => Some(s as u32),
-            Some(_) => return Err(Status::invalid_argument("page_size must be positive")),
+            Some(ps) if ps < 0 => {
+                return Err(Status::invalid_argument("page_size cannot be negative"));
+            }
+            Some(0) => None, // Zero means use server default
+            Some(ps) => Some(ps.min(DEFAULT_PAGE_SIZE) as u32),
             None => None,
         };
         let pagination = PaginationOptions {
