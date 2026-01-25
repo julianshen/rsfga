@@ -157,6 +157,9 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Run both HTTP and gRPC servers with shared storage.
+///
+/// Uses `tokio::select!` to race server futures against shutdown signal,
+/// propagating errors immediately if a server fails to start or encounters an error.
 async fn run_servers<S>(
     storage: Arc<S>,
     http_addr: SocketAddr,
@@ -170,17 +173,18 @@ where
     // Create shutdown broadcast channel
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
-    // Start HTTP server
+    // Prepare HTTP server future
     let http_storage = Arc::clone(&storage);
     let http_shutdown_rx = shutdown_tx.subscribe();
-    let http_handle = tokio::spawn(async move {
+    let http_future = async move {
         let state = AppState::new(http_storage);
         let router = create_router_with_observability(state, metrics_state);
         run_http_server(router, http_addr, http_shutdown_rx).await
-    });
+    };
 
-    // Start gRPC server if enabled
-    let grpc_handle = if config.grpc.enabled {
+    // Prepare gRPC server future if enabled
+    let grpc_enabled = config.grpc.enabled;
+    let grpc_future = if grpc_enabled {
         let grpc_storage = Arc::clone(&storage);
         let grpc_config = GrpcServerConfig {
             reflection_enabled: config.grpc.reflection,
@@ -190,44 +194,67 @@ where
 
         info!(%grpc_addr, "gRPC server enabled");
 
-        Some(tokio::spawn(async move {
-            // Create a future that completes when shutdown is signaled
+        Some(async move {
             let shutdown_future = async move {
                 let mut rx = grpc_shutdown_rx;
                 let _ = rx.recv().await;
             };
-
-            if let Err(e) =
-                run_grpc_server_with_shutdown(grpc_storage, grpc_addr, grpc_config, shutdown_future)
-                    .await
-            {
-                error!("gRPC server error: {}", e);
-            }
-        }))
+            run_grpc_server_with_shutdown(grpc_storage, grpc_addr, grpc_config, shutdown_future)
+                .await
+                .map_err(|e| anyhow::anyhow!("gRPC server error: {}", e))
+        })
     } else {
         info!("gRPC server disabled");
         None
     };
 
-    // Wait for shutdown signal
-    shutdown_signal().await;
-
-    // Signal all servers to shutdown
-    let _ = shutdown_tx.send(());
-
-    // Wait for servers to finish
-    if let Err(e) = http_handle.await {
-        error!("HTTP server task error: {}", e);
-    }
-
-    if let Some(handle) = grpc_handle {
-        if let Err(e) = handle.await {
-            error!("gRPC server task error: {}", e);
+    // Use select! to race servers against shutdown signal, propagating errors immediately
+    let result = if let Some(grpc_fut) = grpc_future {
+        tokio::select! {
+            result = http_future => {
+                // HTTP server completed (either error or shutdown)
+                if let Err(ref e) = result {
+                    error!("HTTP server error: {}", e);
+                }
+                // Signal gRPC to shutdown
+                let _ = shutdown_tx.send(());
+                result
+            }
+            result = grpc_fut => {
+                // gRPC server completed (either error or shutdown)
+                if let Err(ref e) = result {
+                    error!("gRPC server error: {}", e);
+                }
+                // Signal HTTP to shutdown
+                let _ = shutdown_tx.send(());
+                result
+            }
+            _ = shutdown_signal() => {
+                // Shutdown signal received
+                info!("Shutdown signal received, stopping servers");
+                let _ = shutdown_tx.send(());
+                Ok(())
+            }
         }
-    }
+    } else {
+        // Only HTTP server
+        tokio::select! {
+            result = http_future => {
+                if let Err(ref e) = result {
+                    error!("HTTP server error: {}", e);
+                }
+                result
+            }
+            _ = shutdown_signal() => {
+                info!("Shutdown signal received, stopping servers");
+                let _ = shutdown_tx.send(());
+                Ok(())
+            }
+        }
+    };
 
     info!("All servers shutdown complete");
-    Ok(())
+    result
 }
 
 /// Run the HTTP server with graceful shutdown.

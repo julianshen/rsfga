@@ -19,6 +19,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use tonic::transport::server::Router;
 use tonic::transport::Server;
 use tonic_health::server::health_reporter;
 use tracing::info;
@@ -50,6 +51,46 @@ impl Default for GrpcServerConfig {
     }
 }
 
+/// Build the gRPC server router with configured services.
+///
+/// This helper function configures all gRPC services based on the provided config,
+/// reducing duplication between `run_grpc_server` and `run_grpc_server_with_shutdown`.
+async fn build_grpc_router<S>(
+    storage: Arc<S>,
+    config: &GrpcServerConfig,
+) -> Result<Router, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: DataStore + Send + Sync + 'static,
+{
+    // Create the OpenFGA service
+    let openfga_service = OpenFgaGrpcService::new(storage);
+    let openfga_server = OpenFgaServiceServer::new(openfga_service);
+
+    // Start with base server and add the main service
+    let mut router = Server::builder().add_service(openfga_server);
+
+    // Add health check service if enabled
+    if config.health_check_enabled {
+        let (mut health_reporter, health_service) = health_reporter();
+        health_reporter
+            .set_serving::<OpenFgaServiceServer<OpenFgaGrpcService<S>>>()
+            .await;
+        info!("gRPC health check service enabled");
+        router = router.add_service(health_service);
+    }
+
+    // Add reflection service if enabled
+    if config.reflection_enabled {
+        let reflection_service = tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+            .build()?;
+        info!("gRPC reflection service enabled");
+        router = router.add_service(reflection_service);
+    }
+
+    Ok(router)
+}
+
 /// Run the gRPC server.
 ///
 /// This starts a Tonic gRPC server with the OpenFGA service implementation,
@@ -74,54 +115,8 @@ where
 {
     info!(%addr, "Starting gRPC server");
 
-    // Create the OpenFGA service
-    let openfga_service = OpenFgaGrpcService::new(storage);
-    let openfga_server = OpenFgaServiceServer::new(openfga_service);
-
-    // Build the server
-    let mut builder = Server::builder();
-
-    // Add health check service if enabled
-    let (mut health_reporter, health_service) = health_reporter();
-    if config.health_check_enabled {
-        // Set the OpenFGA service as serving
-        health_reporter
-            .set_serving::<OpenFgaServiceServer<OpenFgaGrpcService<S>>>()
-            .await;
-        info!("gRPC health check service enabled");
-    }
-
-    // Add reflection service if enabled
-    if config.reflection_enabled {
-        let reflection_service = tonic_reflection::server::Builder::configure()
-            .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
-            .build()?;
-
-        info!("gRPC reflection service enabled");
-
-        if config.health_check_enabled {
-            builder
-                .add_service(openfga_server)
-                .add_service(health_service)
-                .add_service(reflection_service)
-                .serve(addr)
-                .await?;
-        } else {
-            builder
-                .add_service(openfga_server)
-                .add_service(reflection_service)
-                .serve(addr)
-                .await?;
-        }
-    } else if config.health_check_enabled {
-        builder
-            .add_service(openfga_server)
-            .add_service(health_service)
-            .serve(addr)
-            .await?;
-    } else {
-        builder.add_service(openfga_server).serve(addr).await?;
-    }
+    let router = build_grpc_router(storage, &config).await?;
+    router.serve(addr).await?;
 
     info!("gRPC server shutdown complete");
     Ok(())
@@ -129,7 +124,9 @@ where
 
 /// Run the gRPC server with graceful shutdown.
 ///
-/// This wraps `run_grpc_server` with a shutdown signal handler.
+/// Similar to `run_grpc_server`, but accepts a shutdown signal for graceful termination.
+/// When the shutdown signal completes, the server will stop accepting new connections
+/// and wait for existing requests to complete before returning.
 pub async fn run_grpc_server_with_shutdown<S>(
     storage: Arc<S>,
     addr: SocketAddr,
@@ -141,56 +138,8 @@ where
 {
     info!(%addr, "Starting gRPC server with graceful shutdown");
 
-    // Create the OpenFGA service
-    let openfga_service = OpenFgaGrpcService::new(storage);
-    let openfga_server = OpenFgaServiceServer::new(openfga_service);
-
-    // Build the server
-    let mut builder = Server::builder();
-
-    // Add health check service if enabled
-    let (mut health_reporter, health_service) = health_reporter();
-    if config.health_check_enabled {
-        health_reporter
-            .set_serving::<OpenFgaServiceServer<OpenFgaGrpcService<S>>>()
-            .await;
-        info!("gRPC health check service enabled");
-    }
-
-    // Add reflection service if enabled
-    if config.reflection_enabled {
-        let reflection_service = tonic_reflection::server::Builder::configure()
-            .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
-            .build()?;
-
-        info!("gRPC reflection service enabled");
-
-        if config.health_check_enabled {
-            builder
-                .add_service(openfga_server)
-                .add_service(health_service)
-                .add_service(reflection_service)
-                .serve_with_shutdown(addr, shutdown_signal)
-                .await?;
-        } else {
-            builder
-                .add_service(openfga_server)
-                .add_service(reflection_service)
-                .serve_with_shutdown(addr, shutdown_signal)
-                .await?;
-        }
-    } else if config.health_check_enabled {
-        builder
-            .add_service(openfga_server)
-            .add_service(health_service)
-            .serve_with_shutdown(addr, shutdown_signal)
-            .await?;
-    } else {
-        builder
-            .add_service(openfga_server)
-            .serve_with_shutdown(addr, shutdown_signal)
-            .await?;
-    }
+    let router = build_grpc_router(storage, &config).await?;
+    router.serve_with_shutdown(addr, shutdown_signal).await?;
 
     info!("gRPC server shutdown complete");
     Ok(())
