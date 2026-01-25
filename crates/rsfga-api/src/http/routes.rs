@@ -1518,12 +1518,21 @@ fn expand_node_to_body(node: rsfga_domain::resolver::ExpandNode) -> ExpandNodeBo
                 } => {
                     // Extract object from leaf.name (format: "type:id#relation")
                     // The tupleset relation is on the same object being expanded
+                    //
+                    // Error handling strategy: Log warning and continue with empty/malformed object.
+                    // Rationale:
+                    // 1. Malformed leaf.name indicates a bug in the domain resolver, not user input
+                    // 2. Failing the entire expand request would be worse than returning partial data
+                    // 3. Warning logs allow debugging while maintaining API availability
+                    // 4. OpenFGA's behavior with malformed data is not well-documented, so we
+                    //    err on the side of returning data rather than erroring
+                    //
                     // Note: split('#').next() always returns Some since split returns at least one element
                     let object_part = leaf.name.split('#').next().unwrap_or_default();
                     if object_part.is_empty() && !leaf.name.is_empty() {
                         tracing::warn!(
                             leaf_name = %leaf.name,
-                            "Expand leaf.name has empty object part before '#'"
+                            "Expand leaf.name has empty object part before '#' - possible resolver bug"
                         );
                     }
                     ExpandLeafBody::new_tuple_to_userset(
@@ -2944,5 +2953,43 @@ mod tests {
 
         let union = body.union.unwrap();
         assert_eq!(union.nodes.len(), 2);
+    }
+
+    /// Test: Malformed leaf.name starting with '#' serializes with empty object
+    ///
+    /// Edge case: When leaf.name has format "#relation" (missing type:id),
+    /// the object field should be Some("") (empty string), not None.
+    #[test]
+    fn test_expand_malformed_leaf_name_serialization() {
+        let leaf = ExpandLeafBody {
+            users: None,
+            computed: None,
+            tuple_to_userset: Some(ExpandTupleToUsersetBody {
+                tupleset: ExpandObjectRelationBody {
+                    object: Some(String::new()), // Empty from malformed "#relation" leaf name
+                    relation: "parent".to_string(),
+                },
+                computed_userset: ExpandObjectRelationBody {
+                    object: None,
+                    relation: "viewer".to_string(),
+                },
+            }),
+        };
+
+        let json = serde_json::to_string(&leaf).unwrap();
+
+        // Verify tupleset still has object field (even if empty)
+        assert!(
+            json.contains(r#""tupleset":{"object":"","relation":"parent"}"#),
+            "Malformed tupleset should serialize with empty object, got: {}",
+            json
+        );
+
+        // Verify computedUserset omits object field entirely (Option::None)
+        assert!(
+            json.contains(r#""computedUserset":{"relation":"viewer"}"#),
+            "computedUserset should omit object field, got: {}",
+            json
+        );
     }
 }

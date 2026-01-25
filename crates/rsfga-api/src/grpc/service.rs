@@ -684,7 +684,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 return Err(Status::invalid_argument("page_size cannot be negative"));
             }
             Some(0) => None, // Zero means use server default
-            Some(ps) => Some(ps.min(DEFAULT_PAGE_SIZE) as u32),
+            Some(ps) => Some(DEFAULT_PAGE_SIZE.min(ps) as u32),
             None => None,
         };
         let pagination = PaginationOptions {
@@ -1212,7 +1212,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         // Parse pagination from request, capping at DEFAULT_PAGE_SIZE
         let page_size = req
             .page_size
-            .map(|ps| ps.min(DEFAULT_PAGE_SIZE))
+            .map(|ps| DEFAULT_PAGE_SIZE.min(ps))
             .unwrap_or(DEFAULT_PAGE_SIZE);
         let pagination = PaginationOptions {
             page_size: Some(page_size as u32),
@@ -1627,7 +1627,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 return Err(Status::invalid_argument("page_size cannot be negative"));
             }
             Some(0) => None, // Zero means use server default
-            Some(ps) => Some(ps.min(DEFAULT_PAGE_SIZE) as u32),
+            Some(ps) => Some(DEFAULT_PAGE_SIZE.min(ps) as u32),
             None => None,
         };
 
