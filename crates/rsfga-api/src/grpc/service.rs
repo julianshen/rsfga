@@ -15,7 +15,6 @@ use rsfga_domain::resolver::{
 use rsfga_server::handlers::batch::BatchCheckHandler;
 use rsfga_storage::{
     DataStore, PaginationOptions, StorageError, StoredAuthorizationModel, StoredTuple, TupleFilter,
-    Utc,
 };
 
 use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
@@ -1587,13 +1586,12 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .map_err(storage_error_to_status)?;
 
         // Build filter - optionally filter by object type
-        let filter = TupleFilter {
+        let filter = rsfga_storage::ReadChangesFilter {
             object_type: if req.r#type.is_empty() {
                 None
             } else {
                 Some(req.r#type.clone())
             },
-            ..Default::default()
         };
 
         // Validate and parse page_size:
@@ -1618,42 +1616,49 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             },
         };
 
-        // Read tuples from storage
+        // Read changes from changelog (ordered chronologically)
         let result = self
             .storage
-            .read_tuples_paginated(&req.store_id, &filter, &pagination)
+            .read_changes(&req.store_id, &filter, &pagination)
             .await
             .map_err(storage_error_to_status)?;
 
-        // Pre-calculate fallback timestamp once for legacy tuples without created_at
-        let fallback_timestamp = Utc::now();
-
-        // Convert tuples to changes (all as writes)
+        // Convert storage TupleChange to proto TupleChange
         let changes: Vec<TupleChange> = result
             .items
             .into_iter()
-            .map(|t| {
-                let user = format_user(&t.user_type, &t.user_id, t.user_relation.as_deref());
-                let object = format!("{}:{}", t.object_type, t.object_id);
+            .map(|change| {
+                let user = format_user(
+                    &change.tuple.user_type,
+                    &change.tuple.user_id,
+                    change.tuple.user_relation.as_deref(),
+                );
+                let object = format!("{}:{}", change.tuple.object_type, change.tuple.object_id);
 
                 // Build condition if present
-                let condition = t.condition_name.map(|name| RelationshipCondition {
-                    name,
-                    context: t.condition_context.map(hashmap_to_prost_struct),
-                });
+                let condition = change
+                    .tuple
+                    .condition_name
+                    .map(|name| RelationshipCondition {
+                        name,
+                        context: change.tuple.condition_context.map(hashmap_to_prost_struct),
+                    });
+
+                // Map storage operation to proto operation
+                let operation = match change.operation {
+                    rsfga_storage::TupleOperation::Write => TupleOperation::Write as i32,
+                    rsfga_storage::TupleOperation::Delete => TupleOperation::Delete as i32,
+                };
 
                 TupleChange {
                     tuple_key: Some(TupleKey {
                         user,
-                        relation: t.relation,
+                        relation: change.tuple.relation,
                         object,
                         condition,
                     }),
-                    operation: TupleOperation::Write as i32,
-                    // Use tuple's created_at timestamp, or fallback for legacy data
-                    timestamp: Some(datetime_to_timestamp(
-                        t.created_at.unwrap_or(fallback_timestamp),
-                    )),
+                    operation,
+                    timestamp: Some(datetime_to_timestamp(change.timestamp)),
                 }
             })
             .collect();

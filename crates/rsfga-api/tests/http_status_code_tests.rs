@@ -1124,6 +1124,18 @@ impl DataStore for MockStorage {
             message: Some("mock".to_string()),
         })
     }
+
+    async fn read_changes(
+        &self,
+        _store_id: &str,
+        _filter: &rsfga_storage::ReadChangesFilter,
+        _pagination: &PaginationOptions,
+    ) -> StorageResult<PaginatedResult<rsfga_storage::TupleChange>> {
+        Ok(PaginatedResult {
+            items: vec![],
+            continuation_token: None,
+        })
+    }
 }
 
 // Factory functions for backwards compatibility with existing tests

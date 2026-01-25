@@ -2130,13 +2130,9 @@ async fn read_changes<S: DataStore>(
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
-    // ReadChanges is not yet fully implemented - we return recent tuples as "writes"
-    // This is a simplified implementation that doesn't track actual changes
-    use rsfga_storage::TupleFilter;
-
-    let filter = TupleFilter {
+    // Build filter for ReadChanges
+    let filter = rsfga_storage::ReadChangesFilter {
         object_type: query.r#type.clone(),
-        ..Default::default()
     };
 
     // Validate page_size is positive before casting to u32 (negative i32 wraps to huge u32)
@@ -2150,34 +2146,34 @@ async fn read_changes<S: DataStore>(
         continuation_token: query.continuation_token,
     };
 
+    // Read changes from changelog (ordered chronologically)
     let result = state
         .storage
-        .read_tuples_paginated(&store_id, &filter, &pagination)
+        .read_changes(&store_id, &filter, &pagination)
         .await?;
 
-    // Convert tuples to changes (all as writes)
+    // Convert TupleChange to response body
     let changes: Vec<TupleChangeBody> = result
         .items
         .into_iter()
-        .map(|t| TupleChangeBody {
+        .map(|change| TupleChangeBody {
             tuple_key: TupleKeyResponseBody {
-                user: format_user(&t.user_type, &t.user_id, t.user_relation.as_deref()),
-                relation: t.relation,
-                object: format!("{}:{}", t.object_type, t.object_id),
-                condition: t
-                    .condition_name
-                    .map(|name| RelationshipConditionResponseBody {
+                user: format_user(
+                    &change.tuple.user_type,
+                    &change.tuple.user_id,
+                    change.tuple.user_relation.as_deref(),
+                ),
+                relation: change.tuple.relation,
+                object: format!("{}:{}", change.tuple.object_type, change.tuple.object_id),
+                condition: change.tuple.condition_name.map(|name| {
+                    RelationshipConditionResponseBody {
                         name,
-                        context: t.condition_context,
-                    }),
+                        context: change.tuple.condition_context,
+                    }
+                }),
             },
-            operation: "TUPLE_OPERATION_WRITE".to_string(),
-            // Timestamps are set at write time in the API layer.
-            // Fallback to current time only for legacy data without timestamps.
-            timestamp: t
-                .created_at
-                .map(|dt| dt.to_rfc3339())
-                .unwrap_or_else(|| Utc::now().to_rfc3339()),
+            operation: change.operation.to_string(),
+            timestamp: change.timestamp.to_rfc3339(),
         })
         .collect();
 
