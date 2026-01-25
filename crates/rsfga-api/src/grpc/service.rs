@@ -674,14 +674,37 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             TupleFilter::default()
         };
 
-        let tuples = self
+        // Build pagination options from request
+        // Validate and parse page_size:
+        // - Reject negative values (invalid input)
+        // - Treat zero as "use server default" (OpenFGA compatibility)
+        // - Cap positive values at DEFAULT_PAGE_SIZE to prevent DoS
+        let page_size = match req.page_size {
+            Some(ps) if ps < 0 => {
+                return Err(Status::invalid_argument("page_size cannot be negative"));
+            }
+            Some(0) => None, // Zero means use server default
+            Some(ps) => Some(DEFAULT_PAGE_SIZE.min(ps) as u32),
+            None => None,
+        };
+        let pagination = PaginationOptions {
+            page_size,
+            continuation_token: if req.continuation_token.is_empty() {
+                None
+            } else {
+                Some(req.continuation_token)
+            },
+        };
+
+        let result = self
             .storage
-            .read_tuples(&req.store_id, &filter)
+            .read_tuples_paginated(&req.store_id, &filter, &pagination)
             .await
             .map_err(storage_error_to_status)?;
 
         // Convert to response format, including conditions (OpenFGA compatibility I2)
-        let response_tuples: Vec<Tuple> = tuples
+        let response_tuples: Vec<Tuple> = result
+            .items
             .into_iter()
             .map(|t| Tuple {
                 key: Some(TupleKey {
@@ -699,7 +722,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         Ok(Response::new(ReadResponse {
             tuples: response_tuples,
-            continuation_token: String::new(),
+            continuation_token: result.continuation_token.unwrap_or_default(),
         }))
     }
 
@@ -1189,7 +1212,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         // Parse pagination from request, capping at DEFAULT_PAGE_SIZE
         let page_size = req
             .page_size
-            .map(|ps| ps.min(DEFAULT_PAGE_SIZE))
+            .map(|ps| DEFAULT_PAGE_SIZE.min(ps))
             .unwrap_or(DEFAULT_PAGE_SIZE);
         let pagination = PaginationOptions {
             page_size: Some(page_size as u32),
@@ -1604,7 +1627,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 return Err(Status::invalid_argument("page_size cannot be negative"));
             }
             Some(0) => None, // Zero means use server default
-            Some(ps) => Some(ps.min(DEFAULT_PAGE_SIZE) as u32),
+            Some(ps) => Some(DEFAULT_PAGE_SIZE.min(ps) as u32),
             None => None,
         };
 
