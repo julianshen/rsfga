@@ -146,6 +146,18 @@ pub fn estimate_context_size(ctx: &std::collections::HashMap<String, serde_json:
 /// Maximum allowed relation name length per OpenFGA spec.
 pub const MAX_RELATION_LENGTH: usize = 50;
 
+/// Maximum allowed object ID length per OpenFGA spec.
+/// Object IDs (the part after "type:") must not exceed 256 characters.
+pub const MAX_OBJECT_ID_LENGTH: usize = 256;
+
+/// Maximum allowed user ID length per OpenFGA spec.
+/// User IDs (the full "type:id" or "type:id#relation") must not exceed 512 characters.
+pub const MAX_USER_ID_LENGTH: usize = 512;
+
+/// Maximum number of tuples allowed in a single write request per OpenFGA spec.
+/// This prevents DoS attacks and ensures reasonable batch sizes.
+pub const MAX_TUPLES_PER_WRITE: usize = 100;
+
 /// Validates a user identifier format.
 ///
 /// Valid formats:
@@ -181,6 +193,79 @@ pub fn validate_user_format(user: &str) -> Option<&'static str> {
     }
 
     None // Valid
+}
+
+/// Validates the object identifier length per OpenFGA spec.
+///
+/// The object ID (the part after "type:") must not exceed 256 characters.
+/// Also validates that the object is in valid "type:id" format.
+///
+/// # Arguments
+///
+/// * `object` - The full object string in "type:id" format
+///
+/// # Returns
+///
+/// Returns `Some(error_message)` if the format is invalid or object ID exceeds the limit,
+/// `None` if valid.
+pub fn validate_object_id_length(object: &str) -> Option<String> {
+    // Extract the ID part after "type:"
+    let Some(colon_pos) = object.find(':') else {
+        return Some("object must be in 'type:id' format".to_string());
+    };
+
+    let id = &object[colon_pos + 1..];
+    if id.len() > MAX_OBJECT_ID_LENGTH {
+        return Some(format!(
+            "object identifier exceeds maximum length of {} (got {})",
+            MAX_OBJECT_ID_LENGTH,
+            id.len()
+        ));
+    }
+    None
+}
+
+/// Validates the user identifier length per OpenFGA spec.
+///
+/// The full user string must not exceed 512 characters.
+///
+/// # Arguments
+///
+/// * `user` - The user string (e.g., "user:alice" or "group:admins#member")
+///
+/// # Returns
+///
+/// Returns `Some(error_message)` if the user exceeds the limit, `None` if valid.
+pub fn validate_user_id_length(user: &str) -> Option<String> {
+    if user.len() > MAX_USER_ID_LENGTH {
+        return Some(format!(
+            "user identifier exceeds maximum length of {} (got {})",
+            MAX_USER_ID_LENGTH,
+            user.len()
+        ));
+    }
+    None
+}
+
+/// Validates the number of tuples in a write request per OpenFGA spec.
+///
+/// A single write request cannot contain more than 100 tuples (writes + deletes).
+///
+/// # Arguments
+///
+/// * `count` - The total number of tuples (writes + deletes)
+///
+/// # Returns
+///
+/// Returns `Some(error_message)` if the count exceeds the limit, `None` if valid.
+pub fn validate_tuple_count(count: usize) -> Option<String> {
+    if count > MAX_TUPLES_PER_WRITE {
+        return Some(format!(
+            "maximum {} tuples per write request (got {})",
+            MAX_TUPLES_PER_WRITE, count
+        ));
+    }
+    None
 }
 
 /// Validates a relation name format per OpenFGA spec.
@@ -330,5 +415,71 @@ mod tests {
         // Empty string should return error
         let result = validate_store_id_format("");
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_validate_object_id_length_valid() {
+        // Valid: exactly at limit (256 chars)
+        let id = "x".repeat(256);
+        let object = format!("document:{}", id);
+        assert!(validate_object_id_length(&object).is_none());
+
+        // Valid: short ID
+        assert!(validate_object_id_length("document:readme").is_none());
+    }
+
+    #[test]
+    fn test_validate_object_id_length_exceeds_limit() {
+        // Invalid: exceeds 256 char limit
+        let id = "x".repeat(257);
+        let object = format!("document:{}", id);
+        let result = validate_object_id_length(&object);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_validate_object_id_length_no_colon() {
+        // Invalid: object without colon (malformed)
+        let result = validate_object_id_length("invalidobject");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("must be in 'type:id' format"));
+    }
+
+    #[test]
+    fn test_validate_user_id_length_valid() {
+        // Valid: exactly at limit (512 chars)
+        let user = "x".repeat(512);
+        assert!(validate_user_id_length(&user).is_none());
+
+        // Valid: short user
+        assert!(validate_user_id_length("user:alice").is_none());
+    }
+
+    #[test]
+    fn test_validate_user_id_length_exceeds_limit() {
+        // Invalid: exceeds 512 char limit
+        let user = "x".repeat(513);
+        let result = validate_user_id_length(&user);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_validate_tuple_count_valid() {
+        // Valid: exactly at limit (100)
+        assert!(validate_tuple_count(100).is_none());
+
+        // Valid: under limit
+        assert!(validate_tuple_count(50).is_none());
+        assert!(validate_tuple_count(0).is_none());
+    }
+
+    #[test]
+    fn test_validate_tuple_count_exceeds_limit() {
+        // Invalid: exceeds 100 tuple limit
+        let result = validate_tuple_count(101);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("maximum 100 tuples"));
     }
 }

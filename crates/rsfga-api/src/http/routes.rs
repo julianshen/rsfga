@@ -1632,6 +1632,48 @@ async fn write_tuples<S: DataStore>(
         return Err(ApiError::validation_error(err));
     }
 
+    // Validate tuple count before processing (OpenFGA limit: 100 tuples per write)
+    let write_count = body.writes.as_ref().map_or(0, |w| w.tuple_keys.len());
+    let delete_count = body.deletes.as_ref().map_or(0, |d| d.tuple_keys.len());
+    let total_count = write_count + delete_count;
+    if let Some(err) = validate_tuple_count(total_count) {
+        return Err(ApiError::validation_error(err));
+    }
+
+    // Validate user/object ID lengths before processing (OpenFGA limits)
+    if let Some(ref writes) = body.writes {
+        for (i, tk) in writes.tuple_keys.iter().enumerate() {
+            if let Some(err) = validate_user_id_length(&tk.user) {
+                return Err(ApiError::validation_error(format!(
+                    "write tuple at index {}: {}",
+                    i, err
+                )));
+            }
+            if let Some(err) = validate_object_id_length(&tk.object) {
+                return Err(ApiError::validation_error(format!(
+                    "write tuple at index {}: {}",
+                    i, err
+                )));
+            }
+        }
+    }
+    if let Some(ref deletes) = body.deletes {
+        for (i, tk) in deletes.tuple_keys.iter().enumerate() {
+            if let Some(err) = validate_user_id_length(&tk.user) {
+                return Err(ApiError::validation_error(format!(
+                    "delete tuple at index {}: {}",
+                    i, err
+                )));
+            }
+            if let Some(err) = validate_object_id_length(&tk.object) {
+                return Err(ApiError::validation_error(format!(
+                    "delete tuple at index {}: {}",
+                    i, err
+                )));
+            }
+        }
+    }
+
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
 
@@ -1745,7 +1787,8 @@ async fn write_tuples<S: DataStore>(
 
 // Use shared validation functions from the validation module
 use crate::validation::{
-    is_valid_condition_name, json_exceeds_max_depth, validate_store_id_format,
+    is_valid_condition_name, json_exceeds_max_depth, validate_object_id_length,
+    validate_store_id_format, validate_tuple_count, validate_user_id_length,
     MAX_CONDITION_CONTEXT_SIZE,
 };
 
