@@ -613,7 +613,7 @@ async fn test_storage_survives_restart_postgres() {
 #[tokio::test]
 #[ignore = "requires running MySQL"]
 async fn test_storage_survives_restart_mysql() {
-    let store_id = "int-restart-test-mysql";
+    let store_id = "integration-restart-mysql";
 
     // Phase 1: Write data with first connection
     {

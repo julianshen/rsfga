@@ -766,7 +766,89 @@ impl PostgresDataStore {
                 })?;
         }
 
+        // Apply column size migrations for existing databases
+        // This widens columns from old sizes to new OpenFGA-compliant sizes.
+        self.apply_column_size_migration().await?;
+
         debug!("Database migrations completed successfully");
+        Ok(())
+    }
+
+    /// Apply column size migrations for existing databases.
+    ///
+    /// This function widens columns from old sizes (e.g., VARCHAR(255)) to new
+    /// OpenFGA-compliant sizes. PostgreSQL's ALTER TABLE ... TYPE is idempotent -
+    /// running it on a column that already has the target size has no effect.
+    ///
+    /// # Column Size Changes
+    ///
+    /// | Table | Column | Old Size | New Size |
+    /// |-------|--------|----------|----------|
+    /// | stores | id | 255 | 26 |
+    /// | stores | name | 255 | 256 |
+    /// | tuples | store_id | 255 | 26 |
+    /// | tuples | object_type | 255 | 254 |
+    /// | tuples | object_id | 255 | 256 |
+    /// | tuples | relation | 255 | 50 |
+    /// | tuples | user_type | 255 | 254 |
+    /// | tuples | user_id | 255 | 512 |
+    /// | tuples | user_relation | 255 | 50 |
+    /// | tuples | condition_name | - | 256 |
+    /// | changelog | (same as tuples) | | |
+    async fn apply_column_size_migration(&self) -> StorageResult<()> {
+        // PostgreSQL ALTER TABLE ... TYPE is idempotent, so we can run these
+        // unconditionally. Unlike MySQL, there's no need to check current sizes.
+        //
+        // Note: Both PostgreSQL and CockroachDB support the same ALTER COLUMN syntax.
+        let stores_alterations = ["ALTER TABLE stores ALTER COLUMN name TYPE VARCHAR(256)"];
+
+        for sql in stores_alterations {
+            sqlx::query(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to alter stores table: {e}"),
+                })?;
+        }
+
+        // tuples table migrations
+        let tuples_alterations = [
+            "ALTER TABLE tuples ALTER COLUMN object_type TYPE VARCHAR(254)",
+            "ALTER TABLE tuples ALTER COLUMN object_id TYPE VARCHAR(256)",
+            "ALTER TABLE tuples ALTER COLUMN relation TYPE VARCHAR(50)",
+            "ALTER TABLE tuples ALTER COLUMN user_type TYPE VARCHAR(254)",
+            "ALTER TABLE tuples ALTER COLUMN user_id TYPE VARCHAR(512)",
+            "ALTER TABLE tuples ALTER COLUMN user_relation TYPE VARCHAR(50)",
+        ];
+
+        for sql in tuples_alterations {
+            sqlx::query(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to alter tuples table: {e}"),
+                })?;
+        }
+
+        // changelog table migrations (same as tuples)
+        let changelog_alterations = [
+            "ALTER TABLE changelog ALTER COLUMN object_type TYPE VARCHAR(254)",
+            "ALTER TABLE changelog ALTER COLUMN object_id TYPE VARCHAR(256)",
+            "ALTER TABLE changelog ALTER COLUMN relation TYPE VARCHAR(50)",
+            "ALTER TABLE changelog ALTER COLUMN user_type TYPE VARCHAR(254)",
+            "ALTER TABLE changelog ALTER COLUMN user_id TYPE VARCHAR(512)",
+            "ALTER TABLE changelog ALTER COLUMN user_relation TYPE VARCHAR(50)",
+        ];
+
+        for sql in changelog_alterations {
+            sqlx::query(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to alter changelog table: {e}"),
+                })?;
+        }
+
         Ok(())
     }
 

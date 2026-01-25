@@ -177,7 +177,7 @@ async fn create_postgres_store() -> PostgresDataStore {
         .await
         .expect("Failed to run migrations");
 
-    cleanup_test_stores(&store, "parity-").await;
+    cleanup_test_stores(&store, "par").await; // Matches both "par-" and "parity-" prefixes
     store
 }
 
@@ -199,7 +199,7 @@ async fn create_mysql_store() -> MySQLDataStore {
         .await
         .expect("Failed to run migrations");
 
-    cleanup_test_stores(&store, "parity-").await;
+    cleanup_test_stores(&store, "par").await; // Matches both "par-" and "parity-" prefixes
     store
 }
 
@@ -221,7 +221,7 @@ async fn create_cockroachdb_store() -> PostgresDataStore {
         .await
         .expect("Failed to run migrations on CockroachDB");
 
-    cleanup_test_stores(&store, "parity-").await;
+    cleanup_test_stores(&store, "par").await; // Matches both "par-" and "parity-" prefixes
     store
 }
 
