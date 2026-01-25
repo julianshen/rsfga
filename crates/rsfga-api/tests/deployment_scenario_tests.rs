@@ -1001,7 +1001,8 @@ async fn test_rest_api_consistent_error_format() {
         "Error should have 'message'"
     );
 
-    // Test 400 - bad request (invalid store ID format)
+    // Test 404 - non-existent store (regardless of ID format)
+    // OpenFGA returns 404 for any non-existent store, not 400 for invalid format
     let (status, response) = post_json(
         create_test_app(&storage),
         "/stores/invalid-store-id/check",
@@ -1015,7 +1016,7 @@ async fn test_rest_api_consistent_error_format() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(response.get("code").is_some(), "Error should have 'code'");
     assert!(
         response.get("message").is_some(),

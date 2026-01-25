@@ -1541,10 +1541,10 @@ async fn test_check_nonexistent_store_returns_404() {
     );
 }
 
-/// Test: Check with invalid store ID format returns 400.
-/// OpenFGA validates store ID format before checking if the store exists.
+/// Test: Check with invalid store ID format returns 404.
+/// OpenFGA returns 404 for any non-existent store, regardless of ID format.
 #[tokio::test]
-async fn test_check_invalid_store_id_format_returns_400() {
+async fn test_check_invalid_store_id_format_returns_404() {
     let storage = Arc::new(MemoryDataStore::new());
 
     let (status, _response) = post_json(
@@ -1562,8 +1562,8 @@ async fn test_check_invalid_store_id_format_returns_400() {
 
     assert_eq!(
         status,
-        StatusCode::BAD_REQUEST,
-        "Invalid store ID format should return 400"
+        StatusCode::NOT_FOUND,
+        "Non-existent store (regardless of ID format) should return 404"
     );
 }
 
