@@ -1357,9 +1357,30 @@ where
             .get_objects_of_type(&request.store_id, &request.object_type, limit)
             .await?;
 
+        // Also include objects from contextual tuples that match the requested type.
+        // Contextual tuples may reference objects that don't exist in storage yet.
+        // We need to check these objects for permissions as well.
+        // Use HashSet for O(1) deduplication instead of O(n) Vec::contains.
+        let mut seen: std::collections::HashSet<String> = candidates.iter().cloned().collect();
+        for ct in request.contextual_tuples.iter() {
+            // Early exit: stop adding candidates once we hit the limit (DoS protection)
+            if candidates.len() >= limit {
+                break;
+            }
+            // Parse the object using split_once (more idiomatic than find + split_at)
+            // Malformed objects without ':' are silently skipped (consistent with tuple parsing)
+            if let Some((obj_type, obj_id)) = ct.object.split_once(':') {
+                if obj_type == request.object_type && !seen.contains(obj_id) {
+                    let obj_id_string = obj_id.to_string();
+                    seen.insert(obj_id_string.clone());
+                    candidates.push(obj_id_string);
+                }
+            }
+        }
+
         // Check if we hit the limit (truncation detection)
         let truncated = if candidates.len() > max_candidates {
-            candidates.pop(); // Remove the extra candidate
+            candidates.truncate(max_candidates); // Truncate to max
             true
         } else {
             false

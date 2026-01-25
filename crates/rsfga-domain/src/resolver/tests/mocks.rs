@@ -118,6 +118,32 @@ impl TupleReader for MockTupleReader {
     async fn store_exists(&self, store_id: &str) -> DomainResult<bool> {
         Ok(self.stores.read().await.contains(store_id))
     }
+
+    async fn get_objects_of_type(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        max_count: usize,
+    ) -> DomainResult<Vec<String>> {
+        // Extract unique object IDs for the given type from stored tuples
+        let tuples = self.tuples.read().await;
+        let prefix = format!("{store_id}:{object_type}:");
+        let mut objects = HashSet::new();
+
+        for key in tuples.keys() {
+            if key.starts_with(&prefix) {
+                // Key format: "store_id:object_type:object_id:relation"
+                let parts: Vec<&str> = key.splitn(4, ':').collect();
+                if parts.len() >= 3 {
+                    objects.insert(parts[2].to_string());
+                }
+            }
+        }
+
+        let mut result: Vec<String> = objects.into_iter().collect();
+        result.truncate(max_count);
+        Ok(result)
+    }
 }
 
 /// Mock model reader for testing.
