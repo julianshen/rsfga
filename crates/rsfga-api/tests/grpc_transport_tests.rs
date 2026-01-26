@@ -507,8 +507,7 @@ async fn test_grpc_server_graceful_shutdown() {
     let new_client_result = timeout(Duration::from_millis(500), create_client(addr)).await;
 
     // Either the connect times out or fails
-    if new_client_result.is_ok() {
-        let client_result = new_client_result.unwrap();
+    if let Ok(client_result) = new_client_result {
         assert!(
             client_result.is_err(),
             "Connection after shutdown should fail"
