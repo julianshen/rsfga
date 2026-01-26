@@ -31,6 +31,8 @@ tower-http = { workspace = true }
 
 # gRPC
 tonic = { workspace = true }
+tonic-health = { workspace = true }
+tonic-reflection = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 
@@ -74,6 +76,7 @@ clap = { workspace = true }
 proptest = { workspace = true }
 mockall = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tokio-stream = { workspace = true }
 futures = { workspace = true }
 criterion = { workspace = true }
 

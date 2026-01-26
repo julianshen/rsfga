@@ -33,6 +33,10 @@ pub struct ServerConfig {
     #[serde(default)]
     pub server: ServerSettings,
 
+    /// gRPC settings
+    #[serde(default)]
+    pub grpc: GrpcSettings,
+
     /// Storage settings
     #[serde(default)]
     pub storage: StorageSettings,
@@ -95,6 +99,73 @@ fn default_request_timeout() -> u64 {
 
 fn default_max_connections() -> usize {
     10000
+}
+
+/// gRPC server settings.
+///
+/// These settings can be overridden via environment variables with the `RSFGA_` prefix
+/// and `__` as the nested key separator:
+///
+/// - `RSFGA_GRPC__ENABLED=false` - Disable gRPC server entirely
+/// - `RSFGA_GRPC__PORT=50052` - Change gRPC port
+/// - `RSFGA_GRPC__REFLECTION=false` - Disable gRPC reflection
+/// - `RSFGA_GRPC__HEALTH_CHECK=false` - Disable gRPC health check service
+///
+/// # Example YAML Configuration
+///
+/// ```yaml
+/// grpc:
+///   enabled: true
+///   port: 50051
+///   reflection: true
+///   health_check: true
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct GrpcSettings {
+    /// Enable gRPC server.
+    ///
+    /// When disabled, only the HTTP REST API will be available.
+    /// Environment variable: `RSFGA_GRPC__ENABLED`
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// gRPC port to listen on.
+    ///
+    /// Default: 50051 (standard gRPC port)
+    /// Environment variable: `RSFGA_GRPC__PORT`
+    #[serde(default = "default_grpc_port")]
+    pub port: u16,
+
+    /// Enable gRPC reflection for service discovery.
+    ///
+    /// When enabled, clients like grpcurl can discover available services
+    /// without needing the proto files.
+    /// Environment variable: `RSFGA_GRPC__REFLECTION`
+    #[serde(default = "default_true")]
+    pub reflection: bool,
+
+    /// Enable gRPC health check service.
+    ///
+    /// Implements the standard gRPC health checking protocol for load balancer
+    /// integration and Kubernetes readiness probes.
+    /// Environment variable: `RSFGA_GRPC__HEALTH_CHECK`
+    #[serde(default = "default_true")]
+    pub health_check: bool,
+}
+
+impl Default for GrpcSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: default_grpc_port(),
+            reflection: true,
+            health_check: true,
+        }
+    }
+}
+
+fn default_grpc_port() -> u16 {
+    50051
 }
 
 /// Storage backend settings.
