@@ -76,6 +76,7 @@ clap = { workspace = true }
 proptest = { workspace = true }
 mockall = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tokio-stream = { workspace = true }
 futures = { workspace = true }
 criterion = { workspace = true }
 
