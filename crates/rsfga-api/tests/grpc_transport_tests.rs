@@ -63,8 +63,17 @@ fn find_available_port() -> u16 {
     listener.local_addr().unwrap().port()
 }
 
+/// Maximum retries for server readiness check.
+const MAX_READINESS_RETRIES: u32 = 50;
+
+/// Delay between readiness check retries.
+const READINESS_RETRY_DELAY: Duration = Duration::from_millis(10);
+
 /// Start a gRPC server on the given address with a shutdown channel.
 /// Returns a handle that can be awaited to wait for server completion.
+///
+/// Uses a retry loop to actively check for server readiness, which is faster
+/// and more reliable than a fixed sleep delay.
 async fn start_test_server<S>(
     storage: Arc<S>,
     addr: SocketAddr,
@@ -85,10 +94,28 @@ where
         run_grpc_server_with_shutdown(storage, addr, config, shutdown_signal).await
     });
 
-    // Give the server a moment to bind
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Actively check for server readiness with retries
+    // This is faster than a fixed sleep and more reliable on slow CI
+    wait_for_server_ready(addr).await;
 
     (handle, shutdown_tx)
+}
+
+/// Wait for the gRPC server to be ready by attempting to connect.
+/// Uses exponential backoff with a maximum number of retries.
+async fn wait_for_server_ready(addr: SocketAddr) {
+    for attempt in 0..MAX_READINESS_RETRIES {
+        // Try to establish a TCP connection to check if server is listening
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(_) => return, // Server is ready
+            Err(_) => {
+                if attempt < MAX_READINESS_RETRIES - 1 {
+                    tokio::time::sleep(READINESS_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+    // If we get here, server didn't start in time - tests will fail with clear errors
 }
 
 /// Create a gRPC channel connected to the given address.
@@ -855,4 +882,69 @@ async fn test_grpc_write_and_read_over_transport() {
     // Cleanup
     let _ = shutdown_tx.send(());
     let _ = timeout(SERVER_STARTUP_TIMEOUT, handle).await;
+}
+
+// ============================================================================
+// Section 9: Error Handling - Port Conflicts
+// ============================================================================
+
+/// Test: gRPC server fails when port is already in use.
+///
+/// Verifies the server returns an appropriate error when trying to bind
+/// to a port that is already occupied by another process.
+#[tokio::test]
+async fn test_grpc_server_fails_when_port_in_use() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let port = find_available_port();
+    let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+    let config = GrpcServerConfig::default();
+
+    // Start the first server successfully
+    let (handle1, shutdown_tx1) =
+        start_test_server(Arc::clone(&storage), addr, config.clone()).await;
+
+    // Verify first server is running
+    let client = create_client(addr).await;
+    assert!(client.is_ok(), "First server should be running");
+
+    // Try to start a second server on the same port
+    let storage2 = Arc::new(MemoryDataStore::new());
+    let (shutdown_tx2, shutdown_rx2) = oneshot::channel::<()>();
+
+    let handle2 = tokio::spawn(async move {
+        let shutdown_signal = async move {
+            let _ = shutdown_rx2.await;
+        };
+        run_grpc_server_with_shutdown(storage2, addr, config, shutdown_signal).await
+    });
+
+    // Wait for the second server to fail (it should fail quickly)
+    let result = timeout(Duration::from_secs(2), handle2).await;
+
+    // The second server should have completed (with an error)
+    assert!(result.is_ok(), "Second server spawn should complete");
+    let server_result = result.unwrap();
+    assert!(server_result.is_ok(), "Task should not panic");
+    let inner_result = server_result.unwrap();
+    assert!(
+        inner_result.is_err(),
+        "Second server should fail due to port conflict"
+    );
+
+    // Verify the error is related to transport/binding
+    // The exact error message varies by OS and Tonic version
+    let err_msg = inner_result.unwrap_err().to_string().to_lowercase();
+    assert!(
+        err_msg.contains("address")
+            || err_msg.contains("use")
+            || err_msg.contains("bind")
+            || err_msg.contains("transport"),
+        "Error should mention address binding or transport issue: {}",
+        err_msg
+    );
+
+    // Cleanup
+    let _ = shutdown_tx1.send(());
+    let _ = shutdown_tx2.send(()); // May have already dropped, but try anyway
+    let _ = timeout(SERVER_STARTUP_TIMEOUT, handle1).await;
 }

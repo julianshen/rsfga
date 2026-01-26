@@ -21,7 +21,8 @@ use std::sync::Arc;
 
 use tonic::transport::server::Router;
 use tonic::transport::Server;
-use tonic_health::server::health_reporter;
+use tonic_health::server::{health_reporter, HealthReporter};
+use tonic_health::ServingStatus;
 use tracing::info;
 
 use rsfga_storage::DataStore;
@@ -51,14 +52,24 @@ impl Default for GrpcServerConfig {
     }
 }
 
+/// Result from building the gRPC router, including optional health reporter for lifecycle management.
+struct GrpcRouterResult {
+    router: Router,
+    /// Health reporter for updating service status during graceful shutdown.
+    /// Only present when health_check_enabled is true.
+    health_reporter: Option<HealthReporter>,
+}
+
 /// Build the gRPC server router with configured services.
 ///
 /// This helper function configures all gRPC services based on the provided config,
 /// reducing duplication between `run_grpc_server` and `run_grpc_server_with_shutdown`.
+///
+/// Returns the router and an optional health reporter for lifecycle management.
 async fn build_grpc_router<S>(
     storage: Arc<S>,
     config: &GrpcServerConfig,
-) -> Result<Router, Box<dyn std::error::Error + Send + Sync>>
+) -> Result<GrpcRouterResult, Box<dyn std::error::Error + Send + Sync>>
 where
     S: DataStore + Send + Sync + 'static,
 {
@@ -68,6 +79,7 @@ where
 
     // Start with base server and add the main service
     let mut router = Server::builder().add_service(openfga_server);
+    let mut health_reporter_opt = None;
 
     // Add health check service if enabled
     if config.health_check_enabled {
@@ -77,6 +89,7 @@ where
             .await;
         info!("gRPC health check service enabled");
         router = router.add_service(health_service);
+        health_reporter_opt = Some(health_reporter);
     }
 
     // Add reflection service if enabled
@@ -88,7 +101,10 @@ where
         router = router.add_service(reflection_service);
     }
 
-    Ok(router)
+    Ok(GrpcRouterResult {
+        router,
+        health_reporter: health_reporter_opt,
+    })
 }
 
 /// Run the gRPC server.
@@ -115,7 +131,12 @@ where
 {
     info!(%addr, "Starting gRPC server");
 
-    let router = build_grpc_router(storage, &config).await?;
+    let GrpcRouterResult {
+        router,
+        health_reporter,
+    } = build_grpc_router(storage, &config).await?;
+    // Keep health_reporter alive for the lifetime of the server
+    let _health_reporter = health_reporter;
     router.serve(addr).await?;
 
     info!("gRPC server shutdown complete");
@@ -125,8 +146,10 @@ where
 /// Run the gRPC server with graceful shutdown.
 ///
 /// Similar to `run_grpc_server`, but accepts a shutdown signal for graceful termination.
-/// When the shutdown signal completes, the server will stop accepting new connections
-/// and wait for existing requests to complete before returning.
+/// When the shutdown signal completes, the server will:
+/// 1. Update health status to NOT_SERVING (allows load balancers to drain connections)
+/// 2. Stop accepting new connections
+/// 3. Wait for existing requests to complete before returning
 pub async fn run_grpc_server_with_shutdown<S>(
     storage: Arc<S>,
     addr: SocketAddr,
@@ -138,8 +161,26 @@ where
 {
     info!(%addr, "Starting gRPC server with graceful shutdown");
 
-    let router = build_grpc_router(storage, &config).await?;
-    router.serve_with_shutdown(addr, shutdown_signal).await?;
+    let GrpcRouterResult {
+        router,
+        health_reporter,
+    } = build_grpc_router(storage, &config).await?;
+
+    // Wrap the shutdown signal to update health status before stopping
+    let graceful_shutdown = async move {
+        shutdown_signal.await;
+
+        // Update health status to NOT_SERVING before shutdown
+        // This allows load balancers to stop sending new requests
+        if let Some(mut reporter) = health_reporter {
+            info!("Setting health status to NOT_SERVING for graceful shutdown");
+            reporter
+                .set_service_status("openfga.v1.OpenFgaService", ServingStatus::NotServing)
+                .await;
+        }
+    };
+
+    router.serve_with_shutdown(addr, graceful_shutdown).await?;
 
     info!("gRPC server shutdown complete");
     Ok(())

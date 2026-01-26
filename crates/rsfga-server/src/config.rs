@@ -102,21 +102,53 @@ fn default_max_connections() -> usize {
 }
 
 /// gRPC server settings.
+///
+/// These settings can be overridden via environment variables with the `RSFGA_` prefix
+/// and `__` as the nested key separator:
+///
+/// - `RSFGA_GRPC__ENABLED=false` - Disable gRPC server entirely
+/// - `RSFGA_GRPC__PORT=50052` - Change gRPC port
+/// - `RSFGA_GRPC__REFLECTION=false` - Disable gRPC reflection
+/// - `RSFGA_GRPC__HEALTH_CHECK=false` - Disable gRPC health check service
+///
+/// # Example YAML Configuration
+///
+/// ```yaml
+/// grpc:
+///   enabled: true
+///   port: 50051
+///   reflection: true
+///   health_check: true
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct GrpcSettings {
-    /// Enable gRPC server
+    /// Enable gRPC server.
+    ///
+    /// When disabled, only the HTTP REST API will be available.
+    /// Environment variable: `RSFGA_GRPC__ENABLED`
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// gRPC port (default: 50051)
+    /// gRPC port to listen on.
+    ///
+    /// Default: 50051 (standard gRPC port)
+    /// Environment variable: `RSFGA_GRPC__PORT`
     #[serde(default = "default_grpc_port")]
     pub port: u16,
 
-    /// Enable gRPC reflection for service discovery
+    /// Enable gRPC reflection for service discovery.
+    ///
+    /// When enabled, clients like grpcurl can discover available services
+    /// without needing the proto files.
+    /// Environment variable: `RSFGA_GRPC__REFLECTION`
     #[serde(default = "default_true")]
     pub reflection: bool,
 
-    /// Enable gRPC health check service
+    /// Enable gRPC health check service.
+    ///
+    /// Implements the standard gRPC health checking protocol for load balancer
+    /// integration and Kubernetes readiness probes.
+    /// Environment variable: `RSFGA_GRPC__HEALTH_CHECK`
     #[serde(default = "default_true")]
     pub health_check: bool,
 }
