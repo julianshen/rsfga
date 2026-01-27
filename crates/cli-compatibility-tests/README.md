@@ -5,19 +5,26 @@ Tests are written as `.fga.yaml` files and executed using `fga model test`.
 
 ## Prerequisites
 
-1. Install the OpenFGA CLI:
+1. **Bash 4.0+** (only required for `compare-implementations.sh`):
+   ```bash
+   bash --version  # Check your version
+   # macOS ships with Bash 3.x, upgrade with: brew install bash
+   # run-tests.sh works with Bash 3.x
+   ```
+
+2. Install the OpenFGA CLI:
    ```bash
    brew install openfga/tap/fga
    # or
    go install github.com/openfga/cli/cmd/fga@latest
    ```
 
-2. Install jq (for JSON parsing):
+3. Install jq (for JSON parsing):
    ```bash
    brew install jq
    ```
 
-3. Start RSFGA server:
+4. Start RSFGA server:
    ```bash
    cargo run --release
    ```
@@ -104,3 +111,13 @@ tests:
 4. Write test assertions
 5. Run `fga model test --tests your-test.fga.yaml` to verify
 6. Add the test to the runner script
+
+## Known Behavioral Differences
+
+The following behavioral differences between RSFGA and OpenFGA are tracked:
+
+| Issue | Description | RSFGA Behavior | OpenFGA Behavior |
+|-------|-------------|----------------|------------------|
+| [#290](https://github.com/julianshen/rsfga/issues/290) | Missing condition context | Returns explicit error | Returns `false` |
+
+These differences are documented in the relevant test files with comments explaining the deviation.

@@ -31,6 +31,11 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
+# Sanitize string for use in store names (alphanumeric, dash, underscore only)
+sanitize_name() {
+    echo "$1" | tr -cd '[:alnum:]-_'
+}
+
 # Check if fga CLI is installed
 if ! command -v fga &> /dev/null; then
     echo -e "${RED}Error: fga CLI not found${NC}"
@@ -106,12 +111,13 @@ for test_file in "${TEST_FILES[@]}"; do
     fi
 
     test_name=$(basename "$test_file" .fga.yaml)
+    safe_name=$(sanitize_name "$test_name")
     ((TOTAL++))
 
     echo -n "Running ${test_name}... "
 
-    # Create a temporary store for this test
-    store_result=$(fga store create --api-url "${FGA_API_URL}" --name "cli-test-${test_name}-$$" 2>&1) || {
+    # Create a temporary store for this test (use sanitized name to prevent injection)
+    store_result=$(fga store create --api-url "${FGA_API_URL}" --name "cli-test-${safe_name}-$$" 2>&1) || {
         echo -e "${RED}FAIL${NC} (store creation failed)"
         if [ "$VERBOSE" = "true" ]; then
             echo "  Error: ${store_result}"
@@ -147,8 +153,12 @@ for test_file in "${TEST_FILES[@]}"; do
         --store-id "${store_id}" \
         --tests "${test_file}" 2>&1) || test_exit_code=$?
 
-    # Cleanup: delete the store
-    fga store delete --api-url "${FGA_API_URL}" --store-id "${store_id}" > /dev/null 2>&1 || true
+    # Cleanup: delete the store (log errors in verbose mode)
+    if ! cleanup_output=$(fga store delete --api-url "${FGA_API_URL}" --store-id "${store_id}" 2>&1); then
+        if [ "$VERBOSE" = "true" ]; then
+            echo "  Warning: Failed to cleanup store ${store_id}: ${cleanup_output}" >&2
+        fi
+    fi
 
     # Check result
     if [ $test_exit_code -eq 0 ]; then

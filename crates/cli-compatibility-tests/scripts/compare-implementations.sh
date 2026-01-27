@@ -28,6 +28,18 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# Sanitize string for use in store names (alphanumeric, dash, underscore only)
+sanitize_name() {
+    echo "$1" | tr -cd '[:alnum:]-_'
+}
+
+# Check bash version (need 4+ for associative arrays)
+if [[ "${BASH_VERSION%%.*}" -lt 4 ]]; then
+    echo -e "${RED}Error: Bash 4.0 or later required${NC}"
+    echo "Current version: ${BASH_VERSION}"
+    exit 1
+fi
+
 # Check fga CLI
 if ! command -v fga &> /dev/null; then
     echo -e "${RED}Error: fga CLI not found${NC}"
@@ -83,9 +95,10 @@ run_test() {
     local test_file="$1"
     local api_url="$2"
     local test_name=$(basename "$test_file" .fga.yaml)
+    local safe_name=$(sanitize_name "$test_name")
 
-    # Create store
-    store_result=$(fga store create --api-url "${api_url}" --name "compare-${test_name}-$$" 2>&1) || return 1
+    # Create store (use sanitized name to prevent injection)
+    store_result=$(fga store create --api-url "${api_url}" --name "compare-${safe_name}-$$" 2>&1) || return 1
     store_id=$(echo "$store_result" | jq -r '.store.id // empty') || return 1
     [ -z "$store_id" ] && return 1
 
@@ -96,7 +109,7 @@ run_test() {
         --store-id "${store_id}" \
         --tests "${test_file}" > /dev/null 2>&1 || exit_code=$?
 
-    # Cleanup
+    # Cleanup (best effort, don't fail the test if cleanup fails)
     fga store delete --api-url "${api_url}" --store-id "${store_id}" > /dev/null 2>&1 || true
 
     return $exit_code
