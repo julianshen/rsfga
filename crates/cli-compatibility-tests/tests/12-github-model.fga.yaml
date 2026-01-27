@@ -1,0 +1,240 @@
+name: GitHub-style Permissions Model
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type organization
+    relations
+      define owner: [user]
+      define member: [user] or owner
+      define billing_manager: [user]
+      define repo_admin: [user] or owner
+
+  type team
+    relations
+      define org: [organization]
+      define maintainer: [user]
+      define member: [user] or maintainer
+
+  type repository
+    relations
+      define org: [organization]
+      define owner: [user, organization#owner]
+      define admin: [user, team#member, organization#repo_admin] or owner
+      define maintainer: [user, team#member] or admin
+      define writer: [user, team#member] or maintainer
+      define triager: [user, team#member] or writer
+      define reader: [user, team#member, user:*] or triager
+
+tuples:
+  # Organization structure
+  - user: user:ceo
+    relation: owner
+    object: organization:acme
+
+  - user: user:alice
+    relation: member
+    object: organization:acme
+
+  - user: user:bob
+    relation: member
+    object: organization:acme
+
+  - user: user:finance-lead
+    relation: billing_manager
+    object: organization:acme
+
+  # Teams
+  - user: organization:acme
+    relation: org
+    object: team:backend
+
+  - user: user:alice
+    relation: maintainer
+    object: team:backend
+
+  - user: user:bob
+    relation: member
+    object: team:backend
+
+  - user: organization:acme
+    relation: org
+    object: team:frontend
+
+  - user: user:charlie
+    relation: member
+    object: team:frontend
+
+  # Repository: acme/api
+  - user: organization:acme
+    relation: org
+    object: repository:acme/api
+
+  - user: organization:acme#owner
+    relation: owner
+    object: repository:acme/api
+
+  - user: team:backend#member
+    relation: maintainer
+    object: repository:acme/api
+
+  # Repository: acme/website (public)
+  - user: organization:acme
+    relation: org
+    object: repository:acme/website
+
+  - user: organization:acme#owner
+    relation: owner
+    object: repository:acme/website
+
+  - user: team:frontend#member
+    relation: writer
+    object: repository:acme/website
+
+  - user: user:*
+    relation: reader
+    object: repository:acme/website
+
+  # External contributor
+  - user: user:external-contributor
+    relation: triager
+    object: repository:acme/api
+
+tests:
+  - name: "Organization owner has admin on all repos"
+    check:
+      - user: user:ceo
+        object: repository:acme/api
+        assertions:
+          owner: true
+          admin: true
+          maintainer: true
+          writer: true
+          triager: true
+          reader: true
+
+      - user: user:ceo
+        object: repository:acme/website
+        assertions:
+          owner: true
+          admin: true
+          reader: true
+
+  - name: "Team maintainer has maintainer access on assigned repos"
+    check:
+      - user: user:alice
+        object: repository:acme/api
+        assertions:
+          owner: false
+          admin: false
+          maintainer: true
+          writer: true
+          triager: true
+          reader: true
+
+  - name: "Team member has maintainer access (via team userset)"
+    check:
+      - user: user:bob
+        object: repository:acme/api
+        assertions:
+          maintainer: true
+          writer: true
+          reader: true
+
+  - name: "Frontend team member has write access to website"
+    check:
+      - user: user:charlie
+        object: repository:acme/website
+        assertions:
+          admin: false
+          maintainer: false
+          writer: true
+          triager: true
+          reader: true
+
+  - name: "External contributor has triager access only"
+    check:
+      - user: user:external-contributor
+        object: repository:acme/api
+        assertions:
+          admin: false
+          maintainer: false
+          writer: false
+          triager: true
+          reader: true
+
+  - name: "Public repo readable by anyone"
+    check:
+      - user: user:random-internet-user
+        object: repository:acme/website
+        assertions:
+          admin: false
+          writer: false
+          reader: true
+
+  - name: "Billing manager has no repo access"
+    check:
+      - user: user:finance-lead
+        object: repository:acme/api
+        assertions:
+          owner: false
+          admin: false
+          reader: false
+
+  - name: "List repositories user can admin"
+    list_objects:
+      - user: user:ceo
+        type: repository
+        assertions:
+          admin:
+            - repository:acme/api
+            - repository:acme/website
+
+      - user: user:alice
+        type: repository
+        assertions:
+          admin: []
+          maintainer:
+            - repository:acme/api
+
+  - name: "List users who can write to repo"
+    list_users:
+      - object: repository:acme/api
+        user_filter:
+          - type: user
+        assertions:
+          maintainer:
+            users:
+              - user:alice
+              - user:bob
+              - user:ceo
+
+  - name: "Organization membership"
+    check:
+      - user: user:ceo
+        object: organization:acme
+        assertions:
+          owner: true
+          member: true
+
+      - user: user:alice
+        object: organization:acme
+        assertions:
+          owner: false
+          member: true
+
+  - name: "Team membership"
+    list_users:
+      - object: team:backend
+        user_filter:
+          - type: user
+        assertions:
+          member:
+            users:
+              - user:alice
+              - user:bob
+          maintainer:
+            users:
+              - user:alice

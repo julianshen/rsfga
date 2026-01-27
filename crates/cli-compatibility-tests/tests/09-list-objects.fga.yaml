@@ -1,0 +1,176 @@
+name: ListObjects API Comprehensive Tests
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type organization
+    relations
+      define member: [user]
+      define admin: [user] or member
+
+  type folder
+    relations
+      define org: [organization]
+      define org_member: member from org
+      define owner: [user]
+      define editor: [user, organization#member]
+      define viewer: [user, organization#member] or editor or owner
+
+  type document
+    relations
+      define parent: [folder]
+      define parent_viewer: viewer from parent
+      define owner: [user]
+      define editor: [user] or owner
+      define viewer: [user] or editor or parent_viewer
+
+tuples:
+  # Organization setup
+  - user: user:alice
+    relation: member
+    object: organization:acme
+  - user: user:bob
+    relation: member
+    object: organization:acme
+  - user: user:charlie
+    relation: admin
+    object: organization:beta
+
+  # Folders
+  - user: organization:acme
+    relation: org
+    object: folder:shared
+  - user: organization:acme#member
+    relation: viewer
+    object: folder:shared
+  - user: user:alice
+    relation: owner
+    object: folder:private
+  - user: organization:acme#member
+    relation: editor
+    object: folder:team
+
+  # Documents
+  - user: folder:shared
+    relation: parent
+    object: document:doc1
+  - user: folder:shared
+    relation: parent
+    object: document:doc2
+  - user: folder:private
+    relation: parent
+    object: document:doc3
+  - user: folder:team
+    relation: parent
+    object: document:doc4
+
+  - user: user:alice
+    relation: owner
+    object: document:doc5
+  - user: user:bob
+    relation: editor
+    object: document:doc6
+
+  # Direct viewer on docs
+  - user: user:charlie
+    relation: viewer
+    object: document:doc1
+
+tests:
+  - name: "List all documents user can view"
+    list_objects:
+      # Alice: member of acme, owner of private folder, owner of doc5
+      - user: user:alice
+        type: document
+        assertions:
+          viewer:
+            - document:doc1  # via folder:shared -> org:acme#member
+            - document:doc2  # via folder:shared -> org:acme#member
+            - document:doc3  # via folder:private (owner)
+            - document:doc4  # via folder:team (acme#member editor)
+            - document:doc5  # direct owner
+          owner:
+            - document:doc5
+
+      # Bob: member of acme, editor of doc6
+      - user: user:bob
+        type: document
+        assertions:
+          viewer:
+            - document:doc1
+            - document:doc2
+            - document:doc4
+            - document:doc6
+          editor:
+            - document:doc6
+
+      # Charlie: admin of beta (not acme), direct viewer of doc1
+      - user: user:charlie
+        type: document
+        assertions:
+          viewer:
+            - document:doc1  # direct viewer only
+
+  - name: "List folders user can access"
+    list_objects:
+      - user: user:alice
+        type: folder
+        assertions:
+          viewer:
+            - folder:shared
+            - folder:private
+            - folder:team
+          owner:
+            - folder:private
+
+      - user: user:bob
+        type: folder
+        assertions:
+          viewer:
+            - folder:shared
+            - folder:team
+          editor:
+            - folder:team
+
+  - name: "List organizations user is member of"
+    list_objects:
+      - user: user:alice
+        type: organization
+        assertions:
+          member:
+            - organization:acme
+          admin:
+            - organization:acme  # admin includes member
+
+      - user: user:charlie
+        type: organization
+        assertions:
+          member: []
+          admin:
+            - organization:beta
+
+  - name: "Empty result when no access"
+    list_objects:
+      - user: user:nobody
+        type: document
+        assertions:
+          viewer: []
+          editor: []
+          owner: []
+
+      - user: user:nobody
+        type: folder
+        assertions:
+          viewer: []
+
+  - name: "List objects with specific relation only"
+    list_objects:
+      - user: user:alice
+        type: document
+        assertions:
+          owner:
+            - document:doc5
+          editor:
+            - document:doc5  # owner implies editor

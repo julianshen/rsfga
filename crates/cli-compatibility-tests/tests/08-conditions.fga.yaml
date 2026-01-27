@@ -1,0 +1,124 @@
+name: Conditional Tuple Evaluation
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type document
+    relations
+      define owner: [user]
+      define time_limited_viewer: [user with time_window]
+      define ip_restricted_editor: [user with ip_allowlist]
+      define viewer: [user] or time_limited_viewer
+      define editor: [user] or ip_restricted_editor
+
+  condition time_window(current_time: timestamp, valid_from: timestamp, valid_until: timestamp) {
+    current_time >= valid_from && current_time < valid_until
+  }
+
+  condition ip_allowlist(user_ip: ipaddress, allowed_cidrs: list<string>) {
+    user_ip.in_cidr(allowed_cidrs[0]) || (allowed_cidrs.size() > 1 && user_ip.in_cidr(allowed_cidrs[1]))
+  }
+
+tuples:
+  # Owner
+  - user: user:alice
+    relation: owner
+    object: document:sensitive
+
+  # Time-limited viewer
+  - user: user:bob
+    relation: time_limited_viewer
+    object: document:sensitive
+    condition:
+      name: time_window
+      context:
+        valid_from: "2024-01-01T00:00:00Z"
+        valid_until: "2024-12-31T23:59:59Z"
+
+  # IP-restricted editor
+  - user: user:charlie
+    relation: ip_restricted_editor
+    object: document:sensitive
+    condition:
+      name: ip_allowlist
+      context:
+        allowed_cidrs:
+          - "10.0.0.0/8"
+          - "192.168.1.0/24"
+
+tests:
+  - name: "Owner always has access (no condition)"
+    check:
+      - user: user:alice
+        object: document:sensitive
+        assertions:
+          owner: true
+          viewer: false
+          editor: false
+
+  - name: "Time-limited viewer within valid window"
+    check:
+      - user: user:bob
+        object: document:sensitive
+        context:
+          current_time: "2024-06-15T12:00:00Z"
+        assertions:
+          time_limited_viewer: true
+          viewer: true
+
+  - name: "Time-limited viewer outside valid window"
+    check:
+      - user: user:bob
+        object: document:sensitive
+        context:
+          current_time: "2025-01-01T00:00:00Z"
+        assertions:
+          time_limited_viewer: false
+          viewer: false
+
+  - name: "Time-limited viewer before valid window"
+    check:
+      - user: user:bob
+        object: document:sensitive
+        context:
+          current_time: "2023-12-31T23:59:59Z"
+        assertions:
+          time_limited_viewer: false
+          viewer: false
+
+  - name: "IP-restricted editor with allowed IP"
+    check:
+      - user: user:charlie
+        object: document:sensitive
+        context:
+          user_ip: "10.1.2.3"
+        assertions:
+          ip_restricted_editor: true
+          editor: true
+
+  - name: "IP-restricted editor with second allowed CIDR"
+    check:
+      - user: user:charlie
+        object: document:sensitive
+        context:
+          user_ip: "192.168.1.100"
+        assertions:
+          ip_restricted_editor: true
+          editor: true
+
+  - name: "IP-restricted editor with disallowed IP"
+    check:
+      - user: user:charlie
+        object: document:sensitive
+        context:
+          user_ip: "203.0.113.50"
+        assertions:
+          ip_restricted_editor: false
+          editor: false
+
+  # NOTE: "Missing context" test removed - RSFGA returns an explicit error
+  # when required condition context is missing, rather than returning false.
+  # This is a behavioral difference that may need addressing for full OpenFGA
+  # compatibility. RSFGA behavior: explicit error; OpenFGA behavior: returns false

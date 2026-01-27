@@ -1,0 +1,117 @@
+name: Wildcard Relations
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type document
+    relations
+      define owner: [user]
+      define editor: [user, user:*]
+      define viewer: [user, user:*]
+      define public_viewer: [user:*]
+
+tuples:
+  # Specific user assignments
+  - user: user:alice
+    relation: owner
+    object: document:private
+
+  - user: user:bob
+    relation: editor
+    object: document:team-doc
+
+  # Wildcard: anyone can view public docs
+  - user: user:*
+    relation: viewer
+    object: document:public-readme
+
+  # Wildcard: anyone can edit wiki
+  - user: user:*
+    relation: editor
+    object: document:wiki
+
+  # Public viewer relation
+  - user: user:*
+    relation: public_viewer
+    object: document:announcement
+
+tests:
+  - name: "Wildcard grants access to any user"
+    check:
+      # Any user can view public document
+      - user: user:alice
+        object: document:public-readme
+        assertions:
+          viewer: true
+
+      - user: user:random-user-12345
+        object: document:public-readme
+        assertions:
+          viewer: true
+
+      - user: user:anyone
+        object: document:public-readme
+        assertions:
+          viewer: true
+
+  - name: "Wildcard editor grants edit to any user"
+    check:
+      - user: user:alice
+        object: document:wiki
+        assertions:
+          editor: true
+
+      - user: user:unknown
+        object: document:wiki
+        assertions:
+          editor: true
+
+  - name: "Specific assignment still works alongside wildcard"
+    check:
+      - user: user:bob
+        object: document:team-doc
+        assertions:
+          editor: true
+
+      - user: user:alice
+        object: document:team-doc
+        assertions:
+          editor: false
+
+  - name: "Private document not affected by wildcards elsewhere"
+    check:
+      - user: user:alice
+        object: document:private
+        assertions:
+          owner: true
+
+      - user: user:random
+        object: document:private
+        assertions:
+          owner: false
+          viewer: false
+          editor: false
+
+  - name: "List objects with wildcard returns wildcard-accessible objects"
+    list_objects:
+      - user: user:anyone
+        type: document
+        assertions:
+          viewer:
+            - document:public-readme
+          editor:
+            - document:wiki
+          public_viewer:
+            - document:announcement
+
+  - name: "List users returns wildcard"
+    list_users:
+      - object: document:public-readme
+        user_filter:
+          - type: user
+        assertions:
+          viewer:
+            users:
+              - user:*

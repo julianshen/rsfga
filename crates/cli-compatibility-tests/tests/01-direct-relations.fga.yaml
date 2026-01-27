@@ -1,0 +1,112 @@
+name: Direct Relations
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type document
+    relations
+      define owner: [user]
+      define editor: [user]
+      define viewer: [user]
+
+tuples:
+  # Owner assignment
+  - user: user:alice
+    relation: owner
+    object: document:budget
+
+  # Editor assignment
+  - user: user:bob
+    relation: editor
+    object: document:budget
+
+  # Viewer assignments
+  - user: user:charlie
+    relation: viewer
+    object: document:budget
+  - user: user:alice
+    relation: viewer
+    object: document:roadmap
+
+tests:
+  - name: "Owner has owner relation"
+    check:
+      - user: user:alice
+        object: document:budget
+        assertions:
+          owner: true
+          editor: false
+          viewer: false
+
+  - name: "Editor has editor relation only"
+    check:
+      - user: user:bob
+        object: document:budget
+        assertions:
+          owner: false
+          editor: true
+          viewer: false
+
+  - name: "Viewer has viewer relation only"
+    check:
+      - user: user:charlie
+        object: document:budget
+        assertions:
+          owner: false
+          editor: false
+          viewer: true
+
+  - name: "No relation returns false"
+    check:
+      - user: user:david
+        object: document:budget
+        assertions:
+          owner: false
+          editor: false
+          viewer: false
+
+  - name: "User with multiple documents"
+    check:
+      - user: user:alice
+        object: document:roadmap
+        assertions:
+          viewer: true
+          owner: false
+
+  - name: "List objects for owner"
+    list_objects:
+      - user: user:alice
+        type: document
+        assertions:
+          owner:
+            - document:budget
+
+  - name: "List objects for viewer"
+    list_objects:
+      - user: user:alice
+        type: document
+        assertions:
+          viewer:
+            - document:roadmap
+
+  - name: "List users with owner relation"
+    list_users:
+      - object: document:budget
+        user_filter:
+          - type: user
+        assertions:
+          owner:
+            users:
+              - user:alice
+
+  - name: "List users with viewer relation"
+    list_users:
+      - object: document:budget
+        user_filter:
+          - type: user
+        assertions:
+          viewer:
+            users:
+              - user:charlie

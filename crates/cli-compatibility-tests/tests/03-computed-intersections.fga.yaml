@@ -1,0 +1,115 @@
+name: Computed Intersection Relations
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type organization
+    relations
+      define member: [user]
+      define admin: [user]
+
+  type document
+    relations
+      define parent_org: [organization]
+      define org_member: member from parent_org
+      define org_admin: admin from parent_org
+      define editor: [user]
+      define can_edit: editor and org_member
+
+tuples:
+  # Organization structure
+  - user: user:alice
+    relation: member
+    object: organization:acme
+  - user: user:alice
+    relation: admin
+    object: organization:acme
+  - user: user:bob
+    relation: member
+    object: organization:acme
+  - user: user:charlie
+    relation: admin
+    object: organization:acme
+
+  # Document belongs to organization
+  - user: organization:acme
+    relation: parent_org
+    object: document:internal-doc
+
+  # Editor assignments
+  - user: user:alice
+    relation: editor
+    object: document:internal-doc
+  - user: user:bob
+    relation: editor
+    object: document:internal-doc
+  - user: user:david
+    relation: editor
+    object: document:internal-doc
+
+tests:
+  - name: "Intersection requires BOTH conditions"
+    check:
+      # Alice: editor AND org_member = true
+      - user: user:alice
+        object: document:internal-doc
+        assertions:
+          editor: true
+          org_member: true
+          can_edit: true
+
+      # Bob: editor AND org_member = true
+      - user: user:bob
+        object: document:internal-doc
+        assertions:
+          editor: true
+          org_member: true
+          can_edit: true
+
+      # Charlie: NOT editor but IS org_member = false
+      - user: user:charlie
+        object: document:internal-doc
+        assertions:
+          editor: false
+          org_member: false  # not a member, only admin
+          can_edit: false
+
+      # David: IS editor but NOT org_member = false
+      - user: user:david
+        object: document:internal-doc
+        assertions:
+          editor: true
+          org_member: false
+          can_edit: false
+
+  - name: "List objects respects intersection"
+    list_objects:
+      - user: user:alice
+        type: document
+        assertions:
+          can_edit:
+            - document:internal-doc
+      - user: user:david
+        type: document
+        assertions:
+          can_edit: []
+          editor:
+            - document:internal-doc
+
+  - name: "List users for intersection relation"
+    list_users:
+      - object: document:internal-doc
+        user_filter:
+          - type: user
+        assertions:
+          can_edit:
+            users:
+              - user:alice
+              - user:bob
+          editor:
+            users:
+              - user:alice
+              - user:bob
+              - user:david
