@@ -92,6 +92,170 @@ async fn test_can_create_tables_with_migrations() {
     store.delete_store("test-migrations").await.unwrap();
 }
 
+// ==========================================================================
+// Section: Migration Idempotency Tests (PostgreSQL)
+// ==========================================================================
+
+/// Test: Migrations are idempotent on PostgreSQL
+///
+/// Running migrations multiple times should succeed without errors.
+/// This verifies that CREATE TABLE IF NOT EXISTS and similar patterns work correctly.
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_migrations_idempotent_on_postgres() {
+    let database_url = get_database_url();
+
+    let config = PostgresConfig {
+        database_url,
+        max_connections: 5,
+        min_connections: 1,
+        connect_timeout_secs: 30,
+        ..Default::default()
+    };
+
+    let store = PostgresDataStore::from_config(&config)
+        .await
+        .expect("Failed to create PostgresDataStore");
+
+    // Run migrations multiple times - should succeed each time
+    for i in 1..=3 {
+        store
+            .run_migrations()
+            .await
+            .unwrap_or_else(|e| panic!("Migration run {i} failed: {e}"));
+    }
+
+    cleanup_test_stores(&store).await;
+
+    // Verify we can still operate normally
+    store
+        .create_store("test-pg-idempotent", "Migration Test Store")
+        .await
+        .unwrap();
+
+    let s = store.get_store("test-pg-idempotent").await.unwrap();
+    assert_eq!(s.id, "test-pg-idempotent");
+
+    // Cleanup
+    store.delete_store("test-pg-idempotent").await.unwrap();
+}
+
+/// Test: Column size migration is idempotent on PostgreSQL
+///
+/// Unlike CockroachDB, PostgreSQL doesn't have the expression index limitation,
+/// but we still need to verify that running column size migrations multiple times
+/// succeeds without errors.
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_column_size_migration_idempotent_on_postgres() {
+    let store = create_store().await;
+
+    // Run migrations multiple times - should succeed each time
+    for i in 1..=3 {
+        store
+            .run_migrations()
+            .await
+            .unwrap_or_else(|e| panic!("Migration run {i} failed: {e}"));
+    }
+
+    // Verify we can still operate normally after multiple migration runs
+    store
+        .create_store("test-pg-column-migration", "Migration Test Store")
+        .await
+        .unwrap();
+
+    // Write and read a tuple with condition to verify schema is correct
+    let tuple = StoredTuple::with_condition(
+        "document",
+        "readme",
+        "viewer",
+        "user",
+        "alice",
+        None,
+        "time_based",
+        None,
+    );
+    store
+        .write_tuple("test-pg-column-migration", tuple)
+        .await
+        .unwrap();
+
+    let tuples = store
+        .read_tuples(
+            "test-pg-column-migration",
+            &TupleFilter {
+                object_type: Some("document".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(tuples.len(), 1);
+    assert_eq!(tuples[0].condition_name, Some("time_based".to_string()));
+
+    // Cleanup
+    store
+        .delete_store("test-pg-column-migration")
+        .await
+        .unwrap();
+}
+
+/// Test: Verify column sizes are correct after migration on PostgreSQL
+///
+/// This test queries information_schema to verify all VARCHAR columns have
+/// the expected sizes after running migrations.
+#[tokio::test]
+#[ignore = "requires running PostgreSQL"]
+async fn test_column_sizes_correct_after_migration_on_postgres() {
+    let store = create_store().await;
+
+    // Expected column sizes matching the column_specs in apply_column_size_migration
+    let expected_sizes: Vec<(&str, &str, i32)> = vec![
+        ("stores", "id", 26),
+        ("stores", "name", 256),
+        ("authorization_models", "id", 26),
+        ("authorization_models", "store_id", 26),
+        ("tuples", "store_id", 26),
+        ("tuples", "object_type", 254),
+        ("tuples", "object_id", 256),
+        ("tuples", "relation", 50),
+        ("tuples", "user_type", 254),
+        ("tuples", "user_id", 512),
+        ("tuples", "user_relation", 50),
+        ("tuples", "condition_name", 256),
+        ("changelog", "store_id", 26),
+        ("changelog", "object_type", 254),
+        ("changelog", "object_id", 256),
+        ("changelog", "relation", 50),
+        ("changelog", "user_type", 254),
+        ("changelog", "user_id", 512),
+        ("changelog", "user_relation", 50),
+        ("changelog", "condition_name", 256),
+    ];
+
+    // Query actual column sizes from information_schema
+    // Note: PostgreSQL returns INT4 (i32) for character_maximum_length
+    for (table, column, expected_size) in expected_sizes {
+        let actual_size: Option<i32> = sqlx::query_scalar(
+            "SELECT character_maximum_length FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_optional(store.pool())
+        .await
+        .unwrap_or_else(|e| panic!("Failed to query size for {table}.{column}: {e}"))
+        .flatten();
+
+        assert_eq!(
+            actual_size,
+            Some(expected_size),
+            "Column {table}.{column} should have size {expected_size}, got {actual_size:?}"
+        );
+    }
+}
+
 // Test: Can write tuple to database
 #[tokio::test]
 #[ignore = "requires running PostgreSQL"]

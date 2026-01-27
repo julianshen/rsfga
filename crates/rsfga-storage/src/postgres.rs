@@ -807,85 +807,114 @@ impl PostgresDataStore {
         // PostgreSQL ALTER TABLE ... TYPE is idempotent, so we can run these
         // unconditionally. Unlike MySQL, there's no need to check current sizes.
         //
-        // Note: Both PostgreSQL and CockroachDB support the same ALTER COLUMN syntax.
+        // IMPORTANT: CockroachDB has expression indexes that prevent ALTER COLUMN TYPE
+        // even when no actual change is needed. For CockroachDB, we must check if the
+        // column already has the target size and skip the ALTER if it does.
         //
         // IMPORTANT: Some columns are being SHRUNK (255→26 for store_id fields).
         // This will fail if existing data exceeds the new limit. In practice,
         // store IDs should always be ULIDs (26 chars), so this should be safe.
         // If migration fails, manually verify data lengths before retrying.
 
-        // 1. stores table - must be migrated first (parent table for FKs)
-        let stores_alterations = [
-            // Note: Shrinking id from 255 to 26 - will fail if data > 26 chars
-            "ALTER TABLE stores ALTER COLUMN id TYPE VARCHAR(26)",
-            "ALTER TABLE stores ALTER COLUMN name TYPE VARCHAR(256)",
+        let is_cockroachdb = self.is_cockroachdb().await?;
+
+        // Helper function to check if a column needs alteration on CockroachDB.
+        // Note: CockroachDB returns INT8 (i64) for character_maximum_length, so we use i64.
+        //
+        // Returns:
+        // - Ok(true) if column needs alteration (size doesn't match target)
+        // - Ok(false) if column already has correct size (skip alteration)
+        // - Error if column doesn't exist (indicates schema mismatch)
+        async fn needs_column_alteration(
+            pool: &sqlx::PgPool,
+            table: &str,
+            column: &str,
+            target_size: i64,
+        ) -> StorageResult<bool> {
+            let current_size: Option<i64> = sqlx::query_scalar(
+                "SELECT character_maximum_length FROM information_schema.columns \
+                 WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2",
+            )
+            .bind(table)
+            .bind(column)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| StorageError::QueryError {
+                message: format!("Failed to check column size for {table}.{column}: {e}"),
+            })?
+            .flatten();
+
+            match current_size {
+                Some(size) => Ok(size != target_size),
+                None => {
+                    // Column doesn't exist - this indicates a schema issue.
+                    // Return true to attempt ALTER, which will produce a clear error message.
+                    debug!(
+                        table,
+                        column, "Column not found in information_schema, will attempt ALTER"
+                    );
+                    Ok(true)
+                }
+            }
+        }
+
+        // Column size specifications: (table, column, target_size)
+        // Using i64 for target_size to match CockroachDB's INT8 return type.
+        //
+        // SAFETY: These values are hardcoded string literals (not user input),
+        // so the format! macro below is safe from SQL injection. If modifying
+        // this to accept dynamic values, use parameterized queries instead.
+        let column_specs: [(&str, &str, i64); 20] = [
+            // stores table - must be migrated first (parent table for FKs)
+            ("stores", "id", 26),
+            ("stores", "name", 256),
+            // authorization_models table - references stores.id
+            ("authorization_models", "id", 26),
+            ("authorization_models", "store_id", 26),
+            // tuples table - references stores.id
+            ("tuples", "store_id", 26),
+            ("tuples", "object_type", 254),
+            ("tuples", "object_id", 256),
+            ("tuples", "relation", 50),
+            ("tuples", "user_type", 254),
+            ("tuples", "user_id", 512),
+            ("tuples", "user_relation", 50),
+            ("tuples", "condition_name", 256),
+            // changelog table - references stores.id (same fields as tuples)
+            ("changelog", "store_id", 26),
+            ("changelog", "object_type", 254),
+            ("changelog", "object_id", 256),
+            ("changelog", "relation", 50),
+            ("changelog", "user_type", 254),
+            ("changelog", "user_id", 512),
+            ("changelog", "user_relation", 50),
+            ("changelog", "condition_name", 256),
         ];
 
-        for sql in stores_alterations {
-            sqlx::query(sql)
+        for (table, column, target_size) in column_specs {
+            // For CockroachDB, skip if column already has correct size
+            // This avoids errors with expression indexes that depend on the column
+            if is_cockroachdb
+                && !needs_column_alteration(&self.pool, table, column, target_size).await?
+            {
+                debug!(
+                    table,
+                    column, target_size, "Skipping column alteration (already correct size)"
+                );
+                continue;
+            }
+
+            let sql =
+                format!("ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR({target_size})");
+            sqlx::query(&sql)
                 .execute(&self.pool)
                 .await
                 .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to alter stores table: {e}"),
+                    message: format!("Failed to alter {table}.{column}: {e}"),
                 })?;
         }
 
-        // 2. authorization_models table - references stores.id
-        let auth_models_alterations = [
-            "ALTER TABLE authorization_models ALTER COLUMN id TYPE VARCHAR(26)",
-            "ALTER TABLE authorization_models ALTER COLUMN store_id TYPE VARCHAR(26)",
-        ];
-
-        for sql in auth_models_alterations {
-            sqlx::query(sql)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to alter authorization_models table: {e}"),
-                })?;
-        }
-
-        // 3. tuples table - references stores.id
-        let tuples_alterations = [
-            "ALTER TABLE tuples ALTER COLUMN store_id TYPE VARCHAR(26)",
-            "ALTER TABLE tuples ALTER COLUMN object_type TYPE VARCHAR(254)",
-            "ALTER TABLE tuples ALTER COLUMN object_id TYPE VARCHAR(256)",
-            "ALTER TABLE tuples ALTER COLUMN relation TYPE VARCHAR(50)",
-            "ALTER TABLE tuples ALTER COLUMN user_type TYPE VARCHAR(254)",
-            "ALTER TABLE tuples ALTER COLUMN user_id TYPE VARCHAR(512)",
-            "ALTER TABLE tuples ALTER COLUMN user_relation TYPE VARCHAR(50)",
-        ];
-
-        for sql in tuples_alterations {
-            sqlx::query(sql)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to alter tuples table: {e}"),
-                })?;
-        }
-
-        // 4. changelog table - references stores.id (same fields as tuples)
-        let changelog_alterations = [
-            "ALTER TABLE changelog ALTER COLUMN store_id TYPE VARCHAR(26)",
-            "ALTER TABLE changelog ALTER COLUMN object_type TYPE VARCHAR(254)",
-            "ALTER TABLE changelog ALTER COLUMN object_id TYPE VARCHAR(256)",
-            "ALTER TABLE changelog ALTER COLUMN relation TYPE VARCHAR(50)",
-            "ALTER TABLE changelog ALTER COLUMN user_type TYPE VARCHAR(254)",
-            "ALTER TABLE changelog ALTER COLUMN user_id TYPE VARCHAR(512)",
-            "ALTER TABLE changelog ALTER COLUMN user_relation TYPE VARCHAR(50)",
-        ];
-
-        for sql in changelog_alterations {
-            sqlx::query(sql)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| StorageError::QueryError {
-                    message: format!("Failed to alter changelog table: {e}"),
-                })?;
-        }
-
-        // 5. assertions table - references stores.id and authorization_models.id
+        // assertions table - references stores.id and authorization_models.id
         // Check if assertions table exists before altering
         let assertions_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'assertions')",
@@ -897,15 +926,28 @@ impl PostgresDataStore {
         })?;
 
         if assertions_exists {
-            let assertions_alterations = [
-                "ALTER TABLE assertions ALTER COLUMN store_id TYPE VARCHAR(26)",
-                "ALTER TABLE assertions ALTER COLUMN authorization_model_id TYPE VARCHAR(26)",
+            let assertions_specs: [(&str, &str, i64); 2] = [
+                ("assertions", "store_id", 26),
+                ("assertions", "authorization_model_id", 26),
             ];
 
-            for sql in assertions_alterations {
-                sqlx::query(sql).execute(&self.pool).await.map_err(|e| {
+            for (table, column, target_size) in assertions_specs {
+                if is_cockroachdb
+                    && !needs_column_alteration(&self.pool, table, column, target_size).await?
+                {
+                    debug!(
+                        table,
+                        column, target_size, "Skipping column alteration (already correct size)"
+                    );
+                    continue;
+                }
+
+                let sql = format!(
+                    "ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR({target_size})"
+                );
+                sqlx::query(&sql).execute(&self.pool).await.map_err(|e| {
                     StorageError::QueryError {
-                        message: format!("Failed to alter assertions table: {e}"),
+                        message: format!("Failed to alter {table}.{column}: {e}"),
                     }
                 })?;
             }
