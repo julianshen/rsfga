@@ -39,6 +39,13 @@ if ! command -v fga &> /dev/null; then
     exit 1
 fi
 
+# Check if jq is installed
+if ! command -v jq &> /dev/null; then
+    echo -e "${RED}Error: jq not found${NC}"
+    echo "Install it with: brew install jq"
+    exit 1
+fi
+
 # Check if server is running
 echo -e "${BLUE}Checking connection to ${FGA_API_URL}...${NC}"
 if ! curl -sf "${FGA_API_URL}/health" > /dev/null 2>&1; then
@@ -113,9 +120,9 @@ for test_file in "${TEST_FILES[@]}"; do
         continue
     }
 
-    # Extract store ID from JSON output (handles both ULID and UUID formats)
+    # Extract store ID from JSON output using jq
     # JSON format: {"store":{"id":"01KFZZSBM316YHPWRH0RHE64SD",...}}
-    store_id=$(echo "$store_result" | grep -oE '"id":"[^"]+"' | head -1 | cut -d'"' -f4) || {
+    store_id=$(echo "$store_result" | jq -r '.store.id // empty') || {
         echo -e "${RED}FAIL${NC} (could not extract store ID)"
         if [ "$VERBOSE" = "true" ]; then
             echo "  Output: ${store_result}"

@@ -34,6 +34,13 @@ if ! command -v fga &> /dev/null; then
     exit 1
 fi
 
+# Check jq
+if ! command -v jq &> /dev/null; then
+    echo -e "${RED}Error: jq not found${NC}"
+    echo "Install it with: brew install jq"
+    exit 1
+fi
+
 echo -e "${CYAN}============================================${NC}"
 echo -e "${CYAN}  OpenFGA vs RSFGA Compatibility Comparison${NC}"
 echo -e "${CYAN}============================================${NC}"
@@ -79,7 +86,7 @@ run_test() {
 
     # Create store
     store_result=$(fga store create --api-url "${api_url}" --name "compare-${test_name}-$$" 2>&1) || return 1
-    store_id=$(echo "$store_result" | grep -oE '"id":"[^"]+"' | head -1 | cut -d'"' -f4) || return 1
+    store_id=$(echo "$store_result" | jq -r '.store.id // empty') || return 1
     [ -z "$store_id" ] && return 1
 
     # Run test

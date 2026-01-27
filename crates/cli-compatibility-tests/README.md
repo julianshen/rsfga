@@ -12,7 +12,12 @@ Tests are written as `.fga.yaml` files and executed using `fga model test`.
    go install github.com/openfga/cli/cmd/fga@latest
    ```
 
-2. Start RSFGA server:
+2. Install jq (for JSON parsing):
+   ```bash
+   brew install jq
+   ```
+
+3. Start RSFGA server:
    ```bash
    cargo run --release
    ```
