@@ -818,8 +818,13 @@ impl PostgresDataStore {
 
         let is_cockroachdb = self.is_cockroachdb().await?;
 
-        // Helper function to check if a column needs alteration on CockroachDB
+        // Helper function to check if a column needs alteration on CockroachDB.
         // Note: CockroachDB returns INT8 (i64) for character_maximum_length, so we use i64.
+        //
+        // Returns:
+        // - Ok(true) if column needs alteration (size doesn't match target)
+        // - Ok(false) if column already has correct size (skip alteration)
+        // - Error if column doesn't exist (indicates schema mismatch)
         async fn needs_column_alteration(
             pool: &sqlx::PgPool,
             table: &str,
@@ -839,13 +844,27 @@ impl PostgresDataStore {
             })?
             .flatten();
 
-            // If column doesn't exist or size doesn't match, needs alteration
-            Ok(current_size != Some(target_size))
+            match current_size {
+                Some(size) => Ok(size != target_size),
+                None => {
+                    // Column doesn't exist - this indicates a schema issue.
+                    // Return true to attempt ALTER, which will produce a clear error message.
+                    debug!(
+                        table,
+                        column, "Column not found in information_schema, will attempt ALTER"
+                    );
+                    Ok(true)
+                }
+            }
         }
 
         // Column size specifications: (table, column, target_size)
-        // Using i64 for target_size to match CockroachDB's INT8 return type
-        let column_specs: [(&str, &str, i64); 18] = [
+        // Using i64 for target_size to match CockroachDB's INT8 return type.
+        //
+        // SAFETY: These values are hardcoded string literals (not user input),
+        // so the format! macro below is safe from SQL injection. If modifying
+        // this to accept dynamic values, use parameterized queries instead.
+        let column_specs: [(&str, &str, i64); 20] = [
             // stores table - must be migrated first (parent table for FKs)
             ("stores", "id", 26),
             ("stores", "name", 256),
@@ -860,6 +879,7 @@ impl PostgresDataStore {
             ("tuples", "user_type", 254),
             ("tuples", "user_id", 512),
             ("tuples", "user_relation", 50),
+            ("tuples", "condition_name", 256),
             // changelog table - references stores.id (same fields as tuples)
             ("changelog", "store_id", 26),
             ("changelog", "object_type", 254),
@@ -868,6 +888,7 @@ impl PostgresDataStore {
             ("changelog", "user_type", 254),
             ("changelog", "user_id", 512),
             ("changelog", "user_relation", 50),
+            ("changelog", "condition_name", 256),
         ];
 
         for (table, column, target_size) in column_specs {
