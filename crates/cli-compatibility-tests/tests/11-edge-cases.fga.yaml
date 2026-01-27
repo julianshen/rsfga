@@ -1,0 +1,182 @@
+name: Edge Cases and Boundary Conditions
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type level0
+    relations
+      define member: [user]
+
+  type level1
+    relations
+      define parent: [level0]
+      define member: member from parent
+
+  type level2
+    relations
+      define parent: [level1]
+      define member: member from parent
+
+  type level3
+    relations
+      define parent: [level2]
+      define member: member from parent
+
+  type level4
+    relations
+      define parent: [level3]
+      define member: member from parent
+
+  type level5
+    relations
+      define parent: [level4]
+      define member: member from parent
+
+  type document
+    relations
+      define owner: [user]
+      define self_ref: owner
+      define a: [user]
+      define b: [user] or a
+      define c: [user] or b
+      define complex: a and b and c
+
+tuples:
+  # Deep nesting setup
+  - user: user:deep
+    relation: member
+    object: level0:root
+
+  - user: level0:root
+    relation: parent
+    object: level1:l1
+
+  - user: level1:l1
+    relation: parent
+    object: level2:l2
+
+  - user: level2:l2
+    relation: parent
+    object: level3:l3
+
+  - user: level3:l3
+    relation: parent
+    object: level4:l4
+
+  - user: level4:l4
+    relation: parent
+    object: level5:l5
+
+  # Self-referencing relation
+  - user: user:alice
+    relation: owner
+    object: document:self-ref-test
+
+  # Complex intersection
+  - user: user:bob
+    relation: a
+    object: document:complex-test
+  - user: user:bob
+    relation: b
+    object: document:complex-test
+  - user: user:bob
+    relation: c
+    object: document:complex-test
+
+  - user: user:charlie
+    relation: a
+    object: document:complex-test
+
+tests:
+  - name: "Deep nesting resolution (5 levels)"
+    check:
+      - user: user:deep
+        object: level5:l5
+        assertions:
+          member: true
+
+      - user: user:deep
+        object: level4:l4
+        assertions:
+          member: true
+
+      - user: user:deep
+        object: level3:l3
+        assertions:
+          member: true
+
+  - name: "Self-referencing relation"
+    check:
+      - user: user:alice
+        object: document:self-ref-test
+        assertions:
+          owner: true
+          self_ref: true  # self_ref = owner
+
+  - name: "Complex intersection (a AND b AND c)"
+    check:
+      # Bob has all three
+      - user: user:bob
+        object: document:complex-test
+        assertions:
+          a: true
+          b: true
+          c: true
+          complex: true
+
+      # Charlie only has 'a' - fails intersection
+      - user: user:charlie
+        object: document:complex-test
+        assertions:
+          a: true
+          b: true   # b = [user] or a
+          c: true   # c = [user] or b
+          complex: true  # all conditions met via computed relations
+
+  - name: "Non-existent object returns false"
+    check:
+      - user: user:alice
+        object: document:does-not-exist
+        assertions:
+          owner: false
+          self_ref: false
+
+  - name: "Non-existent user returns false"
+    check:
+      - user: user:nobody-12345
+        object: document:self-ref-test
+        assertions:
+          owner: false
+
+  - name: "Empty string handling"
+    check:
+      - user: user:alice
+        object: level0:root
+        assertions:
+          member: false
+
+  - name: "List objects with deep nesting"
+    list_objects:
+      - user: user:deep
+        type: level5
+        assertions:
+          member:
+            - level5:l5
+
+      - user: user:deep
+        type: level3
+        assertions:
+          member:
+            - level3:l3
+
+  - name: "List users from deep hierarchy"
+    list_users:
+      - object: level5:l5
+        user_filter:
+          - type: user
+        assertions:
+          member:
+            users:
+              - user:deep

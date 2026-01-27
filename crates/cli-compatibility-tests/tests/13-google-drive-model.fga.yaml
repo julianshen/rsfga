@@ -1,0 +1,253 @@
+name: Google Drive-style Permissions Model
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type domain
+    relations
+      define member: [user]
+      define admin: [user]
+
+  type group
+    relations
+      define member: [user, group#member, domain#member]
+      define manager: [user]
+
+  type folder
+    relations
+      define parent: [folder]
+      define owner: [user, domain#admin]
+      define editor: [user, group#member] or owner or editor from parent
+      define viewer: [user, group#member, user:*, domain#member] or editor or viewer from parent
+      define can_share: owner
+
+  type doc
+    relations
+      define parent: [folder]
+      define owner: [user]
+      define editor: [user, group#member] or owner or editor from parent
+      define commenter: [user, group#member] or editor
+      define viewer: [user, group#member, user:*] or commenter or viewer from parent
+
+tuples:
+  # Domain setup
+  - user: user:alice
+    relation: member
+    object: domain:acme.com
+
+  - user: user:bob
+    relation: member
+    object: domain:acme.com
+
+  - user: user:admin
+    relation: admin
+    object: domain:acme.com
+
+  # Group setup
+  - user: user:alice
+    relation: manager
+    object: group:engineering
+
+  - user: user:bob
+    relation: member
+    object: group:engineering
+
+  - user: user:charlie
+    relation: member
+    object: group:marketing
+
+  - user: domain:acme.com#member
+    relation: member
+    object: group:all-employees
+
+  # Folder structure
+  - user: user:alice
+    relation: owner
+    object: folder:engineering-docs
+
+  - user: group:engineering#member
+    relation: editor
+    object: folder:engineering-docs
+
+  - user: folder:engineering-docs
+    relation: parent
+    object: folder:api-specs
+
+  # Documents
+  - user: folder:api-specs
+    relation: parent
+    object: doc:api-v2
+
+  - user: user:bob
+    relation: owner
+    object: doc:design-doc
+
+  - user: group:marketing#member
+    relation: viewer
+    object: doc:design-doc
+
+  # Public document
+  - user: user:alice
+    relation: owner
+    object: doc:public-readme
+
+  - user: user:*
+    relation: viewer
+    object: doc:public-readme
+
+  # Domain-wide shared folder
+  - user: domain:acme.com#member
+    relation: viewer
+    object: folder:company-wiki
+
+tests:
+  - name: "Folder owner has all permissions"
+    check:
+      - user: user:alice
+        object: folder:engineering-docs
+        assertions:
+          owner: true
+          editor: true
+          viewer: true
+          can_share: true
+
+  - name: "Group member can edit shared folder"
+    check:
+      - user: user:bob
+        object: folder:engineering-docs
+        assertions:
+          owner: false
+          editor: true
+          viewer: true
+          can_share: false
+
+  - name: "Nested folder inherits permissions"
+    check:
+      - user: user:alice
+        object: folder:api-specs
+        assertions:
+          editor: true  # inherited from parent folder
+
+      - user: user:bob
+        object: folder:api-specs
+        assertions:
+          editor: true  # inherited from parent folder via group membership
+
+  - name: "Document inherits folder permissions"
+    check:
+      - user: user:alice
+        object: doc:api-v2
+        assertions:
+          editor: true  # via parent folder
+          viewer: true
+
+      - user: user:bob
+        object: doc:api-v2
+        assertions:
+          editor: true  # via parent folder
+          viewer: true
+
+  - name: "Document owner has all permissions"
+    check:
+      - user: user:bob
+        object: doc:design-doc
+        assertions:
+          owner: true
+          editor: true
+          commenter: true
+          viewer: true
+
+  - name: "Group viewer can view document"
+    check:
+      - user: user:charlie
+        object: doc:design-doc
+        assertions:
+          owner: false
+          editor: false
+          commenter: false
+          viewer: true
+
+  - name: "Public document accessible by anyone"
+    check:
+      - user: user:random
+        object: doc:public-readme
+        assertions:
+          viewer: true
+          editor: false
+
+  - name: "Domain member can access domain-shared folder"
+    check:
+      - user: user:alice
+        object: folder:company-wiki
+        assertions:
+          viewer: true
+
+      - user: user:bob
+        object: folder:company-wiki
+        assertions:
+          viewer: true
+
+  - name: "Non-domain user cannot access domain-shared folder"
+    check:
+      - user: user:external
+        object: folder:company-wiki
+        assertions:
+          viewer: false
+
+  - name: "List all folders user can edit"
+    list_objects:
+      - user: user:alice
+        type: folder
+        assertions:
+          editor:
+            - folder:engineering-docs
+            - folder:api-specs  # inherited from parent
+          owner:
+            - folder:engineering-docs
+
+      - user: user:bob
+        type: folder
+        assertions:
+          editor:
+            - folder:engineering-docs
+            - folder:api-specs  # inherited from parent
+          owner: []
+
+  - name: "List all documents user can view"
+    list_objects:
+      - user: user:charlie
+        type: doc
+        assertions:
+          viewer:
+            - doc:design-doc
+            - doc:public-readme  # via user:* wildcard
+
+  - name: "List users who can edit folder"
+    list_users:
+      - object: folder:engineering-docs
+        user_filter:
+          - type: user
+        assertions:
+          owner:
+            users:
+              - user:alice
+          editor:
+            users:
+              - user:alice
+              - user:bob
+
+  - name: "List users who can view document"
+    list_users:
+      - object: doc:design-doc
+        user_filter:
+          - type: user
+        assertions:
+          owner:
+            users:
+              - user:bob
+          viewer:
+            users:
+              - user:bob
+              - user:charlie

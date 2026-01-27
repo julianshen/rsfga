@@ -1,0 +1,104 @@
+name: Computed Union Relations
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type document
+    relations
+      define owner: [user]
+      define editor: [user] or owner
+      define viewer: [user] or editor
+
+tuples:
+  # Alice is owner - should have all relations via union
+  - user: user:alice
+    relation: owner
+    object: document:spec
+
+  # Bob is direct editor - should have editor and viewer
+  - user: user:bob
+    relation: editor
+    object: document:spec
+
+  # Charlie is direct viewer only
+  - user: user:charlie
+    relation: viewer
+    object: document:spec
+
+tests:
+  - name: "Owner gets all relations via union chain"
+    check:
+      - user: user:alice
+        object: document:spec
+        assertions:
+          owner: true
+          editor: true   # via: editor = [user] or owner
+          viewer: true   # via: viewer = [user] or editor (and owner is editor)
+
+  - name: "Direct editor gets editor and viewer"
+    check:
+      - user: user:bob
+        object: document:spec
+        assertions:
+          owner: false
+          editor: true   # direct assignment
+          viewer: true   # via: viewer = [user] or editor
+
+  - name: "Direct viewer gets viewer only"
+    check:
+      - user: user:charlie
+        object: document:spec
+        assertions:
+          owner: false
+          editor: false
+          viewer: true   # direct assignment
+
+  - name: "No assignment returns false for all"
+    check:
+      - user: user:david
+        object: document:spec
+        assertions:
+          owner: false
+          editor: false
+          viewer: false
+
+  - name: "List objects resolves unions correctly"
+    list_objects:
+      - user: user:alice
+        type: document
+        assertions:
+          owner:
+            - document:spec
+          editor:
+            - document:spec
+          viewer:
+            - document:spec
+      - user: user:bob
+        type: document
+        assertions:
+          owner: []
+          editor:
+            - document:spec
+          viewer:
+            - document:spec
+
+  - name: "List users includes computed relations"
+    list_users:
+      - object: document:spec
+        user_filter:
+          - type: user
+        assertions:
+          owner:
+            users:
+              - user:alice
+          editor:
+            users:
+              - user:alice
+              - user:bob
+          viewer:
+            users:
+              - user:alice
+              - user:bob
+              - user:charlie

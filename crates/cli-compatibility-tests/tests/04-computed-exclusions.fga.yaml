@@ -1,0 +1,119 @@
+name: Computed Exclusion Relations (but not)
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type document
+    relations
+      define owner: [user]
+      define editor: [user]
+      define viewer: [user]
+      define blocked: [user]
+      define can_view: viewer but not blocked
+      define can_edit: editor but not blocked
+
+tuples:
+  # Regular assignments
+  - user: user:alice
+    relation: viewer
+    object: document:confidential
+  - user: user:bob
+    relation: viewer
+    object: document:confidential
+  - user: user:charlie
+    relation: editor
+    object: document:confidential
+  - user: user:david
+    relation: editor
+    object: document:confidential
+
+  # Block some users
+  - user: user:bob
+    relation: blocked
+    object: document:confidential
+  - user: user:david
+    relation: blocked
+    object: document:confidential
+
+tests:
+  - name: "Exclusion removes blocked users from viewers"
+    check:
+      # Alice: viewer and NOT blocked
+      - user: user:alice
+        object: document:confidential
+        assertions:
+          viewer: true
+          blocked: false
+          can_view: true
+
+      # Bob: viewer BUT blocked
+      - user: user:bob
+        object: document:confidential
+        assertions:
+          viewer: true
+          blocked: true
+          can_view: false
+
+  - name: "Exclusion removes blocked users from editors"
+    check:
+      # Charlie: editor and NOT blocked
+      - user: user:charlie
+        object: document:confidential
+        assertions:
+          editor: true
+          blocked: false
+          can_edit: true
+
+      # David: editor BUT blocked
+      - user: user:david
+        object: document:confidential
+        assertions:
+          editor: true
+          blocked: true
+          can_edit: false
+
+  - name: "User with no base relation still can't access"
+    check:
+      - user: user:eve
+        object: document:confidential
+        assertions:
+          viewer: false
+          blocked: false
+          can_view: false
+
+  - name: "List objects excludes blocked"
+    list_objects:
+      - user: user:alice
+        type: document
+        assertions:
+          can_view:
+            - document:confidential
+      - user: user:bob
+        type: document
+        assertions:
+          viewer:
+            - document:confidential
+          can_view: []  # blocked!
+
+  - name: "List users excludes blocked"
+    list_users:
+      - object: document:confidential
+        user_filter:
+          - type: user
+        assertions:
+          can_view:
+            users:
+              - user:alice
+          can_edit:
+            users:
+              - user:charlie
+          viewer:
+            users:
+              - user:alice
+              - user:bob
+          blocked:
+            users:
+              - user:bob
+              - user:david

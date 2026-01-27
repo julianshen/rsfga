@@ -1,0 +1,149 @@
+name: Nested Relations (Multi-hop Traversal)
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type team
+    relations
+      define member: [user]
+      define lead: [user]
+
+  type project
+    relations
+      define team: [team]
+      define team_member: member from team
+      define team_lead: lead from team
+      define owner: [user]
+      define editor: [user] or team_lead or owner
+      define viewer: [user] or editor or team_member
+
+  type task
+    relations
+      define parent_project: [project]
+      define project_owner: owner from parent_project
+      define project_editor: editor from parent_project
+      define project_viewer: viewer from parent_project
+      define assignee: [user]
+      define can_complete: assignee or project_editor
+
+tuples:
+  # Team structure
+  - user: user:alice
+    relation: lead
+    object: team:engineering
+  - user: user:bob
+    relation: member
+    object: team:engineering
+  - user: user:charlie
+    relation: member
+    object: team:engineering
+
+  # Project -> Team relationship
+  - user: team:engineering
+    relation: team
+    object: project:alpha
+
+  # Project owner
+  - user: user:diana
+    relation: owner
+    object: project:alpha
+
+  # Task -> Project relationship
+  - user: project:alpha
+    relation: parent_project
+    object: task:implement-feature
+
+  # Task assignee
+  - user: user:charlie
+    relation: assignee
+    object: task:implement-feature
+
+tests:
+  - name: "Team lead gets project editor via nested relation"
+    check:
+      - user: user:alice
+        object: project:alpha
+        assertions:
+          team_lead: true
+          editor: true    # via: editor = [user] or team_lead
+          viewer: true    # via: viewer = [user] or editor
+
+  - name: "Team member gets project viewer via nested relation"
+    check:
+      - user: user:bob
+        object: project:alpha
+        assertions:
+          team_member: true
+          team_lead: false
+          editor: false
+          viewer: true    # via: viewer = team_member
+
+  - name: "Project owner gets all project relations"
+    check:
+      - user: user:diana
+        object: project:alpha
+        assertions:
+          owner: true
+          editor: true
+          viewer: true
+
+  - name: "3-hop: Team lead can complete tasks in their project"
+    check:
+      - user: user:alice
+        object: task:implement-feature
+        assertions:
+          project_editor: true   # user:alice -> team:engineering (lead) -> project:alpha (team_lead -> editor)
+          can_complete: true     # via project_editor
+
+  - name: "Assignee can complete their task"
+    check:
+      - user: user:charlie
+        object: task:implement-feature
+        assertions:
+          assignee: true
+          can_complete: true
+
+  - name: "Team member without assignment cannot complete"
+    check:
+      - user: user:bob
+        object: task:implement-feature
+        assertions:
+          project_viewer: true
+          project_editor: false
+          assignee: false
+          can_complete: false
+
+  - name: "List objects through nested relations"
+    list_objects:
+      - user: user:alice
+        type: project
+        assertions:
+          editor:
+            - project:alpha
+          viewer:
+            - project:alpha
+      - user: user:bob
+        type: project
+        assertions:
+          editor: []
+          viewer:
+            - project:alpha
+
+  - name: "List users through nested project"
+    list_users:
+      - object: project:alpha
+        user_filter:
+          - type: user
+        assertions:
+          viewer:
+            users:
+              - user:alice
+              - user:bob
+              - user:charlie
+              - user:diana
+          editor:
+            users:
+              - user:alice
+              - user:diana

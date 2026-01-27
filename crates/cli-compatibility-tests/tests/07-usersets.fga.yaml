@@ -1,0 +1,151 @@
+name: Userset References
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type group
+    relations
+      define member: [user, group#member]
+      define admin: [user]
+
+  type folder
+    relations
+      define owner: [user]
+      define editor: [user, group#member]
+      define viewer: [user, group#member] or editor
+
+  type document
+    relations
+      define parent_folder: [folder]
+      define folder_owner: owner from parent_folder
+      define folder_editor: editor from parent_folder
+      define folder_viewer: viewer from parent_folder
+      define owner: [user] or folder_owner
+      define editor: [user, group#member] or owner or folder_editor
+      define viewer: [user, group#member] or editor or folder_viewer
+
+tuples:
+  # Group memberships (including nested groups)
+  - user: user:alice
+    relation: member
+    object: group:engineering
+  - user: user:bob
+    relation: member
+    object: group:engineering
+  - user: user:charlie
+    relation: admin
+    object: group:engineering
+
+  # Nested group: design is a member of engineering
+  - user: group:design#member
+    relation: member
+    object: group:engineering
+  - user: user:diana
+    relation: member
+    object: group:design
+
+  # Folder with group access
+  - user: user:eve
+    relation: owner
+    object: folder:shared
+
+  - user: group:engineering#member
+    relation: editor
+    object: folder:shared
+
+  # Document in folder
+  - user: folder:shared
+    relation: parent_folder
+    object: document:specs
+
+tests:
+  - name: "Direct group member has access via userset"
+    check:
+      - user: user:alice
+        object: folder:shared
+        assertions:
+          editor: true
+          viewer: true
+
+      - user: user:bob
+        object: folder:shared
+        assertions:
+          editor: true
+          viewer: true
+
+  - name: "Nested group member has access via transitive userset"
+    check:
+      # Diana is member of design, design#member is member of engineering
+      - user: user:diana
+        object: folder:shared
+        assertions:
+          editor: true    # via group:engineering#member which includes group:design#member
+          viewer: true
+
+  - name: "Group admin without membership has no access"
+    check:
+      - user: user:charlie
+        object: folder:shared
+        assertions:
+          editor: false   # admin is not a member
+          viewer: false
+
+  - name: "Folder owner has owner access"
+    check:
+      - user: user:eve
+        object: folder:shared
+        assertions:
+          owner: true
+          editor: false   # owner doesn't automatically get editor via userset
+          viewer: false   # viewer = [user, group#member] or editor, doesn't include owner
+
+  - name: "Document inherits folder permissions"
+    check:
+      - user: user:alice
+        object: document:specs
+        assertions:
+          folder_editor: true
+          editor: true
+          viewer: true
+
+      - user: user:eve
+        object: document:specs
+        assertions:
+          folder_owner: true
+          owner: true
+          editor: true
+          viewer: true
+
+  - name: "List objects with userset access"
+    list_objects:
+      - user: user:alice
+        type: folder
+        assertions:
+          editor:
+            - folder:shared
+      - user: user:diana
+        type: folder
+        assertions:
+          editor:
+            - folder:shared
+
+  - name: "List users includes userset members"
+    list_users:
+      - object: folder:shared
+        user_filter:
+          - type: user
+        assertions:
+          owner:
+            users:
+              - user:eve
+      - object: folder:shared
+        user_filter:
+          - type: group
+            relation: member
+        assertions:
+          editor:
+            users:
+              - group:engineering#member
+              - group:design#member  # transitively via design#member -> engineering

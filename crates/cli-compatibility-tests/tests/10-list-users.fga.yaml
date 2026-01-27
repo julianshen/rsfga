@@ -1,0 +1,202 @@
+name: ListUsers API Comprehensive Tests
+model: |
+  model
+    schema 1.1
+
+  type user
+
+  type group
+    relations
+      define member: [user, group#member]
+
+  type team
+    relations
+      define member: [user, group#member]
+      define lead: [user]
+
+  type document
+    relations
+      define owner: [user]
+      define editor: [user, group#member, team#member]
+      define viewer: [user, user:*, group#member] or editor or owner
+      define commenter: [user]
+
+tuples:
+  # Groups
+  - user: user:alice
+    relation: member
+    object: group:engineering
+  - user: user:bob
+    relation: member
+    object: group:engineering
+  - user: user:charlie
+    relation: member
+    object: group:design
+
+  # Nested group
+  - user: group:design#member
+    relation: member
+    object: group:all-staff
+
+  # Teams
+  - user: user:diana
+    relation: member
+    object: team:alpha
+  - user: user:eve
+    relation: lead
+    object: team:alpha
+  - user: group:engineering#member
+    relation: member
+    object: team:alpha
+
+  # Documents
+  - user: user:frank
+    relation: owner
+    object: document:budget
+
+  - user: group:engineering#member
+    relation: editor
+    object: document:roadmap
+
+  - user: team:alpha#member
+    relation: editor
+    object: document:sprint-plan
+
+  - user: user:*
+    relation: viewer
+    object: document:public-faq
+
+  - user: user:george
+    relation: viewer
+    object: document:memo
+
+  - user: user:hannah
+    relation: commenter
+    object: document:memo
+
+tests:
+  - name: "List direct users"
+    list_users:
+      - object: document:budget
+        user_filter:
+          - type: user
+        assertions:
+          owner:
+            users:
+              - user:frank
+          viewer:
+            users:
+              - user:frank  # owner implies viewer
+
+  - name: "List users from group userset"
+    list_users:
+      - object: document:roadmap
+        user_filter:
+          - type: user
+        assertions:
+          editor:
+            users:
+              - user:alice
+              - user:bob
+          viewer:
+            users:
+              - user:alice
+              - user:bob
+
+  - name: "List users from team userset"
+    list_users:
+      - object: document:sprint-plan
+        user_filter:
+          - type: user
+        assertions:
+          editor:
+            users:
+              - user:alice   # via group:engineering#member -> team:alpha#member
+              - user:bob     # via group:engineering#member -> team:alpha#member
+              - user:diana   # direct team member
+
+  - name: "List wildcard users"
+    list_users:
+      - object: document:public-faq
+        user_filter:
+          - type: user
+        assertions:
+          viewer:
+            users:
+              - user:*
+
+  - name: "List users with specific relation"
+    list_users:
+      - object: document:memo
+        user_filter:
+          - type: user
+        assertions:
+          viewer:
+            users:
+              - user:george
+          commenter:
+            users:
+              - user:hannah
+
+  - name: "List group references"
+    list_users:
+      - object: document:roadmap
+        user_filter:
+          - type: group
+            relation: member
+        assertions:
+          editor:
+            users:
+              - group:engineering#member
+
+  - name: "List team references"
+    list_users:
+      - object: document:sprint-plan
+        user_filter:
+          - type: team
+            relation: member
+        assertions:
+          editor:
+            users:
+              - team:alpha#member
+
+  - name: "Empty result for no users"
+    list_users:
+      - object: document:budget
+        user_filter:
+          - type: user
+        assertions:
+          editor:
+            users: []
+          commenter:
+            users: []
+
+  - name: "List group members directly"
+    list_users:
+      - object: group:engineering
+        user_filter:
+          - type: user
+        assertions:
+          member:
+            users:
+              - user:alice
+              - user:bob
+
+  - name: "List nested group members"
+    list_users:
+      - object: group:all-staff
+        user_filter:
+          - type: user
+        assertions:
+          member:
+            users:
+              - user:charlie  # via group:design#member
+      - object: group:all-staff
+        user_filter:
+          - type: group
+            relation: member
+        assertions:
+          member:
+            users:
+              - group:all-staff#member  # self-referential userset (RSFGA behavior)
+              - group:design#member
