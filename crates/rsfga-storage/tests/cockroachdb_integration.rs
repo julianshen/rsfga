@@ -109,6 +109,160 @@ async fn test_migrations_idempotent_on_cockroachdb() {
     store.delete_store("test-crdb-idempotent").await.unwrap();
 }
 
+/// Test: Column size migration is idempotent on CockroachDB
+///
+/// CockroachDB has expression indexes that prevent ALTER COLUMN TYPE operations
+/// even when no actual type change is needed. This test verifies that our
+/// migration logic correctly detects when columns already have the target size
+/// and skips the ALTER operation.
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_column_size_migration_idempotent_on_cockroachdb() {
+    let store = create_store().await;
+
+    // Run migrations multiple times - should succeed each time
+    // This specifically tests the CockroachDB expression index workaround
+    for i in 1..=3 {
+        store
+            .run_migrations()
+            .await
+            .unwrap_or_else(|e| panic!("Migration run {i} failed: {e}"));
+    }
+
+    // Verify we can still operate normally after multiple migration runs
+    store
+        .create_store("test-crdb-column-migration", "Migration Test Store")
+        .await
+        .unwrap();
+
+    // Write and read a tuple with condition to verify schema is correct
+    let tuple = StoredTuple::with_condition(
+        "document",
+        "readme",
+        "viewer",
+        "user",
+        "alice",
+        None,
+        "time_based",
+        None,
+    );
+    store
+        .write_tuple("test-crdb-column-migration", tuple)
+        .await
+        .unwrap();
+
+    let tuples = store
+        .read_tuples(
+            "test-crdb-column-migration",
+            &TupleFilter {
+                object_type: Some("document".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(tuples.len(), 1);
+    assert_eq!(tuples[0].condition_name, Some("time_based".to_string()));
+
+    // Cleanup
+    store
+        .delete_store("test-crdb-column-migration")
+        .await
+        .unwrap();
+}
+
+/// Test: Verify column sizes are correct after migration on CockroachDB
+///
+/// This test queries information_schema to verify all VARCHAR columns have
+/// the expected sizes after running migrations.
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_column_sizes_correct_after_migration_on_cockroachdb() {
+    let store = create_store().await;
+
+    // Expected column sizes matching the column_specs in apply_column_size_migration
+    let expected_sizes: Vec<(&str, &str, i64)> = vec![
+        ("stores", "id", 26),
+        ("stores", "name", 256),
+        ("authorization_models", "id", 26),
+        ("authorization_models", "store_id", 26),
+        ("tuples", "store_id", 26),
+        ("tuples", "object_type", 254),
+        ("tuples", "object_id", 256),
+        ("tuples", "relation", 50),
+        ("tuples", "user_type", 254),
+        ("tuples", "user_id", 512),
+        ("tuples", "user_relation", 50),
+        ("tuples", "condition_name", 256),
+        ("changelog", "store_id", 26),
+        ("changelog", "object_type", 254),
+        ("changelog", "object_id", 256),
+        ("changelog", "relation", 50),
+        ("changelog", "user_type", 254),
+        ("changelog", "user_id", 512),
+        ("changelog", "user_relation", 50),
+        ("changelog", "condition_name", 256),
+    ];
+
+    // Query actual column sizes from information_schema
+    for (table, column, expected_size) in expected_sizes {
+        let actual_size: Option<i64> = sqlx::query_scalar(
+            "SELECT character_maximum_length FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_optional(store.pool())
+        .await
+        .unwrap_or_else(|e| panic!("Failed to query size for {table}.{column}: {e}"))
+        .flatten();
+
+        assert_eq!(
+            actual_size,
+            Some(expected_size),
+            "Column {table}.{column} should have size {expected_size}, got {actual_size:?}"
+        );
+    }
+}
+
+/// Test: Migration handles CockroachDB expression indexes gracefully
+///
+/// CockroachDB creates internal computed columns (crdb_internal_idx_expr) for
+/// expression indexes like COALESCE(user_relation, ''). This test verifies that
+/// our migration logic correctly handles these dependencies.
+#[tokio::test]
+#[ignore = "requires running CockroachDB"]
+async fn test_migration_handles_expression_indexes_on_cockroachdb() {
+    let store = create_store().await;
+
+    // Verify the tuples table has the unique index with expression
+    // This index is what causes the ALTER COLUMN TYPE to fail if we don't
+    // check sizes first
+    let index_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1 FROM information_schema.statistics
+            WHERE table_schema = current_schema()
+            AND table_name = 'tuples'
+            AND index_name = 'idx_tuples_unique'
+        )",
+    )
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+
+    assert!(
+        index_exists,
+        "idx_tuples_unique index should exist on tuples table"
+    );
+
+    // Run migrations again - this should NOT fail even with the expression index
+    store
+        .run_migrations()
+        .await
+        .expect("Migration should succeed with expression indexes present");
+}
+
 // ==========================================================================
 // Section 4.2: Store CRUD Tests
 // ==========================================================================
