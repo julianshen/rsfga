@@ -118,8 +118,17 @@ tests:
           ip_restricted_editor: false
           editor: false
 
-  # NOTE: "Missing context" test removed - RSFGA returns an explicit error
-  # when required condition context is missing, rather than returning false.
-  # This is a behavioral difference that may need addressing for full OpenFGA
-  # compatibility. RSFGA behavior: explicit error; OpenFGA behavior: returns false
-  # Tracked in: https://github.com/julianshen/rsfga/issues/290
+  # NOTE: OpenFGA returns error code 2000 when required condition context is missing.
+  # This is intentional behavior - the Check operation cannot be evaluated without
+  # the required parameters. The fga model test framework does not support assertions
+  # that expect errors, so this test case is commented out.
+  #
+  # See: https://github.com/julianshen/rsfga/issues/290 (closed - not a bug)
+  #
+  # - name: "Missing context returns error for conditional tuples"
+  #   check:
+  #     - user: user:bob
+  #       object: document:sensitive
+  #       assertions:
+  #         time_limited_viewer: error  # Not supported by fga test framework
+  #         viewer: error

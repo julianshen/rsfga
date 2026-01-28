@@ -17,7 +17,7 @@ use async_trait::async_trait;
 
 use super::mocks::{MockModelReader, MockTupleReader};
 use crate::error::{DomainError, DomainResult};
-use crate::model::{Condition, RelationDefinition, TypeDefinition, Userset};
+use crate::model::{Condition, ConditionParameter, RelationDefinition, TypeDefinition, Userset};
 use crate::resolver::{
     CheckRequest, CheckResult, ContextualTuple, ExpandLeafValue, ExpandNode, ExpandRequest,
     GraphResolver, ListObjectsRequest, ResolverConfig, StoredTupleRef, TupleReader,
@@ -4214,6 +4214,246 @@ async fn test_check_returns_error_for_invalid_cel_expression() {
             "Error should indicate CEL parse/eval failure: {err}"
         );
     }
+}
+
+/// Test: Check returns error when condition context is missing.
+///
+/// Both OpenFGA and RSFGA return error code 2000 when required condition
+/// parameters are not provided in the request context. The condition cannot
+/// be evaluated without its required parameters.
+///
+/// See: https://github.com/julianshen/rsfga/issues/290 (verified both RSFGA and
+/// OpenFGA return an error, not false)
+#[tokio::test]
+async fn test_check_returns_error_when_condition_context_missing() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Create a condition that requires "current_time" parameter
+    let condition = Condition::with_parameters(
+        "time_window",
+        vec![
+            ConditionParameter::new("current_time", "timestamp"),
+            ConditionParameter::new("valid_from", "timestamp"),
+            ConditionParameter::new("valid_until", "timestamp"),
+        ],
+        "request.current_time >= request.valid_from && request.current_time < request.valid_until",
+    )
+    .unwrap();
+
+    model_reader.add_condition("store1", condition).await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "time_limited_viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Add tuple with condition context (valid_from and valid_until are in tuple)
+    let mut tuple_context = HashMap::new();
+    tuple_context.insert(
+        "valid_from".to_string(),
+        serde_json::Value::String("2024-01-01T00:00:00Z".to_string()),
+    );
+    tuple_context.insert(
+        "valid_until".to_string(),
+        serde_json::Value::String("2024-12-31T23:59:59Z".to_string()),
+    );
+
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "sensitive",
+            "time_limited_viewer",
+            "user",
+            "bob",
+            None,
+            "time_window",
+            Some(tuple_context),
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Act: Check WITHOUT providing current_time in request context
+    let request = CheckRequest {
+        store_id: "store1".to_string(),
+        user: "user:bob".to_string(),
+        relation: "time_limited_viewer".to_string(),
+        object: "document:sensitive".to_string(),
+        contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(HashMap::new()),
+        authorization_model_id: None,
+    };
+
+    let result = resolver.check(&request).await;
+
+    // Assert: Should return an error because required context is missing
+    // Both OpenFGA and RSFGA return error code 2000 in this case
+    assert!(
+        result.is_err(),
+        "Missing condition context should return an error, not Ok: {:?}",
+        result
+    );
+}
+
+/// Test: Check returns true when all condition parameters are provided and satisfied.
+///
+/// Verifies that conditions work correctly when all required context is provided.
+#[tokio::test]
+async fn test_check_returns_true_when_condition_context_provided_and_satisfied() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Create a simple condition that checks a boolean value
+    let condition = Condition::with_parameters(
+        "is_enabled",
+        vec![ConditionParameter::new("enabled", "bool")],
+        "request.enabled == true",
+    )
+    .unwrap();
+
+    model_reader.add_condition("store1", condition).await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "feature".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "user".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "feature",
+            "beta",
+            "user",
+            "user",
+            "alice",
+            None,
+            "is_enabled",
+            None, // No tuple context, param comes from request
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Act: Check WITH the required context provided and set to true
+    let mut context = HashMap::new();
+    context.insert("enabled".to_string(), serde_json::json!(true));
+
+    let request = CheckRequest {
+        store_id: "store1".to_string(),
+        user: "user:alice".to_string(),
+        relation: "user".to_string(),
+        object: "feature:beta".to_string(),
+        contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(context),
+        authorization_model_id: None,
+    };
+
+    let result = resolver.check(&request).await;
+
+    // Assert: Should return Ok(true) when condition is satisfied
+    assert!(result.is_ok(), "Check should succeed: {:?}", result);
+    assert!(
+        result.unwrap().allowed,
+        "Condition should be satisfied when enabled=true"
+    );
+}
+
+/// Test: Check returns false when condition parameters are provided but not satisfied.
+///
+/// Verifies that conditions correctly deny access when the expression evaluates to false.
+#[tokio::test]
+async fn test_check_returns_false_when_condition_not_satisfied() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Create a simple condition that checks a boolean value
+    let condition = Condition::with_parameters(
+        "is_enabled",
+        vec![ConditionParameter::new("enabled", "bool")],
+        "request.enabled == true",
+    )
+    .unwrap();
+
+    model_reader.add_condition("store1", condition).await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "feature".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "user".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "feature",
+            "beta",
+            "user",
+            "user",
+            "alice",
+            None,
+            "is_enabled",
+            None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Act: Check WITH the required context but set to false
+    let mut context = HashMap::new();
+    context.insert("enabled".to_string(), serde_json::json!(false));
+
+    let request = CheckRequest {
+        store_id: "store1".to_string(),
+        user: "user:alice".to_string(),
+        relation: "user".to_string(),
+        object: "feature:beta".to_string(),
+        contextual_tuples: Arc::new(vec![]),
+        context: Arc::new(context),
+        authorization_model_id: None,
+    };
+
+    let result = resolver.check(&request).await;
+
+    // Assert: Should return Ok(false) when condition evaluates to false
+    assert!(result.is_ok(), "Check should succeed: {:?}", result);
+    assert!(
+        !result.unwrap().allowed,
+        "Condition should not be satisfied when enabled=false"
+    );
 }
 
 // ========== Section: Cache Integration Tests ==========
