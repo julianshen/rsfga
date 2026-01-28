@@ -114,10 +114,9 @@ tests:
 
 ## Known Behavioral Differences
 
-The following behavioral differences between RSFGA and OpenFGA are tracked:
+No known behavioral differences. RSFGA aims for 100% OpenFGA API compatibility.
 
-| Issue | Description | RSFGA Behavior | OpenFGA Behavior |
-|-------|-------------|----------------|------------------|
-| [#290](https://github.com/julianshen/rsfga/issues/290) | Missing condition context | Returns explicit error | Returns `false` |
-
-These differences are documented in the relevant test files with comments explaining the deviation.
+Note: Both RSFGA and OpenFGA return error code 2000 when required condition context
+parameters are missing from a Check request. This is correct behavior - the condition
+cannot be evaluated without its required parameters. See issue #290 for investigation
+details.
