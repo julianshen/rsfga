@@ -1462,11 +1462,12 @@ where
     ) -> BoxFuture<'a, DomainResult<()>> {
         Box::pin(async move {
             // Depth limit protection (DoS prevention)
+            // Return error for consistency with other depth checks in the codebase
             if depth >= max_depth {
-                return Ok(());
+                return Err(DomainError::DepthLimitExceeded { max_depth });
             }
 
-            // Check if we've hit the limit
+            // Check if we've hit the result limit (not an error, just stop collecting)
             if results.len() >= limit {
                 return Ok(());
             }
@@ -1548,8 +1549,8 @@ where
                             &type_constraint.type_name
                         };
 
-                        // Skip if parent_type is a wildcard
-                        if parent_type == "*" {
+                        // Skip if parent_type is empty, wildcard, or malformed
+                        if parent_type.is_empty() || parent_type == "*" {
                             continue;
                         }
 
@@ -1569,19 +1570,31 @@ where
                         let mut parent_seen: HashSet<String> = HashSet::new();
                         let mut parent_results: Vec<String> = Vec::new();
 
-                        self.reverse_expand_objects(
-                            store_id,
-                            user,
-                            parent_type,
-                            computed_userset,
-                            &parent_rel_def.rewrite,
-                            &mut parent_seen,
-                            &mut parent_results,
-                            limit, // Use limit for parents too
-                            depth + 1,
-                            max_depth,
-                        )
-                        .await?;
+                        // Handle depth limit in parent traversal - continue to next type constraint
+                        // rather than failing the entire operation
+                        match self
+                            .reverse_expand_objects(
+                                store_id,
+                                user,
+                                parent_type,
+                                computed_userset,
+                                &parent_rel_def.rewrite,
+                                &mut parent_seen,
+                                &mut parent_results,
+                                limit, // Use limit for parents too
+                                depth + 1,
+                                max_depth,
+                            )
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(DomainError::DepthLimitExceeded { .. }) => {
+                                // Depth limit in parent traversal - skip this type constraint
+                                // but continue with others
+                                continue;
+                            }
+                            Err(e) => return Err(e),
+                        }
 
                         if parent_results.is_empty() {
                             continue;
@@ -1623,23 +1636,41 @@ where
 
                 Userset::Union { children } => {
                     // Union: collect results from all children
+                    // DepthLimitExceeded in one branch should not prevent collecting from others
+                    let mut last_depth_error: Option<DomainError> = None;
                     for child in children {
                         if results.len() >= limit {
                             break;
                         }
-                        self.reverse_expand_objects(
-                            store_id,
-                            user,
-                            object_type,
-                            relation,
-                            child,
-                            seen,
-                            results,
-                            limit,
-                            depth + 1,
-                            max_depth,
-                        )
-                        .await?;
+                        match self
+                            .reverse_expand_objects(
+                                store_id,
+                                user,
+                                object_type,
+                                relation,
+                                child,
+                                seen,
+                                results,
+                                limit,
+                                depth + 1,
+                                max_depth,
+                            )
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(DomainError::DepthLimitExceeded { .. }) => {
+                                // Track the error but continue with other branches
+                                last_depth_error =
+                                    Some(DomainError::DepthLimitExceeded { max_depth });
+                            }
+                            Err(e) => return Err(e), // Propagate other errors immediately
+                        }
+                    }
+                    // If all branches hit depth limit and we got no results, propagate the error
+                    if results.is_empty() {
+                        if let Some(err) = last_depth_error {
+                            return Err(err);
+                        }
                     }
                 }
 

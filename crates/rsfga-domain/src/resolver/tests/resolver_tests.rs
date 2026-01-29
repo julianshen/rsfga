@@ -6656,3 +6656,182 @@ async fn test_list_objects_empty_results_with_reverse_expand() {
     assert!(result.objects.is_empty());
     assert!(!result.truncated);
 }
+
+/// Tests list_objects with Exclusion relation (base minus subtract).
+#[tokio::test]
+async fn test_list_objects_with_exclusion_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Document with viewer = all_viewers - blocked_viewers (exclusion)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "all_viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "blocked".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Exclusion {
+                            base: Box::new(Userset::ComputedUserset {
+                                relation: "all_viewer".to_string(),
+                            }),
+                            subtract: Box::new(Userset::ComputedUserset {
+                                relation: "blocked".to_string(),
+                            }),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is all_viewer on doc1, doc2, doc3
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "document",
+            "doc1",
+            "all_viewer",
+            "user",
+            "alice",
+            None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "document",
+            "doc2",
+            "all_viewer",
+            "user",
+            "alice",
+            None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "document",
+            "doc3",
+            "all_viewer",
+            "user",
+            "alice",
+            None,
+        )
+        .await;
+
+    // Alice is blocked from doc2
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "blocked", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice should see doc1 and doc3 (all_viewer minus blocked)
+    // but NOT doc2 (she is blocked from it)
+    assert_eq!(result.objects.len(), 2);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(!result.objects.contains(&"document:doc2".to_string()));
+    assert!(result.objects.contains(&"document:doc3".to_string()));
+}
+
+/// Tests list_objects with Intersection relation.
+#[tokio::test]
+async fn test_list_objects_with_intersection_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Document with viewer = must_be_owner AND must_be_approved (intersection)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "approved".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Intersection {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "owner".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "approved".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is owner of doc1, doc2, doc3
+    tuple_reader
+        .add_tuple("store1", "document", "doc1", "owner", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store1", "document", "doc2", "owner", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store1", "document", "doc3", "owner", "user", "alice", None)
+        .await;
+
+    // Alice is approved for doc1 and doc3 only
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "approved", "user", "alice", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc3", "approved", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice should see doc1 and doc3 (owner AND approved)
+    // but NOT doc2 (owner but not approved)
+    assert_eq!(result.objects.len(), 2);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(!result.objects.contains(&"document:doc2".to_string()));
+    assert!(result.objects.contains(&"document:doc3".to_string()));
+}

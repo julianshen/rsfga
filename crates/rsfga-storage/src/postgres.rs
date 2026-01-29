@@ -1044,9 +1044,28 @@ impl DataStore for PostgresDataStore {
             return Ok(Vec::new());
         }
 
+        // Bounds check: limit the number of parent IDs to prevent DoS via query explosion.
+        // PostgreSQL handles large arrays well, but we still want a reasonable limit.
+        const MAX_PARENT_IDS: usize = 1000;
+        let parent_ids = if parent_ids.len() > MAX_PARENT_IDS {
+            &parent_ids[..MAX_PARENT_IDS]
+        } else {
+            parent_ids
+        };
+
         // Validate inputs
         validate_store_id(store_id)?;
         validate_object_type(object_type)?;
+
+        // Validate relation format (non-empty)
+        if relation.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Validate parent_type format (non-empty)
+        if parent_type.is_empty() {
+            return Ok(Vec::new());
+        }
 
         // Verify store exists (with timeout protection)
         let store_id_owned = store_id.to_string();

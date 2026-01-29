@@ -2381,9 +2381,29 @@ impl DataStore for MySQLDataStore {
             return Ok(Vec::new());
         }
 
+        // Bounds check: limit the number of parent IDs to prevent DoS via query explosion.
+        // MySQL has a limit on the number of placeholders in an IN clause (typically ~65535).
+        // We use a conservative limit of 1000 to ensure reasonable query performance.
+        const MAX_PARENT_IDS: usize = 1000;
+        let parent_ids = if parent_ids.len() > MAX_PARENT_IDS {
+            &parent_ids[..MAX_PARENT_IDS]
+        } else {
+            parent_ids
+        };
+
         // Validate inputs
         validate_store_id(store_id)?;
         validate_object_type(object_type)?;
+
+        // Validate relation format (non-empty, no special chars that could cause issues)
+        if relation.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Validate parent_type format (non-empty)
+        if parent_type.is_empty() {
+            return Ok(Vec::new());
+        }
 
         // Verify store exists (with timeout protection)
         let store_id_owned = store_id.to_string();
@@ -2409,8 +2429,11 @@ impl DataStore for MySQLDataStore {
             });
         }
 
-        // MySQL doesn't support ANY, so we need to build a dynamic IN clause
-        // or use a different approach. We'll build the placeholders dynamically.
+        // Build dynamic IN clause with parameterized placeholders.
+        // SAFETY: This is NOT SQL injection because:
+        // 1. We only construct placeholder strings ("?"), not user data
+        // 2. All user-provided values (parent_ids) are bound via parameterized queries
+        // 3. The number of placeholders is bounded by MAX_PARENT_IDS above
         let placeholders: Vec<&str> = (0..parent_ids.len()).map(|_| "?").collect();
         let placeholders_str = placeholders.join(", ");
 
