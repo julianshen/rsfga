@@ -21,6 +21,12 @@
 //! - **Range scan**: O(K + log N) where K is result set size
 //! - **Delete**: O(1) (tombstone write, compaction cleanup)
 //!
+//! # Async Safety
+//!
+//! All RocksDB operations are wrapped in `tokio::task::spawn_blocking` to avoid
+//! blocking the async runtime. This ensures the Tokio executor threads remain
+//! responsive even during heavy I/O operations.
+//!
 //! # Limitations
 //!
 //! - Single-node only (no replication)
@@ -29,14 +35,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
 use rust_rocksdb::{Options, WriteBatch, DB};
 use serde::{Deserialize, Serialize};
-use tracing::instrument;
+use tracing::{instrument, warn};
+use ulid::Ulid;
 
 use crate::error::{HealthStatus, StorageError, StorageResult};
 use crate::traits::{
@@ -66,8 +72,6 @@ pub struct RocksDBConfig {
     pub enable_compression: bool,
     /// Maximum number of background compaction threads (default: 4).
     pub max_background_jobs: i32,
-    /// Query timeout for operations (default: 30 seconds).
-    pub query_timeout_secs: u64,
 }
 
 impl Default for RocksDBConfig {
@@ -80,7 +84,6 @@ impl Default for RocksDBConfig {
             block_cache_size: 128 * 1024 * 1024, // 128MB
             enable_compression: true,
             max_background_jobs: 4,
-            query_timeout_secs: 30,
         }
     }
 }
@@ -116,11 +119,12 @@ struct ChangeValue {
 /// RocksDB implementation of DataStore.
 ///
 /// Thread-safe embedded storage optimized for write-heavy workloads.
+/// All blocking I/O operations are offloaded to a blocking thread pool
+/// via `tokio::task::spawn_blocking`.
 pub struct RocksDBDataStore {
     db: Arc<DB>,
+    #[allow(dead_code)]
     config: RocksDBConfig,
-    /// Counter for generating unique change IDs.
-    change_counter: AtomicU64,
 }
 
 impl std::fmt::Debug for RocksDBDataStore {
@@ -162,7 +166,6 @@ impl RocksDBDataStore {
         Ok(Self {
             db: Arc::new(db),
             config,
-            change_counter: AtomicU64::new(0),
         })
     }
 
@@ -266,66 +269,16 @@ impl RocksDBDataStore {
     // Internal Helpers
     // =========================================================================
 
-    /// Checks if a store exists.
-    fn store_exists(&self, store_id: &str) -> StorageResult<bool> {
-        let key = Self::store_key(store_id);
-        match self.db.get(key.as_bytes()) {
-            Ok(Some(_)) => Ok(true),
-            Ok(None) => Ok(false),
-            Err(e) => Err(StorageError::QueryError {
-                message: format!("Failed to check store existence: {e}"),
-            }),
-        }
+    /// Generates a unique change ID using ULID.
+    /// ULIDs are lexicographically sortable and unique across restarts/processes.
+    fn generate_change_id() -> String {
+        Ulid::new().to_string()
     }
 
-    /// Ensures a store exists, returning StoreNotFound if not.
-    fn ensure_store_exists(&self, store_id: &str) -> StorageResult<()> {
-        if !self.store_exists(store_id)? {
-            return Err(StorageError::StoreNotFound {
-                store_id: store_id.to_string(),
-            });
-        }
-        Ok(())
-    }
-
-    /// Generates a ULID-like ID for changes using timestamp + counter.
-    fn generate_change_id(&self) -> String {
-        let now = chrono::Utc::now();
-        let counter = self.change_counter.fetch_add(1, Ordering::SeqCst);
-        format!("{}{:06}", now.format("%Y%m%d%H%M%S%3f"), counter)
-    }
-
-    /// Writes a change entry to the changelog.
-    fn write_change(
-        &self,
-        batch: &mut WriteBatch,
-        store_id: &str,
-        tuple: &StoredTuple,
-        operation: TupleOperation,
-    ) {
-        let change_id = self.generate_change_id();
-        let key = Self::change_key(store_id, &change_id);
-        let tuple_key = Self::tuple_key(
-            store_id,
-            &tuple.object_type,
-            &tuple.object_id,
-            &tuple.relation,
-            &tuple.user_type,
-            &tuple.user_id,
-            tuple.user_relation.as_deref(),
-        );
-        let value = ChangeValue {
-            tuple_key,
-            tuple_value: TupleValue {
-                condition_name: tuple.condition_name.clone(),
-                condition_context: tuple.condition_context.clone(),
-                created_at: tuple.created_at,
-            },
-            operation: operation.as_str().to_string(),
-            timestamp: chrono::Utc::now(),
-        };
-        if let Ok(json) = serde_json::to_vec(&value) {
-            batch.put(key.as_bytes(), &json);
+    /// Helper to convert spawn_blocking JoinError to StorageError.
+    fn join_error(e: tokio::task::JoinError) -> StorageError {
+        StorageError::InternalError {
+            message: format!("Task join error: {e}"),
         }
     }
 }
@@ -341,99 +294,166 @@ impl DataStore for RocksDBDataStore {
         validate_store_id(id)?;
         validate_store_name(name)?;
 
-        let key = Self::store_key(id);
+        let db = Arc::clone(&self.db);
+        let id_owned = id.to_string();
+        let name_owned = name.to_string();
 
-        // Check if store already exists
-        if self.store_exists(id)? {
-            return Err(StorageError::StoreAlreadyExists {
-                store_id: id.to_string(),
-            });
-        }
+        tokio::task::spawn_blocking(move || {
+            let key = Self::store_key(&id_owned);
 
-        let now = chrono::Utc::now();
-        let store = Store {
-            id: id.to_string(),
-            name: name.to_string(),
-            created_at: now,
-            updated_at: now,
-        };
+            // Check if store already exists
+            if db
+                .get(key.as_bytes())
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })?
+                .is_some()
+            {
+                return Err(StorageError::StoreAlreadyExists { store_id: id_owned });
+            }
 
-        let value = serde_json::to_vec(&store).map_err(|e| StorageError::SerializationError {
-            message: format!("Failed to serialize store: {e}"),
-        })?;
+            let now = chrono::Utc::now();
+            let store = Store {
+                id: id_owned,
+                name: name_owned,
+                created_at: now,
+                updated_at: now,
+            };
 
-        self.db
-            .put(key.as_bytes(), &value)
-            .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to create store: {e}"),
-            })?;
+            let value =
+                serde_json::to_vec(&store).map_err(|e| StorageError::SerializationError {
+                    message: format!("Failed to serialize store: {e}"),
+                })?;
 
-        Ok(store)
+            db.put(key.as_bytes(), &value)
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to create store: {e}"),
+                })?;
+
+            Ok(store)
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     #[instrument(skip(self), fields(store_id = %id))]
     async fn get_store(&self, id: &str) -> StorageResult<Store> {
-        let key = Self::store_key(id);
+        let db = Arc::clone(&self.db);
+        let id_owned = id.to_string();
 
-        match self.db.get(key.as_bytes()) {
-            Ok(Some(value)) => {
-                serde_json::from_slice(&value).map_err(|e| StorageError::SerializationError {
-                    message: format!("Failed to deserialize store: {e}"),
-                })
+        tokio::task::spawn_blocking(move || {
+            let key = Self::store_key(&id_owned);
+
+            match db.get(key.as_bytes()) {
+                Ok(Some(value)) => {
+                    serde_json::from_slice(&value).map_err(|e| StorageError::SerializationError {
+                        message: format!("Failed to deserialize store: {e}"),
+                    })
+                }
+                Ok(None) => Err(StorageError::StoreNotFound { store_id: id_owned }),
+                Err(e) => Err(StorageError::QueryError {
+                    message: format!("Failed to get store: {e}"),
+                }),
             }
-            Ok(None) => Err(StorageError::StoreNotFound {
-                store_id: id.to_string(),
-            }),
-            Err(e) => Err(StorageError::QueryError {
-                message: format!("Failed to get store: {e}"),
-            }),
-        }
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     #[instrument(skip(self), fields(store_id = %id))]
     async fn delete_store(&self, id: &str) -> StorageResult<()> {
-        self.ensure_store_exists(id)?;
+        let db = Arc::clone(&self.db);
+        let id_owned = id.to_string();
 
-        let mut batch = WriteBatch::default();
+        tokio::task::spawn_blocking(move || {
+            let store_key = Self::store_key(&id_owned);
 
-        // Delete the store record
-        batch.delete(Self::store_key(id).as_bytes());
-
-        // Delete all tuples for this store
-        let tuple_prefix = Self::tuple_prefix(id);
-        for (key, _) in self.db.prefix_iterator(tuple_prefix.as_bytes()).flatten() {
-            let key_str = String::from_utf8_lossy(&key);
-            if !key_str.starts_with(&tuple_prefix) {
-                break;
+            // Check if store exists
+            if db
+                .get(store_key.as_bytes())
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })?
+                .is_none()
+            {
+                return Err(StorageError::StoreNotFound {
+                    store_id: id_owned.clone(),
+                });
             }
-            batch.delete(&key);
-        }
 
-        // Delete all models for this store
-        let model_prefix = Self::model_prefix(id);
-        for (key, _) in self.db.prefix_iterator(model_prefix.as_bytes()).flatten() {
-            let key_str = String::from_utf8_lossy(&key);
-            if !key_str.starts_with(&model_prefix) {
-                break;
+            let mut batch = WriteBatch::default();
+
+            // Delete the store record
+            batch.delete(store_key.as_bytes());
+
+            // Delete all tuples for this store
+            let tuple_prefix = Self::tuple_prefix(&id_owned);
+            let iter = db.prefix_iterator(tuple_prefix.as_bytes());
+            for item in iter {
+                match item {
+                    Ok((key, _)) => {
+                        let key_str = String::from_utf8_lossy(&key);
+                        if !key_str.starts_with(&tuple_prefix) {
+                            break;
+                        }
+                        batch.delete(&key);
+                    }
+                    Err(e) => {
+                        return Err(StorageError::QueryError {
+                            message: format!("Failed to iterate tuples for deletion: {e}"),
+                        });
+                    }
+                }
             }
-            batch.delete(&key);
-        }
 
-        // Delete all changes for this store
-        let change_prefix = Self::change_prefix(id);
-        for (key, _) in self.db.prefix_iterator(change_prefix.as_bytes()).flatten() {
-            let key_str = String::from_utf8_lossy(&key);
-            if !key_str.starts_with(&change_prefix) {
-                break;
+            // Delete all models for this store
+            let model_prefix = Self::model_prefix(&id_owned);
+            let iter = db.prefix_iterator(model_prefix.as_bytes());
+            for item in iter {
+                match item {
+                    Ok((key, _)) => {
+                        let key_str = String::from_utf8_lossy(&key);
+                        if !key_str.starts_with(&model_prefix) {
+                            break;
+                        }
+                        batch.delete(&key);
+                    }
+                    Err(e) => {
+                        return Err(StorageError::QueryError {
+                            message: format!("Failed to iterate models for deletion: {e}"),
+                        });
+                    }
+                }
             }
-            batch.delete(&key);
-        }
 
-        self.db.write(batch).map_err(|e| StorageError::QueryError {
-            message: format!("Failed to delete store: {e}"),
-        })?;
+            // Delete all changes for this store
+            let change_prefix = Self::change_prefix(&id_owned);
+            let iter = db.prefix_iterator(change_prefix.as_bytes());
+            for item in iter {
+                match item {
+                    Ok((key, _)) => {
+                        let key_str = String::from_utf8_lossy(&key);
+                        if !key_str.starts_with(&change_prefix) {
+                            break;
+                        }
+                        batch.delete(&key);
+                    }
+                    Err(e) => {
+                        return Err(StorageError::QueryError {
+                            message: format!("Failed to iterate changes for deletion: {e}"),
+                        });
+                    }
+                }
+            }
 
-        Ok(())
+            db.write(batch).map_err(|e| StorageError::QueryError {
+                message: format!("Failed to delete store: {e}"),
+            })?;
+
+            Ok(())
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     #[instrument(skip(self), fields(store_id = %id))]
@@ -441,56 +461,85 @@ impl DataStore for RocksDBDataStore {
         validate_store_id(id)?;
         validate_store_name(name)?;
 
-        let key = Self::store_key(id);
+        let db = Arc::clone(&self.db);
+        let id_owned = id.to_string();
+        let name_owned = name.to_string();
 
-        // Get existing store
-        let mut store = self.get_store(id).await?;
+        tokio::task::spawn_blocking(move || {
+            let key = Self::store_key(&id_owned);
 
-        // Update fields
-        store.name = name.to_string();
-        store.updated_at = chrono::Utc::now();
+            // Get existing store
+            let mut store: Store = match db.get(key.as_bytes()) {
+                Ok(Some(value)) => serde_json::from_slice(&value).map_err(|e| {
+                    StorageError::SerializationError {
+                        message: format!("Failed to deserialize store: {e}"),
+                    }
+                })?,
+                Ok(None) => return Err(StorageError::StoreNotFound { store_id: id_owned }),
+                Err(e) => {
+                    return Err(StorageError::QueryError {
+                        message: format!("Failed to get store: {e}"),
+                    })
+                }
+            };
 
-        let value = serde_json::to_vec(&store).map_err(|e| StorageError::SerializationError {
-            message: format!("Failed to serialize store: {e}"),
-        })?;
+            // Update fields
+            store.name = name_owned;
+            store.updated_at = chrono::Utc::now();
 
-        self.db
-            .put(key.as_bytes(), &value)
-            .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to update store: {e}"),
-            })?;
+            let value =
+                serde_json::to_vec(&store).map_err(|e| StorageError::SerializationError {
+                    message: format!("Failed to serialize store: {e}"),
+                })?;
 
-        Ok(store)
+            db.put(key.as_bytes(), &value)
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to update store: {e}"),
+                })?;
+
+            Ok(store)
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     async fn list_stores(&self) -> StorageResult<Vec<Store>> {
-        let prefix = Self::store_prefix();
-        let mut stores = Vec::new();
+        let db = Arc::clone(&self.db);
 
-        let iter = self.db.prefix_iterator(prefix.as_bytes());
-        for item in iter {
-            match item {
-                Ok((key, value)) => {
-                    let key_str = String::from_utf8_lossy(&key);
-                    if !key_str.starts_with(&prefix) {
-                        break;
+        tokio::task::spawn_blocking(move || {
+            let prefix = Self::store_prefix();
+            let mut stores = Vec::new();
+
+            let iter = db.prefix_iterator(prefix.as_bytes());
+            for item in iter {
+                match item {
+                    Ok((key, value)) => {
+                        let key_str = String::from_utf8_lossy(&key);
+                        if !key_str.starts_with(&prefix) {
+                            break;
+                        }
+                        match serde_json::from_slice::<Store>(&value) {
+                            Ok(store) => stores.push(store),
+                            Err(e) => {
+                                warn!(key = %key_str, error = %e, "Failed to deserialize store, skipping");
+                            }
+                        }
                     }
-                    if let Ok(store) = serde_json::from_slice::<Store>(&value) {
-                        stores.push(store);
+                    Err(e) => {
+                        return Err(StorageError::QueryError {
+                            message: format!("Failed to iterate stores: {e}"),
+                        });
                     }
-                }
-                Err(e) => {
-                    return Err(StorageError::QueryError {
-                        message: format!("Failed to iterate stores: {e}"),
-                    });
                 }
             }
-        }
 
-        // Sort by created_at descending for consistency
-        stores.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            // Sort by created_at descending for consistency
+            stores.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
-        Ok(stores)
+            Ok(stores)
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     async fn list_stores_paginated(
@@ -536,58 +585,105 @@ impl DataStore for RocksDBDataStore {
             validate_tuple(tuple)?;
         }
 
-        self.ensure_store_exists(store_id)?;
+        let db = Arc::clone(&self.db);
+        let store_id_owned = store_id.to_string();
 
-        let mut batch = WriteBatch::default();
-        let now = chrono::Utc::now();
+        tokio::task::spawn_blocking(move || {
+            // Check store exists
+            let store_key = Self::store_key(&store_id_owned);
+            if db
+                .get(store_key.as_bytes())
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })?
+                .is_none()
+            {
+                return Err(StorageError::StoreNotFound {
+                    store_id: store_id_owned,
+                });
+            }
 
-        // Process deletes first
-        for tuple in deletes {
-            let key = Self::tuple_key(
-                store_id,
-                &tuple.object_type,
-                &tuple.object_id,
-                &tuple.relation,
-                &tuple.user_type,
-                &tuple.user_id,
-                tuple.user_relation.as_deref(),
-            );
-            batch.delete(key.as_bytes());
-            self.write_change(&mut batch, store_id, &tuple, TupleOperation::Delete);
-        }
+            let mut batch = WriteBatch::default();
+            let now = chrono::Utc::now();
 
-        // Process writes
-        for tuple in writes {
-            let key = Self::tuple_key(
-                store_id,
-                &tuple.object_type,
-                &tuple.object_id,
-                &tuple.relation,
-                &tuple.user_type,
-                &tuple.user_id,
-                tuple.user_relation.as_deref(),
-            );
+            // Process deletes first
+            for tuple in deletes {
+                let key = Self::tuple_key(
+                    &store_id_owned,
+                    &tuple.object_type,
+                    &tuple.object_id,
+                    &tuple.relation,
+                    &tuple.user_type,
+                    &tuple.user_id,
+                    tuple.user_relation.as_deref(),
+                );
+                batch.delete(key.as_bytes());
 
-            let value = TupleValue {
-                condition_name: tuple.condition_name.clone(),
-                condition_context: tuple.condition_context.clone(),
-                created_at: Some(tuple.created_at.unwrap_or(now)),
-            };
+                // Write change entry
+                let change_id = Self::generate_change_id();
+                let change_key = Self::change_key(&store_id_owned, &change_id);
+                let change_value = ChangeValue {
+                    tuple_key: key.clone(),
+                    tuple_value: TupleValue {
+                        condition_name: tuple.condition_name.clone(),
+                        condition_context: tuple.condition_context.clone(),
+                        created_at: tuple.created_at,
+                    },
+                    operation: TupleOperation::Delete.as_str().to_string(),
+                    timestamp: chrono::Utc::now(),
+                };
+                if let Ok(json) = serde_json::to_vec(&change_value) {
+                    batch.put(change_key.as_bytes(), &json);
+                }
+            }
 
-            let json =
-                serde_json::to_vec(&value).map_err(|e| StorageError::SerializationError {
-                    message: format!("Failed to serialize tuple: {e}"),
-                })?;
+            // Process writes
+            for tuple in writes {
+                let key = Self::tuple_key(
+                    &store_id_owned,
+                    &tuple.object_type,
+                    &tuple.object_id,
+                    &tuple.relation,
+                    &tuple.user_type,
+                    &tuple.user_id,
+                    tuple.user_relation.as_deref(),
+                );
 
-            batch.put(key.as_bytes(), &json);
-            self.write_change(&mut batch, store_id, &tuple, TupleOperation::Write);
-        }
+                let value = TupleValue {
+                    condition_name: tuple.condition_name.clone(),
+                    condition_context: tuple.condition_context.clone(),
+                    created_at: Some(tuple.created_at.unwrap_or(now)),
+                };
 
-        self.db.write(batch).map_err(|e| StorageError::QueryError {
-            message: format!("Failed to write tuples: {e}"),
-        })?;
+                let json =
+                    serde_json::to_vec(&value).map_err(|e| StorageError::SerializationError {
+                        message: format!("Failed to serialize tuple: {e}"),
+                    })?;
 
-        Ok(())
+                batch.put(key.as_bytes(), &json);
+
+                // Write change entry
+                let change_id = Self::generate_change_id();
+                let change_key = Self::change_key(&store_id_owned, &change_id);
+                let change_value = ChangeValue {
+                    tuple_key: key,
+                    tuple_value: value,
+                    operation: TupleOperation::Write.as_str().to_string(),
+                    timestamp: chrono::Utc::now(),
+                };
+                if let Ok(json) = serde_json::to_vec(&change_value) {
+                    batch.put(change_key.as_bytes(), &json);
+                }
+            }
+
+            db.write(batch).map_err(|e| StorageError::QueryError {
+                message: format!("Failed to write tuples: {e}"),
+            })?;
+
+            Ok(())
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     async fn read_tuples(
@@ -595,7 +691,17 @@ impl DataStore for RocksDBDataStore {
         store_id: &str,
         filter: &TupleFilter,
     ) -> StorageResult<Vec<StoredTuple>> {
-        self.ensure_store_exists(store_id)?;
+        // Validate and parse filters upfront (before spawn_blocking)
+        let store_id_owned = store_id.to_string();
+
+        // Check store exists
+        let store = self.get_store(store_id).await;
+        if let Err(StorageError::StoreNotFound { .. }) = store {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id_owned,
+            });
+        }
+        store?;
 
         // Parse user filter upfront
         let user_filter = if let Some(ref user) = filter.user {
@@ -604,87 +710,103 @@ impl DataStore for RocksDBDataStore {
             None
         };
 
-        // Determine the best prefix to scan based on filters
-        let prefix = if let Some(ref object_type) = filter.object_type {
-            Self::tuple_prefix_by_type(store_id, object_type)
-        } else {
-            Self::tuple_prefix(store_id)
-        };
+        let db = Arc::clone(&self.db);
+        let filter_owned = filter.clone();
 
-        let mut tuples = Vec::new();
-        let iter = self.db.prefix_iterator(prefix.as_bytes());
+        tokio::task::spawn_blocking(move || {
+            // Determine the best prefix to scan based on filters
+            let prefix = if let Some(ref object_type) = filter_owned.object_type {
+                Self::tuple_prefix_by_type(&store_id_owned, object_type)
+            } else {
+                Self::tuple_prefix(&store_id_owned)
+            };
 
-        for item in iter {
-            match item {
-                Ok((key, value)) => {
-                    let key_str = String::from_utf8_lossy(&key);
-                    if !key_str.starts_with(&prefix) {
-                        break;
-                    }
+            let mut tuples = Vec::new();
+            let iter = db.prefix_iterator(prefix.as_bytes());
 
-                    // Parse the key
-                    let Some((object_type, object_id, relation, user_type, user_id, user_relation)) =
-                        Self::parse_tuple_key(&key_str)
-                    else {
-                        continue;
-                    };
-
-                    // Apply filters
-                    if let Some(ref ot) = filter.object_type {
-                        if &object_type != ot {
-                            continue;
+            for item in iter {
+                match item {
+                    Ok((key, value)) => {
+                        let key_str = String::from_utf8_lossy(&key);
+                        if !key_str.starts_with(&prefix) {
+                            break;
                         }
-                    }
-                    if let Some(ref oi) = filter.object_id {
-                        if &object_id != oi {
-                            continue;
-                        }
-                    }
-                    if let Some(ref r) = filter.relation {
-                        if &relation != r {
-                            continue;
-                        }
-                    }
-                    if let Some((ref ut, ref ui, ref ur)) = user_filter {
-                        if &user_type != ut || &user_id != ui || &user_relation != ur {
-                            continue;
-                        }
-                    }
 
-                    // Parse the value
-                    let tuple_value: TupleValue = match serde_json::from_slice(&value) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-
-                    // Apply condition filter
-                    if let Some(ref cn) = filter.condition_name {
-                        if tuple_value.condition_name.as_ref() != Some(cn) {
+                        // Parse the key
+                        let Some((
+                            object_type,
+                            object_id,
+                            relation,
+                            user_type,
+                            user_id,
+                            user_relation,
+                        )) = Self::parse_tuple_key(&key_str)
+                        else {
                             continue;
-                        }
-                    }
+                        };
 
-                    tuples.push(StoredTuple {
-                        object_type,
-                        object_id,
-                        relation,
-                        user_type,
-                        user_id,
-                        user_relation,
-                        condition_name: tuple_value.condition_name,
-                        condition_context: tuple_value.condition_context,
-                        created_at: tuple_value.created_at,
-                    });
-                }
-                Err(e) => {
-                    return Err(StorageError::QueryError {
-                        message: format!("Failed to iterate tuples: {e}"),
-                    });
+                        // Apply filters
+                        if let Some(ref ot) = filter_owned.object_type {
+                            if &object_type != ot {
+                                continue;
+                            }
+                        }
+                        if let Some(ref oi) = filter_owned.object_id {
+                            if &object_id != oi {
+                                continue;
+                            }
+                        }
+                        if let Some(ref r) = filter_owned.relation {
+                            if &relation != r {
+                                continue;
+                            }
+                        }
+                        if let Some((ref ut, ref ui, ref ur)) = user_filter {
+                            if &user_type != ut || &user_id != ui || &user_relation != ur {
+                                continue;
+                            }
+                        }
+
+                        // Parse the value
+                        let tuple_value: TupleValue = match serde_json::from_slice(&value) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                warn!(key = %key_str, error = %e, "Failed to deserialize tuple value, skipping");
+                                continue;
+                            }
+                        };
+
+                        // Apply condition filter
+                        if let Some(ref cn) = filter_owned.condition_name {
+                            if tuple_value.condition_name.as_ref() != Some(cn) {
+                                continue;
+                            }
+                        }
+
+                        tuples.push(StoredTuple {
+                            object_type,
+                            object_id,
+                            relation,
+                            user_type,
+                            user_id,
+                            user_relation,
+                            condition_name: tuple_value.condition_name,
+                            condition_context: tuple_value.condition_context,
+                            created_at: tuple_value.created_at,
+                        });
+                    }
+                    Err(e) => {
+                        return Err(StorageError::QueryError {
+                            message: format!("Failed to iterate tuples: {e}"),
+                        });
+                    }
                 }
             }
-        }
 
-        Ok(tuples)
+            Ok(tuples)
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     async fn read_tuples_paginated(
@@ -744,41 +866,51 @@ impl DataStore for RocksDBDataStore {
     ) -> StorageResult<Vec<String>> {
         validate_store_id(store_id)?;
         validate_object_type(object_type)?;
-        self.ensure_store_exists(store_id)?;
 
-        let prefix = Self::tuple_prefix_by_type(store_id, object_type);
-        let mut unique_ids: HashSet<String> = HashSet::new();
+        // Check store exists
+        self.get_store(store_id).await?;
 
-        let iter = self.db.prefix_iterator(prefix.as_bytes());
-        for item in iter {
-            match item {
-                Ok((key, _)) => {
-                    let key_str = String::from_utf8_lossy(&key);
-                    if !key_str.starts_with(&prefix) {
-                        break;
-                    }
+        let db = Arc::clone(&self.db);
+        let store_id_owned = store_id.to_string();
+        let object_type_owned = object_type.to_string();
 
-                    if let Some((_, object_id, _, _, _, _)) = Self::parse_tuple_key(&key_str) {
-                        unique_ids.insert(object_id);
-                        if unique_ids.len() >= limit {
+        tokio::task::spawn_blocking(move || {
+            let prefix = Self::tuple_prefix_by_type(&store_id_owned, &object_type_owned);
+            let mut unique_ids: HashSet<String> = HashSet::new();
+
+            let iter = db.prefix_iterator(prefix.as_bytes());
+            for item in iter {
+                match item {
+                    Ok((key, _)) => {
+                        let key_str = String::from_utf8_lossy(&key);
+                        if !key_str.starts_with(&prefix) {
                             break;
                         }
+
+                        if let Some((_, object_id, _, _, _, _)) = Self::parse_tuple_key(&key_str) {
+                            unique_ids.insert(object_id);
+                            if unique_ids.len() >= limit {
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        return Err(StorageError::QueryError {
+                            message: format!("Failed to list objects: {e}"),
+                        });
                     }
                 }
-                Err(e) => {
-                    return Err(StorageError::QueryError {
-                        message: format!("Failed to list objects: {e}"),
-                    });
-                }
             }
-        }
 
-        // Sort for deterministic results
-        let mut result: Vec<String> = unique_ids.into_iter().collect();
-        result.sort();
-        result.truncate(limit);
+            // Sort for deterministic results
+            let mut result: Vec<String> = unique_ids.into_iter().collect();
+            result.sort();
+            result.truncate(limit);
 
-        Ok(result)
+            Ok(result)
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     async fn get_objects_with_parents(
@@ -808,61 +940,76 @@ impl DataStore for RocksDBDataStore {
 
         validate_store_id(store_id)?;
         validate_object_type(object_type)?;
-        self.ensure_store_exists(store_id)?;
 
-        let parent_ids_set: HashSet<&str> = parent_ids.iter().map(|s| s.as_str()).collect();
-        let prefix = Self::tuple_prefix_by_type(store_id, object_type);
-        let mut results: Vec<ObjectWithCondition> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
+        // Check store exists
+        self.get_store(store_id).await?;
 
-        let iter = self.db.prefix_iterator(prefix.as_bytes());
-        for item in iter {
-            if results.len() >= limit {
-                break;
-            }
+        let db = Arc::clone(&self.db);
+        let store_id_owned = store_id.to_string();
+        let object_type_owned = object_type.to_string();
+        let relation_owned = relation.to_string();
+        let parent_type_owned = parent_type.to_string();
+        let parent_ids_owned: HashSet<String> = parent_ids.iter().cloned().collect();
 
-            match item {
-                Ok((key, value)) => {
-                    let key_str = String::from_utf8_lossy(&key);
-                    if !key_str.starts_with(&prefix) {
-                        break;
-                    }
+        tokio::task::spawn_blocking(move || {
+            let prefix = Self::tuple_prefix_by_type(&store_id_owned, &object_type_owned);
+            let mut results: Vec<ObjectWithCondition> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
 
-                    if let Some((_, object_id, rel, user_type, user_id, _)) =
-                        Self::parse_tuple_key(&key_str)
-                    {
-                        // Check if this tuple matches our criteria
-                        if rel == relation
-                            && user_type == parent_type
-                            && parent_ids_set.contains(user_id.as_str())
-                            && seen.insert(object_id.clone())
+            let iter = db.prefix_iterator(prefix.as_bytes());
+            for item in iter {
+                if results.len() >= limit {
+                    break;
+                }
+
+                match item {
+                    Ok((key, value)) => {
+                        let key_str = String::from_utf8_lossy(&key);
+                        if !key_str.starts_with(&prefix) {
+                            break;
+                        }
+
+                        if let Some((_, object_id, rel, user_type, user_id, _)) =
+                            Self::parse_tuple_key(&key_str)
                         {
-                            // Parse value for condition info
-                            let tuple_value: TupleValue = match serde_json::from_slice(&value) {
-                                Ok(v) => v,
-                                Err(_) => continue,
-                            };
+                            // Check if this tuple matches our criteria
+                            if rel == relation_owned
+                                && user_type == parent_type_owned
+                                && parent_ids_owned.contains(&user_id)
+                                && seen.insert(object_id.clone())
+                            {
+                                // Parse value for condition info
+                                let tuple_value: TupleValue = match serde_json::from_slice(&value) {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        warn!(key = %key_str, error = %e, "Failed to deserialize tuple value, skipping");
+                                        continue;
+                                    }
+                                };
 
-                            results.push(ObjectWithCondition {
-                                object_id,
-                                condition_name: tuple_value.condition_name,
-                                condition_context: tuple_value.condition_context,
-                            });
+                                results.push(ObjectWithCondition {
+                                    object_id,
+                                    condition_name: tuple_value.condition_name,
+                                    condition_context: tuple_value.condition_context,
+                                });
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    return Err(StorageError::QueryError {
-                        message: format!("Failed to get objects with parents: {e}"),
-                    });
+                    Err(e) => {
+                        return Err(StorageError::QueryError {
+                            message: format!("Failed to get objects with parents: {e}"),
+                        });
+                    }
                 }
             }
-        }
 
-        // Sort for deterministic results
-        results.sort_by(|a, b| a.object_id.cmp(&b.object_id));
+            // Sort for deterministic results
+            results.sort_by(|a, b| a.object_id.cmp(&b.object_id));
 
-        Ok(results)
+            Ok(results)
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     // =========================================================================
@@ -874,20 +1021,28 @@ impl DataStore for RocksDBDataStore {
         model: StoredAuthorizationModel,
     ) -> StorageResult<StoredAuthorizationModel> {
         validate_store_id(&model.store_id)?;
-        self.ensure_store_exists(&model.store_id)?;
 
-        let key = Self::model_key(&model.store_id, &model.id);
-        let value = serde_json::to_vec(&model).map_err(|e| StorageError::SerializationError {
-            message: format!("Failed to serialize model: {e}"),
-        })?;
+        // Check store exists
+        self.get_store(&model.store_id).await?;
 
-        self.db
-            .put(key.as_bytes(), &value)
-            .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to write model: {e}"),
-            })?;
+        let db = Arc::clone(&self.db);
 
-        Ok(model)
+        tokio::task::spawn_blocking(move || {
+            let key = Self::model_key(&model.store_id, &model.id);
+            let value =
+                serde_json::to_vec(&model).map_err(|e| StorageError::SerializationError {
+                    message: format!("Failed to serialize model: {e}"),
+                })?;
+
+            db.put(key.as_bytes(), &value)
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to write model: {e}"),
+                })?;
+
+            Ok(model)
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     async fn get_authorization_model(
@@ -896,23 +1051,33 @@ impl DataStore for RocksDBDataStore {
         model_id: &str,
     ) -> StorageResult<StoredAuthorizationModel> {
         validate_store_id(store_id)?;
-        self.ensure_store_exists(store_id)?;
 
-        let key = Self::model_key(store_id, model_id);
+        // Check store exists
+        self.get_store(store_id).await?;
 
-        match self.db.get(key.as_bytes()) {
-            Ok(Some(value)) => {
-                serde_json::from_slice(&value).map_err(|e| StorageError::SerializationError {
-                    message: format!("Failed to deserialize model: {e}"),
-                })
+        let db = Arc::clone(&self.db);
+        let store_id_owned = store_id.to_string();
+        let model_id_owned = model_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let key = Self::model_key(&store_id_owned, &model_id_owned);
+
+            match db.get(key.as_bytes()) {
+                Ok(Some(value)) => {
+                    serde_json::from_slice(&value).map_err(|e| StorageError::SerializationError {
+                        message: format!("Failed to deserialize model: {e}"),
+                    })
+                }
+                Ok(None) => Err(StorageError::ModelNotFound {
+                    model_id: model_id_owned,
+                }),
+                Err(e) => Err(StorageError::QueryError {
+                    message: format!("Failed to get model: {e}"),
+                }),
             }
-            Ok(None) => Err(StorageError::ModelNotFound {
-                model_id: model_id.to_string(),
-            }),
-            Err(e) => Err(StorageError::QueryError {
-                message: format!("Failed to get model: {e}"),
-            }),
-        }
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     async fn list_authorization_models(
@@ -920,39 +1085,51 @@ impl DataStore for RocksDBDataStore {
         store_id: &str,
     ) -> StorageResult<Vec<StoredAuthorizationModel>> {
         validate_store_id(store_id)?;
-        self.ensure_store_exists(store_id)?;
 
-        let prefix = Self::model_prefix(store_id);
-        let mut models = Vec::new();
+        // Check store exists
+        self.get_store(store_id).await?;
 
-        let iter = self.db.prefix_iterator(prefix.as_bytes());
-        for item in iter {
-            match item {
-                Ok((key, value)) => {
-                    let key_str = String::from_utf8_lossy(&key);
-                    if !key_str.starts_with(&prefix) {
-                        break;
+        let db = Arc::clone(&self.db);
+        let store_id_owned = store_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let prefix = Self::model_prefix(&store_id_owned);
+            let mut models = Vec::new();
+
+            let iter = db.prefix_iterator(prefix.as_bytes());
+            for item in iter {
+                match item {
+                    Ok((key, value)) => {
+                        let key_str = String::from_utf8_lossy(&key);
+                        if !key_str.starts_with(&prefix) {
+                            break;
+                        }
+                        match serde_json::from_slice::<StoredAuthorizationModel>(&value) {
+                            Ok(model) => models.push(model),
+                            Err(e) => {
+                                warn!(key = %key_str, error = %e, "Failed to deserialize model, skipping");
+                            }
+                        }
                     }
-                    if let Ok(model) = serde_json::from_slice::<StoredAuthorizationModel>(&value) {
-                        models.push(model);
+                    Err(e) => {
+                        return Err(StorageError::QueryError {
+                            message: format!("Failed to iterate models: {e}"),
+                        });
                     }
-                }
-                Err(e) => {
-                    return Err(StorageError::QueryError {
-                        message: format!("Failed to iterate models: {e}"),
-                    });
                 }
             }
-        }
 
-        // Sort by created_at DESC, id DESC (newest first, deterministic)
-        models.sort_by(|a, b| {
-            b.created_at
-                .cmp(&a.created_at)
-                .then_with(|| b.id.cmp(&a.id))
-        });
+            // Sort by created_at DESC, id DESC (newest first, deterministic)
+            models.sort_by(|a, b| {
+                b.created_at
+                    .cmp(&a.created_at)
+                    .then_with(|| b.id.cmp(&a.id))
+            });
 
-        Ok(models)
+            Ok(models)
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     async fn list_authorization_models_paginated(
@@ -1001,31 +1178,39 @@ impl DataStore for RocksDBDataStore {
         model_id: &str,
     ) -> StorageResult<()> {
         validate_store_id(store_id)?;
-        self.ensure_store_exists(store_id)?;
 
-        let key = Self::model_key(store_id, model_id);
+        // Check store exists
+        self.get_store(store_id).await?;
 
-        // Check if model exists
-        if self
-            .db
-            .get(key.as_bytes())
-            .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to check model: {e}"),
-            })?
-            .is_none()
-        {
-            return Err(StorageError::ModelNotFound {
-                model_id: model_id.to_string(),
-            });
-        }
+        let db = Arc::clone(&self.db);
+        let store_id_owned = store_id.to_string();
+        let model_id_owned = model_id.to_string();
 
-        self.db
-            .delete(key.as_bytes())
-            .map_err(|e| StorageError::QueryError {
-                message: format!("Failed to delete model: {e}"),
-            })?;
+        tokio::task::spawn_blocking(move || {
+            let key = Self::model_key(&store_id_owned, &model_id_owned);
 
-        Ok(())
+            // Check if model exists
+            if db
+                .get(key.as_bytes())
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check model: {e}"),
+                })?
+                .is_none()
+            {
+                return Err(StorageError::ModelNotFound {
+                    model_id: model_id_owned,
+                });
+            }
+
+            db.delete(key.as_bytes())
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to delete model: {e}"),
+                })?;
+
+            Ok(())
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     // =========================================================================
@@ -1038,100 +1223,119 @@ impl DataStore for RocksDBDataStore {
         filter: &ReadChangesFilter,
         pagination: &PaginationOptions,
     ) -> StorageResult<PaginatedResult<TupleChange>> {
-        self.ensure_store_exists(store_id)?;
+        // Check store exists
+        self.get_store(store_id).await?;
 
-        let prefix = Self::change_prefix(store_id);
+        let db = Arc::clone(&self.db);
+        let store_id_owned = store_id.to_string();
+        let filter_owned = filter.clone();
         let offset = parse_continuation_token(&pagination.continuation_token)? as usize;
         let page_size = pagination.page_size.unwrap_or(50) as usize;
 
-        let mut changes: Vec<TupleChange> = Vec::new();
-        let mut count = 0;
-        let mut skipped = 0;
+        tokio::task::spawn_blocking(move || {
+            let prefix = Self::change_prefix(&store_id_owned);
 
-        let iter = self.db.prefix_iterator(prefix.as_bytes());
-        for item in iter {
-            match item {
-                Ok((key, value)) => {
-                    let key_str = String::from_utf8_lossy(&key);
-                    if !key_str.starts_with(&prefix) {
-                        break;
-                    }
+            let mut changes: Vec<TupleChange> = Vec::new();
+            let mut count = 0;
+            let mut skipped = 0;
 
-                    let change_value: ChangeValue = match serde_json::from_slice(&value) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
+            let iter = db.prefix_iterator(prefix.as_bytes());
+            for item in iter {
+                match item {
+                    Ok((key, value)) => {
+                        let key_str = String::from_utf8_lossy(&key);
+                        if !key_str.starts_with(&prefix) {
+                            break;
+                        }
 
-                    // Parse the tuple from the change
-                    let Some((object_type, object_id, relation, user_type, user_id, user_relation)) =
-                        Self::parse_tuple_key(&change_value.tuple_key)
-                    else {
-                        continue;
-                    };
+                        let change_value: ChangeValue = match serde_json::from_slice(&value) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                warn!(key = %key_str, error = %e, "Failed to deserialize change value, skipping");
+                                continue;
+                            }
+                        };
 
-                    // Apply type filter
-                    if let Some(ref filter_type) = filter.object_type {
-                        if &object_type != filter_type {
+                        // Parse the tuple from the change
+                        let Some((
+                            object_type,
+                            object_id,
+                            relation,
+                            user_type,
+                            user_id,
+                            user_relation,
+                        )) = Self::parse_tuple_key(&change_value.tuple_key)
+                        else {
+                            continue;
+                        };
+
+                        // Apply type filter
+                        if let Some(ref filter_type) = filter_owned.object_type {
+                            if &object_type != filter_type {
+                                continue;
+                            }
+                        }
+
+                        // Apply offset
+                        if skipped < offset {
+                            skipped += 1;
                             continue;
                         }
+
+                        let tuple = StoredTuple {
+                            object_type,
+                            object_id,
+                            relation,
+                            user_type,
+                            user_id,
+                            user_relation,
+                            condition_name: change_value.tuple_value.condition_name,
+                            condition_context: change_value.tuple_value.condition_context,
+                            created_at: change_value.tuple_value.created_at,
+                        };
+
+                        let operation =
+                            if change_value.operation == TupleOperation::Write.as_str() {
+                                TupleOperation::Write
+                            } else {
+                                TupleOperation::Delete
+                            };
+
+                        changes.push(TupleChange {
+                            tuple,
+                            operation,
+                            timestamp: change_value.timestamp,
+                        });
+
+                        count += 1;
+                        if count > page_size {
+                            break;
+                        }
                     }
-
-                    // Apply offset
-                    if skipped < offset {
-                        skipped += 1;
-                        continue;
+                    Err(e) => {
+                        return Err(StorageError::QueryError {
+                            message: format!("Failed to read changes: {e}"),
+                        });
                     }
-
-                    let tuple = StoredTuple {
-                        object_type,
-                        object_id,
-                        relation,
-                        user_type,
-                        user_id,
-                        user_relation,
-                        condition_name: change_value.tuple_value.condition_name,
-                        condition_context: change_value.tuple_value.condition_context,
-                        created_at: change_value.tuple_value.created_at,
-                    };
-
-                    let operation = if change_value.operation == TupleOperation::Write.as_str() {
-                        TupleOperation::Write
-                    } else {
-                        TupleOperation::Delete
-                    };
-
-                    changes.push(TupleChange {
-                        tuple,
-                        operation,
-                        timestamp: change_value.timestamp,
-                    });
-
-                    count += 1;
-                    if count > page_size {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    return Err(StorageError::QueryError {
-                        message: format!("Failed to read changes: {e}"),
-                    });
                 }
             }
-        }
 
-        let has_more = changes.len() > page_size;
-        let items: Vec<TupleChange> = changes.into_iter().take(page_size).collect();
+            let has_more = changes.len() > page_size;
+            let items: Vec<TupleChange> = changes.into_iter().take(page_size).collect();
 
-        let continuation_token = if has_more {
-            Some((offset + page_size).to_string())
-        } else {
-            None
-        };
+            let continuation_token = if has_more {
+                Some((offset + page_size).to_string())
+            } else {
+                None
+            };
 
-        Ok(PaginatedResult {
-            items,
-            continuation_token,
+            Ok(PaginatedResult {
+                items,
+                continuation_token,
+            })
         })
+        .await
+        .map_err(Self::join_error)?
     }
 
     // =========================================================================
@@ -1139,43 +1343,48 @@ impl DataStore for RocksDBDataStore {
     // =========================================================================
 
     async fn health_check(&self) -> StorageResult<HealthStatus> {
-        let start = Instant::now();
+        let db = Arc::clone(&self.db);
 
-        // Simple health check: write and read a test key
-        let test_key = b"__health_check__";
-        let test_value = b"ok";
+        tokio::task::spawn_blocking(move || {
+            let start = Instant::now();
 
-        self.db
-            .put(test_key, test_value)
-            .map_err(|e| StorageError::HealthCheckFailed {
-                message: format!("Health check write failed: {e}"),
-            })?;
+            // Simple health check: write and read a test key
+            let test_key = b"__health_check__";
+            let test_value = b"ok";
 
-        match self.db.get(test_key) {
-            Ok(Some(value)) if value == test_value => {}
-            Ok(_) => {
-                return Err(StorageError::HealthCheckFailed {
-                    message: "Health check read returned unexpected value".to_string(),
-                });
+            db.put(test_key, test_value)
+                .map_err(|e| StorageError::HealthCheckFailed {
+                    message: format!("Health check write failed: {e}"),
+                })?;
+
+            match db.get(test_key) {
+                Ok(Some(value)) if value == test_value => {}
+                Ok(_) => {
+                    return Err(StorageError::HealthCheckFailed {
+                        message: "Health check read returned unexpected value".to_string(),
+                    });
+                }
+                Err(e) => {
+                    return Err(StorageError::HealthCheckFailed {
+                        message: format!("Health check read failed: {e}"),
+                    });
+                }
             }
-            Err(e) => {
-                return Err(StorageError::HealthCheckFailed {
-                    message: format!("Health check read failed: {e}"),
-                });
-            }
-        }
 
-        // Clean up test key
-        let _ = self.db.delete(test_key);
+            // Clean up test key
+            let _ = db.delete(test_key);
 
-        let latency = start.elapsed();
+            let latency = start.elapsed();
 
-        Ok(HealthStatus {
-            healthy: true,
-            latency,
-            pool_stats: None, // RocksDB doesn't have a connection pool
-            message: Some("rocksdb".to_string()),
+            Ok(HealthStatus {
+                healthy: true,
+                latency,
+                pool_stats: None, // RocksDB doesn't have a connection pool
+                message: Some("rocksdb".to_string()),
+            })
         })
+        .await
+        .map_err(Self::join_error)?
     }
 }
 
@@ -1805,5 +2014,60 @@ mod tests {
         let result = store.read_tuples("test-store", &filter).await;
 
         assert!(matches!(result, Err(StorageError::InvalidFilter { .. })));
+    }
+
+    // ==========================================================================
+    // ULID Change ID Tests
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn test_change_ids_are_unique() {
+        let (store, _temp) = create_test_store();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Write multiple tuples rapidly
+        for i in 0..100 {
+            let tuple = StoredTuple::new(
+                "document",
+                format!("doc{i}"),
+                "viewer",
+                "user",
+                "alice",
+                None,
+            );
+            store.write_tuple("test-store", tuple).await.unwrap();
+        }
+
+        // Read all changes and verify no duplicate IDs
+        let changes = store
+            .read_changes(
+                "test-store",
+                &ReadChangesFilter::default(),
+                &PaginationOptions {
+                    page_size: Some(200),
+                    continuation_token: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(changes.items.len(), 100);
+
+        // Verify all changes have unique tuples (no duplicates)
+        let mut seen_tuples = std::collections::HashSet::new();
+        for change in &changes.items {
+            let tuple_key = format!(
+                "{}:{}#{}@{}:{}",
+                change.tuple.object_type,
+                change.tuple.object_id,
+                change.tuple.relation,
+                change.tuple.user_type,
+                change.tuple.user_id
+            );
+            assert!(
+                seen_tuples.insert(tuple_key.clone()),
+                "Duplicate tuple found: {tuple_key}"
+            );
+        }
     }
 }

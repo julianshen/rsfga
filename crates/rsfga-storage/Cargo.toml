@@ -9,7 +9,7 @@ description = "Storage abstraction layer for RSFGA"
 
 [features]
 default = []
-rocksdb = ["dep:rust-rocksdb"]
+rocksdb = ["dep:rust-rocksdb", "dep:ulid"]
 
 [dependencies]
 # Async runtime
@@ -44,6 +44,7 @@ base64 = "0.22"
 
 # RocksDB (optional - for embedded storage backend)
 rust-rocksdb = { version = "0.22", optional = true }
+ulid = { version = "1.1", optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
