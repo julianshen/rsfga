@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.1",
+  "type_definitions": [
+    {
+      "type": "user"
+    },
+    {
+      "type": "document",
+      "relations": {
+        "viewer": {
+          "this": {}
+        },
+        "editor": {
+          "this": {}
+        }
+      },
+      "metadata": {
+        "relations": {
+          "viewer": {
+            "directly_related_user_types": [
+              { "type": "user" },
+              { "type": "user", "condition": "department_condition" },
+              { "type": "user", "condition": "time_range_condition" }
+            ]
+          },
+          "editor": {
+            "directly_related_user_types": [
+              { "type": "user" },
+              { "type": "user", "condition": "admin_role_condition" }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "conditions": {
+    "department_condition": {
+      "name": "department_condition",
+      "expression": "dept == \"engineering\" || dept == \"product\"",
+      "parameters": {
+        "dept": {
+          "type_name": "TYPE_NAME_STRING"
+        }
+      }
+    },
+    "time_range_condition": {
+      "name": "time_range_condition",
+      "expression": "current_time >= start_time && current_time <= end_time",
+      "parameters": {
+        "current_time": {
+          "type_name": "TYPE_NAME_TIMESTAMP"
+        },
+        "start_time": {
+          "type_name": "TYPE_NAME_TIMESTAMP"
+        },
+        "end_time": {
+          "type_name": "TYPE_NAME_TIMESTAMP"
+        }
+      }
+    },
+    "admin_role_condition": {
+      "name": "admin_role_condition",
+      "expression": "role == \"admin\" || role == \"superadmin\"",
+      "parameters": {
+        "role": {
+          "type_name": "TYPE_NAME_STRING"
+        }
+      }
+    }
+  }
+}

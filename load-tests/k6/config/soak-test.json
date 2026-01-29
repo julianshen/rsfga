@@ -1,0 +1,24 @@
+{
+  "description": "Soak test for memory leaks and degradation",
+  "stages": [
+    { "duration": "5m", "target": 200, "comment": "Ramp up" },
+    { "duration": "55m", "target": 200, "comment": "Sustain for 1 hour" },
+    { "duration": "5m", "target": 0, "comment": "Ramp down" }
+  ],
+  "thresholds": {
+    "http_req_duration": ["p(95)<100", "p(99)<200"],
+    "http_req_failed": ["rate<0.001"]
+  },
+  "env": {
+    "RSFGA_URL": "http://localhost:8080",
+    "USER_COUNT": "2000",
+    "OBJECT_COUNT": "1000"
+  },
+  "notes": [
+    "Use this to detect memory leaks and performance degradation over time",
+    "Monitor memory usage throughout the test",
+    "Compare p95 latency at start vs end",
+    "Total duration: 65 minutes (1+ hour)",
+    "Sustained load: 200 req/s"
+  ]
+}

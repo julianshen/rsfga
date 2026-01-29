@@ -1371,125 +1371,157 @@ where
             });
         }
 
-        // Get all objects of the requested type (limited to max_candidates + 1 for truncation detection)
-        // This is the DoS protection: we bound the number of candidates BEFORE
-        // running expensive permission checks.
+        // OPTIMIZATION: Use reverse lookup to find objects the user can access directly.
+        // This is much faster than fetching all objects and checking each one.
+        // We start from the user and find their direct assignments, then only
+        // fall back to full candidate scanning for computed relations.
         let limit = max_candidates.saturating_add(1);
-        let mut candidates = self
+
+        // Step 1: Get objects where user has DIRECT access (fast path)
+        // This query uses the user index and is O(user's assignments) instead of O(all objects)
+        let direct_objects = self
             .tuple_reader
-            .get_objects_of_type(&request.store_id, &request.object_type, limit)
+            .get_objects_for_user(
+                &request.store_id,
+                &request.user,
+                &request.object_type,
+                Some(&request.relation),
+                limit,
+            )
             .await?;
 
-        // Also include objects from contextual tuples that match the requested type.
-        // Contextual tuples may reference objects that don't exist in storage yet.
-        // We need to check these objects for permissions as well.
-        // Use HashSet for O(1) deduplication instead of O(n) Vec::contains.
-        let mut seen: std::collections::HashSet<String> = candidates.iter().cloned().collect();
+        // Collect directly accessible objects
+        let mut result_objects: Vec<String> = direct_objects
+            .into_iter()
+            .map(|(obj_id, _relation)| format!("{}:{}", request.object_type, obj_id))
+            .collect();
+
+        // Add objects from contextual tuples that grant direct access
+        let mut seen: std::collections::HashSet<String> = result_objects.iter().cloned().collect();
         for ct in request.contextual_tuples.iter() {
-            // Early exit: stop adding candidates once we hit the limit (DoS protection)
-            if candidates.len() >= limit {
+            if result_objects.len() >= limit {
                 break;
             }
-            // Parse the object using split_once (more idiomatic than find + split_at)
-            // Malformed objects without ':' are silently skipped (consistent with tuple parsing)
-            if let Some((obj_type, obj_id)) = ct.object.split_once(':') {
-                if obj_type == request.object_type && !seen.contains(obj_id) {
-                    let obj_id_string = obj_id.to_string();
-                    seen.insert(obj_id_string.clone());
-                    candidates.push(obj_id_string);
+            if ct.user == request.user && ct.relation == request.relation {
+                if let Some((obj_type, _obj_id)) = ct.object.split_once(':') {
+                    if obj_type == request.object_type && !seen.contains(&ct.object) {
+                        seen.insert(ct.object.clone());
+                        result_objects.push(ct.object.clone());
+                    }
                 }
             }
         }
 
-        // Check if we hit the limit (truncation detection)
-        let truncated = if candidates.len() > max_candidates {
-            candidates.truncate(max_candidates); // Truncate to max
-            true
-        } else {
-            false
-        };
+        // Step 2: For computed relations (e.g., viewer from parent), we need to check
+        // additional candidates. Get remaining objects that might have computed access.
+        // Only do this expensive scan if we haven't hit our limit from direct access.
+        let mut truncated = result_objects.len() > max_candidates;
+        if !truncated {
+            // Get all objects of the requested type for computed relation checking
+            let all_candidates = self
+                .tuple_reader
+                .get_objects_of_type(&request.store_id, &request.object_type, limit)
+                .await?;
 
-        // Early exit: skip expensive permission checks if no candidates found
-        if candidates.is_empty() {
-            return Ok(super::ListObjectsResult {
-                objects: Vec::new(),
-                truncated: false,
-            });
+            // Filter to objects not already in our result set (need permission check)
+            let candidates_to_check: Vec<String> = all_candidates
+                .into_iter()
+                .filter(|obj_id| {
+                    let full_obj = format!("{}:{}", request.object_type, obj_id);
+                    !seen.contains(&full_obj)
+                })
+                .collect();
+
+            // Check if we have candidates to check and room for more results
+            if !candidates_to_check.is_empty() && result_objects.len() < max_candidates {
+                // Run parallel permission checks on remaining candidates
+                // Constraint C11: Fail Fast with Bounds - we limit concurrency to avoid
+                // exhausting resources even effectively "bounded" tasks.
+                const MAX_CONCURRENT_CHECKS: usize = 50;
+                // Per-operation timeout for individual permission checks.
+                const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+                // Track if any errors occurred during permission checks
+                let had_errors = std::sync::atomic::AtomicBool::new(false);
+
+                // Clone shared data once outside the loop to avoid per-candidate cloning
+                let shared_contextual_tuples = request.contextual_tuples.clone();
+                let shared_context = request.context.clone();
+
+                // Calculate how many more objects we can add
+                let remaining_capacity = max_candidates.saturating_sub(result_objects.len());
+
+                let computed_objects: Vec<String> = futures::stream::iter(candidates_to_check)
+                    .map(|object_id| {
+                        let check_request = CheckRequest::with_context(
+                            request.store_id.clone(),
+                            request.user.clone(),
+                            request.relation.clone(),
+                            format!("{}:{}", request.object_type, object_id),
+                            shared_contextual_tuples.as_ref().clone(),
+                            shared_context.as_ref().clone(),
+                        );
+                        async move {
+                            let result = timeout(CHECK_TIMEOUT, self.check(&check_request)).await;
+                            (object_id, result)
+                        }
+                    })
+                    .buffer_unordered(MAX_CONCURRENT_CHECKS)
+                    .filter_map(|(object_id, result)| {
+                        let had_errors = &had_errors;
+                        async move {
+                            match result {
+                                Ok(Ok(CheckResult { allowed: true })) => {
+                                    Some(format!("{}:{}", request.object_type, object_id))
+                                }
+                                Ok(Ok(CheckResult { allowed: false })) => None,
+                                Ok(Err(e)) => {
+                                    warn!(
+                                        store_id = %request.store_id,
+                                        object_type = %request.object_type,
+                                        object_id = %object_id,
+                                        error = %e,
+                                        "Permission check failed during list_objects"
+                                    );
+                                    had_errors.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    None
+                                }
+                                Err(_timeout) => {
+                                    warn!(
+                                        store_id = %request.store_id,
+                                        object_type = %request.object_type,
+                                        object_id = %object_id,
+                                        "Permission check timed out during list_objects"
+                                    );
+                                    had_errors.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    None
+                                }
+                            }
+                        }
+                    })
+                    .take(remaining_capacity)
+                    .collect::<Vec<_>>()
+                    .await;
+
+                // Merge computed results into result_objects
+                result_objects.extend(computed_objects);
+
+                // Update truncation status if errors occurred
+                if had_errors.load(std::sync::atomic::Ordering::Relaxed) {
+                    truncated = true;
+                }
+            }
         }
 
-        // Run parallel permission checks on candidates with concurrency limit
-        // Constraint C11: Fail Fast with Bounds - we limit concurrency to avoid
-        // exhausting resources even effectively "bounded" tasks.
-        const MAX_CONCURRENT_CHECKS: usize = 50;
-        // Per-operation timeout for individual permission checks.
-        // Prevents a single slow check from blocking the entire operation.
-        const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
-
-        // Track if any errors occurred during permission checks
-        let had_errors = std::sync::atomic::AtomicBool::new(false);
-
-        // Clone shared data once outside the loop to avoid per-candidate cloning
-        let shared_contextual_tuples = request.contextual_tuples.clone();
-        let shared_context = request.context.clone();
-
-        let objects = futures::stream::iter(candidates)
-            .map(|object_id| {
-                let check_request = CheckRequest::with_context(
-                    request.store_id.clone(),
-                    request.user.clone(),
-                    request.relation.clone(),
-                    format!("{}:{}", request.object_type, object_id),
-                    shared_contextual_tuples.as_ref().clone(),
-                    shared_context.as_ref().clone(),
-                );
-                async move {
-                    // Apply per-operation timeout to prevent indefinite blocking
-                    let result = timeout(CHECK_TIMEOUT, self.check(&check_request)).await;
-                    (object_id, result)
-                }
-            })
-            .buffer_unordered(MAX_CONCURRENT_CHECKS)
-            .filter_map(|(object_id, result)| {
-                let had_errors = &had_errors;
-                async move {
-                    match result {
-                        Ok(Ok(CheckResult { allowed: true })) => {
-                            Some(format!("{}:{}", request.object_type, object_id))
-                        }
-                        Ok(Ok(CheckResult { allowed: false })) => None,
-                        Ok(Err(e)) => {
-                            warn!(
-                                store_id = %request.store_id,
-                                object_type = %request.object_type,
-                                object_id = %object_id,
-                                error = %e,
-                                "Permission check failed during list_objects"
-                            );
-                            had_errors.store(true, std::sync::atomic::Ordering::Relaxed);
-                            None
-                        }
-                        Err(_timeout) => {
-                            warn!(
-                                store_id = %request.store_id,
-                                object_type = %request.object_type,
-                                object_id = %object_id,
-                                "Permission check timed out during list_objects"
-                            );
-                            had_errors.store(true, std::sync::atomic::Ordering::Relaxed);
-                            None
-                        }
-                    }
-                }
-            })
-            .collect::<Vec<_>>()
-            .await;
-
-        // Truncated if we hit the limit OR if any errors occurred (incomplete results)
-        let result_truncated = truncated || had_errors.load(std::sync::atomic::Ordering::Relaxed);
+        // Truncate to max_candidates if needed
+        if result_objects.len() > max_candidates {
+            result_objects.truncate(max_candidates);
+            truncated = true;
+        }
 
         Ok(super::types::ListObjectsResult {
-            objects,
-            truncated: result_truncated,
+            objects: result_objects,
+            truncated,
         })
     }
 

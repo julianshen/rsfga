@@ -1,0 +1,28 @@
+{
+  "description": "Spike test for sudden traffic bursts",
+  "stages": [
+    { "duration": "1m", "target": 50, "comment": "Normal load" },
+    { "duration": "10s", "target": 1000, "comment": "Sudden spike" },
+    { "duration": "1m", "target": 1000, "comment": "Sustain spike" },
+    { "duration": "10s", "target": 50, "comment": "Drop back" },
+    { "duration": "1m", "target": 50, "comment": "Recovery period" },
+    { "duration": "10s", "target": 1000, "comment": "Second spike" },
+    { "duration": "1m", "target": 1000, "comment": "Sustain second spike" },
+    { "duration": "10s", "target": 0, "comment": "Ramp down" }
+  ],
+  "thresholds": {
+    "http_req_duration": ["p(95)<500"],
+    "http_req_failed": ["rate<0.1"]
+  },
+  "env": {
+    "RSFGA_URL": "http://localhost:8080",
+    "USER_COUNT": "3000",
+    "OBJECT_COUNT": "1500"
+  },
+  "notes": [
+    "Use this to test system behavior under sudden traffic bursts",
+    "Monitors recovery time after spikes",
+    "Total duration: ~5 minutes",
+    "Normal load: 50 req/s, Spike: 1000 req/s"
+  ]
+}

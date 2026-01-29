@@ -37,6 +37,30 @@ pub trait TupleReader: Send + Sync {
         // Default: return empty list (ListObjects not supported)
         Ok(Vec::new())
     }
+
+    /// Gets objects where the specified user has a direct relation.
+    ///
+    /// This is a reverse lookup: instead of checking "can user X access object Y",
+    /// it finds "all objects Y where user X has relation R".
+    ///
+    /// Used by ListObjects for efficient permission resolution - starts from user's
+    /// direct assignments rather than checking all objects.
+    ///
+    /// Returns tuples of (object_id, relation) for the specified user and object_type.
+    /// The limit parameter provides DoS protection (constraint C11).
+    ///
+    /// Default implementation returns an empty list. Override to enable efficient ListObjects.
+    async fn get_objects_for_user(
+        &self,
+        _store_id: &str,
+        _user: &str,
+        _object_type: &str,
+        _relation: Option<&str>,
+        _max_count: usize,
+    ) -> DomainResult<Vec<(String, String)>> {
+        // Default: return empty list (reverse lookup not supported)
+        Ok(Vec::new())
+    }
 }
 
 /// Trait for authorization model operations needed by the resolver.
