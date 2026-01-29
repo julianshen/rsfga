@@ -577,7 +577,7 @@ impl std::hash::Hash for StoredTuple {
 }
 
 /// Store metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Store {
     pub id: String,
     pub name: String,
@@ -590,7 +590,7 @@ pub struct Store {
 /// Authorization models define the type system and relations for a store.
 /// The model data is stored as a JSON string to preserve the complex nested
 /// structure of type definitions and conditions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StoredAuthorizationModel {
     /// Unique identifier for this model (ULID format).
     pub id: String,
