@@ -88,6 +88,51 @@ pub fn parse_continuation_token(token: &Option<String>) -> StorageResult<i64> {
     }
 }
 
+/// Result of get_objects_with_parents containing object ID and optional condition info.
+///
+/// This struct is returned by `get_objects_with_parents` to enable proper condition
+/// evaluation for TupleToUserset relations. Without condition info, the ReverseExpand
+/// algorithm would grant access to objects whose tupleset tuples have failing conditions.
+///
+/// # Authorization Correctness (Invariant I1)
+///
+/// When a tuple has a condition (e.g., `document:123#parent@folder:456[valid_until: {...}]`),
+/// the condition must be evaluated before granting access. Returning only object IDs would
+/// bypass condition evaluation, potentially granting unauthorized access.
+#[derive(Debug, Clone)]
+pub struct ObjectWithCondition {
+    /// The object ID (e.g., "doc1" not "document:doc1").
+    pub object_id: String,
+    /// Optional condition name that must be satisfied for this tuple.
+    pub condition_name: Option<String>,
+    /// Optional condition context (parameters) as JSON key-value pairs.
+    pub condition_context: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+impl ObjectWithCondition {
+    /// Creates a new ObjectWithCondition without a condition.
+    pub fn new(object_id: impl Into<String>) -> Self {
+        Self {
+            object_id: object_id.into(),
+            condition_name: None,
+            condition_context: None,
+        }
+    }
+
+    /// Creates a new ObjectWithCondition with a condition.
+    pub fn with_condition(
+        object_id: impl Into<String>,
+        condition_name: impl Into<String>,
+        condition_context: Option<std::collections::HashMap<String, serde_json::Value>>,
+    ) -> Self {
+        Self {
+            object_id: object_id.into(),
+            condition_name: Some(condition_name.into()),
+            condition_context,
+        }
+    }
+}
+
 /// Cursor for tuple pagination using composite key.
 ///
 /// Enables efficient cursor-based pagination by encoding the last tuple's
@@ -802,8 +847,9 @@ pub trait DataStore: Send + Sync + 'static {
     ///
     /// # Returns
     ///
-    /// A vector of object IDs (not full type:id, just the ID part) that reference
-    /// any of the given parents. Results are DISTINCT and limited.
+    /// A vector of `ObjectWithCondition` containing object IDs and optional condition
+    /// metadata. Condition info is critical for authorization correctness (Invariant I1)
+    /// - tuples with conditions must be evaluated before granting access.
     ///
     /// # Performance
     ///
@@ -822,7 +868,7 @@ pub trait DataStore: Send + Sync + 'static {
         _parent_type: &str,
         _parent_ids: &[String],
         _limit: usize,
-    ) -> StorageResult<Vec<String>> {
+    ) -> StorageResult<Vec<ObjectWithCondition>> {
         // Default implementation returns empty - ReverseExpand will fall back to
         // forward-scan when this is not implemented.
         Ok(Vec::new())

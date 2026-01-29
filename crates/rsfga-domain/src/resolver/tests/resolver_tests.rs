@@ -6927,3 +6927,161 @@ async fn test_list_objects_with_intersection_relation() {
         "Expected doc3 to be accessible (both owner and approved)"
     );
 }
+
+/// Tests that list_objects with TupleToUserset correctly evaluates conditions
+/// on child tuples (the parent relation tuples).
+///
+/// This test verifies Invariant I1 (Correctness Over Performance):
+/// When a tupleset relation (e.g., parent) has conditions, those conditions
+/// must be evaluated before including the child object in results.
+///
+/// Model: document with `define viewer: viewer from parent`
+/// Setup:
+/// - user:alice is viewer on folder:reports
+/// - document:doc1 has parent = folder:reports (no condition) -> should be included
+/// - document:doc2 has parent = folder:reports with failing condition -> should be EXCLUDED
+/// - document:doc3 has parent = folder:reports with passing condition -> should be included
+#[tokio::test]
+async fn test_list_objects_with_conditional_tupleset_in_hierarchy() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Define the folder type with viewer relation
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Define the document type with:
+    // - parent: [folder] (this is where conditions will be)
+    // - viewer: viewer from parent (TupleToUserset)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Add a CEL condition that checks department == "engineering"
+    // Note: CEL expressions access values via "request." prefix
+    model_reader
+        .add_condition(
+            "store1",
+            Condition {
+                name: "dept_check".to_string(),
+                expression: "request.dept == \"engineering\"".to_string(),
+                parameters: vec![ConditionParameter::new("dept", "string")],
+            },
+        )
+        .await;
+
+    // user:alice is viewer on folder:reports
+    tuple_reader
+        .add_tuple(
+            "store1", "folder", "reports", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    // doc1: parent = folder:reports (no condition) -> should be included
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "parent", "folder", "reports", None,
+        )
+        .await;
+
+    // doc2: parent = folder:reports WITH FAILING CONDITION -> should be EXCLUDED
+    let mut doc2_context = std::collections::HashMap::new();
+    doc2_context.insert(
+        "dept".to_string(),
+        serde_json::Value::String("marketing".to_string()),
+    );
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc2",
+            "parent",
+            "folder",
+            "reports",
+            None,
+            "dept_check",
+            Some(doc2_context),
+        )
+        .await;
+
+    // doc3: parent = folder:reports WITH PASSING CONDITION -> should be included
+    let mut doc3_context = std::collections::HashMap::new();
+    doc3_context.insert(
+        "dept".to_string(),
+        serde_json::Value::String("engineering".to_string()),
+    );
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc3",
+            "parent",
+            "folder",
+            "reports",
+            None,
+            "dept_check",
+            Some(doc3_context),
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice should see doc1 and doc3
+    // but NOT doc2 (condition fails: dept=marketing != "engineering")
+    assert_eq!(
+        result.objects.len(),
+        2,
+        "Expected 2 documents (doc1 without condition, doc3 with passing condition), \
+         but NOT doc2 (condition fails). Got: {:?}",
+        result.objects
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible (no condition on parent tuple)"
+    );
+    assert!(
+        !result.objects.contains(&"document:doc2".to_string()),
+        "Expected doc2 to NOT be accessible (condition dept=marketing fails)"
+    );
+    assert!(
+        result.objects.contains(&"document:doc3".to_string()),
+        "Expected doc3 to be accessible (condition dept=engineering passes)"
+    );
+}

@@ -80,8 +80,9 @@ pub trait TupleReader: Send + Sync {
     ///
     /// # Returns
     ///
-    /// A vector of object IDs (not full type:id, just the ID part) that reference any
-    /// of the given parents via the tupleset relation.
+    /// A vector of ObjectTupleInfo containing object IDs and condition metadata for tuples
+    /// that reference any of the given parents via the tupleset relation.
+    /// Condition info is critical for authorization correctness (Invariant I1).
     ///
     /// # Example
     ///
@@ -96,7 +97,7 @@ pub trait TupleReader: Send + Sync {
         _parent_type: &str,
         _parent_ids: &[String],
         _max_count: usize,
-    ) -> DomainResult<Vec<String>> {
+    ) -> DomainResult<Vec<ObjectTupleInfo>> {
         // Default: return empty list (ReverseExpand not supported, falls back to forward-scan)
         Ok(Vec::new())
     }

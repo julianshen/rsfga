@@ -948,8 +948,9 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
         parent_type: &str,
         parent_ids: &[String],
         max_count: usize,
-    ) -> DomainResult<Vec<String>> {
-        self.storage
+    ) -> DomainResult<Vec<ObjectTupleInfo>> {
+        let storage_results = self
+            .storage
             .get_objects_with_parents(
                 store_id,
                 object_type,
@@ -966,7 +967,27 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
                 _ => DomainError::StorageOperationFailed {
                     reason: e.to_string(),
                 },
+            })?;
+
+        // Convert storage ObjectWithCondition to domain ObjectTupleInfo
+        // The tupleset_relation is the relation on this tuple (e.g., "parent")
+        let results = storage_results
+            .into_iter()
+            .map(|obj| {
+                if let Some(condition_name) = obj.condition_name {
+                    ObjectTupleInfo::with_condition(
+                        obj.object_id,
+                        tupleset_relation,
+                        condition_name,
+                        obj.condition_context,
+                    )
+                } else {
+                    ObjectTupleInfo::new(obj.object_id, tupleset_relation)
+                }
             })
+            .collect();
+
+        Ok(results)
     }
 }
 

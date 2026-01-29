@@ -1343,6 +1343,31 @@ where
         request: &super::types::ListObjectsRequest,
         max_candidates: usize,
     ) -> DomainResult<super::types::ListObjectsResult> {
+        // Per-operation timeout for the entire list_objects operation.
+        // Prevents indefinite blocking on pathological graphs (DoS protection - Constraint C11).
+        const LIST_OBJECTS_TIMEOUT: Duration = Duration::from_secs(30);
+
+        // Wrap the entire operation with a timeout
+        match timeout(
+            LIST_OBJECTS_TIMEOUT,
+            self.list_objects_inner(request, max_candidates),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(DomainError::OperationTimeout {
+                operation: "list_objects".to_string(),
+                timeout_secs: LIST_OBJECTS_TIMEOUT.as_secs(),
+            }),
+        }
+    }
+
+    /// Inner implementation of list_objects without timeout wrapper.
+    async fn list_objects_inner(
+        &self,
+        request: &super::types::ListObjectsRequest,
+        max_candidates: usize,
+    ) -> DomainResult<super::types::ListObjectsResult> {
         // Check if store exists
         if !self.tuple_reader.store_exists(&request.store_id).await? {
             return Err(DomainError::StoreNotFound {
@@ -1704,8 +1729,9 @@ where
                             continue;
                         }
 
-                        // Use the new efficient query to find children
-                        let child_ids = self
+                        // Use the new efficient query to find children with condition info
+                        // Returns ObjectTupleInfo for authorization correctness (Invariant I1)
+                        let child_tuples = self
                             .tuple_reader
                             .get_objects_with_parents(
                                 store_id,
@@ -1717,11 +1743,36 @@ where
                             )
                             .await?;
 
-                        for child_id in child_ids {
-                            let full_obj = format!("{}:{}", object_type, child_id);
-                            if !seen.contains(&full_obj) && results.len() < limit {
-                                seen.insert(full_obj.clone());
-                                results.push(full_obj);
+                        for child_tuple in child_tuples {
+                            // Evaluate condition if present (critical for I1 correctness)
+                            // Without this check, users could gain unauthorized access when
+                            // tupleset tuples have conditions that should deny access
+                            if child_tuple.condition_name.is_some() {
+                                let condition_ok = self
+                                    .evaluate_condition(
+                                        store_id,
+                                        child_tuple.condition_name.as_deref(),
+                                        child_tuple.condition_context.as_ref(),
+                                        request_context,
+                                    )
+                                    .await?;
+
+                                if !condition_ok {
+                                    // Condition not satisfied, skip this child object
+                                    continue;
+                                }
+                            }
+
+                            let full_obj = format!("{}:{}", object_type, child_tuple.object_id);
+                            if !seen.contains(&full_obj) {
+                                if results.len() < limit {
+                                    seen.insert(full_obj.clone());
+                                    results.push(full_obj);
+                                } else {
+                                    // Hit limit - there are more objects we couldn't include
+                                    *truncated = true;
+                                    break;
+                                }
                             }
                         }
                     }

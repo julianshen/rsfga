@@ -221,7 +221,7 @@ impl TupleReader for MockTupleReader {
         parent_type: &str,
         parent_ids: &[String],
         max_count: usize,
-    ) -> DomainResult<Vec<String>> {
+    ) -> DomainResult<Vec<ObjectTupleInfo>> {
         if parent_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -231,7 +231,8 @@ impl TupleReader for MockTupleReader {
         // Search through all tuples to find objects that have the given parents
         let tuples = self.tuples.read().await;
         let prefix = format!("{store_id}:{object_type}:");
-        let mut results = HashSet::new();
+        let mut results = Vec::new();
+        let mut seen_objects = HashSet::new();
 
         for (key, stored_tuples) in tuples.iter() {
             if !key.starts_with(&prefix) {
@@ -253,18 +254,32 @@ impl TupleReader for MockTupleReader {
             }
 
             // Check if any of the tuples reference one of our parent objects
+            // Return condition info for authorization correctness (Invariant I1)
             for tuple in stored_tuples {
-                if tuple.user_type == parent_type && parent_id_set.contains(tuple.user_id.as_str())
+                if tuple.user_type == parent_type
+                    && parent_id_set.contains(tuple.user_id.as_str())
+                    && !seen_objects.contains(tuple_object_id)
                 {
-                    results.insert(tuple_object_id.to_string());
+                    seen_objects.insert(tuple_object_id.to_string());
+                    let info = if let Some(ref cond_name) = tuple.condition_name {
+                        ObjectTupleInfo::with_condition(
+                            tuple_object_id.to_string(),
+                            tupleset_relation.to_string(),
+                            cond_name.clone(),
+                            tuple.condition_context.clone(),
+                        )
+                    } else {
+                        ObjectTupleInfo::new(tuple_object_id.to_string(), tupleset_relation)
+                    };
+                    results.push(info);
                     if results.len() >= max_count {
-                        return Ok(results.into_iter().collect());
+                        return Ok(results);
                     }
                 }
             }
         }
 
-        Ok(results.into_iter().collect())
+        Ok(results)
     }
 }
 

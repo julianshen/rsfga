@@ -24,9 +24,9 @@ use tracing::{debug, instrument};
 use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_user_filter, validate_object_type, validate_store_id,
-    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions,
-    ReadChangesFilter, Store, StoredAuthorizationModel, StoredTuple, TupleChange, TupleFilter,
-    TupleOperation,
+    validate_store_name, validate_tuple, DataStore, ObjectWithCondition, PaginatedResult,
+    PaginationOptions, ReadChangesFilter, Store, StoredAuthorizationModel, StoredTuple,
+    TupleChange, TupleFilter, TupleOperation,
 };
 
 /// Parse a database row into a StoredTuple.
@@ -2375,7 +2375,7 @@ impl DataStore for MySQLDataStore {
         parent_type: &str,
         parent_ids: &[String],
         limit: usize,
-    ) -> StorageResult<Vec<String>> {
+    ) -> StorageResult<Vec<ObjectWithCondition>> {
         // If no parent IDs provided, return empty result
         if parent_ids.is_empty() {
             return Ok(Vec::new());
@@ -2434,27 +2434,22 @@ impl DataStore for MySQLDataStore {
         }
 
         // Build dynamic IN clause with parameterized placeholders.
-        // SAFETY: This is NOT SQL injection because:
-        // 1. We only construct placeholder strings ("?"), not user data
-        // 2. All user-provided values (parent_ids) are bound via parameterized queries
-        // 3. The number of placeholders is bounded by MAX_PARENT_IDS above
-        let placeholders: Vec<&str> = (0..parent_ids.len()).map(|_| "?").collect();
-        let placeholders_str = placeholders.join(", ");
-
-        let query = format!(
-            r#"
-            SELECT DISTINCT object_id
-            FROM tuples
-            WHERE store_id = ?
-              AND object_type = ?
-              AND relation = ?
-              AND user_type = ?
-              AND user_id IN ({})
-            ORDER BY object_id
-            LIMIT ?
-            "#,
-            placeholders_str
+        // Security: We build the query string without format! to avoid security anti-patterns.
+        // Only placeholder strings ("?") are appended, never user data.
+        // All values are bound via parameterized queries below.
+        let placeholder_count = parent_ids.len();
+        let mut query = String::from(
+            "SELECT DISTINCT object_id, condition_name, condition_context \
+             FROM tuples \
+             WHERE store_id = ? AND object_type = ? AND relation = ? AND user_type = ? AND user_id IN (",
         );
+        for i in 0..placeholder_count {
+            if i > 0 {
+                query.push_str(", ");
+            }
+            query.push('?');
+        }
+        query.push_str(") ORDER BY object_id LIMIT ?");
 
         let object_type_owned = object_type.to_string();
         let relation_owned = relation.to_string();
@@ -2483,7 +2478,23 @@ impl DataStore for MySQLDataStore {
             })
             .await?;
 
-        Ok(rows.into_iter().map(|row| row.get("object_id")).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let object_id: String = row.get("object_id");
+                let condition_name: Option<String> = row.get("condition_name");
+                let condition_context: Option<serde_json::Value> = row.get("condition_context");
+                let condition_context = condition_context.and_then(|v| {
+                    v.as_object()
+                        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                });
+                ObjectWithCondition {
+                    object_id,
+                    condition_name,
+                    condition_context,
+                }
+            })
+            .collect())
     }
 }
 

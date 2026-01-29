@@ -10,9 +10,9 @@ use tracing::{debug, instrument};
 use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_user_filter, validate_object_type, validate_store_id,
-    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions,
-    ReadChangesFilter, Store, StoredAuthorizationModel, StoredTuple, TupleChange, TupleFilter,
-    TupleOperation,
+    validate_store_name, validate_tuple, DataStore, ObjectWithCondition, PaginatedResult,
+    PaginationOptions, ReadChangesFilter, Store, StoredAuthorizationModel, StoredTuple,
+    TupleChange, TupleFilter, TupleOperation,
 };
 
 /// Maximum size of condition_context JSON in bytes (64 KB).
@@ -1038,7 +1038,7 @@ impl DataStore for PostgresDataStore {
         parent_type: &str,
         parent_ids: &[String],
         limit: usize,
-    ) -> StorageResult<Vec<String>> {
+    ) -> StorageResult<Vec<ObjectWithCondition>> {
         // If no parent IDs provided, return empty result
         if parent_ids.is_empty() {
             return Ok(Vec::new());
@@ -1105,11 +1105,12 @@ impl DataStore for PostgresDataStore {
         // - relation = the tupleset relation (e.g., "parent")
         // - user_type = parent_type (e.g., "folder")
         // - user_id in the list of parent IDs
+        // Returns condition info for authorization correctness (Invariant I1)
         let rows = self
             .execute_with_timeout("get_objects_with_parents", async {
                 sqlx::query(
                     r#"
-                    SELECT DISTINCT object_id
+                    SELECT DISTINCT object_id, condition_name, condition_context
                     FROM tuples
                     WHERE store_id = $1
                       AND object_type = $2
@@ -1135,7 +1136,23 @@ impl DataStore for PostgresDataStore {
             })
             .await?;
 
-        Ok(rows.into_iter().map(|row| row.get("object_id")).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let object_id: String = row.get("object_id");
+                let condition_name: Option<String> = row.get("condition_name");
+                let condition_context: Option<serde_json::Value> = row.get("condition_context");
+                let condition_context = condition_context.and_then(|v| {
+                    v.as_object()
+                        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                });
+                ObjectWithCondition {
+                    object_id,
+                    condition_name,
+                    condition_context,
+                }
+            })
+            .collect())
     }
 
     #[instrument(skip(self))]
