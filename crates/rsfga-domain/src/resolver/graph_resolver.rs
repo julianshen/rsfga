@@ -1458,6 +1458,20 @@ where
             if ct.user == request.user && ct.relation == request.relation {
                 if let Some((obj_type, _obj_id)) = ct.object.split_once(':') {
                     if obj_type == request.object_type && !seen.contains(&ct.object) {
+                        // Evaluate condition if present (I1 correctness requirement)
+                        if ct.condition_name.is_some() {
+                            let condition_ok = self
+                                .evaluate_condition(
+                                    &request.store_id,
+                                    ct.condition_name.as_deref(),
+                                    ct.condition_context.as_ref(),
+                                    &request.context,
+                                )
+                                .await?;
+                            if !condition_ok {
+                                continue;
+                            }
+                        }
                         seen.insert(ct.object.clone());
                         result_objects.push(ct.object.clone());
                     }
