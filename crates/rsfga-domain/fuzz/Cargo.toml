@@ -1,0 +1,37 @@
+[package]
+name = "rsfga-domain-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[dependencies.rsfga-domain]
+path = ".."
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "fuzz_list_objects"
+path = "fuzz_targets/fuzz_list_objects.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_reverse_expand"
+path = "fuzz_targets/fuzz_reverse_expand.rs"
+test = false
+doc = false
+bench = false

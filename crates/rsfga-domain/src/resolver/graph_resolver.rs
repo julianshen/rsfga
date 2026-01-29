@@ -1539,9 +1539,15 @@ where
                         }
 
                         let full_obj = format!("{}:{}", object_type, tuple_info.object_id);
-                        if !seen.contains(&full_obj) && results.len() < limit {
-                            seen.insert(full_obj.clone());
-                            results.push(full_obj);
+                        if !seen.contains(&full_obj) {
+                            if results.len() < limit {
+                                seen.insert(full_obj.clone());
+                                results.push(full_obj);
+                            } else {
+                                // Hit limit - there are more objects we couldn't include
+                                *truncated = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -1864,9 +1870,15 @@ where
 
                     // Add intersection results to main results
                     for obj in current_set {
-                        if !seen.contains(&obj) && results.len() < limit {
-                            seen.insert(obj.clone());
-                            results.push(obj);
+                        if !seen.contains(&obj) {
+                            if results.len() < limit {
+                                seen.insert(obj.clone());
+                                results.push(obj);
+                            } else {
+                                // Hit limit - there are more objects we couldn't include
+                                *truncated = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -1957,12 +1969,15 @@ where
 
                     // Add base results that are not in subtract
                     for obj in base_results {
-                        if !subtract_set.contains(&obj)
-                            && !seen.contains(&obj)
-                            && results.len() < limit
-                        {
-                            seen.insert(obj.clone());
-                            results.push(obj);
+                        if !subtract_set.contains(&obj) && !seen.contains(&obj) {
+                            if results.len() < limit {
+                                seen.insert(obj.clone());
+                                results.push(obj);
+                            } else {
+                                // Hit limit - there are more objects we couldn't include
+                                *truncated = true;
+                                break;
+                            }
                         }
                     }
                 }
