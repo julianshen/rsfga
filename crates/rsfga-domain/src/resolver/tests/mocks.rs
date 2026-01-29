@@ -199,6 +199,60 @@ impl TupleReader for MockTupleReader {
 
         Ok(results)
     }
+
+    async fn get_objects_with_parents(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        tupleset_relation: &str,
+        parent_type: &str,
+        parent_ids: &[String],
+        max_count: usize,
+    ) -> DomainResult<Vec<String>> {
+        if parent_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let parent_id_set: HashSet<&str> = parent_ids.iter().map(|s| s.as_str()).collect();
+
+        // Search through all tuples to find objects that have the given parents
+        let tuples = self.tuples.read().await;
+        let prefix = format!("{store_id}:{object_type}:");
+        let mut results = HashSet::new();
+
+        for (key, stored_tuples) in tuples.iter() {
+            if !key.starts_with(&prefix) {
+                continue;
+            }
+
+            // Key format: "store_id:object_type:object_id:relation"
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+
+            let tuple_object_id = parts[2];
+            let tuple_relation = parts[3];
+
+            // Check if this is the tupleset relation we're looking for
+            if tuple_relation != tupleset_relation {
+                continue;
+            }
+
+            // Check if any of the tuples reference one of our parent objects
+            for tuple in stored_tuples {
+                if tuple.user_type == parent_type && parent_id_set.contains(tuple.user_id.as_str())
+                {
+                    results.insert(tuple_object_id.to_string());
+                    if results.len() >= max_count {
+                        return Ok(results.into_iter().collect());
+                    }
+                }
+            }
+        }
+
+        Ok(results.into_iter().collect())
+    }
 }
 
 /// Mock model reader for testing.
