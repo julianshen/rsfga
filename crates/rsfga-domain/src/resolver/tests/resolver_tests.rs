@@ -6246,11 +6246,28 @@ async fn test_list_objects_with_tuple_to_userset_relation() {
 
     // Alice should see doc1 and doc2 (in folder1 where she is a viewer)
     // but NOT doc3 (in folder2 where she has no access)
-    assert_eq!(result.objects.len(), 2);
-    assert!(result.objects.contains(&"document:doc1".to_string()));
-    assert!(result.objects.contains(&"document:doc2".to_string()));
-    assert!(!result.objects.contains(&"document:doc3".to_string()));
-    assert!(!result.truncated);
+    assert_eq!(
+        result.objects.len(),
+        2,
+        "Expected 2 documents via TupleToUserset, got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible via folder1 viewer relation"
+    );
+    assert!(
+        result.objects.contains(&"document:doc2".to_string()),
+        "Expected doc2 to be accessible via folder1 viewer relation"
+    );
+    assert!(
+        !result.objects.contains(&"document:doc3".to_string()),
+        "Expected doc3 to NOT be accessible (in folder2, no viewer access)"
+    );
+    assert!(
+        !result.truncated,
+        "Expected truncated=false since result count is under limit"
+    );
 }
 
 /// Tests list_objects with Union relation containing both direct and TupleToUserset.
@@ -6341,10 +6358,24 @@ async fn test_list_objects_with_union_of_direct_and_tuple_to_userset() {
     let result = resolver.list_objects(&request, 100).await.unwrap();
 
     // Alice should see doc1 (direct) and doc2 (inherited), but NOT doc3
-    assert_eq!(result.objects.len(), 2);
-    assert!(result.objects.contains(&"document:doc1".to_string()));
-    assert!(result.objects.contains(&"document:doc2".to_string()));
-    assert!(!result.objects.contains(&"document:doc3".to_string()));
+    assert_eq!(
+        result.objects.len(),
+        2,
+        "Expected 2 documents via Union of direct+TupleToUserset, got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible via direct viewer relation"
+    );
+    assert!(
+        result.objects.contains(&"document:doc2".to_string()),
+        "Expected doc2 to be accessible via folder1's inherited viewer relation"
+    );
+    assert!(
+        !result.objects.contains(&"document:doc3".to_string()),
+        "Expected doc3 to NOT be accessible (in folder2, no viewer access)"
+    );
 }
 
 /// Tests list_objects with multiple levels of TupleToUserset (nested hierarchy).
@@ -6476,8 +6507,16 @@ async fn test_list_objects_with_nested_tuple_to_userset() {
     let result = resolver.list_objects(&request, 100).await.unwrap();
 
     // Alice should see doc1 (org1 -> folder1 -> doc1), but NOT doc2
-    assert_eq!(result.objects.len(), 1);
-    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert_eq!(
+        result.objects.len(),
+        1,
+        "Expected 1 document via nested TupleToUserset hierarchy, got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible via org1->folder1->doc1 hierarchy"
+    );
 }
 
 /// Tests list_objects with ComputedUserset relation.
@@ -6539,9 +6578,20 @@ async fn test_list_objects_with_computed_userset() {
     let result = resolver.list_objects(&request, 100).await.unwrap();
 
     // Alice should see both doc1 (as editor -> viewer) and doc2 (as direct viewer)
-    assert_eq!(result.objects.len(), 2);
-    assert!(result.objects.contains(&"document:doc1".to_string()));
-    assert!(result.objects.contains(&"document:doc2".to_string()));
+    assert_eq!(
+        result.objects.len(),
+        2,
+        "Expected 2 documents via ComputedUserset (editor->viewer + direct viewer), got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible via editor->viewer ComputedUserset"
+    );
+    assert!(
+        result.objects.contains(&"document:doc2".to_string()),
+        "Expected doc2 to be accessible via direct viewer relation"
+    );
 }
 
 /// Tests that list_objects respects the max_candidates limit with ReverseExpand.
@@ -6589,8 +6639,16 @@ async fn test_list_objects_respects_limit_with_reverse_expand() {
     let result = resolver.list_objects(&request, 5).await.unwrap();
 
     // Should return exactly 5 documents and indicate truncation
-    assert_eq!(result.objects.len(), 5);
-    assert!(result.truncated);
+    assert_eq!(
+        result.objects.len(),
+        5,
+        "Expected 5 documents (limit=5), got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.truncated,
+        "Expected truncated=true when limit < total results"
+    );
 }
 
 /// Tests that list_objects handles empty results correctly.
@@ -6653,8 +6711,14 @@ async fn test_list_objects_empty_results_with_reverse_expand() {
     let result = resolver.list_objects(&request, 100).await.unwrap();
 
     // Alice should see no documents
-    assert!(result.objects.is_empty());
-    assert!(!result.truncated);
+    assert!(
+        result.objects.is_empty(),
+        "Expected empty results when user has no folder access"
+    );
+    assert!(
+        !result.truncated,
+        "Expected truncated=false when no results to truncate"
+    );
 }
 
 /// Tests list_objects with Exclusion relation (base minus subtract).
@@ -6749,10 +6813,24 @@ async fn test_list_objects_with_exclusion_relation() {
 
     // Alice should see doc1 and doc3 (all_viewer minus blocked)
     // but NOT doc2 (she is blocked from it)
-    assert_eq!(result.objects.len(), 2);
-    assert!(result.objects.contains(&"document:doc1".to_string()));
-    assert!(!result.objects.contains(&"document:doc2".to_string()));
-    assert!(result.objects.contains(&"document:doc3".to_string()));
+    assert_eq!(
+        result.objects.len(),
+        2,
+        "Expected 2 documents via Exclusion (all_viewer minus blocked), got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible (all_viewer, not blocked)"
+    );
+    assert!(
+        !result.objects.contains(&"document:doc2".to_string()),
+        "Expected doc2 to NOT be accessible (blocked relation set)"
+    );
+    assert!(
+        result.objects.contains(&"document:doc3".to_string()),
+        "Expected doc3 to be accessible (all_viewer, not blocked)"
+    );
 }
 
 /// Tests list_objects with Intersection relation.
@@ -6830,8 +6908,22 @@ async fn test_list_objects_with_intersection_relation() {
 
     // Alice should see doc1 and doc3 (owner AND approved)
     // but NOT doc2 (owner but not approved)
-    assert_eq!(result.objects.len(), 2);
-    assert!(result.objects.contains(&"document:doc1".to_string()));
-    assert!(!result.objects.contains(&"document:doc2".to_string()));
-    assert!(result.objects.contains(&"document:doc3".to_string()));
+    assert_eq!(
+        result.objects.len(),
+        2,
+        "Expected 2 documents via Intersection (owner AND approved), got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible (both owner and approved)"
+    );
+    assert!(
+        !result.objects.contains(&"document:doc2".to_string()),
+        "Expected doc2 to NOT be accessible (owner but not approved)"
+    );
+    assert!(
+        result.objects.contains(&"document:doc3".to_string()),
+        "Expected doc3 to be accessible (both owner and approved)"
+    );
 }

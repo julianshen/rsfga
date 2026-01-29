@@ -2381,15 +2381,19 @@ impl DataStore for MySQLDataStore {
             return Ok(Vec::new());
         }
 
-        // Bounds check: limit the number of parent IDs to prevent DoS via query explosion.
+        // Bounds check: reject requests with too many parent IDs to prevent DoS via query explosion.
         // MySQL has a limit on the number of placeholders in an IN clause (typically ~65535).
-        // We use a conservative limit of 1000 to ensure reasonable query performance.
+        // Fail fast instead of silently truncating to ensure callers are aware of limits.
         const MAX_PARENT_IDS: usize = 1000;
-        let parent_ids = if parent_ids.len() > MAX_PARENT_IDS {
-            &parent_ids[..MAX_PARENT_IDS]
-        } else {
-            parent_ids
-        };
+        if parent_ids.len() > MAX_PARENT_IDS {
+            return Err(StorageError::InvalidInput {
+                message: format!(
+                    "too many parent IDs: {} (max {})",
+                    parent_ids.len(),
+                    MAX_PARENT_IDS
+                ),
+            });
+        }
 
         // Validate inputs
         validate_store_id(store_id)?;

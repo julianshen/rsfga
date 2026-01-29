@@ -645,6 +645,19 @@ impl DataStore for MemoryDataStore {
             return Ok(Vec::new());
         }
 
+        // Bounds check: reject requests with too many parent IDs for consistency with DB backends.
+        // Fail fast instead of silently truncating to ensure callers are aware of limits.
+        const MAX_PARENT_IDS: usize = 1000;
+        if parent_ids.len() > MAX_PARENT_IDS {
+            return Err(StorageError::InvalidInput {
+                message: format!(
+                    "too many parent IDs: {} (max {})",
+                    parent_ids.len(),
+                    MAX_PARENT_IDS
+                ),
+            });
+        }
+
         // Validate inputs
         validate_store_id(store_id)?;
         validate_object_type(object_type)?;

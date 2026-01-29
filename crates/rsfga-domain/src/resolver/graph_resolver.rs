@@ -1392,6 +1392,10 @@ where
             .await?;
 
         // Use ReverseExpand to find all accessible objects
+        // visited tracks (object_type, relation) pairs to detect cycles
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut was_truncated = false;
+
         self.reverse_expand_objects(
             &request.store_id,
             &request.user,
@@ -1400,6 +1404,8 @@ where
             &relation_def.rewrite,
             &mut seen,
             &mut result_objects,
+            &mut visited,
+            &mut was_truncated,
             limit,
             0,                     // depth
             self.config.max_depth, // max_depth
@@ -1421,9 +1427,9 @@ where
             }
         }
 
-        // Determine truncation and apply limit
-        let truncated = result_objects.len() > max_candidates;
-        if truncated {
+        // Determine truncation - either from ReverseExpand hitting limits or result size
+        let truncated = was_truncated || result_objects.len() > max_candidates;
+        if result_objects.len() > max_candidates {
             result_objects.truncate(max_candidates);
         }
 
@@ -1446,6 +1452,17 @@ where
     /// - **Union**: Union of results from all children
     /// - **Intersection**: Intersection of results from all children
     /// - **Exclusion**: Results from base minus results from subtract
+    ///
+    /// # Cycle Detection
+    ///
+    /// The `visited` set tracks (object_type, relation) pairs to detect cycles in the
+    /// relation graph. If a cycle is detected, we return CycleDetected error to prevent
+    /// infinite loops.
+    ///
+    /// # Truncation Tracking
+    ///
+    /// The `truncated` flag is set to true if any branch of the traversal hits limits,
+    /// ensuring callers know the results may be incomplete.
     #[allow(clippy::too_many_arguments)]
     fn reverse_expand_objects<'a>(
         &'a self,
@@ -1456,6 +1473,8 @@ where
         userset: &'a Userset,
         seen: &'a mut HashSet<String>,
         results: &'a mut Vec<String>,
+        visited: &'a mut HashSet<String>,
+        truncated: &'a mut bool,
         limit: usize,
         depth: u32,
         max_depth: u32,
@@ -1469,6 +1488,7 @@ where
 
             // Check if we've hit the result limit (not an error, just stop collecting)
             if results.len() >= limit {
+                *truncated = true;
                 return Ok(());
             }
 
@@ -1498,25 +1518,39 @@ where
                 Userset::ComputedUserset {
                     relation: computed_rel,
                 } => {
+                    // Cycle detection: check before traversing to a new relation
+                    // This detects cycles like `define viewer: viewer` or mutual recursion
+                    let cycle_key = format!("{}:{}", object_type, computed_rel);
+                    if visited.contains(&cycle_key) {
+                        return Err(DomainError::CycleDetected { path: cycle_key });
+                    }
+                    visited.insert(cycle_key.clone());
+
                     // Recursively expand the referenced relation on the same object type
                     let rel_def = self
                         .model_reader
                         .get_relation_definition(store_id, object_type, computed_rel)
                         .await?;
 
-                    self.reverse_expand_objects(
-                        store_id,
-                        user,
-                        object_type,
-                        computed_rel,
-                        &rel_def.rewrite,
-                        seen,
-                        results,
-                        limit,
-                        depth + 1,
-                        max_depth,
-                    )
-                    .await?;
+                    let result = self
+                        .reverse_expand_objects(
+                            store_id,
+                            user,
+                            object_type,
+                            computed_rel,
+                            &rel_def.rewrite,
+                            seen,
+                            results,
+                            visited,
+                            truncated,
+                            limit,
+                            depth + 1,
+                            max_depth,
+                        )
+                        .await;
+
+                    visited.remove(&cycle_key);
+                    result?;
                 }
 
                 Userset::TupleToUserset {
@@ -1566,13 +1600,24 @@ where
                             Err(_) => continue,
                         };
 
+                        // Cycle detection: check before traversing to parent type's relation
+                        let parent_cycle_key = format!("{}:{}", parent_type, computed_userset);
+                        if visited.contains(&parent_cycle_key) {
+                            // Skip this type constraint - cycle detected
+                            *truncated = true;
+                            continue;
+                        }
+                        visited.insert(parent_cycle_key.clone());
+
                         // Use ReverseExpand to find accessible parents
                         let mut parent_seen: HashSet<String> = HashSet::new();
                         let mut parent_results: Vec<String> = Vec::new();
+                        let mut parent_visited: HashSet<String> = visited.clone();
+                        let mut parent_truncated = false;
 
-                        // Handle depth limit in parent traversal - continue to next type constraint
-                        // rather than failing the entire operation
-                        match self
+                        // Handle depth limit and cycle errors in parent traversal - continue to
+                        // next type constraint rather than failing the entire operation
+                        let parent_result = self
                             .reverse_expand_objects(
                                 store_id,
                                 user,
@@ -1581,19 +1626,32 @@ where
                                 &parent_rel_def.rewrite,
                                 &mut parent_seen,
                                 &mut parent_results,
+                                &mut parent_visited,
+                                &mut parent_truncated,
                                 limit, // Use limit for parents too
                                 depth + 1,
                                 max_depth,
                             )
-                            .await
-                        {
-                            Ok(()) => {}
-                            Err(DomainError::DepthLimitExceeded { .. }) => {
-                                // Depth limit in parent traversal - skip this type constraint
-                                // but continue with others
+                            .await;
+
+                        visited.remove(&parent_cycle_key);
+
+                        match parent_result {
+                            Ok(()) => {
+                                if parent_truncated {
+                                    *truncated = true;
+                                }
+                            }
+                            Err(DomainError::DepthLimitExceeded { .. })
+                            | Err(DomainError::CycleDetected { .. }) => {
+                                // Depth limit or cycle in parent traversal - skip this type
+                                // constraint but continue with others
+                                *truncated = true;
                                 continue;
                             }
-                            Err(e) => return Err(e),
+                            Err(e) => {
+                                return Err(e);
+                            }
                         }
 
                         if parent_results.is_empty() {
@@ -1636,12 +1694,15 @@ where
 
                 Userset::Union { children } => {
                     // Union: collect results from all children
-                    // DepthLimitExceeded in one branch should not prevent collecting from others
-                    let mut last_depth_error: Option<DomainError> = None;
+                    // DepthLimitExceeded or CycleDetected in one branch should not prevent
+                    // collecting from others - just mark as truncated
                     for child in children {
                         if results.len() >= limit {
+                            *truncated = true;
                             break;
                         }
+                        // Clone visited for each branch so cycles in one branch don't affect others
+                        let mut branch_visited = visited.clone();
                         match self
                             .reverse_expand_objects(
                                 store_id,
@@ -1651,6 +1712,8 @@ where
                                 child,
                                 seen,
                                 results,
+                                &mut branch_visited,
+                                truncated,
                                 limit,
                                 depth + 1,
                                 max_depth,
@@ -1658,18 +1721,14 @@ where
                             .await
                         {
                             Ok(()) => {}
-                            Err(DomainError::DepthLimitExceeded { .. }) => {
-                                // Track the error but continue with other branches
-                                last_depth_error =
-                                    Some(DomainError::DepthLimitExceeded { max_depth });
+                            Err(DomainError::DepthLimitExceeded { .. })
+                            | Err(DomainError::CycleDetected { .. }) => {
+                                // Track that results may be incomplete but continue
+                                *truncated = true;
                             }
-                            Err(e) => return Err(e), // Propagate other errors immediately
-                        }
-                    }
-                    // If all branches hit depth limit and we got no results, propagate the error
-                    if results.is_empty() {
-                        if let Some(err) = last_depth_error {
-                            return Err(err);
+                            Err(e) => {
+                                return Err(e);
+                            }
                         }
                     }
                 }
@@ -1683,20 +1742,41 @@ where
                     // Get results from first child
                     let mut intersection_seen: HashSet<String> = HashSet::new();
                     let mut first_results: Vec<String> = Vec::new();
+                    let mut first_visited = visited.clone();
+                    let mut first_truncated = false;
 
-                    self.reverse_expand_objects(
-                        store_id,
-                        user,
-                        object_type,
-                        relation,
-                        &children[0],
-                        &mut intersection_seen,
-                        &mut first_results,
-                        limit,
-                        depth + 1,
-                        max_depth,
-                    )
-                    .await?;
+                    match self
+                        .reverse_expand_objects(
+                            store_id,
+                            user,
+                            object_type,
+                            relation,
+                            &children[0],
+                            &mut intersection_seen,
+                            &mut first_results,
+                            &mut first_visited,
+                            &mut first_truncated,
+                            limit,
+                            depth + 1,
+                            max_depth,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            if first_truncated {
+                                *truncated = true;
+                            }
+                        }
+                        Err(DomainError::DepthLimitExceeded { .. })
+                        | Err(DomainError::CycleDetected { .. }) => {
+                            // If first branch fails, intersection is incomplete - mark truncated
+                            *truncated = true;
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    }
 
                     let mut current_set: HashSet<String> = first_results.into_iter().collect();
 
@@ -1708,20 +1788,42 @@ where
 
                         let mut child_seen: HashSet<String> = HashSet::new();
                         let mut child_results: Vec<String> = Vec::new();
+                        let mut child_visited = visited.clone();
+                        let mut child_truncated = false;
 
-                        self.reverse_expand_objects(
-                            store_id,
-                            user,
-                            object_type,
-                            relation,
-                            child,
-                            &mut child_seen,
-                            &mut child_results,
-                            limit,
-                            depth + 1,
-                            max_depth,
-                        )
-                        .await?;
+                        match self
+                            .reverse_expand_objects(
+                                store_id,
+                                user,
+                                object_type,
+                                relation,
+                                child,
+                                &mut child_seen,
+                                &mut child_results,
+                                &mut child_visited,
+                                &mut child_truncated,
+                                limit,
+                                depth + 1,
+                                max_depth,
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                if child_truncated {
+                                    *truncated = true;
+                                }
+                            }
+                            Err(DomainError::DepthLimitExceeded { .. })
+                            | Err(DomainError::CycleDetected { .. }) => {
+                                // If any branch fails, intersection is incomplete
+                                *truncated = true;
+                                current_set.clear();
+                                break;
+                            }
+                            Err(e) => {
+                                return Err(e);
+                            }
+                        }
 
                         let child_set: HashSet<String> = child_results.into_iter().collect();
                         current_set = current_set.intersection(&child_set).cloned().collect();
@@ -1740,37 +1842,81 @@ where
                     // Exclusion: get base results minus subtract results
                     let mut base_seen: HashSet<String> = HashSet::new();
                     let mut base_results: Vec<String> = Vec::new();
+                    let mut base_visited = visited.clone();
+                    let mut base_truncated = false;
 
-                    self.reverse_expand_objects(
-                        store_id,
-                        user,
-                        object_type,
-                        relation,
-                        base,
-                        &mut base_seen,
-                        &mut base_results,
-                        limit,
-                        depth + 1,
-                        max_depth,
-                    )
-                    .await?;
+                    match self
+                        .reverse_expand_objects(
+                            store_id,
+                            user,
+                            object_type,
+                            relation,
+                            base,
+                            &mut base_seen,
+                            &mut base_results,
+                            &mut base_visited,
+                            &mut base_truncated,
+                            limit,
+                            depth + 1,
+                            max_depth,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            if base_truncated {
+                                *truncated = true;
+                            }
+                        }
+                        Err(DomainError::DepthLimitExceeded { .. })
+                        | Err(DomainError::CycleDetected { .. }) => {
+                            // If base fails, we can't compute exclusion reliably
+                            *truncated = true;
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    }
 
                     let mut subtract_seen: HashSet<String> = HashSet::new();
                     let mut subtract_results: Vec<String> = Vec::new();
+                    let mut subtract_visited = visited.clone();
+                    let mut subtract_truncated = false;
 
-                    self.reverse_expand_objects(
-                        store_id,
-                        user,
-                        object_type,
-                        relation,
-                        subtract,
-                        &mut subtract_seen,
-                        &mut subtract_results,
-                        limit,
-                        depth + 1,
-                        max_depth,
-                    )
-                    .await?;
+                    match self
+                        .reverse_expand_objects(
+                            store_id,
+                            user,
+                            object_type,
+                            relation,
+                            subtract,
+                            &mut subtract_seen,
+                            &mut subtract_results,
+                            &mut subtract_visited,
+                            &mut subtract_truncated,
+                            limit,
+                            depth + 1,
+                            max_depth,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            if subtract_truncated {
+                                // If subtract was truncated, we might include objects that
+                                // should be excluded - mark as truncated
+                                *truncated = true;
+                            }
+                        }
+                        Err(DomainError::DepthLimitExceeded { .. })
+                        | Err(DomainError::CycleDetected { .. }) => {
+                            // If subtract fails, we include all base results (conservative)
+                            // but mark as truncated since we couldn't fully evaluate
+                            *truncated = true;
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    }
 
                     let subtract_set: HashSet<String> = subtract_results.into_iter().collect();
 

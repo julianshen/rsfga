@@ -1044,14 +1044,18 @@ impl DataStore for PostgresDataStore {
             return Ok(Vec::new());
         }
 
-        // Bounds check: limit the number of parent IDs to prevent DoS via query explosion.
-        // PostgreSQL handles large arrays well, but we still want a reasonable limit.
+        // Bounds check: reject requests with too many parent IDs to prevent DoS via query explosion.
+        // Fail fast instead of silently truncating to ensure callers are aware of limits.
         const MAX_PARENT_IDS: usize = 1000;
-        let parent_ids = if parent_ids.len() > MAX_PARENT_IDS {
-            &parent_ids[..MAX_PARENT_IDS]
-        } else {
-            parent_ids
-        };
+        if parent_ids.len() > MAX_PARENT_IDS {
+            return Err(StorageError::InvalidInput {
+                message: format!(
+                    "too many parent IDs: {} (max {})",
+                    parent_ids.len(),
+                    MAX_PARENT_IDS
+                ),
+            });
+        }
 
         // Validate inputs
         validate_store_id(store_id)?;
