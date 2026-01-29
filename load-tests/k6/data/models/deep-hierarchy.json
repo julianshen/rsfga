@@ -1,0 +1,351 @@
+{
+  "schema_version": "1.1",
+  "type_definitions": [
+    {
+      "type": "user"
+    },
+    {
+      "type": "org",
+      "relations": {
+        "member": {
+          "this": {}
+        }
+      },
+      "metadata": {
+        "relations": {
+          "member": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_1",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "member" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "org" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_2",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_1" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_3",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_2" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_4",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_3" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_5",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_4" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_6",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_5" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_7",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_6" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_8",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_7" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_9",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_8" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_10",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_9" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_11",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_10" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_12",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_11" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_13",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_12" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_14",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_13" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "level_15",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "tupleToUserset": { "tupleset": { "relation": "parent" }, "computedUserset": { "relation": "viewer" } } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": { "directly_related_user_types": [{ "type": "level_14" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    }
+  ]
+}

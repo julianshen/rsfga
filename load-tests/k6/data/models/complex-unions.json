@@ -1,0 +1,76 @@
+{
+  "schema_version": "1.1",
+  "type_definitions": [
+    {
+      "type": "user"
+    },
+    {
+      "type": "group",
+      "relations": {
+        "member": {
+          "this": {}
+        }
+      },
+      "metadata": {
+        "relations": {
+          "member": { "directly_related_user_types": [{ "type": "user" }] }
+        }
+      }
+    },
+    {
+      "type": "resource",
+      "relations": {
+        "owner": {
+          "this": {}
+        },
+        "admin": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "owner" } }
+            ]
+          }
+        },
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "admin" } }
+            ]
+          }
+        },
+        "contributor": {
+          "this": {}
+        },
+        "commenter": {
+          "this": {}
+        },
+        "reviewer": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "editor" } },
+              { "computedUserset": { "relation": "contributor" } },
+              { "computedUserset": { "relation": "commenter" } },
+              { "computedUserset": { "relation": "reviewer" } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "owner": { "directly_related_user_types": [{ "type": "user" }] },
+          "admin": { "directly_related_user_types": [{ "type": "user" }, { "type": "group", "relation": "member" }] },
+          "editor": { "directly_related_user_types": [{ "type": "user" }, { "type": "group", "relation": "member" }] },
+          "contributor": { "directly_related_user_types": [{ "type": "user" }, { "type": "group", "relation": "member" }] },
+          "commenter": { "directly_related_user_types": [{ "type": "user" }, { "type": "group", "relation": "member" }] },
+          "reviewer": { "directly_related_user_types": [{ "type": "user" }, { "type": "group", "relation": "member" }] },
+          "viewer": { "directly_related_user_types": [{ "type": "user" }, { "type": "group", "relation": "member" }] }
+        }
+      }
+    }
+  ]
+}

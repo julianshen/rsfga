@@ -38,6 +38,7 @@ Each ADR follows this structure:
 | ADR-015 | Rust Edition/MSRV | ✅ Accepted | 2024-01-03 | Every 6 months |
 | ADR-016 | Dependency Policy | ✅ Accepted | 2024-01-03 | Security audit |
 | ADR-017 | CEL Expression Caching | ✅ Accepted | 2026-01-14 | Cache performance issues |
+| ADR-018 | ListObjects ReverseExpand | 📋 Proposed | 2026-01-29 | ListObjects p95 > 100ms |
 
 ## Validation Status Summary
 
@@ -62,6 +63,7 @@ This section tracks the validation status of each ADR's criteria.
 | ADR-015 | ✅ Validated | Rust 1.75+ Edition 2021 in use |
 | ADR-016 | ✅ Validated | Dependency policy enforced via cargo-deny |
 | ADR-017 | ✅ Validated | CEL cache implemented with bounded capacity |
+| ADR-018 | 📋 Proposed | ReverseExpand algorithm for ListObjects |
 
 **Note**: Performance-related validations (ADR-001, 002, 003, 005, 012) require benchmarking in Milestone 1.7. These will be updated with actual measurements once benchmarking is complete.
 
@@ -950,6 +952,130 @@ Negative:
 - Issue #108 - Metrics instrumentation (pending)
 
 **Related Risks**: None identified (bounded memory, no external dependencies)
+
+---
+
+## ADR-018: ListObjects ReverseExpand Algorithm
+
+**Status**: 📋 Proposed
+**Date**: 2026-01-29
+**Deciders**: Architecture Team
+**Review Trigger**: ListObjects p95 latency > 100ms in production
+
+**Context**:
+
+Load testing revealed that RSFGA's ListObjects API has **1000x worse performance** than OpenFGA:
+
+| Metric | RSFGA | OpenFGA | Gap |
+|--------|-------|---------|-----|
+| p95 Latency | 14.2s | 14.1ms | 1000x |
+| Throughput | 3.6 req/s | 20 req/s | 5.5x |
+
+Root cause analysis identified that RSFGA uses a **forward-scan algorithm**:
+
+```
+Current Algorithm (O(objects × graph_depth)):
+1. Get ALL objects of requested type (1000 documents)
+2. For EACH object, run a full permission check
+3. Filter to objects where check returns true
+```
+
+OpenFGA uses a **ReverseExpand algorithm** that starts from the user:
+
+```
+ReverseExpand Algorithm (O(user_access × depth)):
+1. Find direct assignments for user (tuples where user is subject)
+2. For computed relations, follow the model in reverse:
+   - tupleToUserset: Find parent objects user can access, then find children
+   - union: Combine results from all branches
+   - intersection/exclusion: Apply set operations
+3. Return accessible objects without per-object checks
+```
+
+**Decision**:
+
+Implement the **ReverseExpand algorithm** for ListObjects to match OpenFGA's performance characteristics. The implementation should:
+
+1. **Parse the authorization model** to understand relation definitions
+2. **Build a reverse traversal plan** based on relation types:
+   - `this` (direct): Query tuples by user
+   - `tupleToUserset`: Recursive expansion through parent relations
+   - `computedUserset`: Follow to the computed relation
+   - `union`: Parallel expansion of all branches
+   - `intersection`: Intersect results from all branches
+   - `exclusion`: Subtract excluded set from included set
+3. **Execute set-based queries** rather than per-object checks
+4. **Support contextual tuples** in the expansion
+
+**Rationale**:
+
+1. **Performance**: ReverseExpand is O(user's access) vs O(all objects), providing orders of magnitude improvement for users with limited access
+2. **Compatibility**: OpenFGA uses this algorithm, so matching it ensures behavioral parity
+3. **Scalability**: The current algorithm doesn't scale - doubling objects doubles latency
+4. **Resource efficiency**: Fewer database queries, less CPU for graph traversal
+
+**Consequences**:
+
+Positive:
+- 100-1000x latency improvement for typical ListObjects queries
+- Matching OpenFGA performance characteristics
+- Better resource utilization (fewer queries, less CPU)
+
+Negative:
+- Significant implementation complexity (~500+ lines)
+- Requires model introspection during query execution
+- More complex testing required for all relation types
+- Potential for subtle behavioral differences from OpenFGA
+
+**Alternatives Considered**:
+
+| Alternative | Latency | Complexity | Compatibility | Maintenance |
+|-------------|---------|------------|---------------|-------------|
+| **ReverseExpand** (proposed) | ⭐⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ |
+| Forward scan + caching | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| Precomputed access matrix | ⭐⭐⭐⭐⭐ | ⭐ | ⭐⭐ | ⭐⭐ |
+| Parallel forward scan | ⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+
+- **Forward scan + caching**: Improves repeat queries but first query is still slow. Cache invalidation complexity.
+- **Precomputed access matrix**: Requires Phase 2 precomputation engine. High write amplification.
+- **Parallel forward scan (current)**: Already implemented but fundamentally limited by O(objects) complexity.
+
+**Implementation Phases**:
+
+1. **Phase 1 - Direct Relations** (Quick Win)
+   - Implement reverse lookup for `this` relations
+   - Add `get_objects_for_user()` to TupleReader trait ✅ (done in load-tests branch)
+   - Expected improvement: 2-10x for direct-only models
+
+2. **Phase 2 - TupleToUserset**
+   - Implement recursive expansion for parent relations
+   - Handle `tupleToUserset` and `computedUserset`
+   - Expected improvement: 100x+ for hierarchical models
+
+3. **Phase 3 - Full Set Operations**
+   - Implement union, intersection, exclusion
+   - Support wildcard expansion
+   - Feature parity with OpenFGA
+
+**Validation Criteria**:
+
+- [ ] ListObjects p95 latency < 100ms for 1000 objects with hierarchical access
+- [ ] ListObjects throughput > 50 req/s (matching OpenFGA baseline)
+- [ ] All OpenFGA compatibility tests pass
+- [ ] Memory usage stays bounded during expansion
+- [ ] Performance regression tests in CI
+
+**References**:
+
+- [OpenFGA Relationship Queries](https://openfga.dev/docs/interacting/relationship-queries)
+- [OpenFGA Performance Optimizations](https://deepwiki.com/openfga/openfga/2.3-performance-optimizations)
+- Load test results: `load-tests/reports/`
+- Implementation: `crates/rsfga-domain/src/resolver/graph_resolver.rs`
+
+**Related Risks**:
+
+- R-007: Performance Target Validation (ListObjects currently fails performance targets)
+- R-012: OpenFGA Behavioral Differences (algorithm change may introduce subtle differences)
 
 ---
 

@@ -1,0 +1,25 @@
+{
+  "description": "Stress test to find breaking points",
+  "stages": [
+    { "duration": "2m", "target": 100, "comment": "Baseline" },
+    { "duration": "2m", "target": 500, "comment": "Moderate stress" },
+    { "duration": "2m", "target": 1000, "comment": "High stress" },
+    { "duration": "2m", "target": 2000, "comment": "Maximum stress - find ceiling" },
+    { "duration": "2m", "target": 0, "comment": "Recovery" }
+  ],
+  "thresholds": {
+    "http_req_duration": ["p(95)<500", "p(99)<1000"],
+    "http_req_failed": ["rate<0.05"]
+  },
+  "env": {
+    "RSFGA_URL": "http://localhost:8080",
+    "USER_COUNT": "5000",
+    "OBJECT_COUNT": "2000"
+  },
+  "notes": [
+    "Use this to find system breaking points",
+    "Monitor for error rate increases and latency spikes",
+    "Total duration: 10 minutes",
+    "Peak load: 2000 req/s"
+  ]
+}

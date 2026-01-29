@@ -889,6 +889,45 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
                 },
             })
     }
+
+    async fn get_objects_for_user(
+        &self,
+        store_id: &str,
+        user: &str,
+        object_type: &str,
+        relation: Option<&str>,
+        max_count: usize,
+    ) -> DomainResult<Vec<(String, String)>> {
+        let filter = rsfga_storage::TupleFilter {
+            object_type: Some(object_type.to_string()),
+            object_id: None,
+            relation: relation.map(|r| r.to_string()),
+            user: Some(user.to_string()),
+            condition_name: None,
+        };
+
+        let tuples = self
+            .storage
+            .read_tuples(store_id, &filter)
+            .await
+            .map_err(|e| match e {
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
+            })?;
+
+        // Collect unique (object_id, relation) pairs up to max_count
+        let results: Vec<(String, String)> = tuples
+            .into_iter()
+            .take(max_count)
+            .map(|t| (t.object_id, t.relation))
+            .collect();
+
+        Ok(results)
+    }
 }
 
 /// Adapter that implements `ModelReader` using a `DataStore`.

@@ -1,0 +1,25 @@
+{
+  "description": "Standard load test configuration",
+  "stages": [
+    { "duration": "2m", "target": 100, "comment": "Ramp up to 100 req/s" },
+    { "duration": "5m", "target": 100, "comment": "Sustain 100 req/s" },
+    { "duration": "2m", "target": 200, "comment": "Increase to 200 req/s" },
+    { "duration": "5m", "target": 200, "comment": "Sustain 200 req/s" },
+    { "duration": "2m", "target": 0, "comment": "Ramp down" }
+  ],
+  "thresholds": {
+    "http_req_duration": ["p(95)<100", "p(99)<200"],
+    "http_req_failed": ["rate<0.01"],
+    "checks": ["rate>0.99"]
+  },
+  "env": {
+    "RSFGA_URL": "http://localhost:8080",
+    "USER_COUNT": "1000",
+    "OBJECT_COUNT": "500"
+  },
+  "notes": [
+    "Use this for validating performance under expected production load",
+    "Total duration: 16 minutes",
+    "Peak load: 200 req/s"
+  ]
+}
