@@ -61,6 +61,44 @@ pub trait TupleReader: Send + Sync {
         // Default: return empty list (reverse lookup not supported)
         Ok(Vec::new())
     }
+
+    /// Finds objects that reference any of the given parent objects via a specific relation.
+    ///
+    /// This is the core query for the ReverseExpand algorithm. For TupleToUserset relations,
+    /// after finding which parent objects the user can access, this method efficiently finds
+    /// all child objects that have those parents.
+    ///
+    /// # Arguments
+    ///
+    /// * `store_id` - The store to query
+    /// * `object_type` - The type of objects to find (e.g., "document")
+    /// * `tupleset_relation` - The relation that references parents (e.g., "parent")
+    /// * `parent_type` - The type of the parent objects (e.g., "folder")
+    /// * `parent_ids` - The IDs of parent objects to search for
+    /// * `max_count` - Maximum number of results (DoS protection)
+    ///
+    /// # Returns
+    ///
+    /// A vector of object IDs (not full type:id, just the ID part) that reference any
+    /// of the given parents via the tupleset relation.
+    ///
+    /// # Example
+    ///
+    /// For a model with `define viewer: viewer from parent` on documents:
+    /// - User has viewer access to folder:reports and folder:archives
+    /// - This method finds all documents with parent = folder:reports OR parent = folder:archives
+    async fn get_objects_with_parents(
+        &self,
+        _store_id: &str,
+        _object_type: &str,
+        _tupleset_relation: &str,
+        _parent_type: &str,
+        _parent_ids: &[String],
+        _max_count: usize,
+    ) -> DomainResult<Vec<String>> {
+        // Default: return empty list (ReverseExpand not supported, falls back to forward-scan)
+        Ok(Vec::new())
+    }
 }
 
 /// Trait for authorization model operations needed by the resolver.

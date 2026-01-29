@@ -2365,6 +2365,99 @@ impl DataStore for MySQLDataStore {
 
         Ok(objects)
     }
+
+    #[instrument(skip(self))]
+    async fn get_objects_with_parents(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        relation: &str,
+        parent_type: &str,
+        parent_ids: &[String],
+        limit: usize,
+    ) -> StorageResult<Vec<String>> {
+        // If no parent IDs provided, return empty result
+        if parent_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Validate inputs
+        validate_store_id(store_id)?;
+        validate_object_type(object_type)?;
+
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("get_objects_with_parents_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // MySQL doesn't support ANY, so we need to build a dynamic IN clause
+        // or use a different approach. We'll build the placeholders dynamically.
+        let placeholders: Vec<&str> = (0..parent_ids.len()).map(|_| "?").collect();
+        let placeholders_str = placeholders.join(", ");
+
+        let query = format!(
+            r#"
+            SELECT DISTINCT object_id
+            FROM tuples
+            WHERE store_id = ?
+              AND object_type = ?
+              AND relation = ?
+              AND user_type = ?
+              AND user_id IN ({})
+            ORDER BY object_id
+            LIMIT ?
+            "#,
+            placeholders_str
+        );
+
+        let object_type_owned = object_type.to_string();
+        let relation_owned = relation.to_string();
+        let parent_type_owned = parent_type.to_string();
+        let parent_ids_owned: Vec<String> = parent_ids.to_vec();
+        let limit = limit as u64;
+
+        let rows = self
+            .execute_with_timeout("get_objects_with_parents", async {
+                let mut query_builder = sqlx::query(&query);
+                query_builder = query_builder.bind(&store_id_owned);
+                query_builder = query_builder.bind(&object_type_owned);
+                query_builder = query_builder.bind(&relation_owned);
+                query_builder = query_builder.bind(&parent_type_owned);
+                for parent_id in &parent_ids_owned {
+                    query_builder = query_builder.bind(parent_id);
+                }
+                query_builder = query_builder.bind(limit);
+
+                query_builder
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to get objects with parents: {e}"),
+                    })
+            })
+            .await?;
+
+        Ok(rows.into_iter().map(|row| row.get("object_id")).collect())
+    }
 }
 
 impl std::fmt::Debug for MySQLDataStore {

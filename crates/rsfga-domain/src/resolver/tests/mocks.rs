@@ -144,6 +144,61 @@ impl TupleReader for MockTupleReader {
         result.truncate(max_count);
         Ok(result)
     }
+
+    async fn get_objects_for_user(
+        &self,
+        store_id: &str,
+        user: &str,
+        object_type: &str,
+        relation: Option<&str>,
+        max_count: usize,
+    ) -> DomainResult<Vec<(String, String)>> {
+        // Parse the user to get user_type:user_id
+        let (user_type, user_id) = if let Some((t, id)) = user.split_once(':') {
+            (t, id)
+        } else {
+            return Ok(Vec::new());
+        };
+
+        // Search through all tuples to find matching ones
+        let tuples = self.tuples.read().await;
+        let prefix = format!("{store_id}:{object_type}:");
+        let mut results = Vec::new();
+
+        for (key, stored_tuples) in tuples.iter() {
+            if !key.starts_with(&prefix) {
+                continue;
+            }
+
+            // Key format: "store_id:object_type:object_id:relation"
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+
+            let tuple_object_id = parts[2];
+            let tuple_relation = parts[3];
+
+            // Filter by relation if specified
+            if let Some(rel) = relation {
+                if tuple_relation != rel {
+                    continue;
+                }
+            }
+
+            // Check if user matches any of the stored tuples
+            for tuple in stored_tuples {
+                if tuple.user_type == user_type && tuple.user_id == user_id {
+                    results.push((tuple_object_id.to_string(), tuple_relation.to_string()));
+                    if results.len() >= max_count {
+                        return Ok(results);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
 }
 
 /// Mock model reader for testing.
