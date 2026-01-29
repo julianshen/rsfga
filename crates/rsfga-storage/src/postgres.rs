@@ -10,9 +10,9 @@ use tracing::{debug, instrument};
 use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_user_filter, validate_object_type, validate_store_id,
-    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions,
-    ReadChangesFilter, Store, StoredAuthorizationModel, StoredTuple, TupleChange, TupleFilter,
-    TupleOperation,
+    validate_store_name, validate_tuple, DataStore, ObjectWithCondition, PaginatedResult,
+    PaginationOptions, ReadChangesFilter, Store, StoredAuthorizationModel, StoredTuple,
+    TupleChange, TupleFilter, TupleOperation,
 };
 
 /// Maximum size of condition_context JSON in bytes (64 KB).
@@ -1027,6 +1027,132 @@ impl DataStore for PostgresDataStore {
             .await?;
 
         Ok(rows.into_iter().map(|row| row.get("object_id")).collect())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_objects_with_parents(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        relation: &str,
+        parent_type: &str,
+        parent_ids: &[String],
+        limit: usize,
+    ) -> StorageResult<Vec<ObjectWithCondition>> {
+        // If no parent IDs provided, return empty result
+        if parent_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Bounds check: reject requests with too many parent IDs to prevent DoS via query explosion.
+        // Fail fast instead of silently truncating to ensure callers are aware of limits.
+        const MAX_PARENT_IDS: usize = 1000;
+        if parent_ids.len() > MAX_PARENT_IDS {
+            return Err(StorageError::InvalidInput {
+                message: format!(
+                    "too many parent IDs: {} (max {})",
+                    parent_ids.len(),
+                    MAX_PARENT_IDS
+                ),
+            });
+        }
+
+        // Validate inputs
+        validate_store_id(store_id)?;
+        validate_object_type(object_type)?;
+
+        // Validate relation format (non-empty)
+        if relation.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Validate parent_type format (non-empty)
+        if parent_type.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("get_objects_with_parents_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        let object_type_owned = object_type.to_string();
+        let relation_owned = relation.to_string();
+        let parent_type_owned = parent_type.to_string();
+        let limit = limit as i64;
+
+        // Build the query with ANY instead of IN for better PostgreSQL performance
+        // This finds all objects of object_type that have a tuple with:
+        // - relation = the tupleset relation (e.g., "parent")
+        // - user_type = parent_type (e.g., "folder")
+        // - user_id in the list of parent IDs
+        // Returns condition info for authorization correctness (Invariant I1)
+        let rows = self
+            .execute_with_timeout("get_objects_with_parents", async {
+                sqlx::query(
+                    r#"
+                    SELECT DISTINCT object_id, condition_name, condition_context
+                    FROM tuples
+                    WHERE store_id = $1
+                      AND object_type = $2
+                      AND relation = $3
+                      AND user_type = $4
+                      AND user_id = ANY($5)
+                    ORDER BY object_id
+                    LIMIT $6
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .bind(&object_type_owned)
+                .bind(&relation_owned)
+                .bind(&parent_type_owned)
+                // sqlx can bind slice directly for ANY clauses
+                .bind(parent_ids)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to get objects with parents: {e}"),
+                })
+            })
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let object_id: String = row.get("object_id");
+                let condition_name: Option<String> = row.get("condition_name");
+                let condition_context: Option<serde_json::Value> = row.get("condition_context");
+                let condition_context = condition_context.and_then(|v| {
+                    v.as_object()
+                        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                });
+                ObjectWithCondition {
+                    object_id,
+                    condition_name,
+                    condition_context,
+                }
+            })
+            .collect())
     }
 
     #[instrument(skip(self))]

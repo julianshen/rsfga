@@ -20,7 +20,7 @@ use rsfga_domain::model::{
     AuthorizationModel, Condition, ConditionParameter, RelationDefinition, TypeConstraint,
     TypeDefinition, Userset,
 };
-use rsfga_domain::resolver::{ModelReader, StoredTupleRef, TupleReader};
+use rsfga_domain::resolver::{ModelReader, ObjectTupleInfo, StoredTupleRef, TupleReader};
 use rsfga_storage::DataStore;
 
 /// Converts a DomainError to a user-friendly validation error message.
@@ -897,7 +897,7 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
         object_type: &str,
         relation: Option<&str>,
         max_count: usize,
-    ) -> DomainResult<Vec<(String, String)>> {
+    ) -> DomainResult<Vec<ObjectTupleInfo>> {
         let filter = rsfga_storage::TupleFilter {
             object_type: Some(object_type.to_string()),
             object_id: None,
@@ -919,11 +919,72 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
                 },
             })?;
 
-        // Collect unique (object_id, relation) pairs up to max_count
-        let results: Vec<(String, String)> = tuples
+        // Collect ObjectTupleInfo with condition info, up to max_count
+        let results: Vec<ObjectTupleInfo> = tuples
             .into_iter()
             .take(max_count)
-            .map(|t| (t.object_id, t.relation))
+            .map(|t| {
+                if let Some(condition_name) = t.condition_name {
+                    ObjectTupleInfo::with_condition(
+                        t.object_id,
+                        t.relation,
+                        condition_name,
+                        t.condition_context,
+                    )
+                } else {
+                    ObjectTupleInfo::new(t.object_id, t.relation)
+                }
+            })
+            .collect();
+
+        Ok(results)
+    }
+
+    async fn get_objects_with_parents(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        tupleset_relation: &str,
+        parent_type: &str,
+        parent_ids: &[String],
+        max_count: usize,
+    ) -> DomainResult<Vec<ObjectTupleInfo>> {
+        let storage_results = self
+            .storage
+            .get_objects_with_parents(
+                store_id,
+                object_type,
+                tupleset_relation,
+                parent_type,
+                parent_ids,
+                max_count,
+            )
+            .await
+            .map_err(|e| match e {
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
+            })?;
+
+        // Convert storage ObjectWithCondition to domain ObjectTupleInfo
+        // The tupleset_relation is the relation on this tuple (e.g., "parent")
+        let results = storage_results
+            .into_iter()
+            .map(|obj| {
+                if let Some(condition_name) = obj.condition_name {
+                    ObjectTupleInfo::with_condition(
+                        obj.object_id,
+                        tupleset_relation,
+                        condition_name,
+                        obj.condition_context,
+                    )
+                } else {
+                    ObjectTupleInfo::new(obj.object_id, tupleset_relation)
+                }
+            })
             .collect();
 
         Ok(results)

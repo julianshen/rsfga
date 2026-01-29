@@ -24,9 +24,9 @@ use tracing::{debug, instrument};
 use crate::error::{HealthStatus, PoolStats, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_user_filter, validate_object_type, validate_store_id,
-    validate_store_name, validate_tuple, DataStore, PaginatedResult, PaginationOptions,
-    ReadChangesFilter, Store, StoredAuthorizationModel, StoredTuple, TupleChange, TupleFilter,
-    TupleOperation,
+    validate_store_name, validate_tuple, DataStore, ObjectWithCondition, PaginatedResult,
+    PaginationOptions, ReadChangesFilter, Store, StoredAuthorizationModel, StoredTuple,
+    TupleChange, TupleFilter, TupleOperation,
 };
 
 /// Parse a database row into a StoredTuple.
@@ -2364,6 +2364,137 @@ impl DataStore for MySQLDataStore {
         let objects = rows.into_iter().map(|row| row.get("object_id")).collect();
 
         Ok(objects)
+    }
+
+    #[instrument(skip(self))]
+    async fn get_objects_with_parents(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        relation: &str,
+        parent_type: &str,
+        parent_ids: &[String],
+        limit: usize,
+    ) -> StorageResult<Vec<ObjectWithCondition>> {
+        // If no parent IDs provided, return empty result
+        if parent_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Bounds check: reject requests with too many parent IDs to prevent DoS via query explosion.
+        // MySQL has a limit on the number of placeholders in an IN clause (typically ~65535).
+        // Fail fast instead of silently truncating to ensure callers are aware of limits.
+        const MAX_PARENT_IDS: usize = 1000;
+        if parent_ids.len() > MAX_PARENT_IDS {
+            return Err(StorageError::InvalidInput {
+                message: format!(
+                    "too many parent IDs: {} (max {})",
+                    parent_ids.len(),
+                    MAX_PARENT_IDS
+                ),
+            });
+        }
+
+        // Validate inputs
+        validate_store_id(store_id)?;
+        validate_object_type(object_type)?;
+
+        // Validate relation format (non-empty, no special chars that could cause issues)
+        if relation.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Validate parent_type format (non-empty)
+        if parent_type.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("get_objects_with_parents_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = ?)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        // Build dynamic IN clause with parameterized placeholders.
+        // Security: We build the query string without format! to avoid security anti-patterns.
+        // Only placeholder strings ("?") are appended, never user data.
+        // All values are bound via parameterized queries below.
+        let placeholder_count = parent_ids.len();
+        let mut query = String::from(
+            "SELECT DISTINCT object_id, condition_name, condition_context \
+             FROM tuples \
+             WHERE store_id = ? AND object_type = ? AND relation = ? AND user_type = ? AND user_id IN (",
+        );
+        for i in 0..placeholder_count {
+            if i > 0 {
+                query.push_str(", ");
+            }
+            query.push('?');
+        }
+        query.push_str(") ORDER BY object_id LIMIT ?");
+
+        let object_type_owned = object_type.to_string();
+        let relation_owned = relation.to_string();
+        let parent_type_owned = parent_type.to_string();
+        let limit = limit as u64;
+
+        let rows = self
+            .execute_with_timeout("get_objects_with_parents", async {
+                let mut query_builder = sqlx::query(&query);
+                query_builder = query_builder.bind(&store_id_owned);
+                query_builder = query_builder.bind(&object_type_owned);
+                query_builder = query_builder.bind(&relation_owned);
+                query_builder = query_builder.bind(&parent_type_owned);
+                // Bind parent_ids directly - no need to clone the slice
+                for parent_id in parent_ids {
+                    query_builder = query_builder.bind(parent_id);
+                }
+                query_builder = query_builder.bind(limit);
+
+                query_builder
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|e| StorageError::QueryError {
+                        message: format!("Failed to get objects with parents: {e}"),
+                    })
+            })
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let object_id: String = row.get("object_id");
+                let condition_name: Option<String> = row.get("condition_name");
+                let condition_context: Option<serde_json::Value> = row.get("condition_context");
+                let condition_context = condition_context.and_then(|v| {
+                    v.as_object()
+                        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                });
+                ObjectWithCondition {
+                    object_id,
+                    condition_name,
+                    condition_context,
+                }
+            })
+            .collect())
     }
 }
 

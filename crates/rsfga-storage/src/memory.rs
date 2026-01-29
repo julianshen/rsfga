@@ -14,9 +14,9 @@ use tracing::instrument;
 use crate::error::{HealthStatus, StorageError, StorageResult};
 use crate::traits::{
     parse_continuation_token, parse_tuple_cursor, parse_user_filter, validate_object_type,
-    validate_store_id, validate_store_name, validate_tuple, DataStore, PaginatedResult,
-    PaginationOptions, ReadChangesFilter, Store, StoredAuthorizationModel, StoredTuple,
-    TupleChange, TupleCursor, TupleFilter,
+    validate_store_id, validate_store_name, validate_tuple, DataStore, ObjectWithCondition,
+    PaginatedResult, PaginationOptions, ReadChangesFilter, Store, StoredAuthorizationModel,
+    StoredTuple, TupleChange, TupleCursor, TupleFilter,
 };
 
 /// In-memory implementation of DataStore.
@@ -629,6 +629,83 @@ impl DataStore for MemoryDataStore {
         }
 
         Ok(unique_ids)
+    }
+
+    async fn get_objects_with_parents(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        relation: &str,
+        parent_type: &str,
+        parent_ids: &[String],
+        limit: usize,
+    ) -> StorageResult<Vec<ObjectWithCondition>> {
+        // If no parent IDs provided, return empty result
+        if parent_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Bounds check: reject requests with too many parent IDs for consistency with DB backends.
+        // Fail fast instead of silently truncating to ensure callers are aware of limits.
+        const MAX_PARENT_IDS: usize = 1000;
+        if parent_ids.len() > MAX_PARENT_IDS {
+            return Err(StorageError::InvalidInput {
+                message: format!(
+                    "too many parent IDs: {} (max {})",
+                    parent_ids.len(),
+                    MAX_PARENT_IDS
+                ),
+            });
+        }
+
+        // Validate inputs
+        validate_store_id(store_id)?;
+        validate_object_type(object_type)?;
+
+        // Verify store exists
+        if !self.stores.contains_key(store_id) {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        let parent_ids_set: HashSet<&str> = parent_ids.iter().map(|s| s.as_str()).collect();
+
+        // Collect matching tuples with condition info (Invariant I1 - authorization correctness)
+        let mut results: Vec<ObjectWithCondition> = self
+            .tuples
+            .get(store_id)
+            .map(|tuples| {
+                tuples
+                    .iter()
+                    .filter(|t| {
+                        t.object_type == object_type
+                            && t.relation == relation
+                            && t.user_type == parent_type
+                            && parent_ids_set.contains(t.user_id.as_str())
+                    })
+                    .map(|t| ObjectWithCondition {
+                        object_id: t.object_id.clone(),
+                        condition_name: t.condition_name.clone(),
+                        condition_context: t.condition_context.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Dedup by object_id while preserving condition info from first occurrence
+        let mut seen: HashSet<String> = HashSet::new();
+        results.retain(|r| seen.insert(r.object_id.clone()));
+
+        // Sort for deterministic results (matches Postgres ORDER BY)
+        results.sort_by(|a, b| a.object_id.cmp(&b.object_id));
+
+        // Apply limit
+        if results.len() > limit {
+            results.truncate(limit);
+        }
+
+        Ok(results)
     }
 
     async fn read_changes(

@@ -1308,16 +1308,23 @@ where
     /// # DoS Protection (Constraint C11)
     ///
     /// This method applies a hard limit of `max_candidates` on the number of
-    /// candidate objects to check. This prevents memory exhaustion attacks
-    /// where an attacker could enumerate a large number of objects.
+    /// objects to return. This prevents memory exhaustion attacks.
     ///
     /// The default limit is 1,000 objects, matching OpenFGA's default behavior.
     ///
-    /// # Algorithm
+    /// # Algorithm: ReverseExpand
     ///
-    /// 1. Query all objects of the requested type (up to max_candidates limit)
-    /// 2. For each candidate object, run a parallel permission check
-    /// 3. Return objects where the check returns true
+    /// Instead of the forward-scan approach (checking every object), this uses
+    /// the ReverseExpand algorithm which traverses the authorization model
+    /// backwards from the user:
+    ///
+    /// 1. Get objects where user has DIRECT access (fast reverse lookup)
+    /// 2. For computed relations (TupleToUserset), find parents the user can
+    ///    access, then find children that reference those parents
+    /// 3. Handle Union/Intersection/Exclusion by combining results appropriately
+    ///
+    /// This provides O(user's accessible objects × depth) complexity instead of
+    /// O(total objects × depth), which can significantly reduce work for selective-access models.
     ///
     /// # Example
     ///
@@ -1332,6 +1339,31 @@ where
     /// // result.objects = ["document:readme", "document:design"]
     /// ```
     pub async fn list_objects(
+        &self,
+        request: &super::types::ListObjectsRequest,
+        max_candidates: usize,
+    ) -> DomainResult<super::types::ListObjectsResult> {
+        // Per-operation timeout for the entire list_objects operation.
+        // Prevents indefinite blocking on pathological graphs (DoS protection - Constraint C11).
+        const LIST_OBJECTS_TIMEOUT: Duration = Duration::from_secs(30);
+
+        // Wrap the entire operation with a timeout
+        match timeout(
+            LIST_OBJECTS_TIMEOUT,
+            self.list_objects_inner(request, max_candidates),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(DomainError::OperationTimeout {
+                operation: "list_objects".to_string(),
+                timeout_secs: LIST_OBJECTS_TIMEOUT.as_secs(),
+            }),
+        }
+    }
+
+    /// Inner implementation of list_objects without timeout wrapper.
+    async fn list_objects_inner(
         &self,
         request: &super::types::ListObjectsRequest,
         max_candidates: usize,
@@ -1371,33 +1403,54 @@ where
             });
         }
 
-        // OPTIMIZATION: Use reverse lookup to find objects the user can access directly.
-        // This is much faster than fetching all objects and checking each one.
-        // We start from the user and find their direct assignments, then only
-        // fall back to full candidate scanning for computed relations.
         let limit = max_candidates.saturating_add(1);
 
-        // Step 1: Get objects where user has DIRECT access (fast path)
-        // This query uses the user index and is O(user's assignments) instead of O(all objects)
-        let direct_objects = self
-            .tuple_reader
-            .get_objects_for_user(
-                &request.store_id,
-                &request.user,
-                &request.object_type,
-                Some(&request.relation),
-                limit,
-            )
-            .await?;
+        // Use ReverseExpand algorithm to efficiently find accessible objects
+        // This traverses the model backwards from the user, avoiding O(n) scans
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut result_objects: Vec<String> = Vec::new();
 
-        // Collect directly accessible objects
-        let mut result_objects: Vec<String> = direct_objects
-            .into_iter()
-            .map(|(obj_id, _relation)| format!("{}:{}", request.object_type, obj_id))
-            .collect();
+        // Get the relation definition to understand how access is computed
+        // If the type or relation doesn't exist, return empty results (not an error)
+        let relation_def = match self
+            .model_reader
+            .get_relation_definition(&request.store_id, &request.object_type, &request.relation)
+            .await
+        {
+            Ok(def) => def,
+            Err(DomainError::TypeNotFound { .. }) | Err(DomainError::RelationNotFound { .. }) => {
+                // Type or relation doesn't exist - return empty results
+                return Ok(super::types::ListObjectsResult {
+                    objects: vec![],
+                    truncated: false,
+                });
+            }
+            Err(e) => return Err(e),
+        };
 
-        // Add objects from contextual tuples that grant direct access
-        let mut seen: std::collections::HashSet<String> = result_objects.iter().cloned().collect();
+        // Use ReverseExpand to find all accessible objects
+        // visited tracks (object_type, relation) pairs to detect cycles
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut was_truncated = false;
+
+        self.reverse_expand_objects(
+            &request.store_id,
+            &request.user,
+            &request.object_type,
+            &request.relation,
+            &relation_def.rewrite,
+            &mut seen,
+            &mut result_objects,
+            &mut visited,
+            &mut was_truncated,
+            &request.context,
+            limit,
+            0,                     // depth
+            self.config.max_depth, // max_depth
+        )
+        .await?;
+
+        // Add objects from contextual tuples that grant access
         for ct in request.contextual_tuples.iter() {
             if result_objects.len() >= limit {
                 break;
@@ -1405,6 +1458,20 @@ where
             if ct.user == request.user && ct.relation == request.relation {
                 if let Some((obj_type, _obj_id)) = ct.object.split_once(':') {
                     if obj_type == request.object_type && !seen.contains(&ct.object) {
+                        // Evaluate condition if present (I1 correctness requirement)
+                        if ct.condition_name.is_some() {
+                            let condition_ok = self
+                                .evaluate_condition(
+                                    &request.store_id,
+                                    ct.condition_name.as_deref(),
+                                    ct.condition_context.as_ref(),
+                                    &request.context,
+                                )
+                                .await?;
+                            if !condition_ok {
+                                continue;
+                            }
+                        }
                         seen.insert(ct.object.clone());
                         result_objects.push(ct.object.clone());
                     }
@@ -1412,116 +1479,576 @@ where
             }
         }
 
-        // Step 2: For computed relations (e.g., viewer from parent), we need to check
-        // additional candidates. Get remaining objects that might have computed access.
-        // Only do this expensive scan if we haven't hit our limit from direct access.
-        let mut truncated = result_objects.len() > max_candidates;
-        if !truncated {
-            // Get all objects of the requested type for computed relation checking
-            let all_candidates = self
-                .tuple_reader
-                .get_objects_of_type(&request.store_id, &request.object_type, limit)
-                .await?;
-
-            // Filter to objects not already in our result set (need permission check)
-            let candidates_to_check: Vec<String> = all_candidates
-                .into_iter()
-                .filter(|obj_id| {
-                    let full_obj = format!("{}:{}", request.object_type, obj_id);
-                    !seen.contains(&full_obj)
-                })
-                .collect();
-
-            // Check if we have candidates to check and room for more results
-            if !candidates_to_check.is_empty() && result_objects.len() < max_candidates {
-                // Run parallel permission checks on remaining candidates
-                // Constraint C11: Fail Fast with Bounds - we limit concurrency to avoid
-                // exhausting resources even effectively "bounded" tasks.
-                const MAX_CONCURRENT_CHECKS: usize = 50;
-                // Per-operation timeout for individual permission checks.
-                const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
-
-                // Track if any errors occurred during permission checks
-                let had_errors = std::sync::atomic::AtomicBool::new(false);
-
-                // Clone shared data once outside the loop to avoid per-candidate cloning
-                let shared_contextual_tuples = request.contextual_tuples.clone();
-                let shared_context = request.context.clone();
-
-                // Calculate how many more objects we can add
-                let remaining_capacity = max_candidates.saturating_sub(result_objects.len());
-
-                let computed_objects: Vec<String> = futures::stream::iter(candidates_to_check)
-                    .map(|object_id| {
-                        let check_request = CheckRequest::with_context(
-                            request.store_id.clone(),
-                            request.user.clone(),
-                            request.relation.clone(),
-                            format!("{}:{}", request.object_type, object_id),
-                            shared_contextual_tuples.as_ref().clone(),
-                            shared_context.as_ref().clone(),
-                        );
-                        async move {
-                            let result = timeout(CHECK_TIMEOUT, self.check(&check_request)).await;
-                            (object_id, result)
-                        }
-                    })
-                    .buffer_unordered(MAX_CONCURRENT_CHECKS)
-                    .filter_map(|(object_id, result)| {
-                        let had_errors = &had_errors;
-                        async move {
-                            match result {
-                                Ok(Ok(CheckResult { allowed: true })) => {
-                                    Some(format!("{}:{}", request.object_type, object_id))
-                                }
-                                Ok(Ok(CheckResult { allowed: false })) => None,
-                                Ok(Err(e)) => {
-                                    warn!(
-                                        store_id = %request.store_id,
-                                        object_type = %request.object_type,
-                                        object_id = %object_id,
-                                        error = %e,
-                                        "Permission check failed during list_objects"
-                                    );
-                                    had_errors.store(true, std::sync::atomic::Ordering::Relaxed);
-                                    None
-                                }
-                                Err(_timeout) => {
-                                    warn!(
-                                        store_id = %request.store_id,
-                                        object_type = %request.object_type,
-                                        object_id = %object_id,
-                                        "Permission check timed out during list_objects"
-                                    );
-                                    had_errors.store(true, std::sync::atomic::Ordering::Relaxed);
-                                    None
-                                }
-                            }
-                        }
-                    })
-                    .take(remaining_capacity)
-                    .collect::<Vec<_>>()
-                    .await;
-
-                // Merge computed results into result_objects
-                result_objects.extend(computed_objects);
-
-                // Update truncation status if errors occurred
-                if had_errors.load(std::sync::atomic::Ordering::Relaxed) {
-                    truncated = true;
-                }
-            }
-        }
-
-        // Truncate to max_candidates if needed
+        // Determine truncation - either from ReverseExpand hitting limits or result size
+        let truncated = was_truncated || result_objects.len() > max_candidates;
         if result_objects.len() > max_candidates {
             result_objects.truncate(max_candidates);
-            truncated = true;
         }
 
         Ok(super::types::ListObjectsResult {
             objects: result_objects,
             truncated,
+        })
+    }
+
+    /// ReverseExpand algorithm: finds objects accessible via the given userset rewrite.
+    ///
+    /// Instead of checking every object (forward-scan), this traverses the model
+    /// backwards from the user to efficiently find accessible objects.
+    ///
+    /// # Algorithm
+    ///
+    /// - **This**: Direct lookup - find objects where user has direct tuple
+    /// - **ComputedUserset**: Recursively expand the referenced relation
+    /// - **TupleToUserset**: Find parents user can access, then find children with those parents
+    /// - **Union**: Union of results from all children
+    /// - **Intersection**: Intersection of results from all children
+    /// - **Exclusion**: Results from base minus results from subtract
+    ///
+    /// # Cycle Detection
+    ///
+    /// The `visited` set tracks (object_type, relation) pairs to detect cycles in the
+    /// relation graph. If a cycle is detected, we return CycleDetected error to prevent
+    /// infinite loops.
+    ///
+    /// # Truncation Tracking
+    ///
+    /// The `truncated` flag is set to true if any branch of the traversal hits limits,
+    /// ensuring callers know the results may be incomplete.
+    #[allow(clippy::too_many_arguments)]
+    fn reverse_expand_objects<'a>(
+        &'a self,
+        store_id: &'a str,
+        user: &'a str,
+        object_type: &'a str,
+        relation: &'a str,
+        userset: &'a Userset,
+        seen: &'a mut HashSet<String>,
+        results: &'a mut Vec<String>,
+        visited: &'a mut HashSet<String>,
+        truncated: &'a mut bool,
+        request_context: &'a HashMap<String, serde_json::Value>,
+        limit: usize,
+        depth: u32,
+        max_depth: u32,
+    ) -> BoxFuture<'a, DomainResult<()>> {
+        Box::pin(async move {
+            // Depth limit protection (DoS prevention)
+            // Return error for consistency with other depth checks in the codebase
+            if depth >= max_depth {
+                return Err(DomainError::DepthLimitExceeded { max_depth });
+            }
+
+            // Check if we've hit the result limit (not an error, just stop collecting)
+            if results.len() >= limit {
+                *truncated = true;
+                return Ok(());
+            }
+
+            match userset {
+                Userset::This => {
+                    // Direct tuple lookup: find objects where user has this relation directly
+                    let direct_objects = self
+                        .tuple_reader
+                        .get_objects_for_user(
+                            store_id,
+                            user,
+                            object_type,
+                            Some(relation),
+                            limit.saturating_sub(results.len()),
+                        )
+                        .await?;
+
+                    for tuple_info in direct_objects {
+                        // Evaluate condition if present
+                        if tuple_info.condition_name.is_some() {
+                            let condition_ok = self
+                                .evaluate_condition(
+                                    store_id,
+                                    tuple_info.condition_name.as_deref(),
+                                    tuple_info.condition_context.as_ref(),
+                                    request_context,
+                                )
+                                .await?;
+
+                            if !condition_ok {
+                                // Condition not satisfied, skip this object
+                                continue;
+                            }
+                        }
+
+                        let full_obj = format!("{}:{}", object_type, tuple_info.object_id);
+                        if !seen.contains(&full_obj) {
+                            if results.len() < limit {
+                                seen.insert(full_obj.clone());
+                                results.push(full_obj);
+                            } else {
+                                // Hit limit - there are more objects we couldn't include
+                                *truncated = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                Userset::ComputedUserset {
+                    relation: computed_rel,
+                } => {
+                    // Cycle detection: check before traversing to a new relation
+                    // This detects cycles like `define viewer: viewer` or mutual recursion
+                    let cycle_key = format!("{}:{}", object_type, computed_rel);
+                    if visited.contains(&cycle_key) {
+                        return Err(DomainError::CycleDetected { path: cycle_key });
+                    }
+                    visited.insert(cycle_key.clone());
+
+                    // Recursively expand the referenced relation on the same object type
+                    let rel_def = self
+                        .model_reader
+                        .get_relation_definition(store_id, object_type, computed_rel)
+                        .await?;
+
+                    let result = self
+                        .reverse_expand_objects(
+                            store_id,
+                            user,
+                            object_type,
+                            computed_rel,
+                            &rel_def.rewrite,
+                            seen,
+                            results,
+                            visited,
+                            truncated,
+                            request_context,
+                            limit,
+                            depth + 1,
+                            max_depth,
+                        )
+                        .await;
+
+                    visited.remove(&cycle_key);
+                    result?;
+                }
+
+                Userset::TupleToUserset {
+                    tupleset,
+                    computed_userset,
+                } => {
+                    // This is the key optimization for hierarchical models.
+                    // Instead of checking every object, we:
+                    // 1. Find all parent objects where user has the computed_userset relation
+                    // 2. Find all child objects that have those parents via the tupleset relation
+
+                    // Step 1: Find parent objects the user can access
+                    // We need to get the type from the tupleset relation's type constraints
+                    let tupleset_def = self
+                        .model_reader
+                        .get_relation_definition(store_id, object_type, tupleset)
+                        .await?;
+
+                    // Extract parent types from type constraints
+                    for type_constraint in &tupleset_def.type_constraints {
+                        // Parse the type constraint (e.g., "folder" or "folder#member")
+                        // split('#').next().unwrap() handles both cases correctly and is safe
+                        // because type_name is a non-empty string from the model definition
+                        let parent_type = type_constraint.type_name.split('#').next().unwrap();
+
+                        // Skip if parent_type is empty, wildcard, or malformed
+                        if parent_type.is_empty() || parent_type == "*" {
+                            continue;
+                        }
+
+                        // Find parents where user has the computed_userset relation
+                        let parent_rel_def = self
+                            .model_reader
+                            .get_relation_definition(store_id, parent_type, computed_userset)
+                            .await;
+
+                        // If the parent type doesn't have this relation, skip it
+                        // Only skip on "relation/type not found"; propagate all other errors
+                        let parent_rel_def = match parent_rel_def {
+                            Ok(def) => def,
+                            Err(DomainError::RelationNotFound { .. })
+                            | Err(DomainError::TypeNotFound { .. }) => continue,
+                            Err(e) => return Err(e),
+                        };
+
+                        // Cycle detection: check before traversing to parent type's relation
+                        let parent_cycle_key = format!("{}:{}", parent_type, computed_userset);
+                        if visited.contains(&parent_cycle_key) {
+                            // Skip this type constraint - cycle detected
+                            *truncated = true;
+                            continue;
+                        }
+                        visited.insert(parent_cycle_key.clone());
+
+                        // Use ReverseExpand to find accessible parents
+                        let mut parent_seen: HashSet<String> = HashSet::new();
+                        let mut parent_results: Vec<String> = Vec::new();
+                        let mut parent_visited: HashSet<String> = visited.clone();
+                        let mut parent_truncated = false;
+
+                        // Handle depth limit and cycle errors in parent traversal - continue to
+                        // next type constraint rather than failing the entire operation
+                        let parent_result = self
+                            .reverse_expand_objects(
+                                store_id,
+                                user,
+                                parent_type,
+                                computed_userset,
+                                &parent_rel_def.rewrite,
+                                &mut parent_seen,
+                                &mut parent_results,
+                                &mut parent_visited,
+                                &mut parent_truncated,
+                                request_context,
+                                limit, // Use limit for parents too
+                                depth + 1,
+                                max_depth,
+                            )
+                            .await;
+
+                        visited.remove(&parent_cycle_key);
+
+                        match parent_result {
+                            Ok(()) => {
+                                if parent_truncated {
+                                    *truncated = true;
+                                }
+                            }
+                            Err(DomainError::DepthLimitExceeded { .. })
+                            | Err(DomainError::CycleDetected { .. }) => {
+                                // Depth limit or cycle in parent traversal - skip this type
+                                // constraint but continue with others
+                                *truncated = true;
+                                continue;
+                            }
+                            Err(e) => {
+                                return Err(e);
+                            }
+                        }
+
+                        if parent_results.is_empty() {
+                            continue;
+                        }
+
+                        // Step 2: Find child objects that have these parents via tupleset
+                        // Extract just the IDs from the parent results
+                        let parent_ids: Vec<String> = parent_results
+                            .iter()
+                            .filter_map(|p| p.split_once(':').map(|(_, id)| id.to_string()))
+                            .collect();
+
+                        if parent_ids.is_empty() {
+                            continue;
+                        }
+
+                        // Use the new efficient query to find children with condition info
+                        // Returns ObjectTupleInfo for authorization correctness (Invariant I1)
+                        let child_tuples = self
+                            .tuple_reader
+                            .get_objects_with_parents(
+                                store_id,
+                                object_type,
+                                tupleset,
+                                parent_type,
+                                &parent_ids,
+                                limit.saturating_sub(results.len()),
+                            )
+                            .await?;
+
+                        for child_tuple in child_tuples {
+                            // Evaluate condition if present (critical for I1 correctness)
+                            // Without this check, users could gain unauthorized access when
+                            // tupleset tuples have conditions that should deny access
+                            if child_tuple.condition_name.is_some() {
+                                let condition_ok = self
+                                    .evaluate_condition(
+                                        store_id,
+                                        child_tuple.condition_name.as_deref(),
+                                        child_tuple.condition_context.as_ref(),
+                                        request_context,
+                                    )
+                                    .await?;
+
+                                if !condition_ok {
+                                    // Condition not satisfied, skip this child object
+                                    continue;
+                                }
+                            }
+
+                            let full_obj = format!("{}:{}", object_type, child_tuple.object_id);
+                            if !seen.contains(&full_obj) {
+                                if results.len() < limit {
+                                    seen.insert(full_obj.clone());
+                                    results.push(full_obj);
+                                } else {
+                                    // Hit limit - there are more objects we couldn't include
+                                    *truncated = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Userset::Union { children } => {
+                    // Union: collect results from all children
+                    // DepthLimitExceeded or CycleDetected in one branch should not prevent
+                    // collecting from others - just mark as truncated
+                    for child in children {
+                        if results.len() >= limit {
+                            *truncated = true;
+                            break;
+                        }
+                        // Clone visited for each branch so cycles in one branch don't affect others
+                        let mut branch_visited = visited.clone();
+                        match self
+                            .reverse_expand_objects(
+                                store_id,
+                                user,
+                                object_type,
+                                relation,
+                                child,
+                                seen,
+                                results,
+                                &mut branch_visited,
+                                truncated,
+                                request_context,
+                                limit,
+                                depth + 1,
+                                max_depth,
+                            )
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(DomainError::DepthLimitExceeded { .. })
+                            | Err(DomainError::CycleDetected { .. }) => {
+                                // Track that results may be incomplete but continue
+                                *truncated = true;
+                            }
+                            Err(e) => {
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
+
+                Userset::Intersection { children } => {
+                    // Intersection: only keep objects that appear in ALL children
+                    if children.is_empty() {
+                        return Ok(());
+                    }
+
+                    // Get results from first child
+                    let mut intersection_seen: HashSet<String> = HashSet::new();
+                    let mut first_results: Vec<String> = Vec::new();
+                    let mut first_visited = visited.clone();
+                    let mut first_truncated = false;
+
+                    match self
+                        .reverse_expand_objects(
+                            store_id,
+                            user,
+                            object_type,
+                            relation,
+                            &children[0],
+                            &mut intersection_seen,
+                            &mut first_results,
+                            &mut first_visited,
+                            &mut first_truncated,
+                            request_context,
+                            limit,
+                            depth + 1,
+                            max_depth,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            if first_truncated {
+                                *truncated = true;
+                            }
+                        }
+                        Err(DomainError::DepthLimitExceeded { .. })
+                        | Err(DomainError::CycleDetected { .. }) => {
+                            // If first branch fails, intersection is incomplete - mark truncated
+                            *truncated = true;
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    }
+
+                    let mut current_set: HashSet<String> = first_results.into_iter().collect();
+
+                    // Intersect with results from remaining children
+                    for child in children.iter().skip(1) {
+                        if current_set.is_empty() {
+                            break;
+                        }
+
+                        let mut child_seen: HashSet<String> = HashSet::new();
+                        let mut child_results: Vec<String> = Vec::new();
+                        let mut child_visited = visited.clone();
+                        let mut child_truncated = false;
+
+                        match self
+                            .reverse_expand_objects(
+                                store_id,
+                                user,
+                                object_type,
+                                relation,
+                                child,
+                                &mut child_seen,
+                                &mut child_results,
+                                &mut child_visited,
+                                &mut child_truncated,
+                                request_context,
+                                limit,
+                                depth + 1,
+                                max_depth,
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                if child_truncated {
+                                    *truncated = true;
+                                }
+                            }
+                            Err(DomainError::DepthLimitExceeded { .. })
+                            | Err(DomainError::CycleDetected { .. }) => {
+                                // If any branch fails, intersection is incomplete
+                                *truncated = true;
+                                current_set.clear();
+                                break;
+                            }
+                            Err(e) => {
+                                return Err(e);
+                            }
+                        }
+
+                        let child_set: HashSet<String> = child_results.into_iter().collect();
+                        // Use retain for in-place intersection, avoiding extra allocations
+                        current_set.retain(|obj| child_set.contains(obj));
+                    }
+
+                    // Add intersection results to main results
+                    for obj in current_set {
+                        if !seen.contains(&obj) {
+                            if results.len() < limit {
+                                seen.insert(obj.clone());
+                                results.push(obj);
+                            } else {
+                                // Hit limit - there are more objects we couldn't include
+                                *truncated = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                Userset::Exclusion { base, subtract } => {
+                    // Exclusion: get base results minus subtract results
+                    let mut base_seen: HashSet<String> = HashSet::new();
+                    let mut base_results: Vec<String> = Vec::new();
+                    let mut base_visited = visited.clone();
+                    let mut base_truncated = false;
+
+                    match self
+                        .reverse_expand_objects(
+                            store_id,
+                            user,
+                            object_type,
+                            relation,
+                            base,
+                            &mut base_seen,
+                            &mut base_results,
+                            &mut base_visited,
+                            &mut base_truncated,
+                            request_context,
+                            limit,
+                            depth + 1,
+                            max_depth,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            if base_truncated {
+                                *truncated = true;
+                            }
+                        }
+                        Err(DomainError::DepthLimitExceeded { .. })
+                        | Err(DomainError::CycleDetected { .. }) => {
+                            // If base fails, we can't compute exclusion reliably
+                            *truncated = true;
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    }
+
+                    let mut subtract_seen: HashSet<String> = HashSet::new();
+                    let mut subtract_results: Vec<String> = Vec::new();
+                    let mut subtract_visited = visited.clone();
+                    let mut subtract_truncated = false;
+
+                    match self
+                        .reverse_expand_objects(
+                            store_id,
+                            user,
+                            object_type,
+                            relation,
+                            subtract,
+                            &mut subtract_seen,
+                            &mut subtract_results,
+                            &mut subtract_visited,
+                            &mut subtract_truncated,
+                            request_context,
+                            limit,
+                            depth + 1,
+                            max_depth,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            if subtract_truncated {
+                                // If subtract was truncated, we might include objects that
+                                // should be excluded - mark as truncated
+                                *truncated = true;
+                            }
+                        }
+                        Err(DomainError::DepthLimitExceeded { .. })
+                        | Err(DomainError::CycleDetected { .. }) => {
+                            // If subtract fails, we include all base results (conservative)
+                            // but mark as truncated since we couldn't fully evaluate
+                            *truncated = true;
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    }
+
+                    let subtract_set: HashSet<String> = subtract_results.into_iter().collect();
+
+                    // Add base results that are not in subtract
+                    for obj in base_results {
+                        if !subtract_set.contains(&obj) && !seen.contains(&obj) {
+                            if results.len() < limit {
+                                seen.insert(obj.clone());
+                                results.push(obj);
+                            } else {
+                                // Hit limit - there are more objects we couldn't include
+                                *truncated = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(())
         })
     }
 

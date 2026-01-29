@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::error::DomainResult;
 use crate::model::{AuthorizationModel, RelationDefinition, TypeDefinition};
 
-use super::types::StoredTupleRef;
+use super::types::{ObjectTupleInfo, StoredTupleRef};
 
 /// Trait for tuple storage operations needed by the resolver.
 #[async_trait]
@@ -46,7 +46,8 @@ pub trait TupleReader: Send + Sync {
     /// Used by ListObjects for efficient permission resolution - starts from user's
     /// direct assignments rather than checking all objects.
     ///
-    /// Returns tuples of (object_id, relation) for the specified user and object_type.
+    /// Returns ObjectTupleInfo for the specified user and object_type, including
+    /// condition info for tuples that have conditions.
     /// The limit parameter provides DoS protection (constraint C11).
     ///
     /// Default implementation returns an empty list. Override to enable efficient ListObjects.
@@ -57,8 +58,47 @@ pub trait TupleReader: Send + Sync {
         _object_type: &str,
         _relation: Option<&str>,
         _max_count: usize,
-    ) -> DomainResult<Vec<(String, String)>> {
+    ) -> DomainResult<Vec<ObjectTupleInfo>> {
         // Default: return empty list (reverse lookup not supported)
+        Ok(Vec::new())
+    }
+
+    /// Finds objects that reference any of the given parent objects via a specific relation.
+    ///
+    /// This is the core query for the ReverseExpand algorithm. For TupleToUserset relations,
+    /// after finding which parent objects the user can access, this method efficiently finds
+    /// all child objects that have those parents.
+    ///
+    /// # Arguments
+    ///
+    /// * `store_id` - The store to query
+    /// * `object_type` - The type of objects to find (e.g., "document")
+    /// * `tupleset_relation` - The relation that references parents (e.g., "parent")
+    /// * `parent_type` - The type of the parent objects (e.g., "folder")
+    /// * `parent_ids` - The IDs of parent objects to search for
+    /// * `max_count` - Maximum number of results (DoS protection)
+    ///
+    /// # Returns
+    ///
+    /// A vector of ObjectTupleInfo containing object IDs and condition metadata for tuples
+    /// that reference any of the given parents via the tupleset relation.
+    /// Condition info is critical for authorization correctness (Invariant I1).
+    ///
+    /// # Example
+    ///
+    /// For a model with `define viewer: viewer from parent` on documents:
+    /// - User has viewer access to folder:reports and folder:archives
+    /// - This method finds all documents with parent = folder:reports OR parent = folder:archives
+    async fn get_objects_with_parents(
+        &self,
+        _store_id: &str,
+        _object_type: &str,
+        _tupleset_relation: &str,
+        _parent_type: &str,
+        _parent_ids: &[String],
+        _max_count: usize,
+    ) -> DomainResult<Vec<ObjectTupleInfo>> {
+        // Default: return empty list (ReverseExpand not supported, falls back to forward-scan)
         Ok(Vec::new())
     }
 }

@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 
 use crate::error::{DomainError, DomainResult};
 use crate::model::{AuthorizationModel, Condition, RelationDefinition, TypeDefinition};
-use crate::resolver::{ModelReader, StoredTupleRef, TupleReader};
+use crate::resolver::{ModelReader, ObjectTupleInfo, StoredTupleRef, TupleReader};
 
 /// Mock tuple reader for testing.
 pub struct MockTupleReader {
@@ -143,6 +143,143 @@ impl TupleReader for MockTupleReader {
         let mut result: Vec<String> = objects.into_iter().collect();
         result.truncate(max_count);
         Ok(result)
+    }
+
+    async fn get_objects_for_user(
+        &self,
+        store_id: &str,
+        user: &str,
+        object_type: &str,
+        relation: Option<&str>,
+        max_count: usize,
+    ) -> DomainResult<Vec<ObjectTupleInfo>> {
+        // Parse the user to get user_type:user_id
+        let (user_type, user_id) = if let Some((t, id)) = user.split_once(':') {
+            (t, id)
+        } else {
+            return Ok(Vec::new());
+        };
+
+        // Search through all tuples to find matching ones
+        let tuples = self.tuples.read().await;
+        let prefix = format!("{store_id}:{object_type}:");
+        let mut results = Vec::new();
+
+        for (key, stored_tuples) in tuples.iter() {
+            if !key.starts_with(&prefix) {
+                continue;
+            }
+
+            // Key format: "store_id:object_type:object_id:relation"
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+
+            let tuple_object_id = parts[2];
+            let tuple_relation = parts[3];
+
+            // Filter by relation if specified
+            if let Some(rel) = relation {
+                if tuple_relation != rel {
+                    continue;
+                }
+            }
+
+            // Check if user matches any of the stored tuples
+            for tuple in stored_tuples {
+                if tuple.user_type == user_type && tuple.user_id == user_id {
+                    let info = if let Some(ref cond_name) = tuple.condition_name {
+                        ObjectTupleInfo::with_condition(
+                            tuple_object_id.to_string(),
+                            tuple_relation.to_string(),
+                            cond_name.clone(),
+                            tuple.condition_context.clone(),
+                        )
+                    } else {
+                        ObjectTupleInfo::new(
+                            tuple_object_id.to_string(),
+                            tuple_relation.to_string(),
+                        )
+                    };
+                    results.push(info);
+                    if results.len() >= max_count {
+                        return Ok(results);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    async fn get_objects_with_parents(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        tupleset_relation: &str,
+        parent_type: &str,
+        parent_ids: &[String],
+        max_count: usize,
+    ) -> DomainResult<Vec<ObjectTupleInfo>> {
+        if parent_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let parent_id_set: HashSet<&str> = parent_ids.iter().map(|s| s.as_str()).collect();
+
+        // Search through all tuples to find objects that have the given parents
+        let tuples = self.tuples.read().await;
+        let prefix = format!("{store_id}:{object_type}:");
+        let mut results = Vec::new();
+        let mut seen_objects = HashSet::new();
+
+        for (key, stored_tuples) in tuples.iter() {
+            if !key.starts_with(&prefix) {
+                continue;
+            }
+
+            // Key format: "store_id:object_type:object_id:relation"
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+
+            let tuple_object_id = parts[2];
+            let tuple_relation = parts[3];
+
+            // Check if this is the tupleset relation we're looking for
+            if tuple_relation != tupleset_relation {
+                continue;
+            }
+
+            // Check if any of the tuples reference one of our parent objects
+            // Return condition info for authorization correctness (Invariant I1)
+            for tuple in stored_tuples {
+                if tuple.user_type == parent_type
+                    && parent_id_set.contains(tuple.user_id.as_str())
+                    && !seen_objects.contains(tuple_object_id)
+                {
+                    seen_objects.insert(tuple_object_id.to_string());
+                    let info = if let Some(ref cond_name) = tuple.condition_name {
+                        ObjectTupleInfo::with_condition(
+                            tuple_object_id.to_string(),
+                            tupleset_relation.to_string(),
+                            cond_name.clone(),
+                            tuple.condition_context.clone(),
+                        )
+                    } else {
+                        ObjectTupleInfo::new(tuple_object_id.to_string(), tupleset_relation)
+                    };
+                    results.push(info);
+                    if results.len() >= max_count {
+                        return Ok(results);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
     }
 }
 

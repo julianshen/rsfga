@@ -6157,3 +6157,931 @@ async fn test_check_skips_cache_when_authorization_model_id_provided() {
         "Should have cache skips when authorization_model_id is provided"
     );
 }
+
+// ============================================================================
+// ReverseExpand Algorithm Tests for ListObjects with TupleToUserset
+// ============================================================================
+
+/// Tests list_objects with TupleToUserset (hierarchical) relation using ReverseExpand algorithm.
+/// This is the key performance optimization: instead of checking every document,
+/// we find folders the user can access and then find documents in those folders.
+#[tokio::test]
+async fn test_list_objects_with_tuple_to_userset_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Add folder type with viewer relation
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Add document type with:
+    // - parent: points to folder
+    // - viewer: computed from parent's viewer (TupleToUserset)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is a viewer of folder1
+    tuple_reader
+        .add_tuple(
+            "store1", "folder", "folder1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    // doc1 and doc2 are in folder1, doc3 is in folder2
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "parent", "folder", "folder1", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "parent", "folder", "folder1", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc3", "parent", "folder", "folder2", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice should see doc1 and doc2 (in folder1 where she is a viewer)
+    // but NOT doc3 (in folder2 where she has no access)
+    assert_eq!(
+        result.objects.len(),
+        2,
+        "Expected 2 documents via TupleToUserset, got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible via folder1 viewer relation"
+    );
+    assert!(
+        result.objects.contains(&"document:doc2".to_string()),
+        "Expected doc2 to be accessible via folder1 viewer relation"
+    );
+    assert!(
+        !result.objects.contains(&"document:doc3".to_string()),
+        "Expected doc3 to NOT be accessible (in folder2, no viewer access)"
+    );
+    assert!(
+        !result.truncated,
+        "Expected truncated=false since result count is under limit"
+    );
+}
+
+/// Tests list_objects with Union relation containing both direct and TupleToUserset.
+#[tokio::test]
+async fn test_list_objects_with_union_of_direct_and_tuple_to_userset() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Add folder type with viewer relation
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Add document type with viewer as Union of direct assignment OR inherited from parent
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::This,
+                                Userset::TupleToUserset {
+                                    tupleset: "parent".to_string(),
+                                    computed_userset: "viewer".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is a viewer of folder1
+    tuple_reader
+        .add_tuple(
+            "store1", "folder", "folder1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    // Alice has direct viewer access to doc1
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    // doc2 is in folder1 (Alice inherits access)
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "parent", "folder", "folder1", None,
+        )
+        .await;
+
+    // doc3 is in folder2 (Alice has no access)
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc3", "parent", "folder", "folder2", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice should see doc1 (direct) and doc2 (inherited), but NOT doc3
+    assert_eq!(
+        result.objects.len(),
+        2,
+        "Expected 2 documents via Union of direct+TupleToUserset, got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible via direct viewer relation"
+    );
+    assert!(
+        result.objects.contains(&"document:doc2".to_string()),
+        "Expected doc2 to be accessible via folder1's inherited viewer relation"
+    );
+    assert!(
+        !result.objects.contains(&"document:doc3".to_string()),
+        "Expected doc3 to NOT be accessible (in folder2, no viewer access)"
+    );
+}
+
+/// Tests list_objects with multiple levels of TupleToUserset (nested hierarchy).
+#[tokio::test]
+async fn test_list_objects_with_nested_tuple_to_userset() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Organization -> Folder -> Document hierarchy
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "organization".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "member".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "org".to_string(),
+                        type_constraints: vec!["organization".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "org".to_string(),
+                            computed_userset: "member".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is member of org1
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "organization",
+            "org1",
+            "member",
+            "user",
+            "alice",
+            None,
+        )
+        .await;
+
+    // folder1 belongs to org1
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "folder",
+            "folder1",
+            "org",
+            "organization",
+            "org1",
+            None,
+        )
+        .await;
+
+    // doc1 is in folder1
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "parent", "folder", "folder1", None,
+        )
+        .await;
+
+    // doc2 is in folder2 (belongs to org2, Alice has no access)
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "folder",
+            "folder2",
+            "org",
+            "organization",
+            "org2",
+            None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "parent", "folder", "folder2", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice should see doc1 (org1 -> folder1 -> doc1), but NOT doc2
+    assert_eq!(
+        result.objects.len(),
+        1,
+        "Expected 1 document via nested TupleToUserset hierarchy, got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible via org1->folder1->doc1 hierarchy"
+    );
+}
+
+/// Tests list_objects with ComputedUserset relation.
+#[tokio::test]
+async fn test_list_objects_with_computed_userset() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Document with editor and viewer relations
+    // viewer is computed from editor (editors can also view)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::This,
+                                Userset::ComputedUserset {
+                                    relation: "editor".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is editor of doc1
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "editor", "user", "alice", None,
+        )
+        .await;
+
+    // Alice is viewer of doc2
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice should see both doc1 (as editor -> viewer) and doc2 (as direct viewer)
+    assert_eq!(
+        result.objects.len(),
+        2,
+        "Expected 2 documents via ComputedUserset (editor->viewer + direct viewer), got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible via editor->viewer ComputedUserset"
+    );
+    assert!(
+        result.objects.contains(&"document:doc2".to_string()),
+        "Expected doc2 to be accessible via direct viewer relation"
+    );
+}
+
+/// Tests that list_objects respects the max_candidates limit with ReverseExpand.
+#[tokio::test]
+async fn test_list_objects_respects_limit_with_reverse_expand() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Alice has access to 10 documents
+    for i in 1..=10 {
+        tuple_reader
+            .add_tuple(
+                "store1",
+                "document",
+                &format!("doc{}", i),
+                "viewer",
+                "user",
+                "alice",
+                None,
+            )
+            .await;
+    }
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    // Request with limit of 5
+    let result = resolver.list_objects(&request, 5).await.unwrap();
+
+    // Should return exactly 5 documents and indicate truncation
+    assert_eq!(
+        result.objects.len(),
+        5,
+        "Expected 5 documents (limit=5), got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.truncated,
+        "Expected truncated=true when limit < total results"
+    );
+}
+
+/// Tests that list_objects handles empty results correctly.
+#[tokio::test]
+async fn test_list_objects_empty_results_with_reverse_expand() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Documents exist but Alice has no access to any folders
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "parent", "folder", "folder1", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice should see no documents
+    assert!(
+        result.objects.is_empty(),
+        "Expected empty results when user has no folder access"
+    );
+    assert!(
+        !result.truncated,
+        "Expected truncated=false when no results to truncate"
+    );
+}
+
+/// Tests list_objects with Exclusion relation (base minus subtract).
+#[tokio::test]
+async fn test_list_objects_with_exclusion_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Document with viewer = all_viewers - blocked_viewers (exclusion)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "all_viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "blocked".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Exclusion {
+                            base: Box::new(Userset::ComputedUserset {
+                                relation: "all_viewer".to_string(),
+                            }),
+                            subtract: Box::new(Userset::ComputedUserset {
+                                relation: "blocked".to_string(),
+                            }),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is all_viewer on doc1, doc2, doc3
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "document",
+            "doc1",
+            "all_viewer",
+            "user",
+            "alice",
+            None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "document",
+            "doc2",
+            "all_viewer",
+            "user",
+            "alice",
+            None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "document",
+            "doc3",
+            "all_viewer",
+            "user",
+            "alice",
+            None,
+        )
+        .await;
+
+    // Alice is blocked from doc2
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "blocked", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice should see doc1 and doc3 (all_viewer minus blocked)
+    // but NOT doc2 (she is blocked from it)
+    assert_eq!(
+        result.objects.len(),
+        2,
+        "Expected 2 documents via Exclusion (all_viewer minus blocked), got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible (all_viewer, not blocked)"
+    );
+    assert!(
+        !result.objects.contains(&"document:doc2".to_string()),
+        "Expected doc2 to NOT be accessible (blocked relation set)"
+    );
+    assert!(
+        result.objects.contains(&"document:doc3".to_string()),
+        "Expected doc3 to be accessible (all_viewer, not blocked)"
+    );
+}
+
+/// Tests list_objects with Intersection relation.
+#[tokio::test]
+async fn test_list_objects_with_intersection_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Document with viewer = must_be_owner AND must_be_approved (intersection)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "approved".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Intersection {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "owner".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "approved".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is owner of doc1, doc2, doc3
+    tuple_reader
+        .add_tuple("store1", "document", "doc1", "owner", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store1", "document", "doc2", "owner", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple("store1", "document", "doc3", "owner", "user", "alice", None)
+        .await;
+
+    // Alice is approved for doc1 and doc3 only
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "approved", "user", "alice", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc3", "approved", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice should see doc1 and doc3 (owner AND approved)
+    // but NOT doc2 (owner but not approved)
+    assert_eq!(
+        result.objects.len(),
+        2,
+        "Expected 2 documents via Intersection (owner AND approved), got {}",
+        result.objects.len()
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible (both owner and approved)"
+    );
+    assert!(
+        !result.objects.contains(&"document:doc2".to_string()),
+        "Expected doc2 to NOT be accessible (owner but not approved)"
+    );
+    assert!(
+        result.objects.contains(&"document:doc3".to_string()),
+        "Expected doc3 to be accessible (both owner and approved)"
+    );
+}
+
+/// Tests that list_objects with TupleToUserset correctly evaluates conditions
+/// on child tuples (the parent relation tuples).
+///
+/// This test verifies Invariant I1 (Correctness Over Performance):
+/// When a tupleset relation (e.g., parent) has conditions, those conditions
+/// must be evaluated before including the child object in results.
+///
+/// Model: document with `define viewer: viewer from parent`
+/// Setup:
+/// - user:alice is viewer on folder:reports
+/// - document:doc1 has parent = folder:reports (no condition) -> should be included
+/// - document:doc2 has parent = folder:reports with failing condition -> should be EXCLUDED
+/// - document:doc3 has parent = folder:reports with passing condition -> should be included
+#[tokio::test]
+async fn test_list_objects_with_conditional_tupleset_in_hierarchy() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Define the folder type with viewer relation
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Define the document type with:
+    // - parent: [folder] (this is where conditions will be)
+    // - viewer: viewer from parent (TupleToUserset)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Add a CEL condition that checks department == "engineering"
+    // Note: CEL expressions access values via "request." prefix
+    model_reader
+        .add_condition(
+            "store1",
+            Condition {
+                name: "dept_check".to_string(),
+                expression: "request.dept == \"engineering\"".to_string(),
+                parameters: vec![ConditionParameter::new("dept", "string")],
+            },
+        )
+        .await;
+
+    // user:alice is viewer on folder:reports
+    tuple_reader
+        .add_tuple(
+            "store1", "folder", "reports", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    // doc1: parent = folder:reports (no condition) -> should be included
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "parent", "folder", "reports", None,
+        )
+        .await;
+
+    // doc2: parent = folder:reports WITH FAILING CONDITION -> should be EXCLUDED
+    let mut doc2_context = std::collections::HashMap::new();
+    doc2_context.insert(
+        "dept".to_string(),
+        serde_json::Value::String("marketing".to_string()),
+    );
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc2",
+            "parent",
+            "folder",
+            "reports",
+            None,
+            "dept_check",
+            Some(doc2_context),
+        )
+        .await;
+
+    // doc3: parent = folder:reports WITH PASSING CONDITION -> should be included
+    let mut doc3_context = std::collections::HashMap::new();
+    doc3_context.insert(
+        "dept".to_string(),
+        serde_json::Value::String("engineering".to_string()),
+    );
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc3",
+            "parent",
+            "folder",
+            "reports",
+            None,
+            "dept_check",
+            Some(doc3_context),
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice should see doc1 and doc3
+    // but NOT doc2 (condition fails: dept=marketing != "engineering")
+    assert_eq!(
+        result.objects.len(),
+        2,
+        "Expected 2 documents (doc1 without condition, doc3 with passing condition), \
+         but NOT doc2 (condition fails). Got: {:?}",
+        result.objects
+    );
+    assert!(
+        result.objects.contains(&"document:doc1".to_string()),
+        "Expected doc1 to be accessible (no condition on parent tuple)"
+    );
+    assert!(
+        !result.objects.contains(&"document:doc2".to_string()),
+        "Expected doc2 to NOT be accessible (condition dept=marketing fails)"
+    );
+    assert!(
+        result.objects.contains(&"document:doc3".to_string()),
+        "Expected doc3 to be accessible (condition dept=engineering passes)"
+    );
+}

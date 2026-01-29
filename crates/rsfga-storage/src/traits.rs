@@ -88,6 +88,51 @@ pub fn parse_continuation_token(token: &Option<String>) -> StorageResult<i64> {
     }
 }
 
+/// Result of get_objects_with_parents containing object ID and optional condition info.
+///
+/// This struct is returned by `get_objects_with_parents` to enable proper condition
+/// evaluation for TupleToUserset relations. Without condition info, the ReverseExpand
+/// algorithm would grant access to objects whose tupleset tuples have failing conditions.
+///
+/// # Authorization Correctness (Invariant I1)
+///
+/// When a tuple has a condition (e.g., `document:123#parent@folder:456[valid_until: {...}]`),
+/// the condition must be evaluated before granting access. Returning only object IDs would
+/// bypass condition evaluation, potentially granting unauthorized access.
+#[derive(Debug, Clone)]
+pub struct ObjectWithCondition {
+    /// The object ID (e.g., "doc1" not "document:doc1").
+    pub object_id: String,
+    /// Optional condition name that must be satisfied for this tuple.
+    pub condition_name: Option<String>,
+    /// Optional condition context (parameters) as JSON key-value pairs.
+    pub condition_context: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+impl ObjectWithCondition {
+    /// Creates a new ObjectWithCondition without a condition.
+    pub fn new(object_id: impl Into<String>) -> Self {
+        Self {
+            object_id: object_id.into(),
+            condition_name: None,
+            condition_context: None,
+        }
+    }
+
+    /// Creates a new ObjectWithCondition with a condition.
+    pub fn with_condition(
+        object_id: impl Into<String>,
+        condition_name: impl Into<String>,
+        condition_context: Option<std::collections::HashMap<String, serde_json::Value>>,
+    ) -> Self {
+        Self {
+            object_id: object_id.into(),
+            condition_name: Some(condition_name.into()),
+            condition_context,
+        }
+    }
+}
+
 /// Cursor for tuple pagination using composite key.
 ///
 /// Enables efficient cursor-based pagination by encoding the last tuple's
@@ -776,6 +821,57 @@ pub trait DataStore: Send + Sync + 'static {
         Err(StorageError::InternalError {
             message: "list_objects_by_type not implemented for this store".to_string(),
         })
+    }
+
+    /// Finds objects that reference any of the given parent objects via a specific relation.
+    ///
+    /// This is the core query for the ReverseExpand algorithm used by ListObjects API.
+    /// Instead of checking every object individually (O(n) permission checks), this method
+    /// efficiently finds all objects that could have inherited access from the given parents.
+    ///
+    /// # Use Case: TupleToUserset Resolution
+    ///
+    /// For a relation like `define viewer: viewer from parent`, to find all documents
+    /// a user can view:
+    /// 1. Find all folders where the user has `viewer` access
+    /// 2. Use this method to find all documents with those folders as their `parent`
+    ///
+    /// # Arguments
+    ///
+    /// * `store_id` - The store to query
+    /// * `object_type` - The type of objects to find (e.g., "document")
+    /// * `relation` - The relation that references parents (e.g., "parent")
+    /// * `parent_type` - The type of the parent objects (e.g., "folder")
+    /// * `parent_ids` - The IDs of parent objects to search for
+    /// * `limit` - Maximum number of results to return (DoS protection)
+    ///
+    /// # Returns
+    ///
+    /// A vector of `ObjectWithCondition` containing object IDs and optional condition
+    /// metadata. Condition info is critical for authorization correctness (Invariant I1)
+    /// - tuples with conditions must be evaluated before granting access.
+    ///
+    /// # Performance
+    ///
+    /// This query uses the (store_id, object_type, relation, user_type, user_id) index
+    /// to efficiently find matching tuples. The IN clause on parent_ids is optimized
+    /// by most database engines.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
+    async fn get_objects_with_parents(
+        &self,
+        _store_id: &str,
+        _object_type: &str,
+        _relation: &str,
+        _parent_type: &str,
+        _parent_ids: &[String],
+        _limit: usize,
+    ) -> StorageResult<Vec<ObjectWithCondition>> {
+        // Default implementation returns empty - ReverseExpand will fall back to
+        // forward-scan when this is not implemented.
+        Ok(Vec::new())
     }
 
     // Transaction support
