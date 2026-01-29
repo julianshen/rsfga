@@ -9,9 +9,8 @@
 use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use rsfga_domain::model::{
-    AuthorizationModel, Condition, RelationDefinition, TypeConstraint, TypeDefinition, Userset,
+    AuthorizationModel, RelationDefinition, TypeConstraint, TypeDefinition, Userset,
 };
-use std::collections::HashMap;
 
 /// Fuzz input for model/userset construction
 #[derive(Debug, Arbitrary)]
@@ -160,7 +159,6 @@ fuzz_target!(|input: FuzzModelInput| {
             for _ in 0..rel_config.num_constraints.min(5) {
                 type_constraints.push(TypeConstraint {
                     type_name: "user".to_string(),
-                    relation: None,
                     condition: None,
                 });
             }
@@ -187,10 +185,10 @@ fuzz_target!(|input: FuzzModelInput| {
 
     // Create the authorization model
     let model = AuthorizationModel {
-        id: "fuzz-model".to_string(),
+        id: Some("fuzz-model".to_string()),
         schema_version: "1.1".to_string(),
         type_definitions,
-        conditions: HashMap::new(),
+        conditions: Vec::new(),
     };
 
     // Exercise the model by accessing various properties
