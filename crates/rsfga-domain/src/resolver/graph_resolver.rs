@@ -1324,7 +1324,7 @@ where
     /// 3. Handle Union/Intersection/Exclusion by combining results appropriately
     ///
     /// This provides O(user's accessible objects × depth) complexity instead of
-    /// O(total objects × depth), giving 100-1000x speedup for hierarchical models.
+    /// O(total objects × depth), which can significantly reduce work for selective-access models.
     ///
     /// # Example
     ///
@@ -1530,8 +1530,7 @@ where
                                     tuple_info.condition_context.as_ref(),
                                     request_context,
                                 )
-                                .await
-                                .unwrap_or(false);
+                                .await?;
 
                             if !condition_ok {
                                 // Condition not satisfied, skip this object
@@ -1605,16 +1604,9 @@ where
                     // Extract parent types from type constraints
                     for type_constraint in &tupleset_def.type_constraints {
                         // Parse the type constraint (e.g., "folder" or "folder#member")
-                        let parent_type = if type_constraint.type_name.contains('#') {
-                            // Userset reference - get the type part
-                            type_constraint
-                                .type_name
-                                .split('#')
-                                .next()
-                                .unwrap_or(&type_constraint.type_name)
-                        } else {
-                            &type_constraint.type_name
-                        };
+                        // split('#').next().unwrap() handles both cases correctly and is safe
+                        // because type_name is a non-empty string from the model definition
+                        let parent_type = type_constraint.type_name.split('#').next().unwrap();
 
                         // Skip if parent_type is empty, wildcard, or malformed
                         if parent_type.is_empty() || parent_type == "*" {
@@ -1628,9 +1620,12 @@ where
                             .await;
 
                         // If the parent type doesn't have this relation, skip it
+                        // Only skip on "relation/type not found"; propagate all other errors
                         let parent_rel_def = match parent_rel_def {
                             Ok(def) => def,
-                            Err(_) => continue,
+                            Err(DomainError::RelationNotFound { .. })
+                            | Err(DomainError::TypeNotFound { .. }) => continue,
+                            Err(e) => return Err(e),
                         };
 
                         // Cycle detection: check before traversing to parent type's relation
@@ -1863,7 +1858,8 @@ where
                         }
 
                         let child_set: HashSet<String> = child_results.into_iter().collect();
-                        current_set = current_set.intersection(&child_set).cloned().collect();
+                        // Use retain for in-place intersection, avoiding extra allocations
+                        current_set.retain(|obj| child_set.contains(obj));
                     }
 
                     // Add intersection results to main results

@@ -2459,7 +2459,6 @@ impl DataStore for MySQLDataStore {
         let object_type_owned = object_type.to_string();
         let relation_owned = relation.to_string();
         let parent_type_owned = parent_type.to_string();
-        let parent_ids_owned: Vec<String> = parent_ids.to_vec();
         let limit = limit as u64;
 
         let rows = self
@@ -2469,7 +2468,8 @@ impl DataStore for MySQLDataStore {
                 query_builder = query_builder.bind(&object_type_owned);
                 query_builder = query_builder.bind(&relation_owned);
                 query_builder = query_builder.bind(&parent_type_owned);
-                for parent_id in &parent_ids_owned {
+                // Bind parent_ids directly - no need to clone the slice
+                for parent_id in parent_ids {
                     query_builder = query_builder.bind(parent_id);
                 }
                 query_builder = query_builder.bind(limit);

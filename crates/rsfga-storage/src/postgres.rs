@@ -1098,7 +1098,6 @@ impl DataStore for PostgresDataStore {
         let object_type_owned = object_type.to_string();
         let relation_owned = relation.to_string();
         let parent_type_owned = parent_type.to_string();
-        let parent_ids_owned: Vec<String> = parent_ids.to_vec();
         let limit = limit as i64;
 
         // Build the query with ANY instead of IN for better PostgreSQL performance
@@ -1125,7 +1124,8 @@ impl DataStore for PostgresDataStore {
                 .bind(&object_type_owned)
                 .bind(&relation_owned)
                 .bind(&parent_type_owned)
-                .bind(&parent_ids_owned)
+                // sqlx can bind slice directly for ANY clauses
+                .bind(parent_ids)
                 .bind(limit)
                 .fetch_all(&self.pool)
                 .await
