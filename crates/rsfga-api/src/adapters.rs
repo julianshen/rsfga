@@ -928,6 +928,35 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
 
         Ok(results)
     }
+
+    async fn get_objects_with_parents(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        tupleset_relation: &str,
+        parent_type: &str,
+        parent_ids: &[String],
+        max_count: usize,
+    ) -> DomainResult<Vec<String>> {
+        self.storage
+            .get_objects_with_parents(
+                store_id,
+                object_type,
+                tupleset_relation,
+                parent_type,
+                parent_ids,
+                max_count,
+            )
+            .await
+            .map_err(|e| match e {
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
+            })
+    }
 }
 
 /// Adapter that implements `ModelReader` using a `DataStore`.

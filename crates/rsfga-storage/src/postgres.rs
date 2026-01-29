@@ -1030,6 +1030,92 @@ impl DataStore for PostgresDataStore {
     }
 
     #[instrument(skip(self))]
+    async fn get_objects_with_parents(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        relation: &str,
+        parent_type: &str,
+        parent_ids: &[String],
+        limit: usize,
+    ) -> StorageResult<Vec<String>> {
+        // If no parent IDs provided, return empty result
+        if parent_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Validate inputs
+        validate_store_id(store_id)?;
+        validate_object_type(object_type)?;
+
+        // Verify store exists (with timeout protection)
+        let store_id_owned = store_id.to_string();
+        let store_exists: bool = self
+            .execute_with_timeout("get_objects_with_parents_store_check", async {
+                sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to check store existence: {e}"),
+                })
+            })
+            .await?;
+
+        if !store_exists {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        let object_type_owned = object_type.to_string();
+        let relation_owned = relation.to_string();
+        let parent_type_owned = parent_type.to_string();
+        let parent_ids_owned: Vec<String> = parent_ids.to_vec();
+        let limit = limit as i64;
+
+        // Build the query with ANY instead of IN for better PostgreSQL performance
+        // This finds all objects of object_type that have a tuple with:
+        // - relation = the tupleset relation (e.g., "parent")
+        // - user_type = parent_type (e.g., "folder")
+        // - user_id in the list of parent IDs
+        let rows = self
+            .execute_with_timeout("get_objects_with_parents", async {
+                sqlx::query(
+                    r#"
+                    SELECT DISTINCT object_id
+                    FROM tuples
+                    WHERE store_id = $1
+                      AND object_type = $2
+                      AND relation = $3
+                      AND user_type = $4
+                      AND user_id = ANY($5)
+                    ORDER BY object_id
+                    LIMIT $6
+                    "#,
+                )
+                .bind(&store_id_owned)
+                .bind(&object_type_owned)
+                .bind(&relation_owned)
+                .bind(&parent_type_owned)
+                .bind(&parent_ids_owned)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryError {
+                    message: format!("Failed to get objects with parents: {e}"),
+                })
+            })
+            .await?;
+
+        Ok(rows.into_iter().map(|row| row.get("object_id")).collect())
+    }
+
+    #[instrument(skip(self))]
     async fn create_store(&self, id: &str, name: &str) -> StorageResult<Store> {
         // Validate inputs
         validate_store_id(id)?;

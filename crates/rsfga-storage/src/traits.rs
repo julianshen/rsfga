@@ -778,6 +778,56 @@ pub trait DataStore: Send + Sync + 'static {
         })
     }
 
+    /// Finds objects that reference any of the given parent objects via a specific relation.
+    ///
+    /// This is the core query for the ReverseExpand algorithm used by ListObjects API.
+    /// Instead of checking every object individually (O(n) permission checks), this method
+    /// efficiently finds all objects that could have inherited access from the given parents.
+    ///
+    /// # Use Case: TupleToUserset Resolution
+    ///
+    /// For a relation like `define viewer: viewer from parent`, to find all documents
+    /// a user can view:
+    /// 1. Find all folders where the user has `viewer` access
+    /// 2. Use this method to find all documents with those folders as their `parent`
+    ///
+    /// # Arguments
+    ///
+    /// * `store_id` - The store to query
+    /// * `object_type` - The type of objects to find (e.g., "document")
+    /// * `relation` - The relation that references parents (e.g., "parent")
+    /// * `parent_type` - The type of the parent objects (e.g., "folder")
+    /// * `parent_ids` - The IDs of parent objects to search for
+    /// * `limit` - Maximum number of results to return (DoS protection)
+    ///
+    /// # Returns
+    ///
+    /// A vector of object IDs (not full type:id, just the ID part) that reference
+    /// any of the given parents. Results are DISTINCT and limited.
+    ///
+    /// # Performance
+    ///
+    /// This query uses the (store_id, object_type, relation, user_type, user_id) index
+    /// to efficiently find matching tuples. The IN clause on parent_ids is optimized
+    /// by most database engines.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::StoreNotFound` if the store doesn't exist.
+    async fn get_objects_with_parents(
+        &self,
+        _store_id: &str,
+        _object_type: &str,
+        _relation: &str,
+        _parent_type: &str,
+        _parent_ids: &[String],
+        _limit: usize,
+    ) -> StorageResult<Vec<String>> {
+        // Default implementation returns empty - ReverseExpand will fall back to
+        // forward-scan when this is not implemented.
+        Ok(Vec::new())
+    }
+
     // Transaction support
     //
     // Note: Individual transaction control is NOT currently supported by any implementation.

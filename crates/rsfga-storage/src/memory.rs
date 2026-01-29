@@ -631,6 +631,63 @@ impl DataStore for MemoryDataStore {
         Ok(unique_ids)
     }
 
+    async fn get_objects_with_parents(
+        &self,
+        store_id: &str,
+        object_type: &str,
+        relation: &str,
+        parent_type: &str,
+        parent_ids: &[String],
+        limit: usize,
+    ) -> StorageResult<Vec<String>> {
+        // If no parent IDs provided, return empty result
+        if parent_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Validate inputs
+        validate_store_id(store_id)?;
+        validate_object_type(object_type)?;
+
+        // Verify store exists
+        if !self.stores.contains_key(store_id) {
+            return Err(StorageError::StoreNotFound {
+                store_id: store_id.to_string(),
+            });
+        }
+
+        let parent_ids_set: HashSet<&str> = parent_ids.iter().map(|s| s.as_str()).collect();
+
+        let mut unique_ids: Vec<String> = self
+            .tuples
+            .get(store_id)
+            .map(|tuples| {
+                tuples
+                    .iter()
+                    .filter(|t| {
+                        t.object_type == object_type
+                            && t.relation == relation
+                            && t.user_type == parent_type
+                            && parent_ids_set.contains(t.user_id.as_str())
+                    })
+                    .map(|t| t.object_id.clone())
+                    .collect::<HashSet<_>>() // Dedup using HashSet
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Sort for deterministic results (matches Postgres ORDER BY)
+        unique_ids.sort();
+
+        // Apply limit
+        if unique_ids.len() > limit {
+            unique_ids.truncate(limit);
+        }
+
+        Ok(unique_ids)
+    }
+
     async fn read_changes(
         &self,
         store_id: &str,
