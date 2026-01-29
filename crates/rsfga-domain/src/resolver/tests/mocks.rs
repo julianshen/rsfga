@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 
 use crate::error::{DomainError, DomainResult};
 use crate::model::{AuthorizationModel, Condition, RelationDefinition, TypeDefinition};
-use crate::resolver::{ModelReader, StoredTupleRef, TupleReader};
+use crate::resolver::{ModelReader, ObjectTupleInfo, StoredTupleRef, TupleReader};
 
 /// Mock tuple reader for testing.
 pub struct MockTupleReader {
@@ -152,7 +152,7 @@ impl TupleReader for MockTupleReader {
         object_type: &str,
         relation: Option<&str>,
         max_count: usize,
-    ) -> DomainResult<Vec<(String, String)>> {
+    ) -> DomainResult<Vec<ObjectTupleInfo>> {
         // Parse the user to get user_type:user_id
         let (user_type, user_id) = if let Some((t, id)) = user.split_once(':') {
             (t, id)
@@ -189,7 +189,20 @@ impl TupleReader for MockTupleReader {
             // Check if user matches any of the stored tuples
             for tuple in stored_tuples {
                 if tuple.user_type == user_type && tuple.user_id == user_id {
-                    results.push((tuple_object_id.to_string(), tuple_relation.to_string()));
+                    let info = if let Some(ref cond_name) = tuple.condition_name {
+                        ObjectTupleInfo::with_condition(
+                            tuple_object_id.to_string(),
+                            tuple_relation.to_string(),
+                            cond_name.clone(),
+                            tuple.condition_context.clone(),
+                        )
+                    } else {
+                        ObjectTupleInfo::new(
+                            tuple_object_id.to_string(),
+                            tuple_relation.to_string(),
+                        )
+                    };
+                    results.push(info);
                     if results.len() >= max_count {
                         return Ok(results);
                     }

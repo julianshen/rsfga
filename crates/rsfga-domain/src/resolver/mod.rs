@@ -42,5 +42,5 @@ pub use traits::{ModelReader, TupleReader};
 pub use types::{
     CheckRequest, CheckResult, ContextualTuple, ExpandLeaf, ExpandLeafValue, ExpandNode,
     ExpandRequest, ExpandResult, ListObjectsRequest, ListObjectsResult, ListUsersRequest,
-    ListUsersResult, StoredTupleRef, UserFilter, UserResult, UsersetTree,
+    ListUsersResult, ObjectTupleInfo, StoredTupleRef, UserFilter, UserResult, UsersetTree,
 };

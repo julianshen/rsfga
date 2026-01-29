@@ -1386,10 +1386,22 @@ where
         let mut result_objects: Vec<String> = Vec::new();
 
         // Get the relation definition to understand how access is computed
-        let relation_def = self
+        // If the type or relation doesn't exist, return empty results (not an error)
+        let relation_def = match self
             .model_reader
             .get_relation_definition(&request.store_id, &request.object_type, &request.relation)
-            .await?;
+            .await
+        {
+            Ok(def) => def,
+            Err(DomainError::TypeNotFound { .. }) | Err(DomainError::RelationNotFound { .. }) => {
+                // Type or relation doesn't exist - return empty results
+                return Ok(super::types::ListObjectsResult {
+                    objects: vec![],
+                    truncated: false,
+                });
+            }
+            Err(e) => return Err(e),
+        };
 
         // Use ReverseExpand to find all accessible objects
         // visited tracks (object_type, relation) pairs to detect cycles
@@ -1406,6 +1418,7 @@ where
             &mut result_objects,
             &mut visited,
             &mut was_truncated,
+            &request.context,
             limit,
             0,                     // depth
             self.config.max_depth, // max_depth
@@ -1475,6 +1488,7 @@ where
         results: &'a mut Vec<String>,
         visited: &'a mut HashSet<String>,
         truncated: &'a mut bool,
+        request_context: &'a HashMap<String, serde_json::Value>,
         limit: usize,
         depth: u32,
         max_depth: u32,
@@ -1506,8 +1520,26 @@ where
                         )
                         .await?;
 
-                    for (obj_id, _rel) in direct_objects {
-                        let full_obj = format!("{}:{}", object_type, obj_id);
+                    for tuple_info in direct_objects {
+                        // Evaluate condition if present
+                        if tuple_info.condition_name.is_some() {
+                            let condition_ok = self
+                                .evaluate_condition(
+                                    store_id,
+                                    tuple_info.condition_name.as_deref(),
+                                    tuple_info.condition_context.as_ref(),
+                                    request_context,
+                                )
+                                .await
+                                .unwrap_or(false);
+
+                            if !condition_ok {
+                                // Condition not satisfied, skip this object
+                                continue;
+                            }
+                        }
+
+                        let full_obj = format!("{}:{}", object_type, tuple_info.object_id);
                         if !seen.contains(&full_obj) && results.len() < limit {
                             seen.insert(full_obj.clone());
                             results.push(full_obj);
@@ -1543,6 +1575,7 @@ where
                             results,
                             visited,
                             truncated,
+                            request_context,
                             limit,
                             depth + 1,
                             max_depth,
@@ -1628,6 +1661,7 @@ where
                                 &mut parent_results,
                                 &mut parent_visited,
                                 &mut parent_truncated,
+                                request_context,
                                 limit, // Use limit for parents too
                                 depth + 1,
                                 max_depth,
@@ -1714,6 +1748,7 @@ where
                                 results,
                                 &mut branch_visited,
                                 truncated,
+                                request_context,
                                 limit,
                                 depth + 1,
                                 max_depth,
@@ -1756,6 +1791,7 @@ where
                             &mut first_results,
                             &mut first_visited,
                             &mut first_truncated,
+                            request_context,
                             limit,
                             depth + 1,
                             max_depth,
@@ -1802,6 +1838,7 @@ where
                                 &mut child_results,
                                 &mut child_visited,
                                 &mut child_truncated,
+                                request_context,
                                 limit,
                                 depth + 1,
                                 max_depth,
@@ -1856,6 +1893,7 @@ where
                             &mut base_results,
                             &mut base_visited,
                             &mut base_truncated,
+                            request_context,
                             limit,
                             depth + 1,
                             max_depth,
@@ -1894,6 +1932,7 @@ where
                             &mut subtract_results,
                             &mut subtract_visited,
                             &mut subtract_truncated,
+                            request_context,
                             limit,
                             depth + 1,
                             max_depth,

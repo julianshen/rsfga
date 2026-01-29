@@ -20,7 +20,7 @@ use rsfga_domain::model::{
     AuthorizationModel, Condition, ConditionParameter, RelationDefinition, TypeConstraint,
     TypeDefinition, Userset,
 };
-use rsfga_domain::resolver::{ModelReader, StoredTupleRef, TupleReader};
+use rsfga_domain::resolver::{ModelReader, ObjectTupleInfo, StoredTupleRef, TupleReader};
 use rsfga_storage::DataStore;
 
 /// Converts a DomainError to a user-friendly validation error message.
@@ -897,7 +897,7 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
         object_type: &str,
         relation: Option<&str>,
         max_count: usize,
-    ) -> DomainResult<Vec<(String, String)>> {
+    ) -> DomainResult<Vec<ObjectTupleInfo>> {
         let filter = rsfga_storage::TupleFilter {
             object_type: Some(object_type.to_string()),
             object_id: None,
@@ -919,11 +919,22 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
                 },
             })?;
 
-        // Collect unique (object_id, relation) pairs up to max_count
-        let results: Vec<(String, String)> = tuples
+        // Collect ObjectTupleInfo with condition info, up to max_count
+        let results: Vec<ObjectTupleInfo> = tuples
             .into_iter()
             .take(max_count)
-            .map(|t| (t.object_id, t.relation))
+            .map(|t| {
+                if let Some(condition_name) = t.condition_name {
+                    ObjectTupleInfo::with_condition(
+                        t.object_id,
+                        t.relation,
+                        condition_name,
+                        t.condition_context,
+                    )
+                } else {
+                    ObjectTupleInfo::new(t.object_id, t.relation)
+                }
+            })
             .collect();
 
         Ok(results)

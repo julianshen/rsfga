@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::error::DomainResult;
 use crate::model::{AuthorizationModel, RelationDefinition, TypeDefinition};
 
-use super::types::StoredTupleRef;
+use super::types::{ObjectTupleInfo, StoredTupleRef};
 
 /// Trait for tuple storage operations needed by the resolver.
 #[async_trait]
@@ -46,7 +46,8 @@ pub trait TupleReader: Send + Sync {
     /// Used by ListObjects for efficient permission resolution - starts from user's
     /// direct assignments rather than checking all objects.
     ///
-    /// Returns tuples of (object_id, relation) for the specified user and object_type.
+    /// Returns ObjectTupleInfo for the specified user and object_type, including
+    /// condition info for tuples that have conditions.
     /// The limit parameter provides DoS protection (constraint C11).
     ///
     /// Default implementation returns an empty list. Override to enable efficient ListObjects.
@@ -57,7 +58,7 @@ pub trait TupleReader: Send + Sync {
         _object_type: &str,
         _relation: Option<&str>,
         _max_count: usize,
-    ) -> DomainResult<Vec<(String, String)>> {
+    ) -> DomainResult<Vec<ObjectTupleInfo>> {
         // Default: return empty list (reverse lookup not supported)
         Ok(Vec::new())
     }

@@ -187,6 +187,47 @@ impl StoredTupleRef {
     }
 }
 
+/// Information about an object-relation tuple for reverse lookup.
+/// Used by `get_objects_for_user` to return object IDs with condition info.
+#[derive(Debug, Clone)]
+pub struct ObjectTupleInfo {
+    /// The object ID (e.g., "doc1" not "document:doc1").
+    pub object_id: String,
+    /// The relation name.
+    pub relation: String,
+    /// Optional condition name that must be satisfied for this tuple.
+    pub condition_name: Option<String>,
+    /// Optional condition context (parameters) as JSON key-value pairs.
+    pub condition_context: Option<HashMap<String, serde_json::Value>>,
+}
+
+impl ObjectTupleInfo {
+    /// Creates a new ObjectTupleInfo without a condition.
+    pub fn new(object_id: impl Into<String>, relation: impl Into<String>) -> Self {
+        Self {
+            object_id: object_id.into(),
+            relation: relation.into(),
+            condition_name: None,
+            condition_context: None,
+        }
+    }
+
+    /// Creates a new ObjectTupleInfo with a condition.
+    pub fn with_condition(
+        object_id: impl Into<String>,
+        relation: impl Into<String>,
+        condition_name: impl Into<String>,
+        condition_context: Option<HashMap<String, serde_json::Value>>,
+    ) -> Self {
+        Self {
+            object_id: object_id.into(),
+            relation: relation.into(),
+            condition_name: Some(condition_name.into()),
+            condition_context,
+        }
+    }
+}
+
 // ============================================================
 // Expand API Types
 // ============================================================
