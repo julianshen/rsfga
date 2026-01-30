@@ -771,7 +771,14 @@ impl DataStore for RocksDBDataStore {
                         let tuple_value: TupleValue = match serde_json::from_slice(&value) {
                             Ok(v) => v,
                             Err(e) => {
-                                warn!(key = %key_str, error = %e, "Failed to deserialize tuple value, skipping");
+                                // Log only object info, not user info (user_id is sensitive)
+                                warn!(
+                                    object_type = %object_type,
+                                    object_id = %object_id,
+                                    relation = %relation,
+                                    error = %e,
+                                    "Failed to deserialize tuple value, skipping"
+                                );
                                 continue;
                             }
                         };
@@ -818,7 +825,7 @@ impl DataStore for RocksDBDataStore {
         // Get all matching tuples
         let mut tuples = self.read_tuples(store_id, filter).await?;
 
-        // Sort for consistent pagination (by object_type, object_id, relation, user_type, user_id)
+        // Sort for consistent pagination (by object_type, object_id, relation, user_type, user_id, user_relation)
         tuples.sort_by(|a, b| {
             (
                 &a.object_type,
@@ -826,6 +833,7 @@ impl DataStore for RocksDBDataStore {
                 &a.relation,
                 &a.user_type,
                 &a.user_id,
+                &a.user_relation,
             )
                 .cmp(&(
                     &b.object_type,
@@ -833,6 +841,7 @@ impl DataStore for RocksDBDataStore {
                     &b.relation,
                     &b.user_type,
                     &b.user_id,
+                    &b.user_relation,
                 ))
         });
 
@@ -954,7 +963,6 @@ impl DataStore for RocksDBDataStore {
         tokio::task::spawn_blocking(move || {
             let prefix = Self::tuple_prefix_by_type(&store_id_owned, &object_type_owned);
             let mut results: Vec<ObjectWithCondition> = Vec::new();
-            let mut seen: HashSet<String> = HashSet::new();
 
             let iter = db.prefix_iterator(prefix.as_bytes());
             for item in iter {
@@ -973,16 +981,26 @@ impl DataStore for RocksDBDataStore {
                             Self::parse_tuple_key(&key_str)
                         {
                             // Check if this tuple matches our criteria
+                            // Note: We don't deduplicate by object_id here because:
+                            // 1. Same object may have multiple parent relationships (different parent_ids)
+                            // 2. Same object+parent may have different conditions
+                            // The caller is responsible for aggregating conditions per object if needed
                             if rel == relation_owned
                                 && user_type == parent_type_owned
                                 && parent_ids_owned.contains(&user_id)
-                                && seen.insert(object_id.clone())
                             {
                                 // Parse value for condition info
                                 let tuple_value: TupleValue = match serde_json::from_slice(&value) {
                                     Ok(v) => v,
                                     Err(e) => {
-                                        warn!(key = %key_str, error = %e, "Failed to deserialize tuple value, skipping");
+                                        // Log only object info, not user info (user_id is sensitive)
+                                        warn!(
+                                            object_type = %object_type_owned,
+                                            object_id = %object_id,
+                                            relation = %rel,
+                                            error = %e,
+                                            "Failed to deserialize tuple value, skipping"
+                                        );
                                         continue;
                                     }
                                 };
