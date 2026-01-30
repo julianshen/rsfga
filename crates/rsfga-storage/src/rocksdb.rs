@@ -113,6 +113,26 @@ mod prefix {
 /// Separator used in composite keys.
 const KEY_SEP: char = ':';
 
+/// Validates that a key component does not contain the key separator.
+///
+/// This prevents key injection attacks where a malicious input like "foo:bar"
+/// could be interpreted as multiple key components.
+///
+/// # Errors
+///
+/// Returns `StorageError::InvalidInput` if the component contains the separator.
+fn validate_key_component(component: &str, field_name: &str) -> StorageResult<()> {
+    if component.contains(KEY_SEP) {
+        return Err(StorageError::InvalidInput {
+            message: format!(
+                "{} cannot contain '{}' character: {}",
+                field_name, KEY_SEP, component
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Internal representation of tuple value stored in RocksDB.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TupleValue {
@@ -217,14 +237,23 @@ impl RocksDBDataStore {
     // Key Construction Helpers
     // =========================================================================
 
-    fn store_key(store_id: &str) -> String {
-        format!("{}{KEY_SEP}{store_id}", prefix::STORE)
+    /// Validates all components of a store key and returns the key.
+    fn store_key(store_id: &str) -> StorageResult<String> {
+        validate_key_component(store_id, "store_id")?;
+        Ok(format!("{}{KEY_SEP}{store_id}", prefix::STORE))
     }
 
     fn store_prefix() -> String {
         format!("{}{KEY_SEP}", prefix::STORE)
     }
 
+    /// Validates all components of a tuple key and returns the key.
+    ///
+    /// # Key Injection Prevention
+    ///
+    /// All components are validated to not contain the separator character (':').
+    /// This prevents malicious inputs like "doc:evil" from being interpreted as
+    /// multiple key components.
     fn tuple_key(
         store_id: &str,
         object_type: &str,
@@ -233,39 +262,69 @@ impl RocksDBDataStore {
         user_type: &str,
         user_id: &str,
         user_relation: Option<&str>,
-    ) -> String {
+    ) -> StorageResult<String> {
+        validate_key_component(store_id, "store_id")?;
+        validate_key_component(object_type, "object_type")?;
+        validate_key_component(object_id, "object_id")?;
+        validate_key_component(relation, "relation")?;
+        validate_key_component(user_type, "user_type")?;
+        validate_key_component(user_id, "user_id")?;
+        if let Some(ur) = user_relation {
+            validate_key_component(ur, "user_relation")?;
+        }
         let user_rel = user_relation.unwrap_or("");
-        format!(
+        Ok(format!(
             "{}{KEY_SEP}{store_id}{KEY_SEP}{object_type}{KEY_SEP}{object_id}{KEY_SEP}{relation}{KEY_SEP}{user_type}{KEY_SEP}{user_id}{KEY_SEP}{user_rel}",
             prefix::TUPLE
-        )
+        ))
     }
 
-    fn tuple_prefix(store_id: &str) -> String {
-        format!("{}{KEY_SEP}{store_id}{KEY_SEP}", prefix::TUPLE)
+    /// Validates store_id and returns the tuple prefix.
+    fn tuple_prefix(store_id: &str) -> StorageResult<String> {
+        validate_key_component(store_id, "store_id")?;
+        Ok(format!("{}{KEY_SEP}{store_id}{KEY_SEP}", prefix::TUPLE))
     }
 
-    fn tuple_prefix_by_type(store_id: &str, object_type: &str) -> String {
-        format!(
+    /// Validates store_id and object_type, returns the tuple prefix by type.
+    fn tuple_prefix_by_type(store_id: &str, object_type: &str) -> StorageResult<String> {
+        validate_key_component(store_id, "store_id")?;
+        validate_key_component(object_type, "object_type")?;
+        Ok(format!(
             "{}{KEY_SEP}{store_id}{KEY_SEP}{object_type}{KEY_SEP}",
             prefix::TUPLE
-        )
+        ))
     }
 
-    fn model_key(store_id: &str, model_id: &str) -> String {
-        format!("{}{KEY_SEP}{store_id}{KEY_SEP}{model_id}", prefix::MODEL)
+    /// Validates all components of a model key and returns the key.
+    fn model_key(store_id: &str, model_id: &str) -> StorageResult<String> {
+        validate_key_component(store_id, "store_id")?;
+        validate_key_component(model_id, "model_id")?;
+        Ok(format!(
+            "{}{KEY_SEP}{store_id}{KEY_SEP}{model_id}",
+            prefix::MODEL
+        ))
     }
 
-    fn model_prefix(store_id: &str) -> String {
-        format!("{}{KEY_SEP}{store_id}{KEY_SEP}", prefix::MODEL)
+    /// Validates store_id and returns the model prefix.
+    fn model_prefix(store_id: &str) -> StorageResult<String> {
+        validate_key_component(store_id, "store_id")?;
+        Ok(format!("{}{KEY_SEP}{store_id}{KEY_SEP}", prefix::MODEL))
     }
 
-    fn change_key(store_id: &str, ulid: &str) -> String {
-        format!("{}{KEY_SEP}{store_id}{KEY_SEP}{ulid}", prefix::CHANGE)
+    /// Validates all components of a change key and returns the key.
+    fn change_key(store_id: &str, ulid: &str) -> StorageResult<String> {
+        validate_key_component(store_id, "store_id")?;
+        validate_key_component(ulid, "change_id")?;
+        Ok(format!(
+            "{}{KEY_SEP}{store_id}{KEY_SEP}{ulid}",
+            prefix::CHANGE
+        ))
     }
 
-    fn change_prefix(store_id: &str) -> String {
-        format!("{}{KEY_SEP}{store_id}{KEY_SEP}", prefix::CHANGE)
+    /// Validates store_id and returns the change prefix.
+    fn change_prefix(store_id: &str) -> StorageResult<String> {
+        validate_key_component(store_id, "store_id")?;
+        Ok(format!("{}{KEY_SEP}{store_id}{KEY_SEP}", prefix::CHANGE))
     }
 
     // =========================================================================
@@ -330,7 +389,7 @@ impl DataStore for RocksDBDataStore {
         let name_owned = name.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let key = Self::store_key(&id_owned);
+            let key = Self::store_key(&id_owned)?;
 
             // Check if store already exists
             if db
@@ -373,7 +432,7 @@ impl DataStore for RocksDBDataStore {
         let id_owned = id.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let key = Self::store_key(&id_owned);
+            let key = Self::store_key(&id_owned)?;
 
             match db.get(key.as_bytes()) {
                 Ok(Some(value)) => {
@@ -397,7 +456,7 @@ impl DataStore for RocksDBDataStore {
         let id_owned = id.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let store_key = Self::store_key(&id_owned);
+            let store_key = Self::store_key(&id_owned)?;
 
             // Check if store exists
             if db
@@ -421,7 +480,7 @@ impl DataStore for RocksDBDataStore {
             // Note: RocksDB prefix_iterator returns keys in lexicographic order.
             // Breaking when a non-matching prefix is found is safe because all
             // subsequent keys will also not match the prefix.
-            let tuple_prefix = Self::tuple_prefix(&id_owned);
+            let tuple_prefix = Self::tuple_prefix(&id_owned)?;
             let iter = db.prefix_iterator(tuple_prefix.as_bytes());
             for item in iter {
                 match item {
@@ -441,7 +500,7 @@ impl DataStore for RocksDBDataStore {
             }
 
             // Delete all models for this store
-            let model_prefix = Self::model_prefix(&id_owned);
+            let model_prefix = Self::model_prefix(&id_owned)?;
             let iter = db.prefix_iterator(model_prefix.as_bytes());
             for item in iter {
                 match item {
@@ -461,7 +520,7 @@ impl DataStore for RocksDBDataStore {
             }
 
             // Delete all changes for this store
-            let change_prefix = Self::change_prefix(&id_owned);
+            let change_prefix = Self::change_prefix(&id_owned)?;
             let iter = db.prefix_iterator(change_prefix.as_bytes());
             for item in iter {
                 match item {
@@ -500,7 +559,7 @@ impl DataStore for RocksDBDataStore {
         let name_owned = name.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let key = Self::store_key(&id_owned);
+            let key = Self::store_key(&id_owned)?;
 
             // Get existing store
             let mut store: Store = match db.get(key.as_bytes()) {
@@ -624,7 +683,7 @@ impl DataStore for RocksDBDataStore {
 
         tokio::task::spawn_blocking(move || {
             // Check store exists
-            let store_key = Self::store_key(&store_id_owned);
+            let store_key = Self::store_key(&store_id_owned)?;
             if db
                 .get(store_key.as_bytes())
                 .map_err(|e| StorageError::QueryError {
@@ -650,12 +709,12 @@ impl DataStore for RocksDBDataStore {
                     &tuple.user_type,
                     &tuple.user_id,
                     tuple.user_relation.as_deref(),
-                );
+                )?;
                 batch.delete(key.as_bytes());
 
                 // Write change entry - propagate errors instead of silently ignoring
                 let change_id = Self::generate_change_id();
-                let change_key = Self::change_key(&store_id_owned, &change_id);
+                let change_key = Self::change_key(&store_id_owned, &change_id)?;
                 let change_value = ChangeValue {
                     tuple_key: key.clone(),
                     tuple_value: TupleValue {
@@ -684,7 +743,7 @@ impl DataStore for RocksDBDataStore {
                     &tuple.user_type,
                     &tuple.user_id,
                     tuple.user_relation.as_deref(),
-                );
+                )?;
 
                 let value = TupleValue {
                     condition_name: tuple.condition_name.clone(),
@@ -701,7 +760,7 @@ impl DataStore for RocksDBDataStore {
 
                 // Write change entry - propagate errors instead of silently ignoring
                 let change_id = Self::generate_change_id();
-                let change_key = Self::change_key(&store_id_owned, &change_id);
+                let change_key = Self::change_key(&store_id_owned, &change_id)?;
                 let change_value = ChangeValue {
                     tuple_key: key,
                     tuple_value: value,
@@ -756,9 +815,9 @@ impl DataStore for RocksDBDataStore {
         tokio::task::spawn_blocking(move || {
             // Determine the best prefix to scan based on filters
             let prefix = if let Some(ref object_type) = filter_owned.object_type {
-                Self::tuple_prefix_by_type(&store_id_owned, object_type)
+                Self::tuple_prefix_by_type(&store_id_owned, object_type)?
             } else {
-                Self::tuple_prefix(&store_id_owned)
+                Self::tuple_prefix(&store_id_owned)?
             };
 
             let mut tuples = Vec::new();
@@ -924,7 +983,7 @@ impl DataStore for RocksDBDataStore {
         let object_type_owned = object_type.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let prefix = Self::tuple_prefix_by_type(&store_id_owned, &object_type_owned);
+            let prefix = Self::tuple_prefix_by_type(&store_id_owned, &object_type_owned)?;
             let mut unique_ids: HashSet<String> = HashSet::new();
 
             let iter = db.prefix_iterator(prefix.as_bytes());
@@ -1001,7 +1060,7 @@ impl DataStore for RocksDBDataStore {
         let parent_ids_owned: HashSet<String> = parent_ids.iter().cloned().collect();
 
         tokio::task::spawn_blocking(move || {
-            let prefix = Self::tuple_prefix_by_type(&store_id_owned, &object_type_owned);
+            let prefix = Self::tuple_prefix_by_type(&store_id_owned, &object_type_owned)?;
             let mut results: Vec<ObjectWithCondition> = Vec::new();
 
             let iter = db.prefix_iterator(prefix.as_bytes());
@@ -1086,7 +1145,7 @@ impl DataStore for RocksDBDataStore {
         let db = Arc::clone(&self.db);
 
         tokio::task::spawn_blocking(move || {
-            let key = Self::model_key(&model.store_id, &model.id);
+            let key = Self::model_key(&model.store_id, &model.id)?;
             let value =
                 serde_json::to_vec(&model).map_err(|e| StorageError::SerializationError {
                     message: format!("Failed to serialize model: {e}"),
@@ -1118,7 +1177,7 @@ impl DataStore for RocksDBDataStore {
         let model_id_owned = model_id.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let key = Self::model_key(&store_id_owned, &model_id_owned);
+            let key = Self::model_key(&store_id_owned, &model_id_owned)?;
 
             match db.get(key.as_bytes()) {
                 Ok(Some(value)) => {
@@ -1151,7 +1210,7 @@ impl DataStore for RocksDBDataStore {
         let store_id_owned = store_id.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let prefix = Self::model_prefix(&store_id_owned);
+            let prefix = Self::model_prefix(&store_id_owned)?;
             let mut models = Vec::new();
 
             let iter = db.prefix_iterator(prefix.as_bytes());
@@ -1245,7 +1304,7 @@ impl DataStore for RocksDBDataStore {
         let model_id_owned = model_id.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let key = Self::model_key(&store_id_owned, &model_id_owned);
+            let key = Self::model_key(&store_id_owned, &model_id_owned)?;
 
             // Check if model exists
             if db
@@ -1291,10 +1350,9 @@ impl DataStore for RocksDBDataStore {
         let page_size = pagination.page_size.unwrap_or(50) as usize;
 
         tokio::task::spawn_blocking(move || {
-            let prefix = Self::change_prefix(&store_id_owned);
+            let prefix = Self::change_prefix(&store_id_owned)?;
 
             let mut changes: Vec<TupleChange> = Vec::new();
-            let mut count = 0;
             let mut skipped = 0;
 
             let iter = db.prefix_iterator(prefix.as_bytes());
@@ -1365,8 +1423,8 @@ impl DataStore for RocksDBDataStore {
                             timestamp: change_value.timestamp,
                         });
 
-                        count += 1;
-                        if count > page_size {
+                        // Collect page_size + 1 to detect if there are more pages
+                        if changes.len() > page_size {
                             break;
                         }
                     }
@@ -2339,5 +2397,201 @@ mod tests {
             let result = store.read_tuples("test-store", &filter).await.unwrap();
             assert!(result.is_empty(), "doc{} should be deleted", i);
         }
+    }
+
+    // ==========================================================================
+    // Key Injection Prevention Tests
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn test_rejects_store_id_with_colon() {
+        let (store, _temp) = create_test_store();
+
+        // Attempt to create store with colon in ID (key injection attempt)
+        let result = store.create_store("malicious:store", "Test").await;
+        assert!(
+            matches!(result, Err(StorageError::InvalidInput { .. })),
+            "Should reject store_id containing colon"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rejects_tuple_with_colon_in_object_type() {
+        let (store, _temp) = create_test_store();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuple = StoredTuple::new(
+            "document:evil", // Injection attempt
+            "doc1",
+            "viewer",
+            "user",
+            "alice",
+            None,
+        );
+        let result = store.write_tuple("test-store", tuple).await;
+        assert!(
+            matches!(result, Err(StorageError::InvalidInput { .. })),
+            "Should reject object_type containing colon"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rejects_tuple_with_colon_in_object_id() {
+        let (store, _temp) = create_test_store();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuple = StoredTuple::new(
+            "document",
+            "doc:evil:injection", // Injection attempt
+            "viewer",
+            "user",
+            "alice",
+            None,
+        );
+        let result = store.write_tuple("test-store", tuple).await;
+        assert!(
+            matches!(result, Err(StorageError::InvalidInput { .. })),
+            "Should reject object_id containing colon"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rejects_tuple_with_colon_in_relation() {
+        let (store, _temp) = create_test_store();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuple = StoredTuple::new(
+            "document",
+            "doc1",
+            "viewer:admin", // Injection attempt
+            "user",
+            "alice",
+            None,
+        );
+        let result = store.write_tuple("test-store", tuple).await;
+        assert!(
+            matches!(result, Err(StorageError::InvalidInput { .. })),
+            "Should reject relation containing colon"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rejects_tuple_with_colon_in_user_type() {
+        let (store, _temp) = create_test_store();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuple = StoredTuple::new(
+            "document",
+            "doc1",
+            "viewer",
+            "user:group", // Injection attempt
+            "alice",
+            None,
+        );
+        let result = store.write_tuple("test-store", tuple).await;
+        assert!(
+            matches!(result, Err(StorageError::InvalidInput { .. })),
+            "Should reject user_type containing colon"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rejects_tuple_with_colon_in_user_id() {
+        let (store, _temp) = create_test_store();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let tuple = StoredTuple::new(
+            "document",
+            "doc1",
+            "viewer",
+            "user",
+            "alice:bob", // Injection attempt
+            None,
+        );
+        let result = store.write_tuple("test-store", tuple).await;
+        assert!(
+            matches!(result, Err(StorageError::InvalidInput { .. })),
+            "Should reject user_id containing colon"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rejects_model_id_with_colon() {
+        let (store, _temp) = create_test_store();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let model = StoredAuthorizationModel::new(
+            "model:evil", // Injection attempt
+            "test-store",
+            "1.1",
+            r#"{"type_definitions": []}"#,
+        );
+        let result = store.write_authorization_model(model).await;
+        assert!(
+            matches!(result, Err(StorageError::InvalidInput { .. })),
+            "Should reject model_id containing colon"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rejects_batch_write_with_colon_injection() {
+        let (store, _temp) = create_test_store();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Mix of valid and invalid tuples - should reject entire batch
+        let tuples = vec![
+            StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+            StoredTuple::new(
+                "document", "doc:evil", // Injection attempt
+                "viewer", "user", "bob", None,
+            ),
+        ];
+        let result = store.write_tuples("test-store", tuples, vec![]).await;
+        assert!(
+            matches!(result, Err(StorageError::InvalidInput { .. })),
+            "Should reject batch containing tuple with colon"
+        );
+
+        // Verify no tuples were written (atomic rejection)
+        let filter = TupleFilter::default();
+        let stored = store.read_tuples("test-store", &filter).await.unwrap();
+        assert!(
+            stored.is_empty(),
+            "No tuples should be written when batch contains invalid input"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_accepts_valid_identifiers() {
+        let (store, _temp) = create_test_store();
+
+        // Create store with valid ID (hyphens, underscores, alphanumeric)
+        store.create_store("valid-store_123", "Test").await.unwrap();
+
+        // Write tuple with valid identifiers
+        let tuple = StoredTuple::new(
+            "document_type",
+            "doc-123_abc",
+            "can_view",
+            "user_type",
+            "alice-123",
+            None,
+        );
+        store
+            .write_tuple("valid-store_123", tuple)
+            .await
+            .expect("Valid identifiers should be accepted");
+
+        // Write model with valid ID
+        let model = StoredAuthorizationModel::new(
+            "model-123_abc",
+            "valid-store_123",
+            "1.1",
+            r#"{"type_definitions": []}"#,
+        );
+        store
+            .write_authorization_model(model)
+            .await
+            .expect("Valid model ID should be accepted");
     }
 }
