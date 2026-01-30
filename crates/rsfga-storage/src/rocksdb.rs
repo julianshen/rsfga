@@ -32,6 +32,20 @@
 //! - Single-node only (no replication)
 //! - Compaction can cause latency spikes (configurable)
 //! - No SQL query optimizer (complex filters require full scans)
+//!
+//! ## Pagination Memory Usage
+//!
+//! **Important**: Pagination methods (`read_tuples_paginated`, `list_stores_paginated`,
+//! `list_authorization_models_paginated`, `read_changes`) load all matching data into
+//! memory before applying pagination. This is because RocksDB iterators are forward-only
+//! and don't support efficient random offset access.
+//!
+//! For stores with large datasets, consider:
+//! - Using filters to reduce the result set before pagination
+//! - Implementing cursor-based pagination with key-based continuation tokens (future enhancement)
+//! - Setting appropriate page sizes to limit memory usage per request
+//!
+//! The current offset-based pagination trades memory for API compatibility with OpenFGA.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -123,7 +137,6 @@ struct ChangeValue {
 /// via `tokio::task::spawn_blocking`.
 pub struct RocksDBDataStore {
     db: Arc<DB>,
-    #[allow(dead_code)]
     config: RocksDBConfig,
 }
 
@@ -180,6 +193,24 @@ impl RocksDBDataStore {
     /// Returns the configuration for this store.
     pub fn config(&self) -> &RocksDBConfig {
         &self.config
+    }
+
+    /// Forces a compaction of all data in the database.
+    ///
+    /// This is primarily useful for testing to verify data survives compaction.
+    /// In production, RocksDB handles compaction automatically in the background.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::InternalError` if compaction fails.
+    pub async fn compact(&self) -> StorageResult<()> {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            db.compact_range::<&[u8], &[u8]>(None, None);
+            Ok(())
+        })
+        .await
+        .map_err(Self::join_error)?
     }
 
     // =========================================================================
@@ -2095,6 +2126,218 @@ mod tests {
                 seen_tuples.insert(tuple_key.clone()),
                 "Duplicate tuple found: {tuple_key}"
             );
+        }
+    }
+
+    // ==========================================================================
+    // Concurrent Write Tests
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn test_concurrent_writes_no_data_loss() {
+        let (store, _temp) = create_test_store();
+        let store = Arc::new(store);
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let num_writers = 10;
+        let tuples_per_writer = 50;
+
+        // Spawn multiple concurrent writers
+        let mut handles = Vec::new();
+        for writer_id in 0..num_writers {
+            let store = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                for i in 0..tuples_per_writer {
+                    let tuple = StoredTuple::new(
+                        "document",
+                        format!("doc_w{writer_id}_i{i}"),
+                        "viewer",
+                        "user",
+                        format!("user{writer_id}"),
+                        None,
+                    );
+                    store.write_tuple("test-store", tuple).await.unwrap();
+                }
+            }));
+        }
+
+        // Wait for all writers to complete
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Verify all tuples were written
+        let tuples = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            tuples.len(),
+            num_writers * tuples_per_writer,
+            "Expected {} tuples, got {}",
+            num_writers * tuples_per_writer,
+            tuples.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_batch_writes_no_data_loss() {
+        let (store, _temp) = create_test_store();
+        let store = Arc::new(store);
+        store.create_store("test-store", "Test").await.unwrap();
+
+        let num_writers = 5;
+        let batches_per_writer = 10;
+        let tuples_per_batch = 20;
+
+        // Spawn multiple concurrent batch writers
+        let mut handles = Vec::new();
+        for writer_id in 0..num_writers {
+            let store = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                for batch_id in 0..batches_per_writer {
+                    let tuples: Vec<StoredTuple> = (0..tuples_per_batch)
+                        .map(|i| {
+                            StoredTuple::new(
+                                "document",
+                                format!("doc_w{writer_id}_b{batch_id}_i{i}"),
+                                "viewer",
+                                "user",
+                                format!("user{writer_id}"),
+                                None,
+                            )
+                        })
+                        .collect();
+                    store
+                        .write_tuples("test-store", tuples, vec![])
+                        .await
+                        .unwrap();
+                }
+            }));
+        }
+
+        // Wait for all writers to complete
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Verify all tuples were written
+        let tuples = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        let expected = num_writers * batches_per_writer * tuples_per_batch;
+        assert_eq!(
+            tuples.len(),
+            expected,
+            "Expected {} tuples, got {}",
+            expected,
+            tuples.len()
+        );
+    }
+
+    // ==========================================================================
+    // Compaction Survival Tests
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn test_data_survives_compaction() {
+        let (store, _temp) = create_test_store();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Write data
+        let tuples: Vec<StoredTuple> = (0..100)
+            .map(|i| {
+                StoredTuple::new(
+                    "document",
+                    format!("doc{i}"),
+                    "viewer",
+                    "user",
+                    "alice",
+                    None,
+                )
+            })
+            .collect();
+        store
+            .write_tuples("test-store", tuples, vec![])
+            .await
+            .unwrap();
+
+        // Force compaction
+        store.compact().await.unwrap();
+
+        // Verify data still exists
+        let result = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 100, "Data lost after compaction");
+
+        // Verify specific tuple is readable
+        let filter = TupleFilter {
+            object_type: Some("document".to_string()),
+            object_id: Some("doc50".to_string()),
+            ..Default::default()
+        };
+        let specific = store.read_tuples("test-store", &filter).await.unwrap();
+        assert_eq!(specific.len(), 1);
+        assert_eq!(specific[0].object_id, "doc50");
+    }
+
+    #[tokio::test]
+    async fn test_deleted_data_removed_after_compaction() {
+        let (store, _temp) = create_test_store();
+        store.create_store("test-store", "Test").await.unwrap();
+
+        // Write data
+        for i in 0..10 {
+            let tuple = StoredTuple::new(
+                "document",
+                format!("doc{i}"),
+                "viewer",
+                "user",
+                "alice",
+                None,
+            );
+            store.write_tuple("test-store", tuple).await.unwrap();
+        }
+
+        // Delete half
+        for i in 0..5 {
+            let tuple = StoredTuple::new(
+                "document",
+                format!("doc{i}"),
+                "viewer",
+                "user",
+                "alice",
+                None,
+            );
+            store.delete_tuple("test-store", tuple).await.unwrap();
+        }
+
+        // Force compaction (tombstones should be cleaned up)
+        store.compact().await.unwrap();
+
+        // Verify only remaining data exists
+        let result = store
+            .read_tuples("test-store", &TupleFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            result.len(),
+            5,
+            "Expected 5 tuples after deletion and compaction"
+        );
+
+        // Verify deleted tuples are gone
+        for i in 0..5 {
+            let filter = TupleFilter {
+                object_type: Some("document".to_string()),
+                object_id: Some(format!("doc{i}")),
+                ..Default::default()
+            };
+            let result = store.read_tuples("test-store", &filter).await.unwrap();
+            assert!(result.is_empty(), "doc{} should be deleted", i);
         }
     }
 }

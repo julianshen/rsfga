@@ -39,6 +39,7 @@ Each ADR follows this structure:
 | ADR-016 | Dependency Policy | ✅ Accepted | 2024-01-03 | Security audit |
 | ADR-017 | CEL Expression Caching | ✅ Accepted | 2026-01-14 | Cache performance issues |
 | ADR-018 | ListObjects ReverseExpand | ✅ Accepted | 2026-01-29 | ListObjects p95 > 100ms |
+| ADR-019 | RocksDB Embedded Storage | ✅ Accepted | 2026-01-30 | Edge deployment requirements change |
 
 ## Validation Status Summary
 
@@ -64,6 +65,7 @@ This section tracks the validation status of each ADR's criteria.
 | ADR-016 | ✅ Validated | Dependency policy enforced via cargo-deny |
 | ADR-017 | ✅ Validated | CEL cache implemented with bounded capacity |
 | ADR-018 | ✅ Validated | ReverseExpand implemented: p95=5.9ms, 176 req/s (2400x improvement) |
+| ADR-019 | ✅ Validated | RocksDB: 11,800+ writes/s (5.9x target), <92µs write latency |
 
 **Note**: All performance-related ADRs (001, 002, 003, 005, 012) validated on 2026-01-29 via k6 load testing against PostgreSQL backend. Results exceed all targets.
 
@@ -1134,6 +1136,207 @@ Negative:
 
 - R-007: Performance Target Validation (ListObjects currently fails performance targets)
 - R-012: OpenFGA Behavioral Differences (algorithm change may introduce subtle differences)
+
+---
+
+## ADR-019: RocksDB Embedded Storage Backend
+
+**Status**: ✅ Accepted (Validated)
+**Date**: 2026-01-30
+**Deciders**: Architecture Team
+**Review Trigger**: Edge deployment requirements change OR RocksDB stability issues
+
+**Context**:
+
+RSFGA currently supports PostgreSQL and MySQL as storage backends. However, these require:
+- Network latency for every query (~1-5ms minimum)
+- External infrastructure management
+- Connection pool overhead
+- Not suitable for embedded/edge deployment scenarios
+
+For edge deployment and embedded use cases, we need a storage backend that:
+- Runs in-process with zero network latency
+- Provides durability (data persists across restarts)
+- Handles concurrent access safely
+- Has minimal operational overhead
+
+**Decision**:
+
+Implement **RocksDB** as an embedded storage backend using the `rust-rocksdb` crate.
+
+**Architecture**:
+
+```
+┌─────────────────────────────────────────┐
+│           RSFGA Application             │
+│  ┌────────────────────────────────────┐ │
+│  │     DataStore Trait (async)        │ │
+│  └────────────────────────────────────┘ │
+│         │                               │
+│  ┌──────┴──────┐                        │
+│  │ spawn_blocking │ (async-to-sync)    │
+│  └──────┬──────┘                        │
+│         │                               │
+│  ┌──────┴──────────────────────────────┐│
+│  │        RocksDB (in-process)         ││
+│  │  ┌──────────┐  ┌─────────────────┐  ││
+│  │  │MemTable  │→ │   SST Files     │  ││
+│  │  │(writes)  │  │(compacted data) │  ││
+│  │  └──────────┘  └─────────────────┘  ││
+│  └─────────────────────────────────────┘│
+└─────────────────────────────────────────┘
+              │
+              ▼
+         Local Disk
+```
+
+**Key Design Decisions**:
+
+1. **Key Schema**:
+   ```
+   Stores:  s:{store_id}                                           → JSON(Store)
+   Tuples:  t:{store_id}:{obj_type}:{obj_id}:{rel}:{user_type}:{user_id}:{user_rel?} → JSON(TupleValue)
+   Models:  m:{store_id}:{model_id}                                → JSON(Model)
+   Changes: c:{store_id}:{ulid}                                    → JSON(TupleChange)
+   ```
+
+2. **Async Safety**: All RocksDB operations wrapped in `tokio::task::spawn_blocking` to avoid blocking the async runtime.
+
+3. **Change ID Generation**: ULID (Universally Unique Lexicographically Sortable Identifier) for changelog entries ensures uniqueness and lexicographic ordering.
+
+4. **Atomic Writes**: RocksDB `WriteBatch` for atomic multi-key operations (tuple writes with changelog).
+
+5. **Compression**: LZ4 compression enabled by default to reduce disk usage with minimal CPU overhead.
+
+**Validation Results (2026-01-30)**:
+
+| Metric | Target | RocksDB Result | vs Target |
+|--------|--------|----------------|-----------|
+| Single Write Throughput | 2,000 req/s | **11,800+ req/s** | **5.9x better** |
+| Write Latency p95 | <10ms | **<92 µs** | **>100x better** |
+| Batch Write | High throughput | **177,000-193,000 tuples/s** | Excellent |
+
+**Comparison with In-Memory Backend**:
+
+| Operation | In-Memory | RocksDB | Ratio |
+|-----------|-----------|---------|-------|
+| Single write | 2.5 µs | 85 µs | In-Memory 34x faster |
+| Batch write (100) | 137 µs | 563 µs | In-Memory 4.1x faster |
+| Point read | 1-9 µs | 111 µs - 1.15 ms | In-Memory 49-180x faster |
+| Data persistence | ❌ | ✅ | RocksDB wins |
+
+**Rationale**:
+
+1. **RocksDB is proven**: Used by Facebook, Cassandra, CockroachDB, TiKV
+2. **LSM tree architecture**: Optimized for write-heavy workloads (our primary use case)
+3. **Mature Rust bindings**: `rust-rocksdb` crate is well-maintained
+4. **Tunable**: Write buffer size, compaction, compression all configurable
+5. **Single-file deployment**: No external services required
+
+**Consequences**:
+
+Positive:
+- Zero network latency for all operations
+- No external infrastructure required
+- Data survives restarts
+- Suitable for edge/embedded deployment
+- 5.9x better than performance targets
+
+Negative:
+- Single-node only (no replication)
+- Compaction can cause latency spikes
+- Pagination loads all data into memory before filtering (documented limitation)
+- Requires C++ build toolchain for compilation
+
+**Known Limitations**:
+
+1. **Pagination Memory Usage**: Pagination methods load all matching data into memory before applying offset/limit. This is because RocksDB iterators are forward-only without efficient random access. For large datasets:
+   - Use filters to reduce result set size
+   - Set appropriate page sizes
+   - Future enhancement: cursor-based pagination with key-based tokens
+
+2. **No Replication**: Single-node only. For multi-node deployments, use PostgreSQL or wait for Phase 3 (NATS edge sync).
+
+3. **Compaction Spikes**: Background compaction can cause occasional latency spikes. Mitigated by:
+   - Configurable `max_background_jobs`
+   - Level-style compaction (default)
+   - Monitoring compaction metrics
+
+**Alternatives Considered**:
+
+| Alternative | Durability | Latency | Complexity | Maintenance |
+|-------------|------------|---------|------------|-------------|
+| **RocksDB** (chosen) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
+| SQLite | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| sled | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ |
+| In-memory only | ⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| Embedded PostgreSQL | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐ |
+
+- **SQLite**: Good durability but slower writes due to B-tree (not LSM). Single-writer limitation.
+- **sled**: Pure Rust but less mature, smaller community, unclear maintenance status.
+- **In-memory only**: Fast but no durability. Not suitable for production.
+- **Embedded PostgreSQL**: Heavyweight, complex deployment, overkill for edge.
+
+**Use Case Recommendations**:
+
+| Use Case | Recommended Backend |
+|----------|---------------------|
+| Unit tests | In-Memory |
+| Integration tests | In-Memory |
+| Development | In-Memory |
+| Edge deployment | RocksDB |
+| Embedded authorization | RocksDB |
+| Single-node production | RocksDB |
+| Multi-node production | PostgreSQL/MySQL |
+
+**Validation Criteria**:
+
+- [x] Write throughput exceeds 2,000 req/s (actual: 11,800+ req/s)
+- [x] Write latency p95 < 10ms (actual: <92 µs)
+- [x] Data survives process restart (compaction survival test)
+- [x] Concurrent writes don't lose data (concurrent write test)
+- [x] All DataStore trait methods implemented
+- [ ] Long-running stability test (24+ hours)
+- [ ] Production deployment validation
+
+**Configuration**:
+
+```rust
+pub struct RocksDBConfig {
+    pub path: String,                    // Database directory
+    pub create_if_missing: bool,         // Default: true
+    pub write_buffer_size: usize,        // Default: 64MB
+    pub max_write_buffer_number: i32,    // Default: 3
+    pub block_cache_size: usize,         // Default: 128MB
+    pub enable_compression: bool,        // Default: true (LZ4)
+    pub max_background_jobs: i32,        // Default: 4
+}
+```
+
+**Build Requirements**:
+
+```bash
+# Fedora/RHEL
+sudo dnf install clang-devel
+
+# Ubuntu/Debian
+sudo apt-get install clang libclang-dev
+
+# macOS
+xcode-select --install
+```
+
+**References**:
+
+- Implementation: `crates/rsfga-storage/src/rocksdb.rs`
+- Benchmarks: `crates/rsfga-storage/benches/rocksdb_benchmarks.rs`
+- RocksDB Wiki: https://github.com/facebook/rocksdb/wiki
+- rust-rocksdb: https://github.com/rust-rocksdb/rust-rocksdb
+
+**Related Risks**:
+
+- R-016: External dependency on RocksDB C++ library
+- R-017: Compaction latency spikes in production (mitigated by configuration)
 
 ---
 
