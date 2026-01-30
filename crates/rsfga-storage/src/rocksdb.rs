@@ -387,6 +387,9 @@ impl DataStore for RocksDBDataStore {
             batch.delete(store_key.as_bytes());
 
             // Delete all tuples for this store
+            // Note: RocksDB prefix_iterator returns keys in lexicographic order.
+            // Breaking when a non-matching prefix is found is safe because all
+            // subsequent keys will also not match the prefix.
             let tuple_prefix = Self::tuple_prefix(&id_owned);
             let iter = db.prefix_iterator(tuple_prefix.as_bytes());
             for item in iter {
@@ -619,7 +622,7 @@ impl DataStore for RocksDBDataStore {
                 );
                 batch.delete(key.as_bytes());
 
-                // Write change entry
+                // Write change entry - propagate errors instead of silently ignoring
                 let change_id = Self::generate_change_id();
                 let change_key = Self::change_key(&store_id_owned, &change_id);
                 let change_value = ChangeValue {
@@ -630,11 +633,14 @@ impl DataStore for RocksDBDataStore {
                         created_at: tuple.created_at,
                     },
                     operation: TupleOperation::Delete.as_str().to_string(),
-                    timestamp: chrono::Utc::now(),
+                    timestamp: now, // Use consistent timestamp for entire batch
                 };
-                if let Ok(json) = serde_json::to_vec(&change_value) {
-                    batch.put(change_key.as_bytes(), &json);
-                }
+                let change_json = serde_json::to_vec(&change_value).map_err(|e| {
+                    StorageError::SerializationError {
+                        message: format!("Failed to serialize change entry: {e}"),
+                    }
+                })?;
+                batch.put(change_key.as_bytes(), &change_json);
             }
 
             // Process writes
@@ -662,18 +668,21 @@ impl DataStore for RocksDBDataStore {
 
                 batch.put(key.as_bytes(), &json);
 
-                // Write change entry
+                // Write change entry - propagate errors instead of silently ignoring
                 let change_id = Self::generate_change_id();
                 let change_key = Self::change_key(&store_id_owned, &change_id);
                 let change_value = ChangeValue {
                     tuple_key: key,
                     tuple_value: value,
                     operation: TupleOperation::Write.as_str().to_string(),
-                    timestamp: chrono::Utc::now(),
+                    timestamp: now, // Use consistent timestamp for entire batch
                 };
-                if let Ok(json) = serde_json::to_vec(&change_value) {
-                    batch.put(change_key.as_bytes(), &json);
-                }
+                let change_json = serde_json::to_vec(&change_value).map_err(|e| {
+                    StorageError::SerializationError {
+                        message: format!("Failed to serialize change entry: {e}"),
+                    }
+                })?;
+                batch.put(change_key.as_bytes(), &change_json);
             }
 
             db.write(batch).map_err(|e| StorageError::QueryError {
