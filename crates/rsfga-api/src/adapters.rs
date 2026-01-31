@@ -890,6 +890,25 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
             })
     }
 
+    /// Gets objects accessible to a user via direct grants and wildcard grants.
+    ///
+    /// This function queries for both:
+    /// 1. Direct grants (e.g., `user:judy` is viewer of `document:x`)
+    /// 2. Wildcard grants (e.g., `user:*` is viewer of `document:y`)
+    ///
+    /// Both queries run in parallel to minimize latency.
+    ///
+    /// # Deduplication and Condition Handling
+    ///
+    /// When the same object appears in both direct and wildcard grants (possibly with
+    /// different conditions), only the first occurrence is kept. Direct grants are
+    /// processed first, so their conditions take precedence over wildcard conditions.
+    ///
+    /// For example, if:
+    /// - `user:alice` is viewer of `document:x` with condition `in_network`
+    /// - `user:*` is viewer of `document:x` with condition `public_access`
+    ///
+    /// The result for `user:alice` will include `document:x` with `in_network` condition.
     async fn get_objects_for_user(
         &self,
         store_id: &str,
@@ -898,8 +917,20 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
         relation: Option<&str>,
         max_count: usize,
     ) -> DomainResult<Vec<ObjectTupleInfo>> {
-        // Query for direct user grants
-        let filter = rsfga_storage::TupleFilter {
+        // Helper to map storage errors to domain errors
+        fn map_storage_err(e: rsfga_storage::StorageError) -> DomainError {
+            match e {
+                rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                    DomainError::StoreNotFound { store_id }
+                }
+                _ => DomainError::StorageOperationFailed {
+                    reason: e.to_string(),
+                },
+            }
+        }
+
+        // Build filter for direct user grants
+        let direct_filter = rsfga_storage::TupleFilter {
             object_type: Some(object_type.to_string()),
             object_id: None,
             relation: relation.map(|r| r.to_string()),
@@ -907,66 +938,43 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
             condition_name: None,
         };
 
-        let storage_err_mapper = |e: rsfga_storage::StorageError| match e {
-            rsfga_storage::StorageError::StoreNotFound { store_id } => {
-                DomainError::StoreNotFound { store_id }
-            }
-            _ => DomainError::StorageOperationFailed {
-                reason: e.to_string(),
-            },
-        };
+        // Determine wildcard user (e.g., "user:judy" -> "user:*")
+        // Skip if user is already a wildcard or has invalid format
+        let wildcard_user = user
+            .split_once(':')
+            .filter(|(_, id)| *id != "*")
+            .map(|(user_type, _)| format!("{user_type}:*"));
 
-        let direct_tuples = self
-            .storage
-            .read_tuples(store_id, &filter)
-            .await
-            .map_err(storage_err_mapper)?;
-
-        // Also query for wildcard grants (e.g., user:* for user:judy)
-        // Extract the user type from user string (e.g., "user:judy" -> "user")
-        let wildcard_user = if let Some((user_type, _)) = user.split_once(':') {
-            // Skip if user is already a wildcard
-            if user.ends_with(":*") {
-                None
-            } else {
-                Some(format!("{user_type}:*"))
-            }
-        } else {
-            None
-        };
-
-        let mut all_tuples = direct_tuples;
-
-        // Query for wildcard tuples if applicable
-        if let Some(wildcard) = wildcard_user {
+        // Run queries in parallel for lower latency
+        let (direct_result, wildcard_result) = if let Some(ref wildcard) = wildcard_user {
             let wildcard_filter = rsfga_storage::TupleFilter {
                 object_type: Some(object_type.to_string()),
                 object_id: None,
                 relation: relation.map(|r| r.to_string()),
-                user: Some(wildcard),
+                user: Some(wildcard.clone()),
                 condition_name: None,
             };
 
-            let wildcard_tuples = self
-                .storage
-                .read_tuples(store_id, &wildcard_filter)
-                .await
-                .map_err(|e| match e {
-                    rsfga_storage::StorageError::StoreNotFound { store_id } => {
-                        DomainError::StoreNotFound { store_id }
-                    }
-                    _ => DomainError::StorageOperationFailed {
-                        reason: e.to_string(),
-                    },
-                })?;
+            let direct_future = self.storage.read_tuples(store_id, &direct_filter);
+            let wildcard_future = self.storage.read_tuples(store_id, &wildcard_filter);
 
-            all_tuples.extend(wildcard_tuples);
-        }
+            tokio::join!(direct_future, wildcard_future)
+        } else {
+            // No wildcard query needed
+            let direct = self.storage.read_tuples(store_id, &direct_filter).await;
+            (direct, Ok(Vec::new()))
+        };
 
-        // Deduplicate by object_id (same object from different grants)
+        // Handle errors - direct query errors take precedence
+        let direct_tuples = direct_result.map_err(map_storage_err)?;
+        let wildcard_tuples = wildcard_result.map_err(map_storage_err)?;
+
+        // Merge results: direct grants first, then wildcard grants
+        // Deduplicate by object_id - first occurrence wins (direct grants take precedence)
         let mut seen_objects = std::collections::HashSet::new();
-        let results: Vec<ObjectTupleInfo> = all_tuples
+        let results: Vec<ObjectTupleInfo> = direct_tuples
             .into_iter()
+            .chain(wildcard_tuples)
             .filter(|t| seen_objects.insert(t.object_id.clone()))
             .take(max_count)
             .map(|t| {
