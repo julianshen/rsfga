@@ -898,6 +898,7 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
         relation: Option<&str>,
         max_count: usize,
     ) -> DomainResult<Vec<ObjectTupleInfo>> {
+        // Query for direct user grants
         let filter = rsfga_storage::TupleFilter {
             object_type: Some(object_type.to_string()),
             object_id: None,
@@ -906,22 +907,67 @@ impl<S: DataStore> TupleReader for DataStoreTupleReader<S> {
             condition_name: None,
         };
 
-        let tuples = self
+        let storage_err_mapper = |e: rsfga_storage::StorageError| match e {
+            rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                DomainError::StoreNotFound { store_id }
+            }
+            _ => DomainError::StorageOperationFailed {
+                reason: e.to_string(),
+            },
+        };
+
+        let direct_tuples = self
             .storage
             .read_tuples(store_id, &filter)
             .await
-            .map_err(|e| match e {
-                rsfga_storage::StorageError::StoreNotFound { store_id } => {
-                    DomainError::StoreNotFound { store_id }
-                }
-                _ => DomainError::StorageOperationFailed {
-                    reason: e.to_string(),
-                },
-            })?;
+            .map_err(storage_err_mapper)?;
 
-        // Collect ObjectTupleInfo with condition info, up to max_count
-        let results: Vec<ObjectTupleInfo> = tuples
+        // Also query for wildcard grants (e.g., user:* for user:judy)
+        // Extract the user type from user string (e.g., "user:judy" -> "user")
+        let wildcard_user = if let Some((user_type, _)) = user.split_once(':') {
+            // Skip if user is already a wildcard
+            if user.ends_with(":*") {
+                None
+            } else {
+                Some(format!("{user_type}:*"))
+            }
+        } else {
+            None
+        };
+
+        let mut all_tuples = direct_tuples;
+
+        // Query for wildcard tuples if applicable
+        if let Some(wildcard) = wildcard_user {
+            let wildcard_filter = rsfga_storage::TupleFilter {
+                object_type: Some(object_type.to_string()),
+                object_id: None,
+                relation: relation.map(|r| r.to_string()),
+                user: Some(wildcard),
+                condition_name: None,
+            };
+
+            let wildcard_tuples = self
+                .storage
+                .read_tuples(store_id, &wildcard_filter)
+                .await
+                .map_err(|e| match e {
+                    rsfga_storage::StorageError::StoreNotFound { store_id } => {
+                        DomainError::StoreNotFound { store_id }
+                    }
+                    _ => DomainError::StorageOperationFailed {
+                        reason: e.to_string(),
+                    },
+                })?;
+
+            all_tuples.extend(wildcard_tuples);
+        }
+
+        // Deduplicate by object_id (same object from different grants)
+        let mut seen_objects = std::collections::HashSet::new();
+        let results: Vec<ObjectTupleInfo> = all_tuples
             .into_iter()
+            .filter(|t| seen_objects.insert(t.object_id.clone()))
             .take(max_count)
             .map(|t| {
                 if let Some(condition_name) = t.condition_name {
@@ -2588,5 +2634,118 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.is_delete);
         assert!(err.to_string().contains("delete tuple"));
+    }
+
+    #[tokio::test]
+    async fn test_get_objects_for_user_includes_wildcard_grants() {
+        use rsfga_domain::resolver::TupleReader;
+
+        let storage = Arc::new(MemoryDataStore::new());
+        storage
+            .create_store("test-store", "Test Store")
+            .await
+            .unwrap();
+
+        // Write wildcard grant: user:* can view document:public1
+        let wildcard_tuple =
+            rsfga_storage::StoredTuple::new("document", "public1", "viewer", "user", "*", None);
+        storage
+            .write_tuples("test-store", vec![wildcard_tuple], vec![])
+            .await
+            .unwrap();
+
+        // Write direct grant: user:alice can view document:private1
+        let direct_tuple = rsfga_storage::StoredTuple::new(
+            "document", "private1", "viewer", "user", "alice", None,
+        );
+        storage
+            .write_tuples("test-store", vec![direct_tuple], vec![])
+            .await
+            .unwrap();
+
+        let reader = DataStoreTupleReader::new(storage);
+
+        // Query for user:judy (no direct grants, should get wildcard grant)
+        let objects = reader
+            .get_objects_for_user("test-store", "user:judy", "document", Some("viewer"), 100)
+            .await
+            .unwrap();
+
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].object_id, "public1");
+    }
+
+    #[tokio::test]
+    async fn test_get_objects_for_user_merges_direct_and_wildcard_grants() {
+        use rsfga_domain::resolver::TupleReader;
+
+        let storage = Arc::new(MemoryDataStore::new());
+        storage
+            .create_store("test-store", "Test Store")
+            .await
+            .unwrap();
+
+        // Write wildcard grant
+        let wildcard_tuple =
+            rsfga_storage::StoredTuple::new("document", "public1", "viewer", "user", "*", None);
+        storage
+            .write_tuples("test-store", vec![wildcard_tuple], vec![])
+            .await
+            .unwrap();
+
+        // Write direct grant for alice
+        let direct_tuple = rsfga_storage::StoredTuple::new(
+            "document", "private1", "viewer", "user", "alice", None,
+        );
+        storage
+            .write_tuples("test-store", vec![direct_tuple], vec![])
+            .await
+            .unwrap();
+
+        let reader = DataStoreTupleReader::new(storage);
+
+        // Query for user:alice (has both direct and wildcard grants)
+        let objects = reader
+            .get_objects_for_user("test-store", "user:alice", "document", Some("viewer"), 100)
+            .await
+            .unwrap();
+
+        assert_eq!(objects.len(), 2);
+        let object_ids: std::collections::HashSet<_> =
+            objects.iter().map(|o| o.object_id.as_str()).collect();
+        assert!(object_ids.contains("public1"));
+        assert!(object_ids.contains("private1"));
+    }
+
+    #[tokio::test]
+    async fn test_get_objects_for_user_deduplicates_results() {
+        use rsfga_domain::resolver::TupleReader;
+
+        let storage = Arc::new(MemoryDataStore::new());
+        storage
+            .create_store("test-store", "Test Store")
+            .await
+            .unwrap();
+
+        // Write both wildcard and direct grant for same object
+        let wildcard_tuple =
+            rsfga_storage::StoredTuple::new("document", "shared", "viewer", "user", "*", None);
+        let direct_tuple =
+            rsfga_storage::StoredTuple::new("document", "shared", "viewer", "user", "alice", None);
+        storage
+            .write_tuples("test-store", vec![wildcard_tuple, direct_tuple], vec![])
+            .await
+            .unwrap();
+
+        let reader = DataStoreTupleReader::new(storage);
+
+        // Query for user:alice - should get only one result (deduplicated)
+        let objects = reader
+            .get_objects_for_user("test-store", "user:alice", "document", Some("viewer"), 100)
+            .await
+            .unwrap();
+
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].object_id, "shared");
     }
 }
