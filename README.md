@@ -18,6 +18,7 @@
 | Storage Layer (PostgreSQL) | ✅ Complete |
 | Storage Layer (MySQL/MariaDB/TiDB) | ✅ Complete |
 | Storage Layer (CockroachDB) | ✅ Complete |
+| Storage Layer (RocksDB) | ✅ Complete |
 | Graph Resolver | ✅ Complete |
 | Batch Check Handler | ✅ Complete |
 | REST & gRPC APIs | ✅ Complete |
@@ -36,7 +37,31 @@
 
 ## Quick Start
 
-### Prerequisites
+### Docker (Recommended)
+
+The easiest way to run RSFGA:
+
+```bash
+# Pull from GitHub Container Registry
+docker pull ghcr.io/julianshen/rsfga:latest
+
+# Run with in-memory storage
+docker run -p 8080:8080 -p 50051:50051 ghcr.io/julianshen/rsfga:latest
+
+# Run with RocksDB persistent storage
+docker run -p 8080:8080 -p 50051:50051 \
+  -e RSFGA_STORAGE__BACKEND=rocksdb \
+  -v rsfga-data:/data \
+  ghcr.io/julianshen/rsfga:latest
+
+# Run with PostgreSQL
+docker run -p 8080:8080 -p 50051:50051 \
+  -e RSFGA_STORAGE__BACKEND=postgres \
+  -e RSFGA_STORAGE__DATABASE_URL="postgres://user:password@host:5432/rsfga" \
+  ghcr.io/julianshen/rsfga:latest
+```
+
+### Prerequisites (for building from source)
 
 - Rust 1.75+ ([Install Rust](https://rustup.rs/))
 - PostgreSQL 14+ / MySQL 8.0+ / CockroachDB (optional, for persistent storage)
@@ -45,11 +70,14 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/rsfga.git
+git clone https://github.com/julianshen/rsfga.git
 cd rsfga
 
 # Build in release mode
 cargo build --release
+
+# Run the server
+./target/release/rsfga --config config.yaml
 ```
 
 ### Running RSFGA
@@ -57,30 +85,17 @@ cargo build --release
 **With in-memory storage (for development/testing):**
 
 ```bash
-# Create a minimal config file
-cat > config.yaml << EOF
-server:
-  host: "0.0.0.0"
-  port: 8080
-
-storage:
-  backend: memory
-
-logging:
-  level: info
-  json: false
-
-metrics:
-  enabled: true
-  path: /metrics
-EOF
-
-# Run the server (binary will be available after M1.9 Deployment section)
-# For now, use the library crates directly in your application
-cargo build --release
+# Run with environment variables
+RSFGA_STORAGE__BACKEND=memory ./target/release/rsfga
 ```
 
-> **Note**: The standalone server binary is being developed in Milestone 1.9, Section 4 (Deployment). Currently, RSFGA is used as library crates integrated into your application.
+**With RocksDB (for embedded/edge deployments):**
+
+```bash
+RSFGA_STORAGE__BACKEND=rocksdb \
+RSFGA_STORAGE__DATA_PATH=/var/lib/rsfga \
+./target/release/rsfga
+```
 
 **With PostgreSQL (for production):**
 

@@ -731,7 +731,7 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "compatibility-tests"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "bollard",
@@ -3347,7 +3347,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-api"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3390,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-domain"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3414,7 +3414,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-server"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3438,7 +3438,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-storage"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
