@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2025-01-31
+
+### Fixed
+- **RocksDB backend validation** - Add "rocksdb" to valid storage backends list in config validation
+- **RocksDB data_path validation** - Add validation that data_path is required when using RocksDB backend
+
 ## [1.0.0] - 2025-01-31
 
 ### 🎉 Initial Production Release

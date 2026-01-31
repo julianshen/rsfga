@@ -394,7 +394,7 @@ impl ServerConfig {
         }
 
         // Validate storage backend
-        let valid_backends = ["memory", "postgres", "mysql", "cockroachdb"];
+        let valid_backends = ["memory", "postgres", "mysql", "cockroachdb", "rocksdb"];
         if !valid_backends.contains(&self.storage.backend.as_str()) {
             return Err(ConfigLoadError::Invalid {
                 message: format!(
@@ -418,6 +418,19 @@ impl ServerConfig {
                     "storage.database_url is required when backend is '{}'",
                     self.storage.backend
                 ),
+            });
+        }
+
+        // Validate rocksdb backend requires non-empty data_path
+        if self.storage.backend == "rocksdb"
+            && self
+                .storage
+                .data_path
+                .as_deref()
+                .map_or(true, |s| s.trim().is_empty())
+        {
+            return Err(ConfigLoadError::Invalid {
+                message: "storage.data_path is required when backend is 'rocksdb'".to_string(),
             });
         }
 
