@@ -5,6 +5,7 @@
 //! - In-memory implementation for testing
 //! - PostgreSQL implementation for production
 //! - MySQL/MariaDB implementation for production
+//! - RocksDB implementation for embedded/edge deployment (optional feature)
 //!
 //! # Architecture
 //!
@@ -16,6 +17,7 @@
 //! │  memory.rs   - In-memory implementation     │
 //! │  postgres.rs - PostgreSQL implementation    │
 //! │  mysql.rs    - MySQL/MariaDB implementation │
+//! │  rocksdb.rs  - RocksDB embedded storage     │
 //! └─────────────────────────────────────────────┘
 //! ```
 //!
@@ -92,6 +94,8 @@ pub mod error;
 pub mod memory;
 pub mod mysql;
 pub mod postgres;
+#[cfg(feature = "rocksdb")]
+pub mod rocksdb;
 pub mod traits;
 
 // Re-export commonly used types
@@ -99,6 +103,8 @@ pub use error::{ConditionConflictError, HealthStatus, PoolStats, StorageError, S
 pub use memory::MemoryDataStore;
 pub use mysql::{MySQLConfig, MySQLDataStore};
 pub use postgres::{PostgresConfig, PostgresDataStore};
+#[cfg(feature = "rocksdb")]
+pub use rocksdb::{RocksDBConfig, RocksDBDataStore};
 pub use traits::{
     parse_continuation_token, parse_user_filter, validate_store_id, validate_store_name,
     validate_tuple, DataStore, ObjectWithCondition, PaginatedResult, PaginationOptions,
