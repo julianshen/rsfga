@@ -171,12 +171,15 @@ fn default_grpc_port() -> u16 {
 /// Storage backend settings.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct StorageSettings {
-    /// Storage backend type: "memory", "postgres", "mysql", or "cockroachdb"
+    /// Storage backend type: "memory", "postgres", "mysql", "cockroachdb", or "rocksdb"
     #[serde(default = "default_storage_backend")]
     pub backend: String,
 
     /// Database connection URL (required if backend is "postgres", "mysql", or "cockroachdb")
     pub database_url: Option<String>,
+
+    /// Data directory path (required if backend is "rocksdb")
+    pub data_path: Option<String>,
 
     /// Connection pool size
     #[serde(default = "default_pool_size")]
@@ -192,6 +195,7 @@ impl Default for StorageSettings {
         Self {
             backend: default_storage_backend(),
             database_url: None,
+            data_path: None,
             pool_size: default_pool_size(),
             connection_timeout_secs: default_connection_timeout(),
         }

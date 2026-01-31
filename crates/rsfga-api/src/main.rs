@@ -25,6 +25,7 @@ use rsfga_api::http::{create_router_with_observability, AppState};
 use rsfga_api::observability::{init_metrics, init_observability, LoggingConfig, TracingConfig};
 use rsfga_server::ServerConfig;
 use rsfga_storage::{
+    rocksdb::{RocksDBConfig, RocksDBDataStore},
     DataStore, MemoryDataStore, MySQLConfig, MySQLDataStore, PostgresConfig, PostgresDataStore,
 };
 
@@ -147,6 +148,20 @@ async fn main() -> anyhow::Result<()> {
             info!("Database migrations complete");
 
             let storage = Arc::new(storage);
+            run_servers(storage, http_addr, grpc_addr, &config, metrics_state).await
+        }
+        "rocksdb" => {
+            let data_path = config.storage.data_path.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("storage.data_path is required for rocksdb backend")
+            })?;
+
+            info!(path = %data_path, "Using RocksDB storage backend");
+            let rocksdb_config = RocksDBConfig {
+                path: data_path.clone(),
+                ..Default::default()
+            };
+
+            let storage = Arc::new(RocksDBDataStore::new(rocksdb_config)?);
             run_servers(storage, http_addr, grpc_addr, &config, metrics_state).await
         }
         _ => {

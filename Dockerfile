@@ -2,16 +2,17 @@
 # RSFGA Dockerfile - Multi-stage build for minimal production image
 # =============================================================================
 #
-# Build: docker build -t rsfga:v0.1.0 .
-# Run:   docker run -p 8080:8080 -v ./config.yaml:/app/config.yaml rsfga:v0.1.0
+# Build: docker build -t rsfga:v1.0.0 .
+# Run:   docker run -p 8080:8080 -v ./config.yaml:/app/config.yaml rsfga:v1.0.0
 #
 # Environment variables:
-#   RSFGA_SERVER__HOST       - Host to bind (default: 0.0.0.0)
-#   RSFGA_SERVER__PORT       - Port to listen (default: 8080)
-#   RSFGA_STORAGE__BACKEND   - Storage backend: "memory" or "postgres"
-#   RSFGA_STORAGE__DATABASE_URL - PostgreSQL connection URL (required if postgres)
-#   RSFGA_LOGGING__LEVEL     - Log level: trace, debug, info, warn, error
-#   RSFGA_LOGGING__JSON      - Use JSON logging format (true/false)
+#   RSFGA_SERVER__HOST          - Host to bind (default: 0.0.0.0)
+#   RSFGA_SERVER__PORT          - Port to listen (default: 8080)
+#   RSFGA_STORAGE__BACKEND      - Storage backend: "memory", "postgres", "mysql", "cockroachdb", or "rocksdb"
+#   RSFGA_STORAGE__DATABASE_URL - Database connection URL (required for postgres/mysql/cockroachdb)
+#   RSFGA_STORAGE__DATA_PATH    - Data directory path (required for rocksdb backend)
+#   RSFGA_LOGGING__LEVEL        - Log level: trace, debug, info, warn, error
+#   RSFGA_LOGGING__JSON         - Use JSON logging format (true/false)
 #
 # =============================================================================
 
@@ -20,10 +21,12 @@
 # -----------------------------------------------------------------------------
 FROM rust:1.88-bookworm AS builder
 
-# Install build dependencies
+# Install build dependencies (including clang for RocksDB)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     protobuf-compiler \
     libprotobuf-dev \
+    clang \
+    libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory
@@ -97,20 +100,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd --gid 1000 rsfga \
     && useradd --uid 1000 --gid rsfga --shell /bin/bash --create-home rsfga
 
-# Create app directory
+# Create app and data directories
 WORKDIR /app
+RUN mkdir -p /data
 
 # Copy binary from builder
 COPY --from=builder /app/target/release/rsfga /app/rsfga
 
 # Set ownership
-RUN chown -R rsfga:rsfga /app
+RUN chown -R rsfga:rsfga /app /data
 
 # Switch to non-root user
 USER rsfga
 
-# Expose HTTP port
+# Expose HTTP and gRPC ports
 EXPOSE 8080
+EXPOSE 50051
+
+# Volume for persistent storage (RocksDB)
+VOLUME /data
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
@@ -119,7 +127,9 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 # Default environment variables
 ENV RSFGA_SERVER__HOST=0.0.0.0
 ENV RSFGA_SERVER__PORT=8080
+ENV RSFGA_GRPC__PORT=50051
 ENV RSFGA_STORAGE__BACKEND=memory
+ENV RSFGA_STORAGE__DATA_PATH=/data
 ENV RSFGA_LOGGING__LEVEL=info
 ENV RSFGA_LOGGING__JSON=true
 

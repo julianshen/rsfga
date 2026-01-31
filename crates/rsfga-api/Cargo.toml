@@ -22,7 +22,7 @@ tokio = { workspace = true }
 # Internal crates
 rsfga-server = { path = "../rsfga-server" }
 rsfga-domain = { path = "../rsfga-domain" }
-rsfga-storage = { path = "../rsfga-storage" }
+rsfga-storage = { path = "../rsfga-storage", features = ["rocksdb"] }
 
 # HTTP server
 axum = { workspace = true }
