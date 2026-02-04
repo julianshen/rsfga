@@ -118,16 +118,18 @@ impl Default for ReconnectConfig {
 }
 
 /// Authentication configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+///
+/// Sensitive fields (password, token, jwt) are redacted in Debug output.
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct AuthConfig {
     /// Username for basic auth
     pub username: Option<String>,
 
-    /// Password for basic auth (sensitive - hidden in Debug)
+    /// Password for basic auth (sensitive - redacted in Debug)
     #[serde(skip_serializing)]
     pub password: Option<String>,
 
-    /// Token for token auth (sensitive - hidden in Debug)
+    /// Token for token auth (sensitive - redacted in Debug)
     #[serde(skip_serializing)]
     pub token: Option<String>,
 
@@ -137,9 +139,22 @@ pub struct AuthConfig {
     /// Path to NKey seed file
     pub nkey_seed_path: Option<String>,
 
-    /// JWT token for JWT auth
+    /// JWT token for JWT auth (sensitive - redacted in Debug)
     #[serde(skip_serializing)]
     pub jwt: Option<String>,
+}
+
+impl std::fmt::Debug for AuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthConfig")
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("credentials_path", &self.credentials_path)
+            .field("nkey_seed_path", &self.nkey_seed_path)
+            .field("jwt", &self.jwt.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 impl AuthConfig {

@@ -6,6 +6,7 @@
 use crate::connection::NatsClient;
 use crate::error::{NatsError, Result};
 use crate::events::{CommittedEvent, WriteRequest, WriteTicket};
+use async_nats::jetstream::context::Publish;
 use async_nats::jetstream::publish::PublishAck;
 use bytes::Bytes;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -208,9 +209,12 @@ impl EventPublisher {
         let subject = request.subject();
         let payload = request.to_bytes()?;
 
-        // Publish with retry
+        // Use request_id as message ID for deduplication during retries
+        let msg_id = &request.request_id;
+
+        // Publish with retry and deduplication
         let ack = self
-            .publish_with_retry(&subject, Bytes::from(payload))
+            .publish_with_retry(&subject, Bytes::from(payload), Some(msg_id))
             .await?;
 
         // Record success
@@ -248,9 +252,12 @@ impl EventPublisher {
         let subject = event.subject();
         let payload = event.to_bytes()?;
 
-        // Publish with retry
+        // Use store_id + sequence as message ID for deduplication during retries
+        let msg_id = format!("{}-{}", event.store_id, event.sequence);
+
+        // Publish with retry and deduplication
         let ack = self
-            .publish_with_retry(&subject, Bytes::from(payload))
+            .publish_with_retry(&subject, Bytes::from(payload), Some(&msg_id))
             .await?;
 
         // Record success
@@ -266,8 +273,16 @@ impl EventPublisher {
         Ok(ack)
     }
 
-    /// Publish with retry and timeout.
-    async fn publish_with_retry(&self, subject: &str, payload: Bytes) -> Result<PublishAck> {
+    /// Publish with retry, timeout, and deduplication.
+    ///
+    /// If `msg_id` is provided, it's used as the Nats-Msg-Id header for
+    /// JetStream deduplication, preventing duplicate messages during retries.
+    async fn publish_with_retry(
+        &self,
+        subject: &str,
+        payload: Bytes,
+        msg_id: Option<&str>,
+    ) -> Result<PublishAck> {
         let mut last_error = None;
         let config = &self.inner.config;
 
@@ -279,11 +294,16 @@ impl EventPublisher {
                 tokio::time::sleep(delay).await;
             }
 
+            // Build publish request with message ID for deduplication
+            let publish = Publish::build()
+                .payload(payload.clone())
+                .message_id(msg_id.unwrap_or(""));
+
             match timeout(
                 config.publish_timeout,
                 self.client
                     .jetstream()
-                    .publish(subject.to_string(), payload.clone()),
+                    .send_publish(subject.to_string(), publish),
             )
             .await
             {

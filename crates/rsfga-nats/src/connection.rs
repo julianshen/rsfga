@@ -1,12 +1,24 @@
 //! NATS connection management with automatic reconnection.
 
-use crate::config::{AuthConfig, NatsConfig, TlsConfig};
+use crate::config::{AuthConfig, NatsConfig, ReconnectConfig, TlsConfig};
 use crate::error::{NatsError, Result};
 use async_nats::jetstream::{self, Context as JetStreamContext};
 use async_nats::Client;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+/// Generate a pseudo-random factor between 0.0 and 1.0 for jitter.
+/// Uses a simple approach based on system time to avoid adding a rand dependency.
+fn rand_factor() -> f64 {
+    use std::time::SystemTime;
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    (nanos % 1000) as f64 / 1000.0
+}
 
 /// NATS client with connection management and JetStream support.
 #[derive(Clone)]
@@ -90,13 +102,7 @@ impl NatsClient {
             .request_timeout(Some(config.request_timeout));
 
         // Configure reconnection
-        if config.reconnect.enabled {
-            options = options
-                .retry_on_initial_connect()
-                .max_reconnects(Some(config.reconnect.max_attempts as usize));
-        } else {
-            options = options.max_reconnects(Some(0));
-        }
+        options = Self::apply_reconnect_config(options, &config.reconnect);
 
         // Configure authentication
         options = Self::apply_auth_config(options, &config.auth).await?;
@@ -107,6 +113,48 @@ impl NatsClient {
         }
 
         Ok(options)
+    }
+
+    /// Apply reconnection configuration with exponential backoff.
+    fn apply_reconnect_config(
+        options: async_nats::ConnectOptions,
+        reconnect: &ReconnectConfig,
+    ) -> async_nats::ConnectOptions {
+        if !reconnect.enabled {
+            // Disable reconnection entirely
+            // Note: async-nats treats None as unlimited, so we must use Some(1)
+            // to effectively disable reconnection (only try once)
+            warn!("Automatic reconnection is disabled");
+            return options.max_reconnects(Some(1));
+        }
+
+        // Configure max reconnects (0 means unlimited in our config)
+        let max_reconnects = if reconnect.max_attempts == 0 {
+            None // Unlimited
+        } else {
+            Some(reconnect.max_attempts as usize)
+        };
+
+        // Clone values for the callback closure
+        let initial_delay = reconnect.initial_delay;
+        let max_delay = reconnect.max_delay;
+        let jitter = reconnect.jitter;
+
+        options
+            .retry_on_initial_connect()
+            .max_reconnects(max_reconnects)
+            .reconnect_delay_callback(move |attempts| {
+                // Exponential backoff with jitter
+                let base_delay = initial_delay.as_millis() as u64;
+                let exponential = base_delay.saturating_mul(2u64.saturating_pow(attempts as u32));
+                let capped = exponential.min(max_delay.as_millis() as u64);
+
+                // Apply jitter (reduce by up to jitter factor)
+                let jitter_amount = (capped as f64 * jitter * rand_factor()) as u64;
+                let with_jitter = capped.saturating_sub(jitter_amount);
+
+                Duration::from_millis(with_jitter.max(base_delay))
+            })
     }
 
     /// Apply authentication configuration.
@@ -127,8 +175,8 @@ impl NatsClient {
             })?;
         } else if let Some(nkey_path) = &auth.nkey_seed_path {
             debug!(path = %nkey_path, "Using NKey authentication");
-            // NKey auth: async-nats handles signing internally when given the seed
-            let seed = std::fs::read_to_string(nkey_path).map_err(|e| {
+            // Use async file I/O to avoid blocking the runtime
+            let seed = tokio::fs::read_to_string(nkey_path).await.map_err(|e| {
                 NatsError::Authentication(format!("Failed to read NKey seed: {}", e))
             })?;
             // Validate the seed is parseable
@@ -136,6 +184,30 @@ impl NatsClient {
                 .map_err(|e| NatsError::Authentication(format!("Invalid NKey seed: {}", e)))?;
             // async-nats nkey() method takes the seed and handles signing internally
             options = options.nkey(seed);
+        } else if let Some(jwt) = &auth.jwt {
+            debug!("Using JWT authentication");
+            // JWT auth requires a signing callback for challenge-response
+            // For now, we only support JWT with NKey seed for signing
+            if let Some(nkey_path) = &auth.nkey_seed_path {
+                let seed = tokio::fs::read_to_string(nkey_path).await.map_err(|e| {
+                    NatsError::Authentication(format!("Failed to read NKey seed for JWT: {}", e))
+                })?;
+                let seed_clone = seed.clone();
+                options = options.jwt(jwt.clone(), move |nonce| {
+                    let seed = seed_clone.clone();
+                    async move {
+                        let key_pair = nkeys::KeyPair::from_seed(&seed)
+                            .map_err(|e| async_nats::AuthError::new(e.to_string()))?;
+                        key_pair
+                            .sign(&nonce)
+                            .map_err(|e| async_nats::AuthError::new(e.to_string()))
+                    }
+                });
+            } else {
+                return Err(NatsError::Authentication(
+                    "JWT authentication requires nkey_seed_path for signing".to_string(),
+                ));
+            }
         }
 
         Ok(options)
