@@ -308,48 +308,159 @@ The key architectural decision is that **consumers run as separate daemons**, no
 | **Gradual rollout** | Run both paths in parallel during migration |
 | **Simpler testing** | Test writer daemon independently |
 
-#### Fallback Modes
+#### API Design: Separate Async Endpoints
 
-```yaml
-# Configuration for write mode
-nats:
-  write_mode: "auto"  # Options: "nats", "direct", "auto"
+Instead of modifying existing endpoints, we create **parallel async API endpoints** that mirror the original:
 
-  # "nats"   - Always write to NATS first (fail if NATS unavailable)
-  # "direct" - Always write to storage directly (original behavior)
-  # "auto"   - Try NATS first, fallback to direct on failure
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          API Endpoint Structure                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Original API (100% unchanged):                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  POST /stores/{store_id}/write           → Direct to storage            │ │
+│  │  POST /stores/{store_id}/write-model     → Direct to storage            │ │
+│  │  POST /stores                            → Direct to storage            │ │
+│  │  DELETE /stores/{store_id}               → Direct to storage            │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  Async API (NEW - NATS-first):                                               │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  POST /async/stores/{store_id}/write     → Publish to NATS              │ │
+│  │  POST /async/stores/{store_id}/write-model → Publish to NATS            │ │
+│  │  POST /async/stores                      → Publish to NATS              │ │
+│  │  DELETE /async/stores/{store_id}         → Publish to NATS              │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  Read APIs (unchanged - always read from storage):                           │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  POST /stores/{store_id}/check           → Read from storage            │ │
+│  │  POST /stores/{store_id}/list-objects    → Read from storage            │ │
+│  │  GET  /stores/{store_id}/read            → Read from storage            │ │
+│  │  GET  /stores/{store_id}/changes         → Read from storage            │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+**Benefits of Separate `/async` Endpoints:**
+
+| Benefit | Description |
+|---------|-------------|
+| **Zero changes to original** | Existing API code untouched |
+| **Client chooses** | Application decides sync vs async per request |
+| **Easy A/B testing** | Route percentage of traffic to async |
+| **Instant rollback** | Just use original endpoint |
+| **Clear semantics** | `/async` signals eventual consistency |
+| **OpenFGA compatible** | Original endpoints remain 100% compatible |
+
+#### Async API Response
+
+The async endpoint returns a **write ticket** for optional RYOW:
+
 ```rust
-// Simplified write handler with fallback
-pub async fn write_tuples_handler(/* ... */) -> Result<Json<WriteResponse>, ApiError> {
-    // Validation (unchanged)
+// Original endpoint response (unchanged)
+// POST /stores/{store_id}/write
+{
+  // Empty response per OpenFGA spec
+}
+
+// Async endpoint response (NEW)
+// POST /async/stores/{store_id}/write
+{
+  "request_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "sequence": 12345,
+  "write_ticket": {
+    "store_id": "store-abc",
+    "sequence": 12345
+  }
+}
+```
+
+#### Using Write Ticket for RYOW
+
+```rust
+// Client can optionally wait for write to be committed
+// POST /stores/{store_id}/check
+{
+  "tuple_key": { ... },
+  "write_ticket": {           // Optional: wait for this write first
+    "store_id": "store-abc",
+    "sequence": 12345
+  }
+}
+```
+
+#### Implementation
+
+```rust
+// routes.rs - Add async routes alongside existing ones
+
+pub fn routes() -> Router {
+    Router::new()
+        // Original write endpoints (UNCHANGED)
+        .route("/stores/:store_id/write", post(write_tuples_handler))
+        .route("/stores/:store_id/write-model", post(write_model_handler))
+
+        // NEW: Async write endpoints (NATS-first)
+        .route("/async/stores/:store_id/write", post(async_write_tuples_handler))
+        .route("/async/stores/:store_id/write-model", post(async_write_model_handler))
+
+        // Read endpoints (unchanged)
+        .route("/stores/:store_id/check", post(check_handler))
+        // ...
+}
+
+// Original handler - UNCHANGED
+pub async fn write_tuples_handler(/* ... */) -> Result<Json<()>, ApiError> {
+    // Existing implementation - no changes
+    state.storage.write_tuples(&store_id, writes, deletes).await?;
+    Ok(Json(()))
+}
+
+// NEW: Async handler - publishes to NATS
+pub async fn async_write_tuples_handler(/* ... */) -> Result<Json<AsyncWriteResponse>, ApiError> {
+    // Same validation as original
     validate_write_request(&request)?;
     let model = get_cached_model(&store_id).await?;
     validate_tuples_against_model(&request, &model)?;
 
-    // Write path selection
-    match state.config.nats.write_mode {
-        WriteMode::Direct => {
-            // Original path - unchanged
-            state.storage.write_tuples(&store_id, writes, deletes).await?
-        }
-        WriteMode::Nats => {
-            // NATS path - new
-            state.nats.publish_write(&store_id, writes, deletes).await?
-        }
-        WriteMode::Auto => {
-            // Try NATS, fallback to direct
-            match state.nats.publish_write(&store_id, writes, deletes).await {
-                Ok(resp) => resp,
-                Err(_) => {
-                    metrics::FALLBACK_WRITES.inc();
-                    state.storage.write_tuples(&store_id, writes, deletes).await?
-                }
-            }
-        }
-    }
+    // Publish to NATS instead of storage
+    let ack = state.nats.publish_write_request(&store_id, &request).await?;
+
+    Ok(Json(AsyncWriteResponse {
+        request_id: ack.request_id,
+        sequence: ack.sequence,
+        write_ticket: Some(WriteTicket {
+            store_id: store_id.clone(),
+            sequence: ack.sequence,
+        }),
+    }))
 }
+```
+
+#### Migration Path
+
+```
+Phase 1: Deploy
+  • Deploy rsfga-writer daemon
+  • Add /async endpoints to rsfga-server
+  • Original API unchanged
+
+Phase 2: Test
+  • Route internal/test traffic to /async
+  • Monitor latency, throughput, consistency
+  • Validate with RYOW tickets
+
+Phase 3: Migrate
+  • Update clients to use /async endpoints
+  • Keep original endpoints for compatibility
+  • Monitor fallback metrics
+
+Phase 4: (Optional) Deprecate
+  • If desired, deprecate original write endpoints
+  • Or keep both forever for flexibility
 ```
 
 #### Binary Structure
