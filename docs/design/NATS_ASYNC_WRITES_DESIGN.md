@@ -392,6 +392,51 @@ The async endpoint returns a **write ticket** for optional RYOW:
 }
 ```
 
+#### Event Publishing: Both Paths Need It
+
+**Critical**: Both sync and async paths must publish to `RSFGA_EVENTS` for data consistency:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     Event Flow for Both Paths                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  SYNC PATH (Original API):                                                   │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  Client → Storage (write) → RSFGA_EVENTS (publish) → Response          │ │
+│  │                                    │                                    │ │
+│  │                                    ├──▶ Edge Sync                       │ │
+│  │                                    ├──▶ Cache Invalidation              │ │
+│  │                                    └──▶ Region Replication              │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  ASYNC PATH (New /async API):                                                │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  Client → RSFGA_WRITES (publish) → Response                            │ │
+│  │                  │                                                      │ │
+│  │                  ▼                                                      │ │
+│  │           rsfga-writer → Storage (batch) → RSFGA_EVENTS (publish)      │ │
+│  │                                                  │                      │ │
+│  │                                                  ├──▶ Edge Sync         │ │
+│  │                                                  ├──▶ Cache Invalidation│ │
+│  │                                                  └──▶ Region Replication│ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  Both paths publish to RSFGA_EVENTS after storage commit!                    │
+│  This ensures all downstream consumers see ALL changes.                      │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Why sync path must also publish events:**
+
+| Consumer | Needs Events Because |
+|----------|---------------------|
+| Edge nodes | Must see all writes to stay in sync |
+| Cache invalidation | Distributed cache must invalidate on all nodes |
+| Region replicas | Secondary regions need all changes |
+| Audit/Analytics | Must capture all changes regardless of path |
+
 #### Implementation
 
 ```rust
@@ -399,7 +444,7 @@ The async endpoint returns a **write ticket** for optional RYOW:
 
 pub fn routes() -> Router {
     Router::new()
-        // Original write endpoints (UNCHANGED)
+        // Original write endpoints (now also publishes events)
         .route("/stores/:store_id/write", post(write_tuples_handler))
         .route("/stores/:store_id/write-model", post(write_model_handler))
 
@@ -412,21 +457,47 @@ pub fn routes() -> Router {
         // ...
 }
 
-// Original handler - UNCHANGED
+// Original handler - NOW publishes events after storage commit
 pub async fn write_tuples_handler(/* ... */) -> Result<Json<()>, ApiError> {
-    // Existing implementation - no changes
-    state.storage.write_tuples(&store_id, writes, deletes).await?;
+    // Validation (unchanged)
+    validate_write_request(&request)?;
+    let model = get_cached_model(&store_id).await?;
+    validate_tuples_against_model(&request, &model)?;
+
+    // Write to storage (unchanged)
+    let sequence = state.storage
+        .write_tuples_with_sequence(&store_id, writes.clone(), deletes.clone())
+        .await?;
+
+    // NEW: Publish event to RSFGA_EVENTS for downstream consumers
+    // This is fire-and-forget (spawn), doesn't block response
+    let event_publisher = state.event_publisher.clone();
+    let store_id_clone = store_id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = event_publisher.publish_committed(
+            &store_id_clone,
+            sequence,
+            &writes,
+            &deletes,
+        ).await {
+            // Log but don't fail - storage write already succeeded
+            tracing::warn!("Failed to publish event: {}", e);
+            metrics::EVENT_PUBLISH_FAILURES.inc();
+        }
+    });
+
+    // Original empty response (OpenFGA compatible)
     Ok(Json(()))
 }
 
-// NEW: Async handler - publishes to NATS
+// NEW: Async handler - publishes to RSFGA_WRITES
 pub async fn async_write_tuples_handler(/* ... */) -> Result<Json<AsyncWriteResponse>, ApiError> {
     // Same validation as original
     validate_write_request(&request)?;
     let model = get_cached_model(&store_id).await?;
     validate_tuples_against_model(&request, &model)?;
 
-    // Publish to NATS instead of storage
+    // Publish to RSFGA_WRITES (rsfga-writer will handle storage + events)
     let ack = state.nats.publish_write_request(&store_id, &request).await?;
 
     Ok(Json(AsyncWriteResponse {
@@ -437,6 +508,47 @@ pub async fn async_write_tuples_handler(/* ... */) -> Result<Json<AsyncWriteResp
             sequence: ack.sequence,
         }),
     }))
+}
+```
+
+#### Event Publisher (Shared by Both Paths)
+
+```rust
+/// Publishes committed events to RSFGA_EVENTS stream
+pub struct EventPublisher {
+    js_context: Context,
+    node_id: String,
+}
+
+impl EventPublisher {
+    /// Publish a committed event (called by both sync handler and rsfga-writer)
+    pub async fn publish_committed(
+        &self,
+        store_id: &str,
+        sequence: u64,
+        writes: &[StoredTuple],
+        deletes: &[StoredTuple],
+    ) -> Result<(), NatsError> {
+        let event = CommittedEvent {
+            event_id: ulid::Ulid::new().to_string(),
+            store_id: store_id.to_string(),
+            sequence,
+            committed_at: Some(SystemTime::now().into()),
+            source_node_id: self.node_id.clone(),
+            payload: Some(Payload::TupleBatch(TupleBatchCommitted {
+                operations: build_operations(writes, deletes),
+            })),
+        };
+
+        let subject = format!("rsfga.events.{}.tuple", store_id);
+
+        self.js_context
+            .publish(subject, event.encode_to_vec().into())
+            .await?
+            .await?;
+
+        Ok(())
+    }
 }
 ```
 
