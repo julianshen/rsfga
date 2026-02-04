@@ -131,6 +131,48 @@ This document proposes a **NATS-first write architecture** for RSFGA where write
 
 ---
 
+## 1.1 OpenFGA API Compatibility Statement
+
+> **IMPORTANT: The async API is an EXTENSION, not a replacement for OpenFGA API**
+
+This design maintains **100% OpenFGA API compatibility**:
+
+| Endpoint | Behavior | OpenFGA Compatible |
+|----------|----------|-------------------|
+| `POST /stores/{id}/write` | Synchronous storage write, unchanged | ✅ Yes (identical) |
+| `POST /stores/{id}/check` | Read from storage, unchanged | ✅ Yes (identical) |
+| `POST /async/stores/{id}/write` | **NEW** - NATS-first write | ➕ Extension |
+
+**Key Compatibility Guarantees**:
+
+1. **Original endpoints unchanged**: The existing `/write`, `/check`, `/read`, and all other OpenFGA endpoints remain 100% compatible with identical request/response formats
+2. **Drop-in replacement preserved**: Applications using only OpenFGA-compatible endpoints see no behavioral changes
+3. **Extension, not modification**: The `/async/*` endpoints are **new additions** that clients explicitly opt into
+4. **Backward compatible**: Clients unaware of async endpoints continue working exactly as before
+
+**Why separate endpoints?**
+
+```text
+✅ Recommended: Separate /async endpoints
+─────────────────────────────────────────
+• Clear client opt-in to eventual consistency
+• No changes to existing endpoint behavior
+• Easy A/B testing and gradual migration
+• Instant rollback by using original endpoint
+• 100% OpenFGA test suite compatibility
+
+❌ Rejected: Modify existing /write endpoint
+─────────────────────────────────────────
+• Breaks OpenFGA behavioral compatibility
+• Clients unaware of consistency change
+• Difficult to rollback
+• Test suite failures
+```
+
+**Migration is Optional**: Organizations can use async endpoints for performance-critical write-heavy workloads while keeping sync endpoints for security-critical operations like permission revocations.
+
+---
+
 ## 2. Motivation and Goals
 
 ### 2.1 Why NATS-First?
@@ -996,6 +1038,128 @@ pub async fn setup_writes_stream(js: &Context) -> Result<(), NatsError> {
 
     js.get_or_create_stream(config).await?;
     Ok(())
+}
+```
+
+### 6.4 Stream Capacity Limits and Behavior
+
+The RSFGA_WRITES stream has explicit bounds to prevent unbounded resource usage:
+
+| Limit | Default Value | Purpose |
+|-------|---------------|---------|
+| `max_messages` | 10,000,000 | Maximum messages in stream |
+| `max_bytes` | 10 GB | Maximum total stream size |
+| `max_age` | 24 hours | Maximum message retention |
+| `max_msg_size` | 1 MB | Maximum single message size |
+
+**What happens when limits are reached?**
+
+The stream uses `DiscardPolicy::Old`, which means:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Stream Capacity Behavior                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  NORMAL OPERATION (stream below limits):                                     │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  Client publish → Accept message → ACK to client                       │ │
+│  │  Consumer pulls → Process → ACK → Message deleted (WorkQueue)          │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  AT CAPACITY (max_messages or max_bytes reached):                            │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  DiscardPolicy::Old behavior:                                          │ │
+│  │  • OLDEST unprocessed messages are DISCARDED to make room              │ │
+│  │  • New message is accepted                                              │ │
+│  │  • ⚠️ DATA LOSS: Discarded writes are permanently lost                 │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  ALTERNATIVE: DiscardPolicy::New (safer but blocks clients):                 │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  • New messages are REJECTED with error                                 │ │
+│  │  • Client receives 503 Service Unavailable                             │ │
+│  │  • No data loss, but write requests fail                               │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Configuration Recommendations**:
+
+| Deployment Size | max_messages | max_bytes | Rationale |
+|-----------------|--------------|-----------|-----------|
+| Small (dev/test) | 100,000 | 1 GB | Limited resources |
+| Medium (production) | 10,000,000 | 10 GB | Default - good balance |
+| Large (high-throughput) | 100,000,000 | 100 GB | Very high burst capacity |
+
+**Capacity Planning Formula**:
+
+```text
+Required capacity = (peak_writes_per_sec × max_consumer_lag_seconds × avg_msg_size)
+
+Example:
+  Peak: 10,000 writes/sec
+  Max acceptable lag: 60 seconds
+  Avg message size: 500 bytes
+
+  Capacity needed: 10,000 × 60 × 500 = 300 MB minimum
+  Recommended: 10x headroom = 3 GB
+```
+
+**Monitoring and Alerts**:
+
+```yaml
+# Prometheus alerting rules
+groups:
+  - name: rsfga_nats_capacity
+    rules:
+      - alert: RSFGAWriteStreamNearCapacity
+        expr: |
+          jetstream_stream_messages{stream="RSFGA_WRITES"}
+          / jetstream_stream_max_messages{stream="RSFGA_WRITES"} > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RSFGA_WRITES stream at {{ $value | humanizePercentage }} capacity"
+          description: "Stream may start discarding old messages. Scale consumers or increase limits."
+
+      - alert: RSFGAWriteStreamAtCapacity
+        expr: |
+          jetstream_stream_messages{stream="RSFGA_WRITES"}
+          / jetstream_stream_max_messages{stream="RSFGA_WRITES"} > 0.95
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RSFGA_WRITES stream at critical capacity"
+          description: "Messages being discarded. Immediate action required."
+```
+
+**Discard Policy Selection**:
+
+| Use Case | Recommended Policy | Trade-off |
+|----------|-------------------|-----------|
+| Best-effort writes (analytics) | `DiscardPolicy::Old` | Accept data loss to maintain throughput |
+| **Authorization (default)** | `DiscardPolicy::New` | Reject writes to prevent silent data loss |
+| Backpressure to clients | `DiscardPolicy::New` | Clients retry, no data loss |
+
+**IMPORTANT**: For authorization systems where write loss is unacceptable, consider changing to `DiscardPolicy::New` and handling the resulting 503 errors in the API layer with fallback to synchronous writes:
+
+```rust
+// Recommended: Fallback to sync write on NATS capacity error
+async fn async_write_with_fallback(/* ... */) -> Result<WriteResponse, ApiError> {
+    match nats.publish_write_request(&store_id, &request).await {
+        Ok(ack) => Ok(async_response(ack)),
+        Err(NatsError::StreamFull) => {
+            // Fallback to synchronous write
+            metrics::NATS_FALLBACK_WRITES.inc();
+            storage.write_tuples(&store_id, &writes, &deletes).await?;
+            Ok(sync_response())
+        }
+        Err(e) => Err(ApiError::from(e)),
+    }
 }
 ```
 

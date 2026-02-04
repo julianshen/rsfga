@@ -40,6 +40,7 @@ Each ADR follows this structure:
 | ADR-017 | CEL Expression Caching | ✅ Accepted | 2026-01-14 | Cache performance issues |
 | ADR-018 | ListObjects ReverseExpand | ✅ Accepted | 2026-01-29 | ListObjects p95 > 100ms |
 | ADR-019 | RocksDB Embedded Storage | ✅ Accepted | 2026-01-30 | Edge deployment requirements change |
+| ADR-020 | NATS-First Write Architecture | 📋 Proposed | 2026-02-04 | Before Version 2.0.0 implementation |
 
 ## Validation Status Summary
 
@@ -66,6 +67,7 @@ This section tracks the validation status of each ADR's criteria.
 | ADR-017 | ✅ Validated | CEL cache implemented with bounded capacity |
 | ADR-018 | ✅ Validated | ReverseExpand implemented: p95=5.9ms, 176 req/s (2400x improvement) |
 | ADR-019 | ✅ Validated | RocksDB: 11,800+ writes/s (5.9x target), <92µs write latency |
+| ADR-020 | 📋 Proposed | NATS-first write architecture - pending Version 2.0.0 |
 
 **Note**: All performance-related ADRs (001, 002, 003, 005, 012) validated on 2026-01-29 via k6 load testing against PostgreSQL backend. Results exceed all targets.
 
@@ -1337,6 +1339,129 @@ xcode-select --install
 
 - R-016: External dependency on RocksDB C++ library
 - R-017: Compaction latency spikes in production (mitigated by configuration)
+
+---
+
+## ADR-020: NATS-First Write Architecture
+
+**Status**: 📋 Proposed (Version 2.0.0)
+**Date**: 2026-02-04
+**Deciders**: Architecture Team
+**Review Trigger**: Before Version 2.0.0 implementation OR NATS proves insufficient in prototyping
+
+**Context**:
+
+The current synchronous write path has limitations:
+- Write latency blocked by database round-trip (15-20ms p99)
+- Throughput limited by database connection pool (~300 writes/sec)
+- Each write is a separate transaction (no batching)
+- Storage failure blocks writes entirely
+- Additional consumers need CDC/polling
+
+For high-throughput deployments, we need a write path that:
+- Provides sub-5ms write acknowledgment
+- Supports 5,000-10,000+ writes/sec sustained throughput
+- Enables batched storage writes for efficiency
+- Supports multiple consumers (edge sync, cache invalidation, audit)
+
+**Decision**:
+
+Implement a **NATS-first write architecture** where writes go to NATS JetStream first, then are consumed and batched into storage:
+
+```
+Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
+           (fast, durable)     (batched writes)
+                 │
+                 ├──▶ Edge Sync Consumer
+                 ├──▶ Cache Invalidation Consumer
+                 └──▶ Audit/Analytics Consumer
+```
+
+**Key Design Choices**:
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Write Target | NATS JetStream first | Non-blocking, durable, enables batching |
+| API Design | Separate `/async` endpoints | 100% OpenFGA API compatibility preserved |
+| Storage Writes | Batched by consumer | 10-50x throughput improvement |
+| Consistency Model | Eventual (with RYOW option) | Performance over strong consistency |
+| Event Delivery | At-least-once | Idempotent consumers handle duplicates |
+| Ordering | Per-store FIFO | JetStream subject partitioning |
+
+**OpenFGA Compatibility**:
+
+The `/async` endpoints are an **extension**, not a replacement:
+- Original `/write` endpoint remains 100% OpenFGA compatible (unchanged request/response format)
+- New `/async/write` endpoint provides NATS-first path with eventual consistency
+- Clients choose which endpoint based on their consistency requirements
+- Drop-in replacement guarantee maintained
+
+**Rationale**:
+
+1. **Performance**: NATS JetStream provides sub-5ms acknowledgment vs 15-20ms for storage
+2. **Throughput**: Batched writes to storage achieve 20-50x higher throughput
+3. **Decoupling**: Storage failures don't block write acceptance
+4. **Multi-consumer**: Native event stream supports edge sync, caching, audit
+5. **Operational**: Gradual migration with both paths available simultaneously
+
+**Consequences**:
+
+Positive:
+- 4-10x lower write latency (2-5ms vs 15-20ms)
+- 20-50x higher throughput (5,000-10,000+ vs 300 writes/sec)
+- Better burst handling (JetStream buffers load spikes)
+- Natural multi-consumer support
+- Enables edge synchronization (Phase 3)
+
+Negative:
+- Eventual consistency (configurable window, typically 20-100ms)
+- Additional infrastructure (NATS cluster required)
+- Separate consumer daemon to operate (`rsfga-writer`)
+- Revocations may have brief delay (mitigated by using sync path for deletes)
+
+**Security Consideration**:
+
+Permission revocations via async path may have a brief delay. Recommendations:
+- Use sync `/write` endpoint for permission revocations (DELETE operations)
+- Use async `/async/write` endpoint for permission grants (WRITE operations)
+- Configure `async_allow_deletes: false` to prevent accidental async revocations
+
+**Alternatives Considered**:
+
+| Alternative | Latency | Throughput | Complexity | Multi-Consumer |
+|-------------|---------|------------|------------|----------------|
+| **NATS-first** (proposed) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| Storage-first + CDC | ⭐⭐ | ⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
+| Kafka-first | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐⭐ |
+| Async storage writes | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ |
+
+- **Storage-first + CDC**: Higher latency, complex CDC setup for multi-consumer
+- **Kafka-first**: Similar benefits but heavier footprint (500MB+ vs 10-20MB NATS)
+- **Async storage writes**: Doesn't provide natural multi-consumer support
+
+**Validation Criteria** (Version 2.0.0):
+
+- [ ] Write latency <5ms p99 with NATS acknowledgment
+- [ ] Throughput >5,000 writes/sec sustained
+- [ ] Batched writes reduce DB transactions by 100x
+- [ ] RYOW consistency works with write tickets
+- [ ] Graceful fallback to sync path on NATS failure
+- [ ] Edge sync receives events within 100ms
+
+**Implementation Details**:
+
+See [NATS_ASYNC_WRITES_DESIGN.md](NATS_ASYNC_WRITES_DESIGN.md) for complete design:
+- Two-stream architecture (RSFGA_WRITES + RSFGA_EVENTS)
+- Storage consumer daemon (`rsfga-writer`)
+- Read-your-own-writes (RYOW) with write tickets
+- Circuit breaker and fallback handling
+- Edge synchronization consumer
+
+**Related Risks**:
+
+- R-006 (NATS Edge Sync Lag)
+- R-014 (NATS vs Kafka Regret)
+- R-018 (Eventual Consistency Window for Revocations)
 
 ---
 
