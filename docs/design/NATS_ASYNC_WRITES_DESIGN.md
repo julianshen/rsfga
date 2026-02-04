@@ -55,7 +55,7 @@
 
 This document proposes a **NATS-first write architecture** for RSFGA where writes go to NATS JetStream first, then are consumed and batched into storage. This inverts the traditional pattern for significant benefits:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    NATS-First Write Architecture                     │
 │                                                                      │
@@ -169,7 +169,7 @@ The traditional write path (validate → write to DB → publish event) has limi
 
 ### 3.1 Existing Synchronous Write Flow
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │                   Current Write Path (Synchronous)                   │
 └─────────────────────────────────────────────────────────────────────┘
@@ -218,7 +218,7 @@ The traditional write path (validate → write to DB → publish event) has limi
 
 ### 4.1 High-Level Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                        NATS-First Write Architecture                         │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -257,7 +257,7 @@ The traditional write path (validate → write to DB → publish event) has limi
 
 ### 4.2 Component Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           Component Architecture                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -314,7 +314,7 @@ The traditional write path (validate → write to DB → publish event) has limi
 
 The key architectural decision is that **consumers run as separate daemons**, not embedded in the API server:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                        Deployment Architecture                               │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -364,7 +364,7 @@ The key architectural decision is that **consumers run as separate daemons**, no
 
 Instead of modifying existing endpoints, we create **parallel async API endpoints** that mirror the original:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          API Endpoint Structure                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -452,7 +452,7 @@ The async endpoint returns a **write ticket** for optional RYOW:
 
 **Critical**: Both sync and async paths must publish to `RSFGA_EVENTS` for data consistency:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                     Event Flow for Both Paths                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -670,7 +670,7 @@ We use **two separate streams** for different purposes:
 3. Events only appear in `RSFGA_EVENTS` after storage commit (guaranteed durable)
 4. Separation allows different retention and consumer patterns
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         Two-Stream Flow                                      │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -937,7 +937,7 @@ pub struct WriteTicket {
 
 ### 6.2 Write Latency Breakdown
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    NATS-First Write Latency                          │
 ├─────────────────────────────────────────────────────────────────────┤
@@ -1222,7 +1222,7 @@ impl StorageConsumer {
 
 ### 7.2 Batching Strategy
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      Batching Strategy                               │
 ├─────────────────────────────────────────────────────────────────────┤
@@ -1415,7 +1415,7 @@ If the consumer crashes after writing to storage but before acknowledging NATS:
 3. `ON CONFLICT` / `ON DUPLICATE KEY` makes write idempotent
 4. Event is published again (downstream consumers must also be idempotent)
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │ Redelivery Scenario                                          │
 │                                                              │
@@ -1615,7 +1615,7 @@ pub async fn write_handler(
 
 Edge nodes consume from `RSFGA_EVENTS` (not `RSFGA_WRITES`) to receive committed changes:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          Edge Synchronization                                │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -1753,7 +1753,7 @@ impl EdgeSyncConsumer {
 
 For multi-region deployment, use NATS stream mirroring:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                      Multi-Region Replication                                │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -1976,7 +1976,7 @@ pub async fn move_to_dlq(
 
 ### 12.1 Throughput Comparison
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                       Throughput Comparison                                  │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -2004,7 +2004,7 @@ pub async fn move_to_dlq(
 
 ### 12.2 Latency Comparison
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                        Latency Comparison                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -2991,28 +2991,135 @@ pub mod fixtures {
 
 ## 21. Open Questions
 
-### 21.1 Unresolved
+### 21.1 Resolved Questions
 
-| Question | Options | Recommendation | Status |
-|----------|---------|----------------|--------|
-| Default consistency | Eventual / RYOW | Eventual | **Open** |
-| Consumer scaling | Single / Sharded | Single initially | **Open** |
-| DLQ retention | 7 days / 30 days | 30 days | **Open** |
-| Sync write threshold | Never / On request | On request | **Decided** |
+| Question | Options | Decision | Rationale |
+|----------|---------|----------|-----------|
+| Default consistency | Eventual / RYOW | **Eventual** | Performance over consistency; RYOW available when needed |
+| Consumer scaling | Single / Sharded | **Single initially, shard per-store if needed** | Start simple; add per-store sharding when consumer lag exceeds 1000ms |
+| DLQ retention | 7 days / 30 days | **30 days** | Sufficient for investigation; auto-purge after 30 days |
+| Sync write threshold | Never / On request | **On request** | Flexibility for critical operations |
+| DLQ retry strategy | Automatic / Manual | **Manual with tooling** | Automatic retry risks loops; provide CLI tools for replay |
+| Event retention (RSFGA_EVENTS) | 7 days / 30 days / Unlimited | **7 days default, configurable** | Sufficient for edge reconnection; longer for compliance if needed |
 
-### 21.2 Questions for Stakeholders
+### 21.2 Batch Size Tuning and Consumer Lag
 
-1. **What is acceptable staleness for reads?**
-   - Current assumption: <500ms typical, <1s max
-   - Affects consumer batch settings
+**Question**: How does batch size relate to consumer lag?
 
-2. **Should sync writes be available?**
-   - Current assumption: Yes, as escape hatch
-   - Adds complexity but provides flexibility
+**Answer**:
 
-3. **Multi-region write handling?**
-   - Current assumption: Single write region
-   - Multi-primary would require conflict resolution
+| Consumer Lag | Batch Size | Batch Timeout | Rationale |
+|--------------|------------|---------------|-----------|
+| < 100ms | 100 msgs | 20ms | Default: prioritize consistency |
+| 100-500ms | 200 msgs | 50ms | Moderate backlog: increase throughput |
+| 500ms-2s | 500 msgs | 100ms | Significant backlog: maximize throughput |
+| > 2s | 500 msgs | 100ms + alert | Critical: scale consumers, investigate |
+
+**Auto-tuning** (future enhancement):
+```rust
+// Dynamic batch sizing based on lag
+fn calculate_batch_settings(lag_ms: u64) -> BatchSettings {
+    match lag_ms {
+        0..=100 => BatchSettings { size: 100, timeout_ms: 20 },
+        101..=500 => BatchSettings { size: 200, timeout_ms: 50 },
+        _ => BatchSettings { size: 500, timeout_ms: 100 },
+    }
+}
+```
+
+### 21.3 Edge Node Disconnection and Event Retention
+
+**Question**: Is 7-day event retention sufficient for disconnected edge nodes?
+
+**Answer**: **7 days is sufficient for typical scenarios, with bootstrap fallback for longer disconnections.**
+
+| Disconnection Duration | Strategy |
+|-----------------------|----------|
+| < 7 days | Resume from last sequence in RSFGA_EVENTS |
+| > 7 days | Full bootstrap sync from central storage |
+| Permanent (new edge) | Full bootstrap sync |
+
+**Configuration**:
+```yaml
+streams:
+  events:
+    max_age_hours: 168  # 7 days default
+    # Increase for compliance requirements:
+    # max_age_hours: 720  # 30 days
+```
+
+**Bootstrap procedure**: Edge consumer detects missing sequences and triggers full sync from central database via `GET /admin/bootstrap?store_id=X&format=batch`.
+
+### 21.4 DLQ Retry Strategy
+
+**Question**: Should DLQ messages be automatically retried or require manual intervention?
+
+**Answer**: **Manual intervention with tooling support.**
+
+**Rationale**:
+- Automatic retry risks infinite loops for truly poisonous messages
+- Manual review allows root cause analysis
+- Tooling makes replay easy once issues are fixed
+
+**DLQ Tooling**:
+```bash
+# View DLQ contents
+nats stream view RSFGA_DLQ --last 20
+
+# Inspect specific message
+nats stream get RSFGA_DLQ 12345
+
+# Replay single message after fix
+rsfga-admin dlq replay --sequence 12345
+
+# Replay all messages for a store
+rsfga-admin dlq replay --store-id store-abc
+
+# Purge old DLQ messages (after investigation)
+nats stream purge RSFGA_DLQ --seq 10000
+```
+
+**Alert on DLQ growth**: Trigger alert when DLQ has > 10 messages in 1 hour.
+
+### 21.5 Consumer Scaling Strategy
+
+**Question**: Should consumer scaling be per-store or global?
+
+**Answer**: **Start with global single consumer; scale per-store if needed.**
+
+| Scenario | Consumer Strategy | When to Use |
+|----------|------------------|-------------|
+| Low volume (< 1000 writes/sec) | Single global consumer | Default |
+| High volume (> 5000 writes/sec) | Multiple consumers with store-based routing | Scale when lag > 500ms |
+| Hot store (one store dominates) | Dedicated consumer for hot store | When single store causes > 50% of lag |
+
+**Scaling trigger**: Consumer lag consistently > 500ms for 5 minutes.
+
+**Per-store consumer configuration**:
+```yaml
+# Consumer per store (advanced deployment)
+consumers:
+  - name: storage-consumer-store-hot
+    filter: "rsfga.writes.store-hot-id"
+    batch_size: 500
+  - name: storage-consumer-default
+    filter: "rsfga.writes.>"
+    batch_size: 100
+```
+
+### 21.6 Remaining Questions for Stakeholders
+
+1. **Compliance requirements for event retention?**
+   - Some industries require longer audit trails (90 days, 1 year)
+   - Affects RSFGA_EVENTS max_age configuration
+
+2. **Multi-region write conflict resolution?**
+   - Current: Single write region, replicate to others
+   - Future: Last-write-wins or custom resolution needed?
+
+3. **Edge node autonomy during disconnection?**
+   - Current: Read-only during disconnection
+   - Future: Allow local writes with sync on reconnection?
 
 ---
 

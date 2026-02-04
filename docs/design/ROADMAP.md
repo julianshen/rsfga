@@ -1946,7 +1946,7 @@ CockroachDB's BIGSERIAL emulation works correctly with our PostgreSQL migrations
 
 NATS-first write architecture where writes go to NATS JetStream first, then are consumed and batched into storage:
 
-```
+```text
 Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
            (fast, durable)     (batched writes)
                  │
