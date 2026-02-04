@@ -2267,7 +2267,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
    - Data tier classification
 
 2. **Edge Sync Agent**
-   - Kafka consumer for change events
+   - NATS JetStream consumer for change events
    - Selective replication based on product config
    - Watermark tracking
 
@@ -2283,7 +2283,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 5. **Multi-Region Replication**
    - PostgreSQL logical replication
-   - Kafka-based CDC
+   - NATS-based event streaming (CDC via RSFGA_EVENTS)
    - Conflict resolution
 
 ---

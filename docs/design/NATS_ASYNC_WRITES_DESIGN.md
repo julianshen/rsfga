@@ -901,10 +901,17 @@ pub async fn write_tuples_handler(
     // 1. Validate request format (fast, no I/O)
     validate_write_request(&request)?;
 
-    // 2. Check authorization model (from cache)
+    // 2. Check authorization model (from cache, with explicit error handling)
     let model = state.model_cache
         .get_or_fetch(&store_id, || state.storage.get_latest_model(&store_id))
-        .await?;
+        .await
+        .map_err(|e| match e {
+            StorageError::StoreNotFound(_) => ApiError::NotFound(format!("Store '{}' not found", store_id)),
+            StorageError::ModelNotFound(_) => ApiError::FailedPrecondition(
+                format!("Store '{}' has no authorization model", store_id)
+            ),
+            _ => ApiError::Internal(e.to_string()),
+        })?;
 
     validate_tuples_against_model(&request.writes, &request.deletes, &model)?;
 
@@ -2242,6 +2249,28 @@ impl NatsCircuitBreaker {
 }
 ```
 
+> **Implementation Note: Concurrency Safety**
+>
+> The example above uses simple atomic loads/stores. For production, use **compare-and-swap** (CAS) to prevent race conditions in state transitions:
+>
+> ```rust
+> // Safe transition: Open → Half-Open (only one thread succeeds)
+> let _ = self.state.compare_exchange(
+>     1,  // expected: Open
+>     2,  // desired: Half-Open
+>     Ordering::SeqCst,
+>     Ordering::SeqCst,
+> );
+>
+> // Safe transition: Half-Open → Closed (on success)
+> let _ = self.state.compare_exchange(2, 0, Ordering::SeqCst, Ordering::SeqCst);
+>
+> // Safe transition: Half-Open → Open (on failure)
+> let _ = self.state.compare_exchange(2, 1, Ordering::SeqCst, Ordering::SeqCst);
+> ```
+>
+> This ensures that when multiple threads race to transition states, only one succeeds and others observe the updated state.
+
 ### 11.3 Fallback to Synchronous Writes
 
 When NATS is unavailable, fall back to direct storage writes:
@@ -2742,43 +2771,48 @@ groups:
 
 ### 15.2 Phase 1: Core NATS Integration
 
+**Dependencies** (add to `rsfga-nats/Cargo.toml`):
+```toml
+[dependencies]
+async-nats = "0.33"         # NATS client (pin to 0.33+ for JetStream stability)
+prost = "0.12"              # Protobuf serialization
+prost-types = "0.12"        # Protobuf well-known types
+ulid = "1.1"                # Request ID generation
+tokio = { version = "1", features = ["sync", "time"] }
+tracing = "0.1"             # Instrumentation
 ```
-Tasks:
-├── [ ] Add async-nats dependency
-├── [ ] Define protobuf schemas (WriteRequest, CommittedEvent)
-├── [ ] Implement NATS connection manager
-├── [ ] Create RSFGA_WRITES stream configuration
-├── [ ] Create RSFGA_EVENTS stream configuration
-├── [ ] Implement write publisher in API layer
-├── [ ] Unit tests with embedded NATS
-└── [ ] Integration tests
-```
+
+**Tasks**:
+- [ ] Add async-nats dependency (version 0.33+)
+- [ ] Define protobuf schemas (WriteRequest, CommittedEvent)
+- [ ] Implement NATS connection manager
+- [ ] Create RSFGA_WRITES stream configuration
+- [ ] Create RSFGA_EVENTS stream configuration
+- [ ] Implement write publisher in API layer
+- [ ] Unit tests with embedded NATS
+- [ ] Integration tests
 
 ### 15.3 Phase 2: Storage Consumer
 
-```
-Tasks:
-├── [ ] Implement StorageConsumer
-├── [ ] Add batch grouping by store_id
-├── [ ] Implement idempotent storage writes
-├── [ ] Add sequence tracking
-├── [ ] Implement event publishing (WRITES → EVENTS)
-├── [ ] Add consumer metrics
-├── [ ] DLQ handling
-└── [ ] Load testing
-```
+**Tasks**:
+- [ ] Implement StorageConsumer
+- [ ] Add batch grouping by store_id
+- [ ] Implement idempotent storage writes
+- [ ] Add sequence tracking
+- [ ] Implement event publishing (WRITES → EVENTS)
+- [ ] Add consumer metrics
+- [ ] DLQ handling
+- [ ] Load testing
 
 ### 15.4 Phase 3: RYOW Support
 
-```
-Tasks:
-├── [ ] Implement WriteTracker
-├── [ ] Add write ticket to API response
-├── [ ] Add wait_for_commit to read handlers
-├── [ ] Add consistency header support
-├── [ ] Add sync write fallback option
-└── [ ] Performance testing
-```
+**Tasks**:
+- [ ] Implement WriteTracker
+- [ ] Add write ticket to API response
+- [ ] Add wait_for_commit to read handlers
+- [ ] Add consistency header support
+- [ ] Add sync write fallback option
+- [ ] Performance testing
 
 ---
 
@@ -3609,15 +3643,19 @@ pub mod fixtures {
 
 ### 19.8 Test Coverage Requirements
 
-| Component | Required Coverage | Critical Paths |
-|-----------|------------------|----------------|
-| NATS Publisher | >90% | Publish, retry, timeout |
-| Storage Consumer | >95% | Batch, write, ack, idempotency |
-| Write Tracker (RYOW) | >90% | Wait, notify, timeout |
-| Event Publisher | >90% | Publish committed events |
-| Circuit Breaker | >95% | State transitions |
-| Async API Handlers | >90% | Validation, publish |
-| Edge Consumer | >85% | Apply, dedupe, sync |
+> **Alignment with Project Standards**: Per CLAUDE.md, the project-wide test coverage target is **>90%**. Security-critical code paths (like the graph resolver) require **>95%**. These Version 2.0.0 components follow the same standards.
+
+| Component | Required Coverage | Critical Paths | Notes |
+|-----------|------------------|----------------|-------|
+| NATS Publisher | >90% | Publish, retry, timeout | Standard coverage |
+| Storage Consumer | >95% | Batch, write, ack, idempotency | **Security-critical**: data integrity |
+| Write Tracker (RYOW) | >90% | Wait, notify, timeout | Standard coverage |
+| Event Publisher | >90% | Publish committed events | Standard coverage |
+| Circuit Breaker | >95% | State transitions | **Security-critical**: fallback safety |
+| Async API Handlers | >90% | Validation, publish | Standard coverage |
+| Edge Consumer | >85% | Apply, dedupe, sync | Lower: edge-specific code |
+
+**Overall Version 2.0.0 Target**: >90% aggregate coverage across all new components.
 
 ---
 
