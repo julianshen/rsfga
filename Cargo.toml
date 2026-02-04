@@ -30,7 +30,6 @@ futures = "0.3"
 
 # NATS messaging
 async-nats = "0.38"
-nats-server = "0.38"
 
 # HTTP server
 axum = "0.7"

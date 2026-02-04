@@ -56,5 +56,5 @@ prost-build = { workspace = true }
 
 [features]
 default = []
-# Enable embedded NATS server for testing (requires nats-server feature)
+# Feature flag for future integration test support
 test-support = []

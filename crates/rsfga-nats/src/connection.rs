@@ -34,8 +34,8 @@ struct NatsClientInner {
     jetstream: JetStreamContext,
     /// Configuration
     config: NatsConfig,
-    /// Connection state
-    state: RwLock<ConnectionState>,
+    /// Connection state (shared with event callback)
+    state: Arc<RwLock<ConnectionState>>,
 }
 
 /// Connection state tracking.
@@ -70,9 +70,14 @@ impl NatsClient {
             "Connecting to NATS"
         );
 
-        let options = Self::build_connect_options(&config).await?;
+        // Create state tracking that will be shared with the event callback
+        let state = Arc::new(RwLock::new(ConnectionState::Reconnecting));
+
+        let options = Self::build_connect_options(&config, state.clone()).await?;
         let client = options.connect(&config.servers).await?;
 
+        // Mark as connected after successful initial connection
+        *state.write().await = ConnectionState::Connected;
         info!("Connected to NATS successfully");
 
         // Create JetStream context
@@ -86,7 +91,7 @@ impl NatsClient {
             client,
             jetstream,
             config,
-            state: RwLock::new(ConnectionState::Connected),
+            state,
         };
 
         Ok(Self {
@@ -95,7 +100,10 @@ impl NatsClient {
     }
 
     /// Build connection options from configuration.
-    async fn build_connect_options(config: &NatsConfig) -> Result<async_nats::ConnectOptions> {
+    async fn build_connect_options(
+        config: &NatsConfig,
+        state: Arc<RwLock<ConnectionState>>,
+    ) -> Result<async_nats::ConnectOptions> {
         let mut options = async_nats::ConnectOptions::new()
             .name(&config.name)
             .connection_timeout(config.connect_timeout)
@@ -111,6 +119,31 @@ impl NatsClient {
         if config.tls.enabled {
             options = Self::apply_tls_config(options, &config.tls)?;
         }
+
+        // Configure event callback to track connection state
+        let state_clone = state.clone();
+        options = options.event_callback(move |event| {
+            let state = state_clone.clone();
+            async move {
+                match event {
+                    async_nats::Event::Connected => {
+                        info!("NATS connection established");
+                        *state.write().await = ConnectionState::Connected;
+                    }
+                    async_nats::Event::Disconnected => {
+                        warn!("NATS connection lost, will attempt reconnection");
+                        *state.write().await = ConnectionState::Reconnecting;
+                    }
+                    async_nats::Event::ServerError(err) => {
+                        warn!(error = %err, "NATS server error");
+                    }
+                    async_nats::Event::ClientError(err) => {
+                        warn!(error = %err, "NATS client error");
+                    }
+                    _ => {}
+                }
+            }
+        });
 
         Ok(options)
     }
