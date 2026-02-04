@@ -28,9 +28,12 @@
 13. [Security Considerations](#13-security-considerations)
 14. [Observability](#14-observability)
 15. [Implementation Plan](#15-implementation-plan)
-16. [Test Cases](#16-test-cases)
-17. [Alternatives Considered](#17-alternatives-considered)
-18. [Open Questions](#18-open-questions)
+16. [Risk Identification](#16-risk-identification)
+17. [Rollback Plan](#17-rollback-plan)
+18. [Operational Runbook](#18-operational-runbook)
+19. [Test Cases](#19-test-cases)
+20. [Alternatives Considered](#20-alternatives-considered)
+21. [Open Questions](#21-open-questions)
 
 ---
 
@@ -71,12 +74,46 @@ This document proposes a **NATS-first write architecture** for RSFGA where write
 
 ### Benefits Over Storage-First
 
-| Metric | Storage-First | NATS-First | Improvement |
-|--------|---------------|------------|-------------|
-| Write Latency (p99) | 15-20ms | 2-5ms | **4-10x faster** |
-| Throughput (writes/sec) | 150-300 | 5,000-10,000 | **20-50x higher** |
-| Burst Handling | Limited by DB | JetStream buffer | **Much better** |
-| Multi-consumer | Complex (CDC) | Native | **Simpler** |
+| Metric | Storage-First | NATS-First | Improvement | Confidence |
+|--------|---------------|------------|-------------|------------|
+| Write Latency (p99) | 15-20ms | 2-5ms | **4-10x faster** | 60% - requires validation |
+| Throughput (writes/sec) | 150-300 | 5,000-10,000 | **20-50x higher** | 60% - requires validation |
+| Burst Handling | Limited by DB | JetStream buffer | **Much better** | 80% - based on NATS benchmarks |
+| Multi-consumer | Complex (CDC) | Native | **Simpler** | 90% - architectural |
+
+> **Note**: Performance claims marked with confidence levels per project standards (ADR methodology).
+> Validation will occur in Milestone 2.0.3 with benchmarking against baseline.
+
+### Security Consideration: Eventual Consistency Window
+
+**⚠️ IMPORTANT**: The async path introduces an eventual consistency window where:
+
+1. **Permission grants** are not immediately visible (~50-300ms typical)
+2. **Permission revocations** continue to be honored during this window
+
+**Security Analysis**:
+
+| Scenario | Risk | Mitigation |
+|----------|------|------------|
+| Grant delay | User cannot access resource for ~300ms | Acceptable UX trade-off |
+| Revoke delay | Revoked user may access for ~300ms | **Security concern** - see below |
+
+**Revocation Window Mitigation Options**:
+
+1. **Use sync path for revocations** (Recommended)
+   - DELETE operations use original sync endpoint
+   - Only writes (grants) use async path
+   - Zero revocation delay
+
+2. **RYOW for sensitive operations**
+   - Client uses write ticket for critical checks
+   - Adds latency but ensures consistency
+
+3. **Accept the window** (Not recommended for sensitive systems)
+   - Appropriate for non-critical authorization
+   - Document in API guidelines
+
+**Recommendation**: Applications should use the **sync `/write` endpoint for permission revocations** and the **async `/async/write` endpoint for permission grants**. This provides the performance benefits of async writes while maintaining security for revocations.
 
 ---
 
@@ -318,12 +355,15 @@ Instead of modifying existing endpoints, we create **parallel async API endpoint
 │                          API Endpoint Structure                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  Original API (100% unchanged):                                              │
+│  Original API (client-visible behavior unchanged):                           │
 │  ┌────────────────────────────────────────────────────────────────────────┐ │
-│  │  POST /stores/{store_id}/write           → Direct to storage            │ │
-│  │  POST /stores/{store_id}/write-model     → Direct to storage            │ │
-│  │  POST /stores                            → Direct to storage            │ │
-│  │  DELETE /stores/{store_id}               → Direct to storage            │ │
+│  │  POST /stores/{store_id}/write           → Storage + publish event      │ │
+│  │  POST /stores/{store_id}/write-model     → Storage + publish event      │ │
+│  │  POST /stores                            → Storage + publish event      │ │
+│  │  DELETE /stores/{store_id}               → Storage + publish event      │ │
+│  │                                                                        │ │
+│  │  Note: Event publishing is internal (fire-and-forget after commit).    │ │
+│  │  Request/response format is 100% OpenFGA compatible - no client change.│ │
 │  └────────────────────────────────────────────────────────────────────────┘ │
 │                                                                              │
 │  Async API (NEW - NATS-first):                                               │
@@ -349,7 +389,8 @@ Instead of modifying existing endpoints, we create **parallel async API endpoint
 
 | Benefit | Description |
 |---------|-------------|
-| **Zero changes to original** | Existing API code untouched |
+| **Client-visible API unchanged** | Same request/response format, 100% OpenFGA compatible |
+| **Internal enhancement only** | Sync path adds event publishing (non-blocking, after commit) |
 | **Client chooses** | Application decides sync vs async per request |
 | **Easy A/B testing** | Route percentage of traffic to async |
 | **Instant rollback** | Just use original endpoint |
@@ -1254,6 +1295,41 @@ impl PostgresStore {
 }
 ```
 
+#### Database-Specific Bulk Operations
+
+The above example uses PostgreSQL's `UNNEST` syntax. Other backends require different approaches:
+
+| Database | Bulk Insert Strategy | Bulk Delete Strategy |
+|----------|---------------------|---------------------|
+| **PostgreSQL** | `UNNEST` arrays | `IN (SELECT FROM UNNEST)` |
+| **CockroachDB** | Same as PostgreSQL | Same as PostgreSQL |
+| **MySQL/MariaDB** | Multi-value `INSERT` | `IN` with value list |
+| **SQLite** | Multi-value `INSERT` | `IN` with value list |
+
+**MySQL Example:**
+
+```sql
+-- Bulk insert (MySQL)
+INSERT INTO tuples (store_id, object_type, object_id, relation, ...)
+VALUES
+  ('store-1', 'document', 'doc1', 'viewer', ...),
+  ('store-1', 'document', 'doc2', 'viewer', ...),
+  ...
+ON DUPLICATE KEY UPDATE
+  condition_name = VALUES(condition_name),
+  condition_context = VALUES(condition_context);
+
+-- Bulk delete (MySQL)
+DELETE FROM tuples
+WHERE store_id = 'store-1'
+  AND (object_type, object_id, relation, user_type, user_id, user_relation) IN (
+    ('document', 'doc1', 'viewer', 'user', 'alice', ''),
+    ('document', 'doc2', 'viewer', 'user', 'bob', '')
+  );
+```
+
+The storage consumer implementation should detect the backend type and use the appropriate bulk operation syntax.
+
 ---
 
 ## 8. Read-Your-Own-Writes Consistency
@@ -2015,7 +2091,202 @@ Tasks:
 
 ---
 
-## 16. Test Cases
+## 16. Risk Identification
+
+### 16.1 Technical Risks
+
+| Risk ID | Risk | Probability | Impact | Mitigation |
+|---------|------|-------------|--------|------------|
+| R1 | NATS becomes single point of failure | Medium | High | Circuit breaker + sync fallback |
+| R2 | Consumer lag causes unacceptable staleness | Medium | Medium | Monitoring + auto-scaling |
+| R3 | Batch processing causes data loss on crash | Low | High | Ack only after DB commit |
+| R4 | RYOW adds complexity and latency | High | Low | Optional, off by default |
+| R5 | Performance targets not met | Medium | Medium | Validate in Milestone 2.0.3 |
+| R6 | NATS JetStream storage fills up | Low | High | Retention limits + monitoring |
+| R7 | Event ordering issues across stores | Low | Medium | Per-store sequence numbers |
+
+### 16.2 Security Risks
+
+| Risk ID | Risk | Probability | Impact | Mitigation |
+|---------|------|-------------|--------|------------|
+| S1 | Revoked permissions honored during window | High | Medium | Use sync path for revocations |
+| S2 | Unauthorized access to NATS stream | Low | High | NKey auth + TLS + ACLs |
+| S3 | Event tampering in transit | Low | High | TLS encryption |
+| S4 | DLQ exposes sensitive tuple data | Low | Medium | DLQ access controls |
+
+### 16.3 Operational Risks
+
+| Risk ID | Risk | Probability | Impact | Mitigation |
+|---------|------|-------------|--------|------------|
+| O1 | Increased operational complexity | High | Medium | Runbook + training |
+| O2 | Debugging async issues is harder | Medium | Medium | Correlation IDs + tracing |
+| O3 | Consumer daemon requires management | High | Low | Kubernetes deployment |
+| O4 | NATS cluster management overhead | Medium | Medium | Managed NATS or simple setup |
+
+---
+
+## 17. Rollback Plan
+
+### 17.1 Rollback Triggers
+
+Rollback should be initiated if:
+
+1. **Consumer lag exceeds 5 minutes** sustained for 15+ minutes
+2. **NATS availability drops below 99%** for 10+ minutes
+3. **Data inconsistency detected** between NATS and storage
+4. **Security incident** related to async path
+5. **Performance degradation** vs. sync baseline
+
+### 17.2 Rollback Procedure
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Rollback Procedure                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Phase 1: Immediate (< 5 minutes)                                            │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  1. Route all traffic to sync endpoints                                │ │
+│  │     - Update load balancer / ingress rules                             │ │
+│  │     - OR clients switch from /async/* to /*                            │ │
+│  │                                                                        │ │
+│  │  2. Keep rsfga-writer running to drain queue                           │ │
+│  │     - Prevents data loss from pending writes                           │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  Phase 2: Drain (< 30 minutes)                                               │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  3. Monitor RSFGA_WRITES queue until empty                             │ │
+│  │     - nats stream info RSFGA_WRITES                                    │ │
+│  │                                                                        │ │
+│  │  4. Verify all messages processed                                      │ │
+│  │     - Compare last sequence with consumer position                     │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  Phase 3: Cleanup (< 1 hour)                                                 │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  5. Stop rsfga-writer daemon                                           │ │
+│  │                                                                        │ │
+│  │  6. (Optional) Keep NATS streams for debugging                         │ │
+│  │     - OR delete: nats stream delete RSFGA_WRITES                       │ │
+│  │                                                                        │ │
+│  │  7. Remove /async endpoints from routing (optional)                    │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 17.3 Rollback Validation
+
+After rollback, verify:
+
+- [ ] All writes going through sync path
+- [ ] No messages pending in RSFGA_WRITES
+- [ ] Latency/throughput metrics match pre-async baseline
+- [ ] No data loss (compare tuple counts)
+- [ ] Edge sync still works (via sync path events)
+
+---
+
+## 18. Operational Runbook
+
+### 18.1 Deployment Checklist
+
+```
+Pre-deployment:
+├── [ ] NATS cluster deployed and healthy
+├── [ ] Streams created (RSFGA_WRITES, RSFGA_EVENTS)
+├── [ ] Credentials configured (NKey or JWT)
+├── [ ] TLS certificates in place
+├── [ ] Monitoring dashboards ready
+└── [ ] Alerting rules configured
+
+Deployment:
+├── [ ] Deploy rsfga-server with NATS config (events only)
+├── [ ] Verify sync path publishes to RSFGA_EVENTS
+├── [ ] Deploy rsfga-writer daemon
+├── [ ] Verify consumer is processing
+├── [ ] Enable /async endpoints (gradual rollout)
+└── [ ] Monitor metrics for 24 hours
+
+Post-deployment:
+├── [ ] Validate performance targets
+├── [ ] Verify edge sync receiving events
+├── [ ] Test RYOW functionality
+└── [ ] Document any issues
+```
+
+### 18.2 Common Operations
+
+#### Check Consumer Status
+
+```bash
+# View consumer lag
+nats consumer info RSFGA_WRITES storage-consumer
+
+# View stream stats
+nats stream info RSFGA_WRITES
+nats stream info RSFGA_EVENTS
+
+# View pending messages
+nats stream view RSFGA_WRITES --last 10
+```
+
+#### Restart Consumer
+
+```bash
+# Consumer is stateless - just restart
+kubectl rollout restart deployment/rsfga-writer
+
+# Consumer will resume from last acked position
+```
+
+#### Handle DLQ Messages
+
+```bash
+# View DLQ messages
+nats stream view RSFGA_DLQ --last 10
+
+# Investigate specific message
+nats stream get RSFGA_DLQ <sequence>
+
+# Replay message (after fixing issue)
+nats pub rsfga.writes.<store_id> --data '<fixed_payload>'
+
+# Clear DLQ after resolution
+nats stream purge RSFGA_DLQ
+```
+
+#### Force Drain Queue
+
+```bash
+# If consumer is stuck, manually drain
+nats consumer next RSFGA_WRITES storage-consumer --count 100 --ack
+```
+
+### 18.3 Monitoring & Alerts
+
+| Metric | Warning | Critical | Action |
+|--------|---------|----------|--------|
+| `rsfga_consumer_lag` | > 1000 | > 10000 | Scale consumer |
+| `rsfga_nats_publish_errors` | > 1/min | > 10/min | Check NATS health |
+| `rsfga_write_latency_p99` | > 10ms | > 50ms | Check NATS latency |
+| `rsfga_fallback_writes` | > 0 | > 100/min | NATS may be down |
+| `rsfga_dlq_messages` | > 0 | > 100 | Investigate failures |
+
+### 18.4 Troubleshooting
+
+| Symptom | Possible Cause | Resolution |
+|---------|---------------|------------|
+| High consumer lag | Consumer slow or down | Scale or restart consumer |
+| Writes returning 503 | NATS unavailable | Check NATS, fallback active |
+| Events not reaching edge | Consumer not publishing | Check RSFGA_EVENTS stream |
+| RYOW timeouts | Consumer behind | Check lag, increase timeout |
+| DLQ filling up | Poison messages | Check payloads, fix and replay |
+
+---
+
+## 19. Test Cases
 
 ### 16.1 Unit Tests
 
@@ -2558,9 +2829,9 @@ pub mod fixtures {
 
 ---
 
-## 17. Alternatives Considered
+## 20. Alternatives Considered
 
-### 16.1 Storage-First with Async Events (Original Proposal)
+### 20.1 Storage-First with Async Events (Original Proposal)
 
 **Approach**: Write to storage first, publish events async after.
 
@@ -2575,7 +2846,7 @@ pub mod fixtures {
 
 **Decision**: Rejected in favor of NATS-first for performance benefits.
 
-### 16.2 Kafka Instead of NATS
+### 20.2 Kafka Instead of NATS
 
 **Approach**: Use Kafka for event streaming.
 
@@ -2592,7 +2863,7 @@ pub mod fixtures {
 
 **Decision**: NATS selected for lower latency and edge-native design.
 
-### 16.3 Database-Based Queue (Transactional Outbox)
+### 20.3 Database-Based Queue (Transactional Outbox)
 
 **Approach**: Write to outbox table in same transaction, process async.
 
@@ -2609,9 +2880,9 @@ pub mod fixtures {
 
 ---
 
-## 18. Open Questions
+## 21. Open Questions
 
-### 18.1 Unresolved
+### 21.1 Unresolved
 
 | Question | Options | Recommendation | Status |
 |----------|---------|----------------|--------|
@@ -2620,7 +2891,7 @@ pub mod fixtures {
 | DLQ retention | 7 days / 30 days | 30 days | **Open** |
 | Sync write threshold | Never / On request | On request | **Decided** |
 
-### 18.2 Questions for Stakeholders
+### 21.2 Questions for Stakeholders
 
 1. **What is acceptable staleness for reads?**
    - Current assumption: <500ms typical, <1s max

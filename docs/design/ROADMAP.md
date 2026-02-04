@@ -1932,7 +1932,7 @@ CockroachDB's BIGSERIAL emulation works correctly with our PostgreSQL migrations
 
 ---
 
-## Version 1.1.0: NATS Async Writes
+## Version 2.0.0: NATS Async Writes
 
 **Goal**: High-throughput async write path using NATS JetStream for improved performance, edge synchronization, and multi-region replication.
 
@@ -1957,7 +1957,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ### Performance Targets
 
-| Metric | Current (v1.0) | Target (v1.1) | Improvement |
+| Metric | Current (v1.0) | Target (v2.0) | Improvement |
 |--------|----------------|---------------|-------------|
 | Write Latency (p99) | 15-20ms | 2-5ms | 4-10x faster |
 | Throughput | 150-300/sec | 5,000-10,000/sec | 20-50x higher |
@@ -1965,25 +1965,25 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Milestone 1.1.1: Core NATS Integration (Week 1-2)
+### Milestone 2.0.1: Core NATS Integration (Week 1-2)
 
 **Goal**: Basic NATS connectivity and event publishing infrastructure
 
 #### Tasks
 
-**1.1.1.1 NATS Dependencies & Configuration**
+**2.0.1.1 NATS Dependencies & Configuration**
 - [ ] Add `async-nats` crate to workspace
 - [ ] Define NATS configuration structure
 - [ ] Implement connection manager with reconnection
 - [ ] Add TLS and authentication support
 
-**1.1.1.2 Event Schema (Protobuf)**
+**2.0.1.2 Event Schema (Protobuf)**
 - [ ] Define `WriteRequest` message for RSFGA_WRITES stream
 - [ ] Define `CommittedEvent` message for RSFGA_EVENTS stream
 - [ ] Define `TupleKey`, `TupleOperation`, `Condition` messages
 - [ ] Generate Rust types from protobuf
 
-**1.1.1.3 JetStream Setup**
+**2.0.1.3 JetStream Setup**
 - [ ] Create RSFGA_WRITES stream configuration (WorkQueue retention)
 - [ ] Create RSFGA_EVENTS stream configuration (Limits retention)
 - [ ] Implement stream creation/verification on startup
@@ -2002,32 +2002,27 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Milestone 1.1.2: Async API Endpoints (Week 3-4)
+### Milestone 2.0.2: Async API Endpoints (Week 3-4)
 
 **Goal**: New `/async` write endpoints that publish to NATS
 
 #### Tasks
 
-**1.1.2.1 Async Write Handler**
+**2.0.2.1 Async Write Handler**
 - [ ] Implement `POST /async/stores/{store_id}/write` endpoint
 - [ ] Validation (same as sync path)
 - [ ] Publish `WriteRequest` to RSFGA_WRITES stream
 - [ ] Return `request_id`, `sequence`, `write_ticket`
 
-**1.1.2.2 Async Model Update Handler**
+**2.0.2.2 Async Model Update Handler**
 - [ ] Implement `POST /async/stores/{store_id}/write-model` endpoint
 - [ ] Publish model update event to NATS
 - [ ] Return write ticket for RYOW
 
-**1.1.2.3 Sync Path Event Publishing**
+**2.0.2.3 Sync Path Event Publishing**
 - [ ] Original `/write` endpoint publishes to RSFGA_EVENTS after storage commit
 - [ ] Fire-and-forget (spawned task, doesn't block response)
 - [ ] Metrics for event publish failures
-
-**1.1.2.4 Write Ticket Support**
-- [ ] Add `write_ticket` to async response
-- [ ] Add optional `write_ticket` parameter to read endpoints
-- [ ] Implement wait-for-commit logic
 
 **Validation Criteria**:
 - [ ] Async endpoint returns in <5ms (without storage wait)
@@ -2038,34 +2033,33 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 **Deliverables**:
 - `/async/*` API endpoints
 - Event publishing in sync path
-- Write ticket support
 
 ---
 
-### Milestone 1.1.3: Storage Consumer Daemon (Week 5-6)
+### Milestone 2.0.3: Storage Consumer Daemon (Week 5-6)
 
 **Goal**: Separate `rsfga-writer` daemon that batches NATS events to storage
 
 #### Tasks
 
-**1.1.3.1 Consumer Implementation**
+**2.0.3.1 Consumer Implementation**
 - [ ] Create `rsfga-writer` binary
 - [ ] Implement pull consumer for RSFGA_WRITES
 - [ ] Batch messages (500 msgs or 100ms timeout)
 - [ ] Group by store_id for parallel processing
 
-**1.1.3.2 Batch Storage Writes**
+**2.0.3.2 Batch Storage Writes**
 - [ ] Aggregate writes/deletes per store
 - [ ] Single transaction per store batch
 - [ ] Bulk INSERT/DELETE with UNNEST
 - [ ] Idempotent writes (ON CONFLICT)
 
-**1.1.3.3 Event Publishing**
+**2.0.3.3 Event Publishing**
 - [ ] Publish `CommittedEvent` to RSFGA_EVENTS after storage commit
 - [ ] Include sequence number for ordering
 - [ ] Ack NATS messages after commit + publish
 
-**1.1.3.4 Metrics & Monitoring**
+**2.0.3.4 Metrics & Monitoring**
 - [ ] Consumer lag gauge
 - [ ] Batch size histogram
 - [ ] Storage write latency histogram
@@ -2084,24 +2078,24 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Milestone 1.1.4: RYOW & Write Tracker (Week 7)
+### Milestone 2.0.4: RYOW & Write Tracker (Week 7)
 
 **Goal**: Read-your-own-writes consistency support
 
 #### Tasks
 
-**1.1.4.1 Write Tracker**
+**2.0.4.1 Write Tracker**
 - [ ] Track committed sequences per store
 - [ ] Notify waiters when sequence committed
 - [ ] Handle timeout for wait operations
 - [ ] Per-store isolation
 
-**1.1.4.2 Read Handler Integration**
+**2.0.4.2 Read Handler Integration**
 - [ ] Check endpoint accepts `write_ticket`
 - [ ] Wait for sequence before executing check
 - [ ] Timeout returns error (not stale result)
 
-**1.1.4.3 Consistency Options**
+**2.0.4.3 Consistency Options**
 - [ ] `X-Consistency: eventual` (default)
 - [ ] `X-Consistency: strong` (wait for all pending)
 - [ ] Sync write escape hatch (`sync: true` in request)
@@ -2118,28 +2112,28 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Milestone 1.1.5: Failure Handling & Resilience (Week 8)
+### Milestone 2.0.5: Failure Handling & Resilience (Week 8)
 
 **Goal**: Robust handling of NATS and storage failures
 
 #### Tasks
 
-**1.1.5.1 Circuit Breaker**
+**2.0.5.1 Circuit Breaker**
 - [ ] Implement circuit breaker for NATS publishing
 - [ ] Configurable failure threshold and reset timeout
 - [ ] Half-open state for recovery testing
 
-**1.1.5.2 Fallback to Sync**
+**2.0.5.2 Fallback to Sync**
 - [ ] Auto-fallback to direct storage write when NATS unavailable
 - [ ] Metric for fallback writes
 - [ ] Still publish event (best effort) after fallback
 
-**1.1.5.3 Dead Letter Queue**
+**2.0.5.3 Dead Letter Queue**
 - [ ] Move poison messages to DLQ after max retries
 - [ ] Include error metadata in DLQ message
 - [ ] DLQ monitoring and alerting
 
-**1.1.5.4 Consumer Recovery**
+**2.0.5.4 Consumer Recovery**
 - [ ] Resume from last acked position
 - [ ] Handle NATS reconnection gracefully
 - [ ] Reprocess unacked messages
@@ -2157,28 +2151,28 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Milestone 1.1.6: Edge Sync Consumer (Week 9)
+### Milestone 2.0.6: Edge Sync Consumer (Week 9)
 
 **Goal**: Edge node synchronization via NATS events
 
 #### Tasks
 
-**1.1.6.1 Edge Consumer Daemon**
+**2.0.6.1 Edge Consumer Daemon**
 - [ ] Create `rsfga-edge` binary
 - [ ] Subscribe to RSFGA_EVENTS with store filter
 - [ ] Apply committed events to local storage
 - [ ] Track sync position per store
 
-**1.1.6.2 Idempotency**
+**2.0.6.2 Idempotency**
 - [ ] Skip already-processed sequences
 - [ ] Handle out-of-order event delivery
 - [ ] Store sync watermark in local DB
 
-**1.1.6.3 Cache Invalidation**
+**2.0.6.3 Cache Invalidation**
 - [ ] Invalidate local cache on event receipt
 - [ ] Metric for cache invalidations
 
-**1.1.6.4 Bootstrap Sync**
+**2.0.6.4 Bootstrap Sync**
 - [ ] Initial full sync from central
 - [ ] Resume from NATS after bootstrap
 - [ ] Graceful handling of large datasets
@@ -2196,7 +2190,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Version 1.1.0 Test Summary
+### Version 2.0.0 Test Summary
 
 | Category | Test Count | Coverage Target |
 |----------|------------|-----------------|
@@ -2212,7 +2206,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Version 1.1.0 Deliverables Summary
+### Version 2.0.0 Deliverables Summary
 
 | Deliverable | Description |
 |-------------|-------------|
@@ -2302,7 +2296,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 - **Distribution**: Docker image, source code
 - **Documentation**: API reference, quick start guide
 
-### v1.1.0 Release (NATS Async Writes) 📋 Planned
+### v2.0.0 Release (NATS Async Writes) 📋 Planned
 - **Audience**: High-throughput production deployments
 - **Features**:
   - Async write API (`/async/*` endpoints)
