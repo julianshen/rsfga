@@ -37,6 +37,20 @@
 
 ---
 
+> **⚠️ SECURITY WARNING: Eventual Consistency and Permission Revocations**
+>
+> This design introduces an eventual consistency window where permission changes may not be immediately visible. **For permission REVOCATIONS (deletes), this means a revoked user may retain access for a brief window (typically 20-100ms).**
+>
+> **Critical Recommendations:**
+> - **Use the sync `/write` endpoint for permission revocations** (DELETE operations)
+> - **Use the async `/async/write` endpoint only for permission grants** (WRITE operations)
+> - Consider the `async_allow_deletes: false` configuration to prevent accidental async revocations
+> - For security-critical systems, always prefer the sync path
+>
+> See [Section 13: Security Considerations](#13-security-considerations) for detailed analysis.
+
+---
+
 ## 1. Executive Summary
 
 This document proposes a **NATS-first write architecture** for RSFGA where writes go to NATS JetStream first, then are consumed and batched into storage. This inverts the traditional pattern for significant benefits:
@@ -238,7 +252,7 @@ The traditional write path (validate → write to DB → publish event) has limi
     │                     │                     │                     │
 
     Write latency: ├─── 2-5ms ───┤
-    Storage latency: ├────────────────── 50-200ms (batched) ─────────┤
+    Storage latency: ├────────────────── 20-100ms (batched) ─────────┤
 ```
 
 ### 4.2 Component Overview
@@ -538,6 +552,14 @@ pub async fn async_write_tuples_handler(/* ... */) -> Result<Json<AsyncWriteResp
     validate_write_request(&request)?;
     let model = get_cached_model(&store_id).await?;
     validate_tuples_against_model(&request, &model)?;
+
+    // SECURITY: Block async deletes if configured (recommended for security-sensitive systems)
+    // Revocations should use sync path to avoid eventual consistency window
+    if !state.config.async_allow_deletes && request.has_deletes() {
+        return Err(ApiError::BadRequest(
+            "DELETE operations not allowed on async endpoint. Use /write for revocations.".into()
+        ));
+    }
 
     // Publish to RSFGA_WRITES (rsfga-writer will handle storage + events)
     let ack = state.nats.publish_write_request(&store_id, &request).await?;
@@ -1018,9 +1040,10 @@ pub struct StorageConsumerConfig {
 impl Default for StorageConsumerConfig {
     fn default() -> Self {
         Self {
-            batch_size: 500,
-            batch_timeout: Duration::from_millis(100),
-            max_per_store_batch: 200,
+            // Prioritize low latency over batch size for shorter consistency window
+            batch_size: 100,                              // Smaller batches = faster processing
+            batch_timeout: Duration::from_millis(20),     // 20ms max wait (was 100ms)
+            max_per_store_batch: 100,                     // Smaller DB transactions
             parallelism: 4,
         }
     }
@@ -1204,10 +1227,11 @@ impl StorageConsumer {
 │                      Batching Strategy                               │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  Pull Configuration:                                                 │
-│    • Batch size: 500 messages                                        │
-│    • Batch timeout: 100ms                                            │
+│  Pull Configuration (optimized for low latency):                     │
+│    • Batch size: 100 messages                                        │
+│    • Batch timeout: 20ms                                             │
 │    • Whichever comes first triggers processing                       │
+│    • Prioritizes consistency window over throughput                  │
 │                                                                      │
 │  Grouping:                                                           │
 │    • Group messages by store_id                                      │
@@ -1219,10 +1243,11 @@ impl StorageConsumer {
 │    • Uses bulk INSERT/DELETE (not individual statements)             │
 │    • Single changelog entry for entire batch                         │
 │                                                                      │
-│  Throughput Math:                                                    │
-│    • 500 msgs/batch × 10 batches/sec = 5,000 msgs/sec               │
+│  Throughput Math (with low-latency settings):                        │
+│    • 100 msgs/batch × 50 batches/sec = 5,000 msgs/sec               │
 │    • With 4 parallel stores: up to 20,000 writes/sec                │
 │    • Actual limit: database write throughput                         │
+│    • Trade-off: Slightly more DB transactions for shorter latency    │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -1330,6 +1355,79 @@ WHERE store_id = 'store-1'
 
 The storage consumer implementation should detect the backend type and use the appropriate bulk operation syntax.
 
+### 7.6 Idempotency Guarantees and Edge Cases
+
+The storage consumer must handle idempotency correctly to prevent data inconsistencies when messages are redelivered.
+
+#### Idempotency Key Strategy
+
+Idempotency is based on the **tuple key** `(user, relation, object)`, NOT the request_id:
+
+```rust
+// Tuple key for idempotency
+pub struct TupleKey {
+    pub user: String,      // e.g., "user:alice"
+    pub relation: String,  // e.g., "viewer"
+    pub object: String,    // e.g., "document:readme"
+}
+```
+
+#### Edge Cases
+
+| Scenario | Behavior | Rationale |
+|----------|----------|-----------|
+| Same tuple written twice | Second write is no-op (ON CONFLICT) | Idempotent by design |
+| Tuple with different condition | **Update** the condition | Condition is metadata, not key |
+| Write then delete same tuple | Delete wins (last-write-wins) | Ordering by NATS sequence |
+| Delete then write same tuple | Write wins (last-write-wins) | Ordering by NATS sequence |
+| Partial batch failure | Rollback entire store batch | Transactional consistency |
+| Consumer processes before ack | Re-process on restart (idempotent) | At-least-once delivery |
+
+#### Condition Changes
+
+When the same tuple is written with a **different CEL condition**, the behavior is UPDATE:
+
+```sql
+-- PostgreSQL: Update condition on conflict
+INSERT INTO tuples (user, relation, object, condition, condition_context)
+VALUES ('user:alice', 'viewer', 'document:readme', 'context.ip_range == "10.0.0.0/8"', '{}')
+ON CONFLICT (store_id, user, relation, object)
+DO UPDATE SET
+  condition = EXCLUDED.condition,
+  condition_context = EXCLUDED.condition_context,
+  updated_at = NOW();
+
+-- MySQL: Same behavior with ON DUPLICATE KEY
+INSERT INTO tuples (...)
+VALUES (...)
+ON DUPLICATE KEY UPDATE
+  condition = VALUES(condition),
+  condition_context = VALUES(condition_context),
+  updated_at = NOW();
+```
+
+#### Message Redelivery
+
+If the consumer crashes after writing to storage but before acknowledging NATS:
+
+1. NATS redelivers the message (at-least-once)
+2. Consumer attempts to write again
+3. `ON CONFLICT` / `ON DUPLICATE KEY` makes write idempotent
+4. Event is published again (downstream consumers must also be idempotent)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Redelivery Scenario                                          │
+│                                                              │
+│ 1. Consumer pulls message                                    │
+│ 2. Consumer writes to DB ✓                                   │
+│ 3. Consumer crashes before ack ✗                             │
+│ 4. NATS redelivers after ack_wait timeout                    │
+│ 5. Consumer writes again (idempotent - no duplicate)         │
+│ 6. Consumer acks message ✓                                   │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ---
 
 ## 8. Read-Your-Own-Writes Consistency
@@ -1361,12 +1459,22 @@ pub async fn check_handler(
         state.write_tracker
             .wait_for_commit(&ticket.store_id, ticket.sequence, Duration::from_secs(5))
             .await
-            .map_err(|_| ApiError::Timeout("Write not yet committed".to_string()))?;
+            .map_err(|_| {
+                // IMPORTANT: Return 504 Gateway Timeout, NOT a false authorization result
+                // Returning false would be a security issue (denying access incorrectly)
+                // Client should retry or fall back to sync path
+                ApiError::GatewayTimeout("RYOW timeout: write not yet committed".to_string())
+            })?;
     }
 
     // Proceed with check (now guaranteed to see the write)
     // ...
 }
+
+// HTTP Status Codes for RYOW:
+// - 200 OK: Write committed, check proceeded normally
+// - 504 Gateway Timeout: Write not committed within timeout (client should retry)
+// - NOT 403/false: Never return authorization denial due to timeout
 
 /// Write tracker that knows which sequences have been committed
 pub struct WriteTracker {
@@ -1881,8 +1989,9 @@ pub async fn move_to_dlq(
 │  NATS-First (Proposed):                                                      │
 │    • Single write: 1 API call → 1 NATS publish                              │
 │    • NATS accepts: ~50,000+ publishes/sec                                   │
-│    • Storage consumer batches: 500 msgs → 1 DB transaction                  │
+│    • Storage consumer batches: 100 msgs → 1 DB transaction                  │
 │    • Consumer throughput: 5,000-10,000 tuples/sec                           │
+│    • Consistency window: 20-100ms (optimized for low latency)               │
 │                                                                              │
 │  Improvement: 15-30x higher sustained throughput                            │
 │                                                                              │
@@ -2918,6 +3027,11 @@ nats:
     - "nats://nats-2:4222"
     - "nats://nats-3:4222"
 
+  # Security: Block DELETE operations on /async endpoints
+  # Recommended: false (default) - revocations should use sync path
+  # Set to true only if eventual consistency is acceptable for revocations
+  async_allow_deletes: false
+
   # Authentication
   auth:
     type: nkey
@@ -2949,11 +3063,11 @@ nats:
       replicas: 3
       max_age_days: 7
 
-# Storage consumer settings
+# Storage consumer settings (optimized for low consistency window)
 consumer:
-  batch_size: 500
-  batch_timeout_ms: 100
-  max_per_store_batch: 200
+  batch_size: 100              # Smaller batches for faster processing
+  batch_timeout_ms: 20         # 20ms max wait (prioritizes latency)
+  max_per_store_batch: 100     # Smaller DB transactions
   parallelism: 4
   ack_wait_seconds: 60
   max_deliver: 5

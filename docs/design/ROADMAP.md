@@ -1957,7 +1957,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ### Performance Targets
 
-| Metric | Current (v1.0) | Target (v2.0) | Improvement |
+| Metric | Current (v1.0) | Target (v2.0.0) | Improvement |
 |--------|----------------|---------------|-------------|
 | Write Latency (p99) | 15-20ms | 2-5ms | 4-10x faster |
 | Throughput | 150-300/sec | 5,000-10,000/sec | 20-50x higher |
@@ -2308,13 +2308,13 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 - **Distribution**: Docker images, Kubernetes Helm chart
 - **Documentation**: NATS deployment guide, async API docs
 
-### v2.0 Release (End of Phase 2)
+### v3.0.0 Release (End of Phase 2 - Precomputation)
 - **Audience**: Ultra-low-latency requirements
 - **Features**: Precomputation, sub-millisecond checks
 - **Distribution**: Docker image, Kubernetes Helm chart
 - **Documentation**: Performance tuning guide, migration guide
 
-### v3.0 Release (End of Phase 3)
+### v4.0.0 Release (End of Phase 3 - Distributed Edge)
 - **Audience**: Global deployment
 - **Features**: Full distributed edge architecture
 - **Distribution**: Multi-arch Docker images, Helm chart, binaries
