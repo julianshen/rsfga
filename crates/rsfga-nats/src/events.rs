@@ -340,13 +340,33 @@ pub struct WriteTicket {
 }
 
 impl WriteTicket {
-    /// Create a new write ticket.
+    /// Default TTL for write tickets (60 seconds).
+    pub const DEFAULT_TTL_SECS: i64 = 60;
+
+    /// Create a new write ticket with default TTL (60 seconds).
     pub fn new(store_id: impl Into<String>, sequence: u64, request_id: impl Into<String>) -> Self {
+        Self::with_ttl(
+            store_id,
+            sequence,
+            request_id,
+            std::time::Duration::from_secs(Self::DEFAULT_TTL_SECS as u64),
+        )
+    }
+
+    /// Create a new write ticket with custom TTL.
+    pub fn with_ttl(
+        store_id: impl Into<String>,
+        sequence: u64,
+        request_id: impl Into<String>,
+        ttl: std::time::Duration,
+    ) -> Self {
         Self {
             store_id: store_id.into(),
             sequence,
             request_id: request_id.into(),
-            expires_at: Utc::now() + chrono::Duration::seconds(60),
+            expires_at: Utc::now()
+                + chrono::Duration::from_std(ttl)
+                    .unwrap_or(chrono::Duration::seconds(Self::DEFAULT_TTL_SECS)),
         }
     }
 

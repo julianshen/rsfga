@@ -85,19 +85,23 @@ impl From<async_nats::ConnectError> for NatsError {
     }
 }
 
-impl From<async_nats::jetstream::context::CreateStreamError> for NatsError {
-    fn from(err: async_nats::jetstream::context::CreateStreamError) -> Self {
+// Note: We intentionally do NOT implement `From<CreateStreamError>` or `From<ConsumerError>`
+// because these errors need context (stream/consumer name) that cannot be inferred.
+// Use `NatsError::stream_error()` or `NatsError::consumer_error()` helper methods instead.
+
+impl NatsError {
+    /// Create a stream error with proper context.
+    pub fn stream_error(stream: impl Into<String>, err: impl std::fmt::Display) -> Self {
         NatsError::Stream {
-            stream: "unknown".to_string(),
+            stream: stream.into(),
             reason: err.to_string(),
         }
     }
-}
 
-impl From<async_nats::jetstream::stream::ConsumerError> for NatsError {
-    fn from(err: async_nats::jetstream::stream::ConsumerError) -> Self {
+    /// Create a consumer error with proper context.
+    pub fn consumer_error(consumer: impl Into<String>, err: impl std::fmt::Display) -> Self {
         NatsError::Consumer {
-            consumer: "unknown".to_string(),
+            consumer: consumer.into(),
             reason: err.to_string(),
         }
     }

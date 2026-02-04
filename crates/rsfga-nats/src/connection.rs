@@ -6,7 +6,7 @@ use async_nats::jetstream::{self, Context as JetStreamContext};
 use async_nats::Client;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// NATS client with connection management and JetStream support.
 #[derive(Clone)]
@@ -127,13 +127,15 @@ impl NatsClient {
             })?;
         } else if let Some(nkey_path) = &auth.nkey_seed_path {
             debug!(path = %nkey_path, "Using NKey authentication");
-            // NKey auth requires reading the seed file
+            // NKey auth: async-nats handles signing internally when given the seed
             let seed = std::fs::read_to_string(nkey_path).map_err(|e| {
                 NatsError::Authentication(format!("Failed to read NKey seed: {}", e))
             })?;
-            let key_pair = nkeys::KeyPair::from_seed(&seed)
+            // Validate the seed is parseable
+            nkeys::KeyPair::from_seed(&seed)
                 .map_err(|e| NatsError::Authentication(format!("Invalid NKey seed: {}", e)))?;
-            options = options.nkey(key_pair.public_key());
+            // async-nats nkey() method takes the seed and handles signing internally
+            options = options.nkey(seed);
         }
 
         Ok(options)
@@ -158,13 +160,6 @@ impl NatsClient {
         if let (Some(cert_path), Some(key_path)) = (&tls.client_cert_path, &tls.client_key_path) {
             debug!(cert = %cert_path, key = %key_path, "Loading client certificate");
             tls_options = tls_options.add_client_certificate(cert_path.into(), key_path.into());
-        }
-
-        // Warn about insecure mode
-        if tls.insecure_skip_verify {
-            warn!("TLS certificate verification is DISABLED - this is insecure!");
-            // Note: async-nats doesn't directly support skip_verify,
-            // this would need custom TLS config
         }
 
         Ok(tls_options)

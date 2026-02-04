@@ -88,14 +88,33 @@ impl JetStreamManager {
             }
             Err(e) => {
                 warn!(stream = %STREAM_WRITES, error = %e, "Failed to create stream, attempting update");
-                // Stream might exist with different config, try to update
+                // Stream might exist with different config, try to update it
+                // First verify stream exists
                 js.get_stream(STREAM_WRITES)
                     .await
-                    .map_err(|e| NatsError::Stream {
+                    .map_err(|get_err| NatsError::Stream {
                         stream: STREAM_WRITES.to_string(),
-                        reason: e.to_string(),
+                        reason: format!("create failed: {}, get failed: {}", e, get_err),
                     })?;
-                info!(stream = %STREAM_WRITES, "Using existing stream");
+
+                // Attempt to update stream configuration via context
+                // Note: Some fields cannot be updated after creation (e.g., storage type)
+                match js.update_stream(&stream_config).await {
+                    Ok(info) => {
+                        info!(
+                            stream = %STREAM_WRITES,
+                            messages = info.state.messages,
+                            "Stream configuration updated"
+                        );
+                    }
+                    Err(update_err) => {
+                        warn!(
+                            stream = %STREAM_WRITES,
+                            error = %update_err,
+                            "Failed to update stream config, using existing configuration"
+                        );
+                    }
+                }
                 Ok(())
             }
         }
@@ -140,13 +159,33 @@ impl JetStreamManager {
             }
             Err(e) => {
                 warn!(stream = %STREAM_EVENTS, error = %e, "Failed to create stream, attempting update");
+                // Stream might exist with different config, try to update it
+                // First verify stream exists
                 js.get_stream(STREAM_EVENTS)
                     .await
-                    .map_err(|e| NatsError::Stream {
+                    .map_err(|get_err| NatsError::Stream {
                         stream: STREAM_EVENTS.to_string(),
-                        reason: e.to_string(),
+                        reason: format!("create failed: {}, get failed: {}", e, get_err),
                     })?;
-                info!(stream = %STREAM_EVENTS, "Using existing stream");
+
+                // Attempt to update stream configuration via context
+                // Note: Some fields cannot be updated after creation (e.g., storage type)
+                match js.update_stream(&stream_config).await {
+                    Ok(info) => {
+                        info!(
+                            stream = %STREAM_EVENTS,
+                            messages = info.state.messages,
+                            "Stream configuration updated"
+                        );
+                    }
+                    Err(update_err) => {
+                        warn!(
+                            stream = %STREAM_EVENTS,
+                            error = %update_err,
+                            "Failed to update stream config, using existing configuration"
+                        );
+                    }
+                }
                 Ok(())
             }
         }

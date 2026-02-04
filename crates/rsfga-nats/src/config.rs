@@ -44,6 +44,10 @@ pub struct NatsConfig {
     /// Write mode: "nats" (async-first), "direct" (sync), "auto" (fallback)
     #[serde(default = "default_write_mode")]
     pub write_mode: WriteMode,
+
+    /// Write ticket TTL (how long a ticket is valid for RYOW consistency)
+    #[serde(default = "default_write_ticket_ttl", with = "humantime_serde")]
+    pub write_ticket_ttl: Duration,
 }
 
 impl Default for NatsConfig {
@@ -58,6 +62,7 @@ impl Default for NatsConfig {
             tls: TlsConfig::default(),
             jetstream: JetStreamConfig::default(),
             write_mode: default_write_mode(),
+            write_ticket_ttl: default_write_ticket_ttl(),
         }
     }
 }
@@ -149,6 +154,9 @@ impl AuthConfig {
 }
 
 /// TLS configuration.
+///
+/// Note: Certificate verification cannot be skipped with async-nats.
+/// For testing, use proper test certificates or local CA.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TlsConfig {
     /// Enable TLS
@@ -163,10 +171,6 @@ pub struct TlsConfig {
 
     /// Path to client key file
     pub client_key_path: Option<String>,
-
-    /// Skip server certificate verification (INSECURE - for testing only)
-    #[serde(default)]
-    pub insecure_skip_verify: bool,
 }
 
 /// JetStream configuration.
@@ -198,12 +202,16 @@ impl Default for JetStreamConfig {
             api_prefix: None,
             dedup_window: default_dedup_window(),
             writes_stream: StreamConfig::default(),
-            events_stream: EventsStreamConfig::default(),
+            events_stream: StreamConfig::events_default(),
         }
     }
 }
 
-/// Configuration for RSFGA_WRITES stream.
+/// Configuration for a JetStream stream.
+///
+/// Used for both RSFGA_WRITES and RSFGA_EVENTS streams.
+/// Use `StreamConfig::default()` for writes (unlimited retention)
+/// or `StreamConfig::events_default()` for events (7-day retention).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamConfig {
     /// Number of replicas for durability
@@ -244,36 +252,9 @@ impl Default for StreamConfig {
     }
 }
 
-/// Configuration for RSFGA_EVENTS stream.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventsStreamConfig {
-    /// Number of replicas for durability
-    #[serde(default = "default_replicas")]
-    pub replicas: u32,
-
-    /// Maximum age of messages
-    #[serde(default = "default_events_max_age", with = "humantime_serde")]
-    pub max_age: Duration,
-
-    /// Maximum number of messages (0 = unlimited)
-    #[serde(default)]
-    pub max_messages: i64,
-
-    /// Maximum bytes (0 = unlimited)
-    #[serde(default)]
-    pub max_bytes: i64,
-
-    /// Maximum message size in bytes
-    #[serde(default = "default_max_message_size")]
-    pub max_message_size: i32,
-
-    /// Storage type: "file" or "memory"
-    #[serde(default = "default_storage")]
-    pub storage: StorageType,
-}
-
-impl Default for EventsStreamConfig {
-    fn default() -> Self {
+impl StreamConfig {
+    /// Create default configuration for events stream (7-day retention).
+    pub fn events_default() -> Self {
         Self {
             replicas: default_replicas(),
             max_age: default_events_max_age(),
@@ -284,6 +265,9 @@ impl Default for EventsStreamConfig {
         }
     }
 }
+
+/// Type alias for backwards compatibility.
+pub type EventsStreamConfig = StreamConfig;
 
 /// Storage type for JetStream streams.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -314,6 +298,10 @@ fn default_request_timeout() -> Duration {
 
 fn default_write_mode() -> WriteMode {
     WriteMode::Direct
+}
+
+fn default_write_ticket_ttl() -> Duration {
+    Duration::from_secs(60)
 }
 
 fn default_true() -> bool {
@@ -411,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_events_stream_config_defaults() {
-        let config = EventsStreamConfig::default();
+        let config = StreamConfig::events_default();
         assert_eq!(config.replicas, 1);
         assert_eq!(config.max_age, Duration::from_secs(7 * 24 * 60 * 60)); // 7 days
     }

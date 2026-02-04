@@ -8,10 +8,9 @@ use crate::error::{NatsError, Result};
 use crate::events::{CommittedEvent, WriteRequest, WriteTicket};
 use async_nats::jetstream::publish::PublishAck;
 use bytes::Bytes;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tracing::{debug, info, instrument, warn};
 
@@ -26,8 +25,8 @@ pub struct EventPublisher {
 }
 
 struct PublisherInner {
-    /// Circuit breaker state
-    circuit_breaker: RwLock<CircuitBreakerState>,
+    /// Circuit breaker state (atomic for lock-free operation)
+    circuit_breaker: AtomicCircuitBreaker,
     /// Metrics
     metrics: PublisherMetrics,
     /// Configuration
@@ -47,6 +46,8 @@ pub struct PublisherConfig {
     pub circuit_breaker_threshold: u32,
     /// Circuit breaker reset timeout
     pub circuit_breaker_reset: Duration,
+    /// Write ticket TTL (how long tickets are valid for RYOW consistency)
+    pub write_ticket_ttl: Duration,
 }
 
 impl Default for PublisherConfig {
@@ -57,19 +58,105 @@ impl Default for PublisherConfig {
             retry_delay: Duration::from_millis(100),
             circuit_breaker_threshold: 5,
             circuit_breaker_reset: Duration::from_secs(30),
+            write_ticket_ttl: Duration::from_secs(60),
         }
     }
 }
 
-/// Circuit breaker state.
-#[derive(Debug, Clone, Default)]
-struct CircuitBreakerState {
+/// Atomic circuit breaker for lock-free operation.
+///
+/// Uses atomic operations to avoid race conditions between checking
+/// the circuit state and updating it after failures/successes.
+struct AtomicCircuitBreaker {
     /// Whether the circuit is open (rejecting requests)
-    open: bool,
+    open: AtomicBool,
     /// Number of consecutive failures
-    failure_count: u32,
-    /// When the circuit was opened
-    opened_at: Option<std::time::Instant>,
+    failure_count: AtomicU32,
+    /// Timestamp when circuit was opened (milliseconds since process start, 0 = not set)
+    opened_at_ms: AtomicU64,
+    /// Reference instant for computing elapsed time
+    epoch: std::time::Instant,
+}
+
+impl Default for AtomicCircuitBreaker {
+    fn default() -> Self {
+        Self {
+            open: AtomicBool::new(false),
+            failure_count: AtomicU32::new(0),
+            opened_at_ms: AtomicU64::new(0),
+            epoch: std::time::Instant::now(),
+        }
+    }
+}
+
+impl AtomicCircuitBreaker {
+    /// Check if circuit allows requests, attempting reset if timeout elapsed.
+    fn check(&self, reset_timeout: Duration) -> Result<()> {
+        if !self.open.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        // Circuit is open - check if we should attempt reset
+        let opened_at_ms = self.opened_at_ms.load(Ordering::Acquire);
+        if opened_at_ms == 0 {
+            // Shouldn't happen, but handle gracefully
+            return Ok(());
+        }
+
+        let elapsed_ms = self.epoch.elapsed().as_millis() as u64 - opened_at_ms;
+        if elapsed_ms > reset_timeout.as_millis() as u64 {
+            // Try to transition to half-open (reset)
+            // Use compare_exchange to ensure only one thread resets
+            if self
+                .open
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.failure_count.store(0, Ordering::Release);
+                self.opened_at_ms.store(0, Ordering::Release);
+                debug!("Circuit breaker reset (half-open)");
+            }
+            return Ok(());
+        }
+
+        Err(NatsError::CircuitBreakerOpen)
+    }
+
+    /// Record a successful operation (resets failure count).
+    fn record_success(&self) {
+        self.failure_count.store(0, Ordering::Release);
+    }
+
+    /// Record a failed operation, potentially opening the circuit.
+    fn record_failure(&self, threshold: u32) {
+        // Increment failure count atomically
+        let failures = self.failure_count.fetch_add(1, Ordering::AcqRel) + 1;
+
+        if failures >= threshold {
+            // Try to open the circuit (only one thread will succeed)
+            if self
+                .open
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                let now_ms = self.epoch.elapsed().as_millis() as u64;
+                self.opened_at_ms.store(now_ms, Ordering::Release);
+                warn!(failures, "Circuit breaker opened");
+            }
+        }
+    }
+
+    /// Check if circuit is currently open.
+    fn is_open(&self) -> bool {
+        self.open.load(Ordering::Acquire)
+    }
+
+    /// Manually reset the circuit.
+    fn reset(&self) {
+        self.open.store(false, Ordering::Release);
+        self.failure_count.store(0, Ordering::Release);
+        self.opened_at_ms.store(0, Ordering::Release);
+    }
 }
 
 /// Publisher metrics.
@@ -98,7 +185,7 @@ impl EventPublisher {
         Self {
             client,
             inner: Arc::new(PublisherInner {
-                circuit_breaker: RwLock::new(CircuitBreakerState::default()),
+                circuit_breaker: AtomicCircuitBreaker::default(),
                 metrics: PublisherMetrics::default(),
                 config,
             }),
@@ -111,7 +198,7 @@ impl EventPublisher {
     #[instrument(skip(self, request), fields(store_id = %request.store_id, request_id = %request.request_id))]
     pub async fn publish_write_request(&self, request: &WriteRequest) -> Result<WriteTicket> {
         // Check circuit breaker
-        self.check_circuit_breaker().await?;
+        self.check_circuit_breaker()?;
 
         self.inner
             .metrics
@@ -127,7 +214,7 @@ impl EventPublisher {
             .await?;
 
         // Record success
-        self.record_success().await;
+        self.record_success();
 
         debug!(
             subject = %subject,
@@ -136,8 +223,13 @@ impl EventPublisher {
             "Write request published"
         );
 
-        // Create write ticket
-        let ticket = WriteTicket::new(&request.store_id, ack.sequence, &request.request_id);
+        // Create write ticket with configured TTL
+        let ticket = WriteTicket::with_ttl(
+            &request.store_id,
+            ack.sequence,
+            &request.request_id,
+            self.inner.config.write_ticket_ttl,
+        );
 
         Ok(ticket)
     }
@@ -146,7 +238,7 @@ impl EventPublisher {
     #[instrument(skip(self, event), fields(store_id = %event.store_id, sequence = event.sequence))]
     pub async fn publish_committed_event(&self, event: &CommittedEvent) -> Result<PublishAck> {
         // Check circuit breaker
-        self.check_circuit_breaker().await?;
+        self.check_circuit_breaker()?;
 
         self.inner
             .metrics
@@ -162,7 +254,7 @@ impl EventPublisher {
             .await?;
 
         // Record success
-        self.record_success().await;
+        self.record_success();
 
         debug!(
             subject = %subject,
@@ -233,62 +325,47 @@ impl EventPublisher {
         }
 
         // All retries failed
-        self.record_failure().await;
+        self.record_failure();
         Err(last_error.unwrap_or_else(|| NatsError::Internal("Unknown publish error".to_string())))
     }
 
     /// Check if circuit breaker allows the request.
-    async fn check_circuit_breaker(&self) -> Result<()> {
-        let mut state = self.inner.circuit_breaker.write().await;
-        let config = &self.inner.config;
+    fn check_circuit_breaker(&self) -> Result<()> {
+        let result = self
+            .inner
+            .circuit_breaker
+            .check(self.inner.config.circuit_breaker_reset);
 
-        if state.open {
-            // Check if we should try to reset
-            if let Some(opened_at) = state.opened_at {
-                if opened_at.elapsed() > config.circuit_breaker_reset {
-                    debug!("Circuit breaker attempting reset (half-open)");
-                    state.open = false;
-                    state.failure_count = 0;
-                    state.opened_at = None;
-                } else {
-                    self.inner
-                        .metrics
-                        .circuit_breaker_rejections
-                        .fetch_add(1, Ordering::Relaxed);
-                    return Err(NatsError::CircuitBreakerOpen);
-                }
-            }
+        if result.is_err() {
+            self.inner
+                .metrics
+                .circuit_breaker_rejections
+                .fetch_add(1, Ordering::Relaxed);
         }
 
-        Ok(())
+        result
     }
 
     /// Record a successful publish.
-    async fn record_success(&self) {
+    fn record_success(&self) {
         self.inner
             .metrics
             .publish_success
             .fetch_add(1, Ordering::Relaxed);
 
-        let mut state = self.inner.circuit_breaker.write().await;
-        state.failure_count = 0;
+        self.inner.circuit_breaker.record_success();
     }
 
     /// Record a failed publish.
-    async fn record_failure(&self) {
+    fn record_failure(&self) {
         self.inner
             .metrics
             .publish_failures
             .fetch_add(1, Ordering::Relaxed);
 
-        let mut state = self.inner.circuit_breaker.write().await;
-        state.failure_count += 1;
-
-        if state.failure_count >= self.inner.config.circuit_breaker_threshold && !state.open {
-            warn!(failures = state.failure_count, "Circuit breaker opened");
-            state.open = true;
-            state.opened_at = Some(std::time::Instant::now());
-        }
+        self.inner
+            .circuit_breaker
+            .record_failure(self.inner.config.circuit_breaker_threshold);
     }
 
     /// Get publisher metrics.
@@ -307,16 +384,13 @@ impl EventPublisher {
     }
 
     /// Check if the circuit breaker is currently open.
-    pub async fn is_circuit_open(&self) -> bool {
-        self.inner.circuit_breaker.read().await.open
+    pub fn is_circuit_open(&self) -> bool {
+        self.inner.circuit_breaker.is_open()
     }
 
     /// Manually reset the circuit breaker.
-    pub async fn reset_circuit_breaker(&self) {
-        let mut state = self.inner.circuit_breaker.write().await;
-        state.open = false;
-        state.failure_count = 0;
-        state.opened_at = None;
+    pub fn reset_circuit_breaker(&self) {
+        self.inner.circuit_breaker.reset();
         info!("Circuit breaker manually reset");
     }
 }
@@ -357,10 +431,9 @@ mod tests {
 
     #[test]
     fn test_circuit_breaker_state_default() {
-        let state = CircuitBreakerState::default();
-        assert!(!state.open);
-        assert_eq!(state.failure_count, 0);
-        assert!(state.opened_at.is_none());
+        let cb = AtomicCircuitBreaker::default();
+        assert!(!cb.is_open());
+        assert_eq!(cb.failure_count.load(Ordering::Relaxed), 0);
     }
 
     #[test]
