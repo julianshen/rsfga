@@ -1,0 +1,60 @@
+[package]
+name = "rsfga-nats"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "NATS JetStream integration for RSFGA async writes"
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# NATS
+async-nats = { workspace = true }
+nkeys = "0.4"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+bytes = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+metrics = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+ulid = { workspace = true }
+chrono = { workspace = true }
+humantime-serde = "1.1"
+
+# Internal crates
+rsfga-domain = { path = "../rsfga-domain" }
+
+[dev-dependencies]
+tokio-test = "0.4"
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
+
+[features]
+default = []
+# Enable embedded NATS server for testing (requires nats-server feature)
+test-support = []
