@@ -258,7 +258,117 @@ The traditional write path (validate → write to DB → publish event) has limi
 └──────────────────────────┘
 ```
 
-### 4.3 Two-Stream Design
+### 4.3 Deployment Architecture: Separate Daemons
+
+The key architectural decision is that **consumers run as separate daemons**, not embedded in the API server:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Deployment Architecture                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Process: rsfga-server                                │
+│                         (Existing API Server)                                │
+│                                                                              │
+│  • Minimal changes to existing code                                          │
+│  • Add NATS publisher (optional, feature-flagged)                            │
+│  • Keep original storage write path (fallback)                               │
+│  • Config flag: nats.write_mode = "nats" | "direct" | "auto"                │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ Publish to NATS (when enabled)
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           NATS JetStream                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+              ┌─────────────────────┼─────────────────────┐
+              ▼                     ▼                     ▼
+┌──────────────────────┐ ┌──────────────────────┐ ┌──────────────────────┐
+│ Process: rsfga-writer│ │ Process: rsfga-edge  │ │ Process: rsfga-sync  │
+│ (Storage Consumer)   │ │ (Edge Sync Daemon)   │ │ (Region Replica)     │
+│                      │ │                      │ │                      │
+│ • Separate binary    │ │ • Separate binary    │ │ • Separate binary    │
+│ • Stateless          │ │ • Runs at edge       │ │ • Runs in secondary  │
+│ • Horizontally scale │ │ • Local storage      │ │   region             │
+│ • Can run multiple   │ │                      │ │                      │
+└──────────────────────┘ └──────────────────────┘ └──────────────────────┘
+```
+
+#### Benefits of Separate Daemons
+
+| Benefit | Description |
+|---------|-------------|
+| **Minimal API changes** | API server only adds NATS publish; existing write path unchanged |
+| **Easy fallback** | Config flag switches between NATS and direct write instantly |
+| **Independent scaling** | Scale writers separately from API servers |
+| **Isolated failures** | Writer crash doesn't affect API availability |
+| **Gradual rollout** | Run both paths in parallel during migration |
+| **Simpler testing** | Test writer daemon independently |
+
+#### Fallback Modes
+
+```yaml
+# Configuration for write mode
+nats:
+  write_mode: "auto"  # Options: "nats", "direct", "auto"
+
+  # "nats"   - Always write to NATS first (fail if NATS unavailable)
+  # "direct" - Always write to storage directly (original behavior)
+  # "auto"   - Try NATS first, fallback to direct on failure
+```
+
+```rust
+// Simplified write handler with fallback
+pub async fn write_tuples_handler(/* ... */) -> Result<Json<WriteResponse>, ApiError> {
+    // Validation (unchanged)
+    validate_write_request(&request)?;
+    let model = get_cached_model(&store_id).await?;
+    validate_tuples_against_model(&request, &model)?;
+
+    // Write path selection
+    match state.config.nats.write_mode {
+        WriteMode::Direct => {
+            // Original path - unchanged
+            state.storage.write_tuples(&store_id, writes, deletes).await?
+        }
+        WriteMode::Nats => {
+            // NATS path - new
+            state.nats.publish_write(&store_id, writes, deletes).await?
+        }
+        WriteMode::Auto => {
+            // Try NATS, fallback to direct
+            match state.nats.publish_write(&store_id, writes, deletes).await {
+                Ok(resp) => resp,
+                Err(_) => {
+                    metrics::FALLBACK_WRITES.inc();
+                    state.storage.write_tuples(&store_id, writes, deletes).await?
+                }
+            }
+        }
+    }
+}
+```
+
+#### Binary Structure
+
+```
+rsfga/
+├── rsfga-server       # Existing API server (minimal changes)
+├── rsfga-writer       # NEW: Storage consumer daemon
+├── rsfga-edge         # NEW: Edge sync daemon
+└── rsfga-sync         # NEW: Region replica daemon
+```
+
+Each daemon is:
+- **Stateless**: All state in NATS/Database
+- **Restartable**: Resume from last NATS consumer position
+- **Horizontally scalable**: Run multiple instances with consumer groups
+- **Independently deployable**: Update without touching API server
+
+### 4.4 Two-Stream Design
 
 We use **two separate streams** for different purposes:
 
