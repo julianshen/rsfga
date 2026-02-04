@@ -28,8 +28,9 @@
 13. [Security Considerations](#13-security-considerations)
 14. [Observability](#14-observability)
 15. [Implementation Plan](#15-implementation-plan)
-16. [Alternatives Considered](#16-alternatives-considered)
-17. [Open Questions](#17-open-questions)
+16. [Test Cases](#16-test-cases)
+17. [Alternatives Considered](#17-alternatives-considered)
+18. [Open Questions](#18-open-questions)
 
 ---
 
@@ -2014,7 +2015,550 @@ Tasks:
 
 ---
 
-## 16. Alternatives Considered
+## 16. Test Cases
+
+### 16.1 Unit Tests
+
+#### NATS Publisher Tests
+
+```rust
+#[cfg(test)]
+mod nats_publisher_tests {
+    // Connection & Configuration
+    #[tokio::test]
+    async fn test_publisher_connects_to_nats_server() { }
+
+    #[tokio::test]
+    async fn test_publisher_reconnects_on_connection_loss() { }
+
+    #[tokio::test]
+    async fn test_publisher_uses_configured_credentials() { }
+
+    // Publishing
+    #[tokio::test]
+    async fn test_publish_write_request_to_correct_subject() { }
+
+    #[tokio::test]
+    async fn test_publish_includes_deduplication_id() { }
+
+    #[tokio::test]
+    async fn test_publish_serializes_protobuf_correctly() { }
+
+    #[tokio::test]
+    async fn test_publish_returns_sequence_number() { }
+
+    #[tokio::test]
+    async fn test_publish_timeout_returns_error() { }
+
+    // Event Publisher
+    #[tokio::test]
+    async fn test_event_publisher_publishes_to_events_stream() { }
+
+    #[tokio::test]
+    async fn test_event_publisher_includes_all_tuple_operations() { }
+
+    #[tokio::test]
+    async fn test_event_publisher_generates_unique_event_id() { }
+}
+```
+
+#### Storage Consumer Tests
+
+```rust
+#[cfg(test)]
+mod storage_consumer_tests {
+    // Batch Processing
+    #[tokio::test]
+    async fn test_consumer_pulls_batch_of_messages() { }
+
+    #[tokio::test]
+    async fn test_consumer_groups_messages_by_store_id() { }
+
+    #[tokio::test]
+    async fn test_consumer_respects_max_batch_size() { }
+
+    #[tokio::test]
+    async fn test_consumer_respects_batch_timeout() { }
+
+    // Storage Writing
+    #[tokio::test]
+    async fn test_consumer_writes_tuples_to_storage() { }
+
+    #[tokio::test]
+    async fn test_consumer_deletes_tuples_from_storage() { }
+
+    #[tokio::test]
+    async fn test_consumer_handles_mixed_writes_and_deletes() { }
+
+    #[tokio::test]
+    async fn test_consumer_writes_in_single_transaction() { }
+
+    // Idempotency
+    #[tokio::test]
+    async fn test_consumer_handles_duplicate_messages_idempotently() { }
+
+    #[tokio::test]
+    async fn test_consumer_uses_on_conflict_for_upsert() { }
+
+    #[tokio::test]
+    async fn test_consumer_skips_already_processed_sequence() { }
+
+    // Acknowledgment
+    #[tokio::test]
+    async fn test_consumer_acks_after_successful_write() { }
+
+    #[tokio::test]
+    async fn test_consumer_nacks_on_storage_failure() { }
+
+    #[tokio::test]
+    async fn test_consumer_acks_individual_messages_in_batch() { }
+
+    // Event Publishing
+    #[tokio::test]
+    async fn test_consumer_publishes_committed_event_after_storage() { }
+
+    #[tokio::test]
+    async fn test_consumer_includes_sequence_in_committed_event() { }
+
+    // Error Handling
+    #[tokio::test]
+    async fn test_consumer_moves_to_dlq_after_max_retries() { }
+
+    #[tokio::test]
+    async fn test_consumer_continues_on_single_message_failure() { }
+
+    #[tokio::test]
+    async fn test_consumer_logs_decode_errors() { }
+}
+```
+
+#### Write Tracker (RYOW) Tests
+
+```rust
+#[cfg(test)]
+mod write_tracker_tests {
+    #[tokio::test]
+    async fn test_tracker_marks_sequence_as_committed() { }
+
+    #[tokio::test]
+    async fn test_tracker_wait_returns_immediately_if_committed() { }
+
+    #[tokio::test]
+    async fn test_tracker_wait_blocks_until_committed() { }
+
+    #[tokio::test]
+    async fn test_tracker_wait_times_out() { }
+
+    #[tokio::test]
+    async fn test_tracker_wakes_multiple_waiters() { }
+
+    #[tokio::test]
+    async fn test_tracker_handles_out_of_order_commits() { }
+
+    #[tokio::test]
+    async fn test_tracker_per_store_isolation() { }
+}
+```
+
+#### Circuit Breaker Tests
+
+```rust
+#[cfg(test)]
+mod circuit_breaker_tests {
+    #[tokio::test]
+    async fn test_circuit_closed_allows_calls() { }
+
+    #[tokio::test]
+    async fn test_circuit_opens_after_threshold_failures() { }
+
+    #[tokio::test]
+    async fn test_circuit_open_rejects_calls() { }
+
+    #[tokio::test]
+    async fn test_circuit_half_open_after_timeout() { }
+
+    #[tokio::test]
+    async fn test_circuit_closes_on_success_in_half_open() { }
+
+    #[tokio::test]
+    async fn test_circuit_reopens_on_failure_in_half_open() { }
+}
+```
+
+### 16.2 Integration Tests
+
+#### Async API Endpoint Tests
+
+```rust
+#[cfg(test)]
+mod async_api_tests {
+    // Basic Operations
+    #[tokio::test]
+    async fn test_async_write_returns_request_id() { }
+
+    #[tokio::test]
+    async fn test_async_write_returns_sequence_number() { }
+
+    #[tokio::test]
+    async fn test_async_write_returns_write_ticket() { }
+
+    #[tokio::test]
+    async fn test_async_write_validates_request() { }
+
+    #[tokio::test]
+    async fn test_async_write_validates_against_model() { }
+
+    #[tokio::test]
+    async fn test_async_write_rejects_invalid_tuples() { }
+
+    // Consistency
+    #[tokio::test]
+    async fn test_async_write_eventually_visible_in_storage() { }
+
+    #[tokio::test]
+    async fn test_async_write_with_ryow_ticket_is_consistent() { }
+
+    #[tokio::test]
+    async fn test_check_waits_for_write_ticket_before_read() { }
+
+    // Error Cases
+    #[tokio::test]
+    async fn test_async_write_returns_503_when_nats_unavailable() { }
+
+    #[tokio::test]
+    async fn test_async_write_returns_400_for_invalid_store() { }
+
+    #[tokio::test]
+    async fn test_async_write_returns_404_for_missing_model() { }
+}
+```
+
+#### Sync API with Event Publishing Tests
+
+```rust
+#[cfg(test)]
+mod sync_api_event_tests {
+    #[tokio::test]
+    async fn test_sync_write_publishes_event_to_nats() { }
+
+    #[tokio::test]
+    async fn test_sync_write_succeeds_even_if_event_publish_fails() { }
+
+    #[tokio::test]
+    async fn test_sync_write_event_contains_all_tuples() { }
+
+    #[tokio::test]
+    async fn test_sync_write_event_has_correct_sequence() { }
+
+    #[tokio::test]
+    async fn test_sync_delete_publishes_delete_event() { }
+
+    #[tokio::test]
+    async fn test_sync_model_update_publishes_model_event() { }
+}
+```
+
+#### End-to-End Flow Tests
+
+```rust
+#[cfg(test)]
+mod e2e_tests {
+    // Full Write Path
+    #[tokio::test]
+    async fn test_async_write_flows_through_to_storage() { }
+
+    #[tokio::test]
+    async fn test_async_write_batch_processed_correctly() { }
+
+    #[tokio::test]
+    async fn test_multiple_stores_processed_in_parallel() { }
+
+    // Edge Sync
+    #[tokio::test]
+    async fn test_edge_consumer_receives_committed_events() { }
+
+    #[tokio::test]
+    async fn test_edge_consumer_applies_writes_to_local_storage() { }
+
+    #[tokio::test]
+    async fn test_edge_consumer_handles_out_of_order_events() { }
+
+    #[tokio::test]
+    async fn test_edge_consumer_skips_duplicate_events() { }
+
+    // Both Paths Consistency
+    #[tokio::test]
+    async fn test_sync_and_async_writes_both_trigger_edge_sync() { }
+
+    #[tokio::test]
+    async fn test_mixed_sync_async_writes_maintain_ordering() { }
+}
+```
+
+### 16.3 Performance Tests
+
+```rust
+#[cfg(test)]
+mod performance_tests {
+    // Latency
+    #[tokio::test]
+    #[ignore] // Run manually
+    async fn test_async_write_latency_under_5ms_p99() { }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_sync_write_latency_under_25ms_p99() { }
+
+    // Throughput
+    #[tokio::test]
+    #[ignore]
+    async fn test_async_write_throughput_over_5000_per_second() { }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_consumer_batch_throughput_over_10000_tuples_per_second() { }
+
+    // Batching Efficiency
+    #[tokio::test]
+    #[ignore]
+    async fn test_batching_reduces_db_transactions() { }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_parallel_store_processing_improves_throughput() { }
+
+    // Memory & Resources
+    #[tokio::test]
+    #[ignore]
+    async fn test_consumer_memory_stable_under_load() { }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_nats_buffer_handles_burst_traffic() { }
+}
+```
+
+### 16.4 Failure & Recovery Tests
+
+```rust
+#[cfg(test)]
+mod failure_tests {
+    // NATS Failures
+    #[tokio::test]
+    async fn test_publisher_retries_on_transient_nats_error() { }
+
+    #[tokio::test]
+    async fn test_publisher_fails_after_max_retries() { }
+
+    #[tokio::test]
+    async fn test_consumer_reconnects_after_nats_restart() { }
+
+    #[tokio::test]
+    async fn test_consumer_resumes_from_last_acked_position() { }
+
+    // Storage Failures
+    #[tokio::test]
+    async fn test_consumer_retries_on_transient_db_error() { }
+
+    #[tokio::test]
+    async fn test_consumer_nacks_on_persistent_db_error() { }
+
+    #[tokio::test]
+    async fn test_messages_redelivered_after_consumer_crash() { }
+
+    // Circuit Breaker
+    #[tokio::test]
+    async fn test_fallback_to_sync_when_nats_unavailable() { }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_prevents_cascade_failure() { }
+
+    // DLQ
+    #[tokio::test]
+    async fn test_poison_message_moved_to_dlq() { }
+
+    #[tokio::test]
+    async fn test_dlq_contains_error_metadata() { }
+
+    // Edge Failures
+    #[tokio::test]
+    async fn test_edge_consumer_recovers_after_disconnect() { }
+
+    #[tokio::test]
+    async fn test_edge_consumer_resyncs_missed_events() { }
+}
+```
+
+### 16.5 Compatibility Tests
+
+```rust
+#[cfg(test)]
+mod compatibility_tests {
+    // Original API Unchanged
+    #[tokio::test]
+    async fn test_original_write_api_response_format_unchanged() { }
+
+    #[tokio::test]
+    async fn test_original_write_api_still_works_without_nats() { }
+
+    #[tokio::test]
+    async fn test_original_read_apis_work_with_async_writes() { }
+
+    // OpenFGA Compatibility
+    #[tokio::test]
+    async fn test_async_written_tuples_visible_via_check() { }
+
+    #[tokio::test]
+    async fn test_async_written_tuples_visible_via_read() { }
+
+    #[tokio::test]
+    async fn test_async_written_tuples_visible_via_list_objects() { }
+
+    #[tokio::test]
+    async fn test_changes_api_includes_async_writes() { }
+
+    // Migration
+    #[tokio::test]
+    async fn test_can_run_sync_and_async_writes_simultaneously() { }
+
+    #[tokio::test]
+    async fn test_switch_from_sync_to_async_preserves_data() { }
+}
+```
+
+### 16.6 Security Tests
+
+```rust
+#[cfg(test)]
+mod security_tests {
+    // Authentication
+    #[tokio::test]
+    async fn test_nats_connection_requires_valid_credentials() { }
+
+    #[tokio::test]
+    async fn test_nats_rejects_invalid_credentials() { }
+
+    // Authorization
+    #[tokio::test]
+    async fn test_publisher_can_only_publish_to_writes_stream() { }
+
+    #[tokio::test]
+    async fn test_consumer_can_only_subscribe_to_allowed_subjects() { }
+
+    #[tokio::test]
+    async fn test_edge_consumer_filtered_to_assigned_stores() { }
+
+    // TLS
+    #[tokio::test]
+    async fn test_nats_connection_uses_tls() { }
+
+    #[tokio::test]
+    async fn test_nats_rejects_invalid_certificates() { }
+
+    // Input Validation
+    #[tokio::test]
+    async fn test_malformed_protobuf_rejected() { }
+
+    #[tokio::test]
+    async fn test_oversized_message_rejected() { }
+}
+```
+
+### 16.7 Test Infrastructure
+
+#### Embedded NATS for Unit Tests
+
+```rust
+use async_nats::jetstream;
+use testcontainers::{clients::Cli, images::nats::Nats};
+
+pub struct TestNats {
+    _container: Container<'static, Nats>,
+    pub client: async_nats::Client,
+    pub js: jetstream::Context,
+}
+
+impl TestNats {
+    pub async fn start() -> Self {
+        let docker = Cli::default();
+        let container = docker.run(Nats::default().with_jetstream());
+        let port = container.get_host_port_ipv4(4222);
+
+        let client = async_nats::connect(format!("localhost:{}", port)).await.unwrap();
+        let js = jetstream::new(client.clone());
+
+        // Create test streams
+        js.get_or_create_stream(stream_config("RSFGA_WRITES")).await.unwrap();
+        js.get_or_create_stream(stream_config("RSFGA_EVENTS")).await.unwrap();
+
+        Self { _container: container, client, js }
+    }
+}
+
+#[tokio::test]
+async fn example_test_with_embedded_nats() {
+    let nats = TestNats::start().await;
+
+    // Use nats.js for publishing/consuming in tests
+    let publisher = NatsEventPublisher::new(nats.js.clone());
+    // ...
+}
+```
+
+#### Test Fixtures
+
+```rust
+pub mod fixtures {
+    pub fn sample_write_request(store_id: &str) -> WriteRequest {
+        WriteRequest {
+            request_id: ulid::Ulid::new().to_string(),
+            store_id: store_id.to_string(),
+            writes: vec![sample_tuple_write()],
+            deletes: vec![],
+            ..Default::default()
+        }
+    }
+
+    pub fn sample_tuple_write() -> TupleWrite {
+        TupleWrite {
+            key: Some(TupleKey {
+                object_type: "document".to_string(),
+                object_id: "doc1".to_string(),
+                relation: "viewer".to_string(),
+                user_type: "user".to_string(),
+                user_id: "alice".to_string(),
+                ..Default::default()
+            }),
+            condition: None,
+        }
+    }
+
+    pub fn sample_committed_event(store_id: &str, sequence: u64) -> CommittedEvent {
+        CommittedEvent {
+            event_id: ulid::Ulid::new().to_string(),
+            store_id: store_id.to_string(),
+            sequence,
+            ..Default::default()
+        }
+    }
+}
+```
+
+### 16.8 Test Coverage Requirements
+
+| Component | Required Coverage | Critical Paths |
+|-----------|------------------|----------------|
+| NATS Publisher | >90% | Publish, retry, timeout |
+| Storage Consumer | >95% | Batch, write, ack, idempotency |
+| Write Tracker (RYOW) | >90% | Wait, notify, timeout |
+| Event Publisher | >90% | Publish committed events |
+| Circuit Breaker | >95% | State transitions |
+| Async API Handlers | >90% | Validation, publish |
+| Edge Consumer | >85% | Apply, dedupe, sync |
+
+---
+
+## 17. Alternatives Considered
 
 ### 16.1 Storage-First with Async Events (Original Proposal)
 
@@ -2065,9 +2609,9 @@ Tasks:
 
 ---
 
-## 17. Open Questions
+## 18. Open Questions
 
-### 17.1 Unresolved
+### 18.1 Unresolved
 
 | Question | Options | Recommendation | Status |
 |----------|---------|----------------|--------|
@@ -2076,7 +2620,7 @@ Tasks:
 | DLQ retention | 7 days / 30 days | 30 days | **Open** |
 | Sync write threshold | Never / On request | On request | **Decided** |
 
-### 17.2 Questions for Stakeholders
+### 18.2 Questions for Stakeholders
 
 1. **What is acceptable staleness for reads?**
    - Current assumption: <500ms typical, <1s max
