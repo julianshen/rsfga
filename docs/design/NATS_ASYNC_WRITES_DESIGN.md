@@ -1170,6 +1170,75 @@ async fn async_write_with_fallback(/* ... */) -> Result<WriteResponse, ApiError>
 }
 ```
 
+#### Client Experience When Stream Full
+
+When `DiscardPolicy::New` is configured and the stream reaches capacity:
+
+**HTTP Response**:
+```http
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+Retry-After: 5
+
+{
+  "code": "SERVICE_UNAVAILABLE",
+  "message": "Write queue at capacity. Request was not processed.",
+  "details": {
+    "reason": "NATS_STREAM_FULL",
+    "stream": "RSFGA_WRITES",
+    "retry_after_seconds": 5
+  }
+}
+```
+
+**Error Mapping**:
+
+| NATS Error | HTTP Status | API Error Code | Client Action |
+|------------|-------------|----------------|---------------|
+| `StreamFull` | 503 | `SERVICE_UNAVAILABLE` | Retry with backoff |
+| `Timeout` | 504 | `GATEWAY_TIMEOUT` | Retry immediately |
+| `NoResponders` | 503 | `SERVICE_UNAVAILABLE` | Check NATS health |
+| `Connection refused` | 503 | `SERVICE_UNAVAILABLE` | Circuit breaker opens |
+
+**Circuit Breaker Integration**:
+
+```rust
+impl NatsPublisher {
+    pub async fn publish(&self, request: &WriteRequest) -> Result<Ack, ApiError> {
+        // Circuit breaker tracks StreamFull as a failure
+        self.circuit_breaker.call(async {
+            match self.js_context.publish(subject, payload).await {
+                Ok(ack) => Ok(ack),
+                Err(e) if e.is_stream_full() => {
+                    // Count toward circuit breaker threshold
+                    metrics::STREAM_FULL_ERRORS.inc();
+                    Err(NatsError::StreamFull)
+                }
+                Err(e) => Err(e),
+            }
+        }).await.map_err(|e| match e {
+            CircuitBreakerError::Open => {
+                // Circuit open - return 503 without hitting NATS
+                ApiError::ServiceUnavailable("Write service temporarily unavailable".into())
+            }
+            CircuitBreakerError::Failed(NatsError::StreamFull) => {
+                ApiError::ServiceUnavailable("Write queue at capacity".into())
+            }
+            CircuitBreakerError::Failed(e) => ApiError::Internal(e.to_string()),
+        })
+    }
+}
+```
+
+**Circuit Breaker Behavior for Stream Full**:
+
+| Consecutive StreamFull | Circuit State | Behavior |
+|------------------------|---------------|----------|
+| 1-4 | Closed | Forward to NATS, return 503 |
+| 5+ (threshold) | Open | Return 503 immediately, skip NATS |
+| After reset_timeout | Half-Open | Try one request |
+| Success | Closed | Resume normal operation |
+
 ---
 
 ## 7. Storage Consumer: NATS to Database
@@ -1657,6 +1726,87 @@ If the consumer crashes after writing to storage but before acknowledging NATS:
 └─────────────────────────────────────────────────────────────┘
 ```
 
+#### Sequence Gaps and Out-of-Order Handling
+
+**Scenario**: Network issues or consumer restarts may cause messages to arrive out-of-order or with sequence gaps.
+
+**NATS JetStream Guarantees**:
+- Messages within a single consumer are delivered in sequence order
+- Gaps indicate unprocessed messages (redelivery pending)
+- Consumer pull operations respect sequence ordering
+
+**Handling Sequence Gaps**:
+
+```rust
+pub struct SequenceTracker {
+    // Track last processed sequence per store
+    last_processed: DashMap<String, u64>,
+}
+
+impl SequenceTracker {
+    /// Detect and log sequence gaps for observability
+    pub fn check_sequence(&self, store_id: &str, seq: u64) -> SequenceStatus {
+        let last = self.last_processed
+            .get(store_id)
+            .map(|v| *v)
+            .unwrap_or(0);
+
+        if seq == last + 1 {
+            SequenceStatus::Expected
+        } else if seq > last + 1 {
+            // Gap detected - messages may be pending redelivery
+            let gap = seq - last - 1;
+            tracing::warn!(
+                store_id = %store_id,
+                expected = last + 1,
+                received = seq,
+                gap = gap,
+                "Sequence gap detected - {} messages pending"
+            );
+            metrics::SEQUENCE_GAPS.inc_by(gap);
+            SequenceStatus::Gap { missing: gap }
+        } else {
+            // Already processed (redelivery)
+            SequenceStatus::Duplicate
+        }
+    }
+}
+```
+
+**Out-of-Order Messages in Multi-Consumer Setup**:
+
+| Scenario | Behavior | Resolution |
+|----------|----------|------------|
+| Messages delivered out of order | Sort by sequence before processing | Deterministic final state |
+| Gap in sequence | Process available, gaps fill on redelivery | Eventually consistent |
+| Duplicate sequence | Idempotent write (no-op) | Safe to reprocess |
+| Consumer A processes seq 5, Consumer B processes seq 3 | Both write idempotently | Last-write-wins |
+
+**Important**: JetStream's pull consumer with `AckExplicit` ensures:
+1. Each message delivered to exactly one consumer instance
+2. Redelivery on ack timeout goes to any available consumer
+3. Sequence order is preserved within each pull batch
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Out-of-Order Resolution                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Pull Batch A (Consumer 1):  [seq:100, seq:101, seq:102]                    │
+│  Pull Batch B (Consumer 2):  [seq:103, seq:104]                             │
+│                                                                              │
+│  Consumer 1 sorts & processes: 100 → 101 → 102                              │
+│  Consumer 2 sorts & processes: 103 → 104                                    │
+│                                                                              │
+│  If Consumer 1 crashes after processing 100, before acking:                 │
+│    • Seq 100 redelivered (idempotent - already in DB)                       │
+│    • Seq 101, 102 redelivered (processed normally)                          │
+│                                                                              │
+│  Final state: All messages processed exactly once (semantically)            │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 ---
 
 ## 8. Read-Your-Own-Writes Consistency
@@ -2096,6 +2246,169 @@ impl EdgeSyncConsumer {
 }
 ```
 
+### 9.3 Edge Bootstrap and Recovery
+
+#### Initial Bootstrap
+
+New edge nodes need to be bootstrapped with a snapshot before consuming events:
+
+```rust
+pub struct EdgeBootstrap {
+    central_api: CentralApiClient,
+    local_storage: Arc<dyn DataStore>,
+}
+
+impl EdgeBootstrap {
+    /// Bootstrap edge from central with full snapshot
+    pub async fn bootstrap(&self, store_ids: &[String]) -> Result<BootstrapResult, BootstrapError> {
+        for store_id in store_ids {
+            // 1. Get latest sequence from central
+            let snapshot = self.central_api
+                .get_store_snapshot(store_id)
+                .await?;
+
+            // 2. Write snapshot to local storage
+            self.local_storage
+                .restore_snapshot(store_id, &snapshot)
+                .await?;
+
+            // 3. Record bootstrap position
+            self.local_storage
+                .set_sync_sequence(store_id, snapshot.sequence)
+                .await?;
+
+            tracing::info!(
+                store_id = %store_id,
+                sequence = snapshot.sequence,
+                tuples = snapshot.tuple_count,
+                "Edge bootstrap complete"
+            );
+        }
+
+        Ok(BootstrapResult::Success)
+    }
+}
+```
+
+#### Recovery When Offline > Event Retention (7+ Days)
+
+> **⚠️ CRITICAL**: If an edge node is offline longer than `RSFGA_EVENTS` retention (default: 7 days), it cannot catch up via event streaming. A full re-bootstrap is required.
+
+**Detection**:
+
+```rust
+pub async fn check_sync_status(&self, store_id: &str) -> SyncStatus {
+    // Get our last processed sequence
+    let local_seq = self.local_storage
+        .get_sync_sequence(store_id)
+        .await
+        .unwrap_or(0);
+
+    // Get oldest available sequence in stream
+    let stream_info = self.js_context
+        .get_stream("RSFGA_EVENTS")
+        .await?
+        .info()
+        .await?;
+
+    let oldest_available = stream_info.state.first_seq;
+
+    if local_seq < oldest_available {
+        // Gap detected - events have been purged
+        SyncStatus::RequiresBootstrap {
+            local_sequence: local_seq,
+            oldest_available,
+            gap: oldest_available - local_seq,
+        }
+    } else {
+        SyncStatus::CanCatchUp {
+            behind_by: stream_info.state.last_seq - local_seq,
+        }
+    }
+}
+```
+
+**Recovery Flow**:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Edge Recovery After Extended Offline                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. Edge comes online after 10 days offline                                  │
+│     └─▶ Local sequence: 50,000                                              │
+│     └─▶ Stream oldest: 80,000 (events 50,001-79,999 purged)                 │
+│                                                                              │
+│  2. Edge detects gap: RequiresBootstrap                                      │
+│     └─▶ Cannot catch up via streaming                                       │
+│                                                                              │
+│  3. Edge requests full bootstrap from central                                │
+│     └─▶ GET /internal/stores/{id}/snapshot                                  │
+│     └─▶ Response: Full tuple set + current sequence (100,000)               │
+│                                                                              │
+│  4. Edge replaces local data with snapshot                                   │
+│     └─▶ Clear existing tuples for store                                     │
+│     └─▶ Write snapshot tuples                                               │
+│     └─▶ Update sync sequence to 100,000                                     │
+│                                                                              │
+│  5. Edge resumes normal streaming from sequence 100,000                      │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Configuration Options for Long Offline Tolerance**:
+
+| Option | Trade-off | Recommendation |
+|--------|-----------|----------------|
+| Increase `RSFGA_EVENTS` retention | More storage, longer catchup | 30 days for edge-heavy deployments |
+| Periodic edge snapshots | Faster recovery, storage cost | Daily snapshots to object storage |
+| Automatic re-bootstrap | Simpler ops, more bandwidth | Enable for small stores (<100K tuples) |
+
+**Automatic Re-Bootstrap Configuration**:
+
+```yaml
+edge:
+  sync:
+    # Auto-bootstrap if gap detected
+    auto_bootstrap: true
+
+    # Max gap before triggering bootstrap (0 = always bootstrap on gap)
+    max_catchup_gap: 100000  # If >100k events behind, bootstrap instead
+
+    # Bootstrap endpoint
+    bootstrap_endpoint: "https://central.rsfga.internal/api/v1"
+
+    # Parallel bootstrap for multiple stores
+    bootstrap_parallelism: 4
+
+  storage:
+    # Keep local snapshots for faster recovery
+    snapshot_interval: "24h"
+    snapshot_retention: "7d"
+```
+
+**Monitoring Queries**:
+
+```promql
+# Edge nodes requiring bootstrap (critical - data may be stale)
+rsfga_edge_sync_status{status="requires_bootstrap"} > 0
+
+# Edge sync lag (warning if growing)
+rsfga_edge_sync_lag_messages > 10000
+
+# Bootstrap operations (should be rare after initial setup)
+increase(rsfga_edge_bootstrap_total[24h]) > 0
+```
+
+**Recovery Time Estimates**:
+
+| Store Size | Bootstrap Time | Notes |
+|------------|----------------|-------|
+| 10K tuples | <5 seconds | Fast, network-bound |
+| 100K tuples | 10-30 seconds | Typical small deployment |
+| 1M tuples | 2-5 minutes | Large store |
+| 10M tuples | 20-60 minutes | Consider incremental sync |
+
 ---
 
 ## 10. Multi-Region Replication
@@ -2271,6 +2584,79 @@ impl NatsCircuitBreaker {
 >
 > This ensures that when multiple threads race to transition states, only one succeeds and others observe the updated state.
 
+#### Consumer High Availability Configuration
+
+> **⚠️ CRITICAL FOR SECURITY**: Consumer crash after dequeue but before DB commit can create a 60-second revocation window (until `ack_wait` expires). HA configuration reduces this to seconds.
+
+**Recommended HA Configuration**:
+
+```rust
+/// Consumer configuration for high availability
+pub async fn setup_ha_consumer(js: &Context) -> Result<Consumer<Config>, NatsError> {
+    let config = jetstream::consumer::pull::Config {
+        name: Some("storage-consumer".to_string()),
+        durable_name: Some("storage-consumer".to_string()),
+
+        // HA Settings
+        max_ack_pending: 10,           // Limit in-flight messages per consumer
+        ack_wait: Duration::from_secs(10),  // Reduced from 60s for faster failover
+
+        // Redelivery
+        max_deliver: 5,                // Max redelivery attempts
+
+        ..Default::default()
+    };
+
+    js.create_consumer_on_stream(config, "RSFGA_WRITES").await
+}
+```
+
+**Deployment for HA**:
+
+```yaml
+# Kubernetes deployment - multiple replicas
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsfga-writer
+spec:
+  replicas: 2  # At least 2 for HA
+  selector:
+    matchLabels:
+      app: rsfga-writer
+  template:
+    spec:
+      containers:
+        - name: rsfga-writer
+          # Consumer group ensures only one processes each message
+          # If one crashes, the other picks up redelivered messages
+```
+
+**Failover Timeline Comparison**:
+
+| Configuration | Consumer Crash Recovery | Revocation Window |
+|---------------|------------------------|-------------------|
+| Default (`ack_wait: 60s`, replicas: 1) | 60 seconds | **60 seconds** ⚠️ |
+| HA (`ack_wait: 10s`, replicas: 2) | ~10 seconds | **~10 seconds** ✓ |
+| Aggressive (`ack_wait: 5s`, replicas: 3) | ~5 seconds | **~5 seconds** ✓ |
+
+**Trade-offs**:
+
+| Setting | Lower Value | Higher Value |
+|---------|-------------|--------------|
+| `ack_wait` | Faster failover, more redeliveries on slow processing | Slower failover, fewer spurious redeliveries |
+| `max_ack_pending` | Less data at risk, lower throughput | More throughput, more data to reprocess on crash |
+| `replicas` | Cost savings | Better availability |
+
+**Recommendation for Security-Sensitive Systems**:
+```yaml
+consumer:
+  ack_wait_seconds: 10      # 10s failover (not 60s)
+  max_ack_pending: 10       # Limit blast radius
+deployment:
+  replicas: 2               # Immediate failover
+```
+
 ### 11.3 Fallback to Synchronous Writes
 
 When NATS is unavailable, fall back to direct storage writes:
@@ -2346,6 +2732,69 @@ pub async fn move_to_dlq(
 ---
 
 ## 12. Performance Analysis
+
+> **Deployment Topology Assumptions**: The performance estimates in this section assume the following baseline deployment. Actual performance will vary based on your infrastructure.
+
+### 12.0 Reference Deployment Topology
+
+**Performance estimates assume this baseline deployment**:
+
+| Component | Configuration | Notes |
+|-----------|--------------|-------|
+| **NATS Cluster** | 3-node, same datacenter as RSFGA | <1ms network latency to RSFGA |
+| **NATS Storage** | SSD/NVMe, file-based JetStream | Critical for publish latency |
+| **Database** | PostgreSQL 15+, same datacenter | <2ms network latency |
+| **Database Storage** | SSD with 10,000+ IOPS | Affects batch write performance |
+| **RSFGA Servers** | 4+ vCPU, 8GB+ RAM | For API handling |
+| **Storage Consumer** | 2+ vCPU, 4GB+ RAM, 2 replicas | For batch processing |
+| **Network** | <1ms latency within datacenter | Cross-AZ adds 1-3ms |
+
+**Latency Impact by NATS Location**:
+
+| NATS Location | Publish Latency | Use Case |
+|---------------|-----------------|----------|
+| Same host (sidecar) | <0.5ms | Highest performance |
+| Same datacenter | 1-3ms | **Recommended for production** |
+| Cross-AZ (same region) | 3-10ms | HA deployment |
+| Cross-region | 20-100ms | Not recommended for writes |
+
+**Storage Backend Impact**:
+
+| Database | Expected Batch Write (100 tuples) | Notes |
+|----------|-----------------------------------|-------|
+| PostgreSQL (local SSD) | 5-15ms | Best performance |
+| PostgreSQL (network SSD) | 10-25ms | Typical cloud |
+| PostgreSQL (cross-AZ) | 20-50ms | HA configuration |
+| MySQL (local SSD) | 5-15ms | Similar to PostgreSQL |
+| CockroachDB (3-node) | 15-30ms | Consensus overhead |
+
+**Scaling Expectations**:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Scaling Reference Points                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Small (1,000 writes/sec):                                                   │
+│    • 2 RSFGA API servers                                                     │
+│    • 1 Storage consumer (with HA replica)                                    │
+│    • 3-node NATS cluster                                                     │
+│    • Single PostgreSQL (or RDS)                                              │
+│                                                                              │
+│  Medium (10,000 writes/sec):                                                 │
+│    • 4-8 RSFGA API servers                                                   │
+│    • 2-4 Storage consumers (sharded by store_id)                             │
+│    • 3-node NATS cluster                                                     │
+│    • PostgreSQL with read replicas                                           │
+│                                                                              │
+│  Large (50,000+ writes/sec):                                                 │
+│    • 10+ RSFGA API servers                                                   │
+│    • 5+ Storage consumers (sharded)                                          │
+│    • 5-node NATS supercluster                                                │
+│    • PostgreSQL cluster or CockroachDB                                       │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 ### 12.1 Throughput Comparison
 
@@ -3485,6 +3934,136 @@ spec:
 - [ ] Metrics accurately reflect failure states
 - [ ] Alerts fire within expected timeframes
 - [ ] Recovery time < 60s for all failure modes
+
+#### Distributed System Test Scenarios
+
+**Network Partition Tests**:
+
+```rust
+#[cfg(test)]
+mod network_partition_tests {
+    // API server cannot reach NATS, but NATS and DB are healthy
+    #[tokio::test]
+    async fn test_api_nats_partition_triggers_circuit_breaker() {
+        // 1. Inject network partition between API and NATS
+        // 2. Send write requests
+        // 3. Verify circuit breaker opens after threshold
+        // 4. Verify fallback to sync writes
+        // 5. Heal partition
+        // 6. Verify circuit breaker closes
+    }
+
+    // Consumer cannot reach DB, but has messages to process
+    #[tokio::test]
+    async fn test_consumer_db_partition_accumulates_lag() {
+        // 1. Inject network partition between consumer and DB
+        // 2. Publish messages to NATS
+        // 3. Verify consumer lag increases (metrics)
+        // 4. Heal partition
+        // 5. Verify consumer catches up
+        // 6. Verify no message loss
+    }
+
+    // NATS cluster internal partition (split-brain prevention)
+    #[tokio::test]
+    async fn test_nats_cluster_partition_maintains_consistency() {
+        // 1. Create 3-node NATS cluster
+        // 2. Partition: node1 isolated, node2+node3 can communicate
+        // 3. Verify JetStream elects new leader
+        // 4. Publish during partition
+        // 5. Heal partition
+        // 6. Verify no duplicate messages, no lost messages
+    }
+}
+```
+
+**Split-Brain Prevention Tests**:
+
+```rust
+#[cfg(test)]
+mod split_brain_tests {
+    // Multiple consumers think they're the only one
+    #[tokio::test]
+    async fn test_consumer_group_prevents_duplicate_processing() {
+        // 1. Start 2 consumer instances
+        // 2. Publish 1000 messages
+        // 3. Verify each message processed exactly once
+        // 4. Verify total processed = 1000
+        // 5. Check for duplicate tuple writes (should be 0)
+    }
+
+    // Consumer A processes, crashes before ack; Consumer B takes over
+    #[tokio::test]
+    async fn test_consumer_failover_idempotent() {
+        // 1. Consumer A pulls and processes message
+        // 2. Kill Consumer A before ack
+        // 3. Wait for ack_wait timeout
+        // 4. Consumer B receives redelivered message
+        // 5. Verify tuple exists exactly once in DB
+    }
+}
+```
+
+**Crash Recovery Tests**:
+
+```rust
+#[cfg(test)]
+mod crash_recovery_tests {
+    // Consumer crash mid-batch
+    #[tokio::test]
+    async fn test_consumer_crash_mid_batch_recovery() {
+        // 1. Consumer pulls batch of 100 messages
+        // 2. Process 50 messages, write to DB
+        // 3. Kill consumer (simulate crash)
+        // 4. Restart consumer
+        // 5. Verify: processed 50 are idempotent, remaining 50 processed
+        // 6. Verify: all 100 messages eventually in DB
+    }
+
+    // NATS server crash
+    #[tokio::test]
+    async fn test_nats_crash_client_reconnects() {
+        // 1. Establish NATS connection
+        // 2. Kill NATS server
+        // 3. Verify API returns 503 (circuit breaker)
+        // 4. Restart NATS server
+        // 5. Verify client reconnects automatically
+        // 6. Verify writes resume
+    }
+
+    // Database crash
+    #[tokio::test]
+    async fn test_db_crash_consumer_retries() {
+        // 1. Consumer processing normally
+        // 2. Kill database
+        // 3. Verify consumer batch fails, messages not acked
+        // 4. Restart database
+        // 5. Verify consumer retries and succeeds
+        // 6. Verify no message loss
+    }
+
+    // Full system restart
+    #[tokio::test]
+    async fn test_full_system_restart_recovery() {
+        // 1. System running with pending messages in NATS
+        // 2. Stop all: API, Consumer, NATS, DB
+        // 3. Restart in order: DB, NATS, Consumer, API
+        // 4. Verify consumer resumes from last acked position
+        // 5. Verify all pending messages processed
+        // 6. Verify new writes work
+    }
+}
+```
+
+**Expected Recovery Times**:
+
+| Failure | Detection Time | Recovery Time | Data Impact |
+|---------|---------------|---------------|-------------|
+| Consumer crash | `ack_wait` (10-60s) | <5s after detection | None (idempotent) |
+| NATS node crash | <1s (cluster) | <5s (leader election) | None |
+| DB crash | <5s (connection timeout) | Until DB restarts | Lag accumulates |
+| Network partition | <5s (circuit breaker) | <5s after healing | None (fallback) |
+| Full system restart | N/A | <60s | None (durable) |
 
 ### 19.5 Compatibility Tests
 
