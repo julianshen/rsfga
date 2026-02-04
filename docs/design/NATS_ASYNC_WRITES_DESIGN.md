@@ -2508,6 +2508,93 @@ tracing::info!(
 );
 ```
 
+### 13.4 Revocation Window: Worst-Case Analysis
+
+> **⚠️ CRITICAL SECURITY ANALYSIS**: Understanding the worst-case scenarios for permission revocation delays.
+
+**Typical Case (Normal Operation)**:
+
+| Phase | Duration | Cumulative |
+|-------|----------|------------|
+| Client → NATS publish | 1-3ms | 1-3ms |
+| Consumer batch wait | 0-20ms | 1-23ms |
+| Storage transaction | 5-15ms | 6-38ms |
+| Cache invalidation | 1-5ms | 7-43ms |
+| **Total typical** | - | **~20-50ms** |
+
+**Worst-Case Scenarios**:
+
+| Scenario | Max Delay | Mitigation |
+|----------|-----------|------------|
+| **Consumer processing backlog** | Seconds to minutes | Monitor `consumer_lag`; scale consumers |
+| **Consumer crash (no restart)** | `ack_wait_seconds` (60s default) | Health checks; auto-restart; consumer HA |
+| **NATS cluster partition** | Minutes | Multi-region NATS; sync fallback |
+| **Database outage** | Indefinite | Circuit breaker triggers sync fallback |
+| **Network partition (edge)** | Indefinite for edge | Edge reads from local storage; central is authoritative |
+
+**Catastrophic Failure Analysis**:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Worst-Case Revocation Timeline                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  SCENARIO: Consumer crashes during processing, no immediate restart          │
+│                                                                              │
+│  T+0ms:    Revocation request published to NATS                             │
+│  T+0ms:    Client receives ACK (thinks revocation is "done")                │
+│  T+20ms:   Consumer pulls message, starts processing                        │
+│  T+25ms:   Consumer CRASHES before ACK                                      │
+│  T+60s:    NATS ack_wait expires, message redelivered                       │
+│  T+60.1s:  New consumer instance picks up message                           │
+│  T+60.2s:  Storage write completes, permission actually revoked             │
+│                                                                              │
+│  RESULT: 60+ second window where revoked user still has access              │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Mitigation Strategies by Risk Level**:
+
+| Risk Level | Strategy | Implementation |
+|------------|----------|----------------|
+| **Critical systems** | Always use sync path for revocations | `async_allow_deletes: false` (default) |
+| **High security** | Reduce `ack_wait_seconds` to 10s | Trade-off: more redeliveries on slow processing |
+| **Medium security** | Monitor consumer lag, alert on backlog | Alert when lag > 1000 messages |
+| **Standard** | Accept eventual consistency | Document SLA: revocations within 60s |
+
+**Recommended Configuration for Security-Sensitive Systems**:
+
+```yaml
+# Prioritize revocation speed over throughput
+nats:
+  async_allow_deletes: false  # Block async deletes entirely
+
+  # If async deletes must be allowed:
+  consumer:
+    ack_wait_seconds: 10       # Faster redelivery on crash
+    max_ack_pending: 100       # Smaller batches = faster processing
+
+  stream:
+    max_age: "1h"              # Don't accumulate old unprocessed writes
+```
+
+**Monitoring Queries for Revocation Safety**:
+
+```promql
+# Alert: Consumer lag indicates potential revocation delay
+# Severity: Critical if lag > 1000 for security-sensitive stores
+sum(rsfga_consumer_lag{stream="RSFGA_WRITES"}) > 1000
+
+# Alert: Revocations using async path (should be zero if async_allow_deletes=false)
+increase(rsfga_async_deletes_blocked[5m]) > 0  # Good: deletes being blocked
+increase(rsfga_writes_by_operation{path="async",operation="delete"}[5m]) > 0  # Bad: async deletes occurring
+
+# Revocation path audit
+sum by (path) (increase(rsfga_writes_by_operation{operation="delete"}[1h]))
+# Expected: sync >> async (or async = 0)
+```
+
 ---
 
 ## 14. Observability

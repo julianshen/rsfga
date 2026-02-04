@@ -687,7 +687,7 @@ Check operations require graph traversal which is computationally expensive. Pre
 Implement **on-write precomputation** with Valkey (Redis) storage:
 
 **Architecture**:
-```
+```text
 Write → Change Classification → Impact Analysis → Compute Affected Checks → Store in Valkey
                                                                                     ↓
                                                               Check → Valkey Lookup → Return
@@ -739,7 +739,7 @@ Global deployments require low latency worldwide. Centralized architecture has i
 Implement **product-based data partitioning** with edge nodes using **NATS** for synchronization:
 
 **Topology**:
-```
+```text
 Edge Nodes (per region)
     ↓ (selective sync via NATS JetStream)
 Regional Nodes (multi-region)
@@ -991,7 +991,7 @@ Test configuration: 5 VUs, 1 minute duration, PostgreSQL backend, 1450 tuples wi
 
 Root cause analysis identified that RSFGA uses a **forward-scan algorithm**:
 
-```
+```text
 Current Algorithm (O(objects × graph_depth)):
 1. Get ALL objects of requested type (1000 documents)
 2. For EACH object, run a full permission check
@@ -1000,7 +1000,7 @@ Current Algorithm (O(objects × graph_depth)):
 
 OpenFGA uses a **ReverseExpand algorithm** that starts from the user:
 
-```
+```text
 ReverseExpand Algorithm (O(user_access × depth)):
 1. Find direct assignments for user (tuples where user is subject)
 2. For computed relations, follow the model in reverse:
@@ -1168,7 +1168,7 @@ Implement **RocksDB** as an embedded storage backend using the `rust-rocksdb` cr
 
 **Architecture**:
 
-```
+```text
 ┌─────────────────────────────────────────┐
 │           RSFGA Application             │
 │  ┌────────────────────────────────────┐ │
@@ -1195,7 +1195,7 @@ Implement **RocksDB** as an embedded storage backend using the `rust-rocksdb` cr
 **Key Design Decisions**:
 
 1. **Key Schema**:
-   ```
+   ```text
    Stores:  s:{store_id}                                           → JSON(Store)
    Tuples:  t:{store_id}:{obj_type}:{obj_id}:{rel}:{user_type}:{user_id}:{user_rel?} → JSON(TupleValue)
    Models:  m:{store_id}:{model_id}                                → JSON(Model)
@@ -1368,7 +1368,7 @@ For high-throughput deployments, we need a write path that:
 
 Implement a **NATS-first write architecture** where writes go to NATS JetStream first, then are consumed and batched into storage:
 
-```
+```text
 Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
            (fast, durable)     (batched writes)
                  │
@@ -1439,14 +1439,31 @@ Permission revocations via async path may have a brief delay. Recommendations:
 - **Kafka-first**: Similar benefits but heavier footprint (500MB+ vs 10-20MB NATS)
 - **Async storage writes**: Doesn't provide natural multi-consumer support
 
+**v1.0 Baseline Metrics** (for comparison):
+
+| Metric | v1.0 Current | Source |
+|--------|--------------|--------|
+| Write latency (p99) | 15-20ms | PostgreSQL sync writes |
+| Write throughput | ~300 writes/sec | DB connection pool limited |
+| DB transactions/write | 1:1 | No batching |
+
 **Validation Criteria** (Version 2.0.0):
 
-- [ ] Write latency <5ms p99 with NATS acknowledgment
-- [ ] Throughput >5,000 writes/sec sustained
-- [ ] Batched writes reduce DB transactions by 100x
-- [ ] RYOW consistency works with write tickets
-- [ ] Graceful fallback to sync path on NATS failure
-- [ ] Edge sync receives events within 100ms
+| Criterion | Target | Confidence | Rationale |
+|-----------|--------|------------|-----------|
+| Write latency p99 | <5ms | 80% | NATS JetStream benchmarks show 1-3ms local |
+| Sustained throughput | >5,000 writes/sec | 60% | Requires batching validation |
+| DB transaction reduction | 100x | 60% | Depends on batch size tuning |
+| RYOW with write tickets | Working | 90% | Straightforward implementation |
+| Sync fallback on NATS failure | Working | 90% | Circuit breaker pattern |
+| Edge sync latency | <100ms | 70% | Depends on network topology |
+
+- [ ] Write latency <5ms p99 with NATS acknowledgment (Confidence: 80%)
+- [ ] Throughput >5,000 writes/sec sustained (Confidence: 60%)
+- [ ] Batched writes reduce DB transactions by 100x (Confidence: 60%)
+- [ ] RYOW consistency works with write tickets (Confidence: 90%)
+- [ ] Graceful fallback to sync path on NATS failure (Confidence: 90%)
+- [ ] Edge sync receives events within 100ms (Confidence: 70%)
 
 **Implementation Details**:
 
