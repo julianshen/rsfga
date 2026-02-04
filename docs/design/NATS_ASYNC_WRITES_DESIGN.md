@@ -1406,6 +1406,64 @@ ON DUPLICATE KEY UPDATE
   updated_at = NOW();
 ```
 
+#### Last-Write-Wins Semantics (Detailed)
+
+**Critical**: The storage consumer processes messages in **NATS sequence order**, ensuring deterministic last-write-wins behavior.
+
+**Same Tuple, Different Conditions**:
+
+```text
+Scenario: Two writes for same tuple with different conditions
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Time    │ Message              │ NATS Seq │ DB Result                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│ T1      │ WRITE alice→doc:1    │ 100      │ INSERT (condition: none)    │
+│         │ condition: none      │          │                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│ T2      │ WRITE alice→doc:1    │ 101      │ UPDATE (condition: ip_check)│
+│         │ condition: ip_check  │          │                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│ Result  │ Final state: alice→doc:1 WITH condition: ip_check             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Scenario: Write then Delete then Write (same tuple)
+┌─────────────────────────────────────────────────────────────────────────┐
+│ NATS Seq │ Operation            │ DB Result                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│ 100      │ WRITE alice→doc:1    │ INSERT                                │
+│ 101      │ DELETE alice→doc:1   │ DELETE                                │
+│ 102      │ WRITE alice→doc:1    │ INSERT (tuple exists again)           │
+├─────────────────────────────────────────────────────────────────────────┤
+│ Result   │ Final state: alice→doc:1 EXISTS (seq 102 is last write)      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Important Guarantees**:
+
+1. **Ordering**: Consumer processes in strict NATS sequence order
+2. **Atomicity**: Each batch is a single DB transaction
+3. **Determinism**: Replay produces identical results
+4. **No lost updates**: Conditions are updated, not ignored
+
+**Edge Case: Concurrent Batches for Same Tuple**:
+
+```rust
+// Consumer ensures ordering within batches
+async fn process_batch(&self, messages: Vec<Message>) -> Result<()> {
+    // Sort by sequence to ensure deterministic ordering
+    let mut sorted = messages;
+    sorted.sort_by_key(|m| m.info().unwrap().stream_sequence);
+
+    // Group by store, maintaining order
+    let grouped = group_by_store_ordered(&sorted);
+
+    // Process each store's messages in sequence order
+    for (store_id, store_messages) in grouped {
+        self.process_store_batch_ordered(&store_id, store_messages).await?;
+    }
+}
+```
+
 #### Message Redelivery
 
 If the consumer crashes after writing to storage but before acknowledging NATS:
@@ -1606,6 +1664,128 @@ pub async fn write_handler(
 | User-facing writes | Write ticket | +5-50ms on read |
 | Critical permissions | Sync write mode | +10-20ms on write |
 | Audit reads | Eventual (acceptable) | None |
+
+### 8.4 WriteTracker Cleanup Strategy
+
+The WriteTracker must manage memory efficiently to prevent leaks from indefinitely tracking sequences.
+
+**Cleanup Triggers**:
+
+```rust
+pub struct WriteTracker {
+    // Map of store_id -> last committed sequence
+    committed: DashMap<String, AtomicU64>,
+    // Waiters for specific sequences (potential memory leak source)
+    waiters: DashMap<(String, u64), Vec<oneshot::Sender<()>>>,
+    // Configuration
+    config: WriteTrackerConfig,
+}
+
+#[derive(Clone)]
+pub struct WriteTrackerConfig {
+    /// Maximum sequences to track per store before cleanup
+    pub max_tracked_sequences_per_store: usize,  // Default: 10,000
+    /// Time-to-live for waiter entries
+    pub waiter_ttl: Duration,                     // Default: 60s
+    /// Cleanup interval
+    pub cleanup_interval: Duration,               // Default: 30s
+    /// Maximum total memory for waiters
+    pub max_waiter_memory_mb: usize,              // Default: 100MB
+}
+
+impl Default for WriteTrackerConfig {
+    fn default() -> Self {
+        Self {
+            max_tracked_sequences_per_store: 10_000,
+            waiter_ttl: Duration::from_secs(60),
+            cleanup_interval: Duration::from_secs(30),
+            max_waiter_memory_mb: 100,
+        }
+    }
+}
+```
+
+**Cleanup Logic**:
+
+```rust
+impl WriteTracker {
+    /// Start background cleanup task
+    pub fn start_cleanup_task(self: Arc<Self>) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(self.config.cleanup_interval);
+            loop {
+                interval.tick().await;
+                self.cleanup_expired_waiters().await;
+                self.cleanup_old_sequences().await;
+            }
+        })
+    }
+
+    /// Remove waiters that have exceeded TTL
+    async fn cleanup_expired_waiters(&self) {
+        let now = Instant::now();
+        let expired: Vec<_> = self.waiters
+            .iter()
+            .filter(|e| e.value().created_at + self.config.waiter_ttl < now)
+            .map(|e| e.key().clone())
+            .collect();
+
+        for key in expired {
+            if let Some((_, waiters)) = self.waiters.remove(&key) {
+                // Notify waiters with timeout error
+                for sender in waiters.senders {
+                    let _ = sender.send(Err(WaitError::Timeout));
+                }
+                self.metrics.waiters_expired.inc_by(waiters.senders.len() as u64);
+            }
+        }
+    }
+
+    /// Prune old committed sequences (keep only recent window)
+    async fn cleanup_old_sequences(&self) {
+        for mut entry in self.committed.iter_mut() {
+            let store_id = entry.key();
+            let current_seq = entry.value().load(Ordering::Relaxed);
+
+            // Remove waiters for sequences already committed
+            let committed_waiters: Vec<_> = self.waiters
+                .iter()
+                .filter(|e| e.key().0 == *store_id && e.key().1 <= current_seq)
+                .map(|e| e.key().clone())
+                .collect();
+
+            for key in committed_waiters {
+                self.waiters.remove(&key);
+            }
+        }
+    }
+
+    /// Emergency cleanup if memory threshold exceeded
+    fn check_memory_pressure(&self) -> bool {
+        let estimated_memory = self.waiters.len() * std::mem::size_of::<WaiterEntry>();
+        estimated_memory > self.config.max_waiter_memory_mb * 1024 * 1024
+    }
+}
+```
+
+**Metrics for Monitoring Cleanup**:
+
+```rust
+// WriteTracker cleanup metrics
+pub static WAITERS_ACTIVE: Gauge = ...;          // Current active waiters
+pub static WAITERS_EXPIRED: Counter = ...;        // Waiters expired by TTL
+pub static WAITERS_SATISFIED: Counter = ...;      // Waiters satisfied by commit
+pub static CLEANUP_RUNS: Counter = ...;           // Cleanup task runs
+pub static MEMORY_PRESSURE_EVENTS: Counter = ...; // Emergency cleanups triggered
+```
+
+**Configuration Recommendations**:
+
+| Deployment Size | max_tracked_sequences | waiter_ttl | cleanup_interval |
+|-----------------|----------------------|------------|------------------|
+| Small (< 100 writes/sec) | 1,000 | 30s | 60s |
+| Medium (100-1000 writes/sec) | 10,000 | 60s | 30s |
+| Large (> 1000 writes/sec) | 50,000 | 120s | 15s |
 
 ---
 
@@ -2088,6 +2268,82 @@ let options = async_nats::ConnectOptions::new()
     );
 ```
 
+### 13.3 Authorization Model Validation (Critical Security Guarantee)
+
+> **⚠️ SECURITY INVARIANT**: Both sync and async write paths perform **IDENTICAL** authorization model validation before accepting any write operation.
+
+**Validation Steps (Both Paths)**:
+
+```rust
+// IDENTICAL validation in both write_tuples_handler and async_write_tuples_handler
+async fn validate_write_operation(
+    store_id: &str,
+    request: &WriteRequest,
+    model_cache: &ModelCache,
+) -> Result<(), ValidationError> {
+    // 1. Load authorization model (from cache or storage)
+    let model = model_cache.get_or_load(store_id).await?;
+
+    // 2. Validate each tuple against the model
+    for tuple in &request.writes {
+        // Verify object type exists in model
+        let type_def = model.get_type(&tuple.object_type)
+            .ok_or(ValidationError::UndefinedType(tuple.object_type.clone()))?;
+
+        // Verify relation exists for this type
+        let _relation = type_def.get_relation(&tuple.relation)
+            .ok_or(ValidationError::UndefinedRelation(
+                tuple.object_type.clone(),
+                tuple.relation.clone(),
+            ))?;
+
+        // Verify user type is allowed for this relation
+        validate_user_type(&tuple.user, &type_def, &tuple.relation)?;
+
+        // Validate condition syntax if present
+        if let Some(condition) = &tuple.condition {
+            validate_cel_condition(condition)?;
+        }
+    }
+
+    // 3. Same validation for deletes
+    for tuple in &request.deletes {
+        // ... identical validation ...
+    }
+
+    Ok(())
+}
+```
+
+**Validation Guarantees**:
+
+| Check | Sync Path | Async Path | Storage Consumer |
+|-------|-----------|------------|------------------|
+| Model existence | ✅ | ✅ | N/A (pre-validated) |
+| Type validation | ✅ | ✅ | N/A (pre-validated) |
+| Relation validation | ✅ | ✅ | N/A (pre-validated) |
+| User type validation | ✅ | ✅ | N/A (pre-validated) |
+| CEL condition syntax | ✅ | ✅ | N/A (pre-validated) |
+| Tuple format | ✅ | ✅ | N/A (pre-validated) |
+
+**Why Storage Consumer Doesn't Re-validate**:
+- All messages in `RSFGA_WRITES` have already passed validation
+- Re-validation would add latency without security benefit
+- Model changes don't invalidate existing tuples (OpenFGA behavior)
+- Invalid messages can only come from compromised NATS credentials
+
+**Audit Trail**:
+```rust
+// Both paths log validation for audit
+tracing::info!(
+    store_id = %store_id,
+    path = "sync|async",
+    tuples_validated = request.writes.len() + request.deletes.len(),
+    model_version = %model.id,
+    "Write request validated against authorization model"
+);
+```
+
 ---
 
 ## 14. Observability
@@ -2101,6 +2357,11 @@ pub static WRITE_LATENCY: Histogram = ...;       // Client-visible write latency
 pub static NATS_PUBLISH_ERRORS: Counter = ...;   // NATS publish failures
 pub static FALLBACK_WRITES: Counter = ...;       // Writes using sync fallback
 
+// Write path selection metrics (audit logging)
+pub static WRITES_BY_PATH: CounterVec = ...;     // Labels: path={sync,async}, reason={default,fallback,explicit}
+pub static WRITES_BY_OPERATION: CounterVec = ...; // Labels: path={sync,async}, operation={write,delete}
+pub static ASYNC_DELETES_BLOCKED: Counter = ...; // Deletes rejected by async_allow_deletes=false
+
 // Consumer metrics
 pub static CONSUMER_LAG: Gauge = ...;            // Messages pending processing
 pub static BATCH_SIZE: Histogram = ...;          // Messages per batch
@@ -2111,6 +2372,76 @@ pub static TUPLES_COMMITTED: Counter = ...;      // Tuples written to storage
 pub static RYOW_WAITS: Counter = ...;            // RYOW wait requests
 pub static RYOW_WAIT_TIME: Histogram = ...;      // Time spent waiting for commit
 pub static RYOW_TIMEOUTS: Counter = ...;         // RYOW timeout errors
+
+// WriteTracker cleanup metrics
+pub static WAITERS_ACTIVE: Gauge = ...;          // Current active waiters
+pub static WAITERS_EXPIRED: Counter = ...;       // Waiters expired by TTL
+pub static WAITERS_SATISFIED: Counter = ...;     // Waiters satisfied by commit
+pub static CLEANUP_RUNS: Counter = ...;          // Cleanup task runs
+```
+
+**Write Path Selection Audit Logging**:
+
+```rust
+// Log every write for audit trail
+fn log_write_path_selection(
+    store_id: &str,
+    path: WritePath,
+    reason: WritePathReason,
+    tuples_written: usize,
+    tuples_deleted: usize,
+) {
+    // Increment metrics
+    WRITES_BY_PATH
+        .with_label_values(&[path.as_str(), reason.as_str()])
+        .inc();
+
+    WRITES_BY_OPERATION
+        .with_label_values(&[path.as_str(), "write"])
+        .inc_by(tuples_written as u64);
+
+    WRITES_BY_OPERATION
+        .with_label_values(&[path.as_str(), "delete"])
+        .inc_by(tuples_deleted as u64);
+
+    // Structured log for audit
+    tracing::info!(
+        store_id = %store_id,
+        path = %path,
+        reason = %reason,
+        tuples_written = tuples_written,
+        tuples_deleted = tuples_deleted,
+        "Write operation completed"
+    );
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum WritePath {
+    Sync,   // Original /write endpoint
+    Async,  // New /async/write endpoint
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum WritePathReason {
+    Default,          // Normal operation
+    Fallback,         // NATS unavailable, fell back to sync
+    Explicit,         // Client explicitly requested sync
+    DeletesBlocked,   // Delete redirected due to async_allow_deletes=false
+}
+```
+
+**Grafana Dashboard Queries**:
+
+```promql
+# Write path distribution
+sum by (path) (rate(rsfga_writes_by_path_total[5m]))
+
+# Deletes blocked by security policy
+rate(rsfga_async_deletes_blocked_total[5m])
+
+# Fallback rate (indicates NATS issues)
+rate(rsfga_writes_by_path_total{reason="fallback"}[5m])
+  / rate(rsfga_writes_by_path_total[5m])
 ```
 
 ### 14.2 Alerting Rules
@@ -2397,7 +2728,7 @@ nats consumer next RSFGA_WRITES storage-consumer --count 100 --ack
 
 ## 19. Test Cases
 
-### 16.1 Unit Tests
+### 19.1 Unit Tests
 
 #### NATS Publisher Tests
 
@@ -2565,7 +2896,7 @@ mod circuit_breaker_tests {
 }
 ```
 
-### 16.2 Integration Tests
+### 19.2 Integration Tests
 
 #### Async API Endpoint Tests
 
@@ -2675,7 +3006,7 @@ mod e2e_tests {
 }
 ```
 
-### 16.3 Performance Tests
+### 19.3 Performance Tests
 
 ```rust
 #[cfg(test)]
@@ -2718,7 +3049,7 @@ mod performance_tests {
 }
 ```
 
-### 16.4 Failure & Recovery Tests
+### 19.4 Failure & Recovery Tests
 
 ```rust
 #[cfg(test)]
@@ -2769,7 +3100,108 @@ mod failure_tests {
 }
 ```
 
-### 16.5 Compatibility Tests
+#### Chaos Engineering Test Scenarios
+
+These tests use chaos engineering tools (e.g., Chaos Mesh, Litmus) to simulate real-world failures:
+
+```yaml
+# Chaos Mesh experiments for RSFGA NATS integration
+
+# 1. Network partition between API server and NATS
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: nats-network-partition
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces: [rsfga]
+    labelSelectors:
+      app: rsfga-server
+  direction: both
+  target:
+    selector:
+      namespaces: [rsfga]
+      labelSelectors:
+        app: nats
+  duration: "60s"
+---
+# 2. NATS pod crash (test consumer recovery)
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: nats-pod-failure
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [rsfga]
+    labelSelectors:
+      app: nats
+  scheduler:
+    cron: "@every 5m"  # Kill one NATS pod every 5 minutes
+---
+# 3. Storage consumer OOM (test redelivery)
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: consumer-memory-stress
+spec:
+  mode: all
+  selector:
+    namespaces: [rsfga]
+    labelSelectors:
+      app: rsfga-writer
+  stressors:
+    memory:
+      workers: 4
+      size: "256MB"
+  duration: "30s"
+---
+# 4. Database latency injection
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: db-latency
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces: [rsfga]
+    labelSelectors:
+      app: rsfga-writer
+  delay:
+    latency: "500ms"
+    jitter: "100ms"
+  target:
+    selector:
+      namespaces: [rsfga]
+      labelSelectors:
+        app: postgresql
+  duration: "2m"
+```
+
+**Expected Behaviors Under Chaos**:
+
+| Scenario | Expected Behavior | Validation |
+|----------|------------------|------------|
+| NATS partition (60s) | Circuit breaker opens, sync fallback | `FALLBACK_WRITES` counter increases |
+| NATS pod kill | Consumer reconnects, resumes from last ack | No message loss, lag recovers |
+| Consumer OOM | Messages redelivered after ack_wait | Idempotent writes, no duplicates |
+| DB latency spike | Batch processing slows, lag increases | Alert triggers, no data loss |
+| JetStream disk full | Publish errors, sync fallback | `NATS_PUBLISH_ERRORS` increases |
+
+**Chaos Test Checklist**:
+
+- [ ] Circuit breaker transitions correctly under NATS failure
+- [ ] Consumer resumes from correct position after crash
+- [ ] No duplicate tuples after any failure scenario
+- [ ] Metrics accurately reflect failure states
+- [ ] Alerts fire within expected timeframes
+- [ ] Recovery time < 60s for all failure modes
+
+### 19.5 Compatibility Tests
 
 ```rust
 #[cfg(test)]
@@ -2806,7 +3238,7 @@ mod compatibility_tests {
 }
 ```
 
-### 16.6 Security Tests
+### 19.6 Security Tests
 
 ```rust
 #[cfg(test)]
@@ -2844,7 +3276,7 @@ mod security_tests {
 }
 ```
 
-### 16.7 Test Infrastructure
+### 19.7 Test Infrastructure
 
 #### Embedded NATS for Unit Tests
 
@@ -2924,7 +3356,7 @@ pub mod fixtures {
 }
 ```
 
-### 16.8 Test Coverage Requirements
+### 19.8 Test Coverage Requirements
 
 | Component | Required Coverage | Critical Paths |
 |-----------|------------------|----------------|
@@ -3107,6 +3539,135 @@ consumers:
     batch_size: 100
 ```
 
+**Kubernetes Auto-Scaling with KEDA**:
+
+KEDA (Kubernetes Event-Driven Autoscaling) can automatically scale consumers based on NATS JetStream lag:
+
+```yaml
+# KEDA ScaledObject for rsfga-writer
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: rsfga-writer-scaler
+  namespace: rsfga
+spec:
+  scaleTargetRef:
+    name: rsfga-writer
+    kind: Deployment
+  pollingInterval: 15                    # Check lag every 15s
+  cooldownPeriod: 60                     # Wait 60s before scaling down
+  minReplicaCount: 1                     # Always run at least 1 consumer
+  maxReplicaCount: 10                    # Maximum consumers
+  triggers:
+    - type: nats-jetstream
+      metadata:
+        # NATS server address
+        natsServerMonitoringEndpoint: "nats.rsfga.svc.cluster.local:8222"
+        # Consumer to monitor
+        account: "$G"
+        stream: "RSFGA_WRITES"
+        consumer: "storage-consumer"
+        # Scale threshold: lag in messages
+        lagThreshold: "1000"             # Scale up when > 1000 messages pending
+        # Or use activationLagThreshold for scale-from-zero
+        activationLagThreshold: "10"
+---
+# TriggerAuthentication for NATS credentials
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: nats-auth
+  namespace: rsfga
+spec:
+  secretTargetRef:
+    - parameter: natsServerMonitoringEndpoint
+      name: nats-credentials
+      key: monitoring-url
+```
+
+**Consumer Lag Calculation Formula**:
+
+```text
+Consumer Lag = Stream Sequence (last message) - Consumer Delivered Sequence
+
+Where:
+- Stream Sequence: nats_jetstream_stream_state{stream="RSFGA_WRITES"} [last_seq]
+- Delivered Sequence: nats_jetstream_consumer_info{consumer="storage-consumer"} [delivered.stream_seq]
+
+Lag in milliseconds (approximate):
+lag_ms = (lag_messages / consumer_throughput_per_sec) * 1000
+
+Example:
+- Lag: 500 messages
+- Consumer throughput: 5000 msgs/sec
+- lag_ms = (500 / 5000) * 1000 = 100ms
+```
+
+**Prometheus Alert for Consumer Lag**:
+
+```yaml
+# Alert when consumer is falling behind
+groups:
+  - name: rsfga-consumer-alerts
+    rules:
+      - alert: RSFGAConsumerLagHigh
+        expr: |
+          (
+            nats_jetstream_stream_state_last_seq{stream="RSFGA_WRITES"}
+            - on(cluster)
+            nats_jetstream_consumer_ack_floor_stream_seq{consumer="storage-consumer"}
+          ) > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RSFGA storage consumer lag exceeds 1000 messages"
+          description: "Consumer lag is {{ $value }} messages. Consider scaling up."
+
+      - alert: RSFGAConsumerLagCritical
+        expr: |
+          (
+            nats_jetstream_stream_state_last_seq{stream="RSFGA_WRITES"}
+            - on(cluster)
+            nats_jetstream_consumer_ack_floor_stream_seq{consumer="storage-consumer"}
+          ) > 10000
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RSFGA storage consumer lag critical"
+          description: "Consumer lag is {{ $value }} messages. Immediate action required."
+```
+
+**HPA Alternative (Without KEDA)**:
+
+```yaml
+# Standard HPA using custom metrics from Prometheus
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rsfga-writer-hpa
+  namespace: rsfga
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rsfga-writer
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: nats_consumer_lag
+          selector:
+            matchLabels:
+              consumer: storage-consumer
+        target:
+          type: AverageValue
+          averageValue: "500"  # Target 500 msgs lag per replica
+```
+
 ### 21.6 Remaining Questions for Stakeholders
 
 1. **Compliance requirements for event retention?**
@@ -3176,8 +3737,42 @@ consumer:
   batch_timeout_ms: 20         # 20ms max wait (prioritizes latency)
   max_per_store_batch: 100     # Smaller DB transactions
   parallelism: 4
-  ack_wait_seconds: 60
-  max_deliver: 5
+  ack_wait_seconds: 60         # See rationale below
+  max_deliver: 5               # Move to DLQ after 5 failed attempts
+
+# ack_wait_seconds Rationale:
+# ────────────────────────────────────────────────────────────────────
+# ack_wait = 60 seconds is chosen to balance:
+#
+# 1. Normal Processing Time:
+#    - Batch fetch: ~20ms
+#    - DB write (100 tuples): ~50-200ms
+#    - Event publish: ~5-20ms
+#    - Total: ~100-300ms typical, ~1-2s worst case
+#
+# 2. Transient Failure Recovery:
+#    - DB connection timeout: 5-10s
+#    - DB transaction retry: 3 attempts × 2s = 6s
+#    - Network hiccup recovery: ~5s
+#    - Total: ~20s for transient recovery
+#
+# 3. Safety Margin:
+#    - 60s provides 3x safety margin over worst case
+#    - Prevents premature redelivery causing duplicates
+#    - Allows time for DB to recover from brief outages
+#
+# 4. Why NOT shorter (e.g., 30s):
+#    - Risk of redelivery during slow DB operations
+#    - Could cause duplicate processing overhead
+#    - Less buffer for transient failures
+#
+# 5. Why NOT longer (e.g., 120s):
+#    - Delays detection of crashed consumers
+#    - Increases latency during consumer failures
+#    - RYOW waiters blocked longer on consumer crash
+#
+# Recommendation: Adjust based on observed DB latency in production.
+# Monitor: STORAGE_WRITE_LATENCY p99 should be << ack_wait_seconds
 
 # RYOW settings
 consistency:
