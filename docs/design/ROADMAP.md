@@ -1965,40 +1965,41 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Milestone 2.0.1: Core NATS Integration (Week 1-2)
+### Milestone 2.0.1: Core NATS Integration (Week 1-2) ✅ COMPLETE
 
 **Goal**: Basic NATS connectivity and event publishing infrastructure
 
 #### Tasks
 
 **2.0.1.1 NATS Dependencies & Configuration**
-- [ ] Add `async-nats` crate to workspace
-- [ ] Define NATS configuration structure
-- [ ] Implement connection manager with reconnection
-- [ ] Add TLS and authentication support
+- [x] Add `async-nats` crate to workspace
+- [x] Define NATS configuration structure
+- [x] Implement connection manager with reconnection
+- [x] Add TLS and authentication support
 
-**2.0.1.2 Event Schema (Protobuf)**
-- [ ] Define `WriteRequest` message for RSFGA_WRITES stream
-- [ ] Define `CommittedEvent` message for RSFGA_EVENTS stream
-- [ ] Define `TupleKey`, `TupleOperation`, `Condition` messages
-- [ ] Generate Rust types from protobuf
+**2.0.1.2 Event Schema (JSON)**
+- [x] Define `WriteRequest` message for RSFGA_WRITES stream
+- [x] Define `CommittedEvent` message for RSFGA_EVENTS stream
+- [x] Define `TupleKey`, `TupleOperation`, `Condition` messages
+- [x] JSON serialization/deserialization (Protobuf deferred to future version)
 
 **2.0.1.3 JetStream Setup**
-- [ ] Create RSFGA_WRITES stream configuration (WorkQueue retention)
-- [ ] Create RSFGA_EVENTS stream configuration (Limits retention)
-- [ ] Implement stream creation/verification on startup
-- [ ] Add deduplication window configuration
+- [x] Create RSFGA_WRITES stream configuration (WorkQueue retention)
+- [x] Create RSFGA_EVENTS stream configuration (Limits retention)
+- [x] Implement stream creation/verification on startup
+- [x] Add deduplication window configuration
 
 **Validation Criteria**:
-- [ ] NATS connection established with TLS
-- [ ] Streams created and accessible
-- [ ] Protobuf serialization/deserialization works
-- [ ] Unit tests with embedded NATS pass
+- [x] NATS connection established with TLS
+- [x] Streams created and accessible
+- [x] JSON serialization/deserialization works
+- [x] Unit tests pass (35 tests)
+- [x] Integration tests with testcontainers (22 tests)
 
 **Deliverables**:
-- `rsfga-nats/` crate with NATS integration
-- Protobuf schema definitions
-- Integration tests with testcontainers
+- ✅ `rsfga-nats/` crate with NATS integration
+- ✅ JSON event schema definitions (Protobuf deferred)
+- ✅ Integration tests with testcontainers
 
 ---
 
