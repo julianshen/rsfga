@@ -6,6 +6,7 @@ members = [
     "crates/rsfga-domain",
     "crates/rsfga-storage",
     "crates/rsfga-nats",
+    "crates/rsfga-writer",
     "crates/compatibility-tests",
 ]
 

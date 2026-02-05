@@ -3644,6 +3644,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsfga-writer"
+version = "1.0.1"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "async-trait",
+ "chrono",
+ "clap",
+ "config",
+ "futures",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "rsfga-nats",
+ "rsfga-storage",
+ "serde",
+ "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+ "uuid",
+]
+
+[[package]]
 name = "rust-ini"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
