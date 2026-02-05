@@ -102,3 +102,72 @@ jobs:
 
       - name: Run security audit
         run: cargo audit
+
+  cli-compatibility:
+    name: CLI Compatibility Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: false
+
+      - name: Install OpenFGA CLI
+        run: go install github.com/openfga/cli/cmd/fga@latest
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-compat-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-compat-
+
+      - name: Build RSFGA server (release)
+        run: cargo build --release --bin rsfga-server
+
+      - name: Start RSFGA server
+        run: |
+          ./target/release/rsfga-server &
+          echo $! > /tmp/rsfga.pid
+          # Wait for server to be ready
+          for i in {1..30}; do
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              echo "Server is ready"
+              break
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 1
+          done
+          # Verify server is actually running
+          if ! curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+            echo "Server failed to start"
+            exit 1
+          fi
+
+      - name: Run CLI compatibility tests
+        working-directory: crates/cli-compatibility-tests
+        run: ./scripts/run-tests.sh
+
+      - name: Stop RSFGA server
+        if: always()
+        run: |
+          if [ -f /tmp/rsfga.pid ]; then
+            kill $(cat /tmp/rsfga.pid) 2>/dev/null || true
+          fi
