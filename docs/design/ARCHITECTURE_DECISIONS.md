@@ -40,7 +40,7 @@ Each ADR follows this structure:
 | ADR-017 | CEL Expression Caching | ✅ Accepted | 2026-01-14 | Cache performance issues |
 | ADR-018 | ListObjects ReverseExpand | ✅ Accepted | 2026-01-29 | ListObjects p95 > 100ms |
 | ADR-019 | RocksDB Embedded Storage | ✅ Accepted | 2026-01-30 | Edge deployment requirements change |
-| ADR-020 | NATS-First Write Architecture | 📋 Proposed | 2026-02-04 | Before Version 2.0.0 implementation |
+| ADR-020 | NATS-First Write Architecture | ✅ Accepted | 2026-02-04 | NATS performance issues OR consistency problems |
 
 ## Validation Status Summary
 
@@ -67,7 +67,7 @@ This section tracks the validation status of each ADR's criteria.
 | ADR-017 | ✅ Validated | CEL cache implemented with bounded capacity |
 | ADR-018 | ✅ Validated | ReverseExpand implemented: p95=5.9ms, 176 req/s (2400x improvement) |
 | ADR-019 | ✅ Validated | RocksDB: 11,800+ writes/s (5.9x target), <92µs write latency |
-| ADR-020 | 📋 Proposed | NATS-first write architecture - pending Version 2.0.0 |
+| ADR-020 | ✅ Implemented | NATS-first write architecture - Milestone 2.0.x complete |
 
 **Note**: All performance-related ADRs (001, 002, 003, 005, 012) validated on 2026-01-29 via k6 load testing against PostgreSQL backend. Results exceed all targets.
 
@@ -1344,10 +1344,10 @@ xcode-select --install
 
 ## ADR-020: NATS-First Write Architecture
 
-**Status**: 📋 Proposed (Version 2.0.0)
+**Status**: ✅ Accepted (Implemented in Milestone 2.0.x)
 **Date**: 2026-02-04
 **Deciders**: Architecture Team
-**Review Trigger**: Before Version 2.0.0 implementation OR NATS proves insufficient in prototyping
+**Review Trigger**: NATS performance issues OR consistency problems require redesign
 
 **Context**:
 
@@ -1473,6 +1473,21 @@ See [NATS_ASYNC_WRITES_DESIGN.md](NATS_ASYNC_WRITES_DESIGN.md) for complete desi
 - Read-your-own-writes (RYOW) with write tickets
 - Circuit breaker and fallback handling
 - Edge synchronization consumer
+
+**Known Limitations** (as of Milestone 2.0.3):
+
+1. **Sequence Counter Persistence**: The `rsfga-writer` uses an in-memory global sequence counter that resets on restart. For production deployments requiring strict ordering, consider:
+   - Persisting sequence per store_id in storage
+   - Using NATS stream sequence numbers directly
+   - Implementing distributed coordination
+
+2. **Delivery Semantics**: The consumer implements **at-least-once** delivery:
+   - Messages are acknowledged only after both storage write AND event publish succeed
+   - Unacked messages are redelivered after ack_wait timeout
+   - Storage writes are idempotent (ON CONFLICT upsert)
+   - Downstream consumers should handle duplicate CommittedEvents
+
+3. **Workers Configuration**: The `workers` config parameter is reserved but not yet implemented. Batch processing is currently sequential.
 
 **Related Risks**:
 

@@ -3,9 +3,23 @@
 //! This module implements a pull consumer that:
 //! - Fetches messages from RSFGA_WRITES stream
 //! - Batches messages by store_id
-//! - Writes to storage in parallel
+//! - Writes to storage with idempotent upserts
 //! - Publishes CommittedEvent to RSFGA_EVENTS
-//! - Acks messages after successful commit
+//! - Acks messages after successful commit and event publish
+//!
+//! # Delivery Semantics
+//!
+//! This consumer implements **at-least-once** delivery:
+//!
+//! - Messages are only acknowledged after BOTH storage write AND event publish succeed
+//! - If event publishing fails after retries, messages are NOT acknowledged
+//! - Unacknowledged messages will be redelivered by NATS after ack_wait timeout
+//! - Storage writes use ON CONFLICT (upsert) for idempotency on redelivery
+//!
+//! This means:
+//! - Writes may be applied more than once (but idempotently)
+//! - CommittedEvents may be published more than once for the same batch
+//! - Downstream consumers should handle duplicate events
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,7 +59,10 @@ pub struct ConsumerConfig {
     pub batch_size: usize,
     /// Batch timeout (flush if no messages for this duration).
     pub batch_timeout: Duration,
-    /// Number of parallel workers for processing batches (reserved for future use).
+    /// Number of parallel workers for processing batches.
+    ///
+    /// **Note:** Currently unused. Reserved for future parallel batch processing.
+    /// The consumer processes batches sequentially for simplicity and correctness.
     #[allow(dead_code)]
     pub workers: usize,
 }
@@ -96,8 +113,20 @@ pub struct WriteConsumer {
     publisher: EventPublisher,
     metrics: Arc<WriterMetrics>,
     config: ConsumerConfig,
-    /// Sequence counter per store for CommittedEvent ordering.
-    /// In production, this should be persisted/coordinated.
+    /// Global sequence counter for CommittedEvent ordering.
+    ///
+    /// # Known Limitation
+    ///
+    /// This counter is global (not per-store) and resets on daemon restart.
+    /// This means:
+    /// - Sequence numbers may reset after restart, breaking ordering guarantees
+    /// - Multiple stores share the same counter (not isolated)
+    ///
+    /// For production deployments requiring strict ordering:
+    /// - Consider persisting sequence per store_id in storage
+    /// - Or use NATS stream sequence numbers directly
+    ///
+    /// TODO: Implement per-store persistent sequence tracking (see ADR-017)
     sequence_counter: AtomicU64,
 }
 
