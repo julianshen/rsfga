@@ -89,7 +89,9 @@ impl ConsumerConfig {
     /// Validate configuration values.
     pub fn validate(&self) -> Result<()> {
         if self.consumer_name.is_empty() {
-            return Err(WriterError::Config("consumer_name cannot be empty".to_string()));
+            return Err(WriterError::Config(
+                "consumer_name cannot be empty".to_string(),
+            ));
         }
         if self.batch_size < MIN_BATCH_SIZE || self.batch_size > MAX_BATCH_SIZE {
             return Err(WriterError::Config(format!(
@@ -203,8 +205,7 @@ impl WriteConsumer {
                 );
                 warn!(
                     consecutive_failures,
-                    backoff_ms,
-                    "Backing off due to consecutive failures"
+                    backoff_ms, "Backing off due to consecutive failures"
                 );
                 tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
             }
