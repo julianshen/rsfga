@@ -468,6 +468,8 @@ fn convert_key_to_tuple(key: &TupleKey) -> Option<StoredTuple> {
 /// Formats:
 /// - "user:alice" -> ("user", "alice", None)
 /// - "team:eng#member" -> ("team", "eng", Some("member"))
+///
+/// TODO: Extract to shared crate (rsfga-domain?) to avoid duplication with rsfga-api/src/utils.rs
 fn parse_user(user: &str) -> Option<(&str, &str, Option<&str>)> {
     let (type_part, rest) = user.split_once(':')?;
 
@@ -481,6 +483,8 @@ fn parse_user(user: &str) -> Option<(&str, &str, Option<&str>)> {
 /// Parse an object string into (type, id).
 ///
 /// Format: "document:readme" -> ("document", "readme")
+///
+/// TODO: Extract to shared crate (rsfga-domain?) to avoid duplication with rsfga-api/src/utils.rs
 fn parse_object(object: &str) -> Option<(&str, &str)> {
     object.split_once(':')
 }
