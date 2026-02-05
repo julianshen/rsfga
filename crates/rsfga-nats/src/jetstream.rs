@@ -4,11 +4,15 @@
 //!
 //! - `RSFGA_WRITES`: WorkQueue retention for write requests
 //! - `RSFGA_EVENTS`: Limits retention for committed events
+//! - `RSFGA_DLQ`: Limits retention for dead letter queue (poison messages)
 
 use crate::config::{EventsStreamConfig, StorageType, StreamConfig};
 use crate::connection::NatsClient;
 use crate::error::{NatsError, Result};
-use crate::{STREAM_EVENTS, STREAM_WRITES, SUBJECT_EVENTS_PREFIX, SUBJECT_WRITES_PREFIX};
+use crate::{
+    STREAM_DLQ, STREAM_EVENTS, STREAM_WRITES, SUBJECT_DLQ_PREFIX, SUBJECT_EVENTS_PREFIX,
+    SUBJECT_WRITES_PREFIX,
+};
 use async_nats::jetstream::stream::{
     Config as StreamConfigNats, RetentionPolicy, StorageType as NatsStorageType,
 };
@@ -39,6 +43,9 @@ impl JetStreamManager {
 
         // Create RSFGA_EVENTS stream
         self.setup_events_stream(&config.events_stream).await?;
+
+        // Create RSFGA_DLQ stream for poison messages
+        self.setup_dlq_stream().await?;
 
         info!("JetStream streams setup complete");
         Ok(())
@@ -186,6 +193,49 @@ impl JetStreamManager {
                         );
                     }
                 }
+                Ok(())
+            }
+        }
+    }
+
+    /// Setup the RSFGA_DLQ stream for dead letter queue.
+    ///
+    /// This stream stores poison messages that failed to parse or process.
+    /// Uses Limits retention with a long max_age for analysis.
+    async fn setup_dlq_stream(&self) -> Result<()> {
+        let js = self.client.jetstream();
+
+        let stream_config = StreamConfigNats {
+            name: STREAM_DLQ.to_string(),
+            description: Some("RSFGA dead letter queue for poison messages".to_string()),
+            subjects: vec![format!("{}.>", SUBJECT_DLQ_PREFIX)],
+            retention: RetentionPolicy::Limits,
+            max_consumers: -1,
+            max_messages: 100_000,        // Keep up to 100k poison messages
+            max_bytes: 100 * 1024 * 1024, // 100MB max
+            max_age: std::time::Duration::from_secs(7 * 24 * 60 * 60), // 7 days
+            storage: NatsStorageType::File,
+            num_replicas: 1,
+            ..Default::default()
+        };
+
+        match js.get_or_create_stream(stream_config.clone()).await {
+            Ok(mut stream) => {
+                let info = stream.info().await.map_err(|e| NatsError::Stream {
+                    stream: STREAM_DLQ.to_string(),
+                    reason: e.to_string(),
+                })?;
+                info!(
+                    stream = %STREAM_DLQ,
+                    messages = info.state.messages,
+                    bytes = info.state.bytes,
+                    "DLQ stream ready"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                warn!(stream = %STREAM_DLQ, error = %e, "Failed to create DLQ stream");
+                // DLQ is optional - don't fail if it can't be created
                 Ok(())
             }
         }

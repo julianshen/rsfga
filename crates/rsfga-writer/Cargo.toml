@@ -50,6 +50,9 @@ chrono = { workspace = true }
 # CLI
 clap = { workspace = true }
 
+# URL parsing for secure credential redaction
+url = "2"
+
 # Configuration
 config = { workspace = true }
 

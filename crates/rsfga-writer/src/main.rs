@@ -29,21 +29,56 @@ use crate::metrics::WriterMetrics;
 
 /// Redact credentials from URLs for safe logging.
 ///
-/// Replaces password in URLs like `postgres://user:password@host` with `***`.
-fn redact_url(url: &str) -> String {
-    // Match pattern: scheme://user:password@rest
-    if let Some(scheme_end) = url.find("://") {
-        let after_scheme = &url[scheme_end + 3..];
-        if let Some(at_pos) = after_scheme.find('@') {
-            let user_pass = &after_scheme[..at_pos];
-            if let Some(colon_pos) = user_pass.find(':') {
-                let user = &user_pass[..colon_pos];
-                let rest = &after_scheme[at_pos..];
-                return format!("{}://{}:***{}", &url[..scheme_end], user, rest);
+/// Uses proper URL parsing to handle edge cases like:
+/// - Passwords containing `@` or `:` characters
+/// - URLs without credentials (returned unchanged)
+/// - Invalid URLs (returned unchanged with fallback parsing)
+///
+/// Examples:
+/// - `postgres://user:password@host` → `postgres://user:***@host`
+/// - `nats://user:p@ss:word@host:4222` → `nats://user:***@host:4222`
+fn redact_url(url_str: &str) -> String {
+    match url::Url::parse(url_str) {
+        Ok(mut url) => {
+            if url.password().is_some() {
+                // Use expect here since we just confirmed password exists
+                let _ = url.set_password(Some("***"));
             }
+            url.to_string()
+        }
+        Err(_) => {
+            // If URL parsing fails, fall back to simple string matching
+            // This handles non-standard URL formats
+            if let Some(scheme_end) = url_str.find("://") {
+                let after_scheme = &url_str[scheme_end + 3..];
+                // Find the last @ before any / (to handle @ in passwords)
+                if let Some(slash_pos) = after_scheme.find('/') {
+                    let userinfo_host = &after_scheme[..slash_pos];
+                    if let Some(at_pos) = userinfo_host.rfind('@') {
+                        let user_pass = &userinfo_host[..at_pos];
+                        if let Some(colon_pos) = user_pass.find(':') {
+                            let user = &user_pass[..colon_pos];
+                            let host_and_rest = &after_scheme[at_pos..];
+                            return format!(
+                                "{}://{}:***{}",
+                                &url_str[..scheme_end],
+                                user,
+                                host_and_rest
+                            );
+                        }
+                    }
+                } else if let Some(at_pos) = after_scheme.rfind('@') {
+                    let user_pass = &after_scheme[..at_pos];
+                    if let Some(colon_pos) = user_pass.find(':') {
+                        let user = &user_pass[..colon_pos];
+                        let rest = &after_scheme[at_pos..];
+                        return format!("{}://{}:***{}", &url_str[..scheme_end], user, rest);
+                    }
+                }
+            }
+            url_str.to_string()
         }
     }
-    url.to_string()
 }
 
 /// RSFGA Writer - Storage consumer daemon for async writes
@@ -222,5 +257,66 @@ async fn create_storage(args: &Args) -> Result<Arc<dyn DataStore>> {
             "Unknown storage backend: {}",
             other
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_redact_url_postgres_simple() {
+        let url = "postgres://user:password@localhost:5432/db";
+        let redacted = redact_url(url);
+        assert!(redacted.contains("user:***@"));
+        assert!(!redacted.contains("password"));
+    }
+
+    #[test]
+    fn test_redact_url_nats_simple() {
+        let url = "nats://admin:secret@localhost:4222";
+        let redacted = redact_url(url);
+        assert!(redacted.contains("admin:***@"));
+        assert!(!redacted.contains("secret"));
+    }
+
+    #[test]
+    fn test_redact_url_with_at_in_password() {
+        // Passwords containing @ are URL-encoded in valid URLs
+        let url = "postgres://user:p%40ssword@localhost/db";
+        let redacted = redact_url(url);
+        assert!(redacted.contains("user:***@"));
+        assert!(!redacted.contains("p%40ssword"));
+    }
+
+    #[test]
+    fn test_redact_url_no_password() {
+        let url = "postgres://localhost:5432/db";
+        let redacted = redact_url(url);
+        assert_eq!(redacted, "postgres://localhost:5432/db");
+    }
+
+    #[test]
+    fn test_redact_url_no_credentials() {
+        let url = "nats://localhost:4222";
+        let redacted = redact_url(url);
+        assert_eq!(redacted, "nats://localhost:4222");
+    }
+
+    #[test]
+    fn test_redact_url_mysql() {
+        let url = "mysql://root:mysecret@127.0.0.1:3306/rsfga";
+        let redacted = redact_url(url);
+        assert!(redacted.contains("root:***@"));
+        assert!(!redacted.contains("mysecret"));
+    }
+
+    #[test]
+    fn test_redact_url_with_path() {
+        let url = "postgres://user:pass@host/database?ssl=true";
+        let redacted = redact_url(url);
+        assert!(redacted.contains("user:***@"));
+        assert!(!redacted.contains(":pass@"));
+        assert!(redacted.contains("/database"));
     }
 }

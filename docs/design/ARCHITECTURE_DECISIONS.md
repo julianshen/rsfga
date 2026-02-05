@@ -1476,10 +1476,10 @@ See [NATS_ASYNC_WRITES_DESIGN.md](NATS_ASYNC_WRITES_DESIGN.md) for complete desi
 
 **Known Limitations** (as of Milestone 2.0.3):
 
-1. **Sequence Counter Persistence**: The `rsfga-writer` uses an in-memory global sequence counter that resets on restart. For production deployments requiring strict ordering, consider:
-   - Persisting sequence per store_id in storage
-   - Using NATS stream sequence numbers directly
-   - Implementing distributed coordination
+1. **Sequence Counter**: ✅ **RESOLVED** - Now uses NATS stream sequence numbers which are:
+   - Persistent across daemon restarts
+   - Unique per message in the stream
+   - Monotonically increasing within the stream
 
 2. **Delivery Semantics**: The consumer implements **at-least-once** delivery:
    - Messages are acknowledged only after both storage write AND event publish succeed

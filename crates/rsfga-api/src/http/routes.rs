@@ -3023,8 +3023,14 @@ async fn async_write_tuples<S: DataStore>(
                     let mut op = TupleOperation::new(&tk.user, &tk.relation, &tk.object);
                     if let Some(cond) = tk.condition {
                         if !cond.name.is_empty() {
-                            op = op.with_condition(rsfga_nats::TupleCondition::new(&cond.name));
-                            // Note: context is added to condition in the consumer
+                            // Create condition with both name and context
+                            let mut condition = rsfga_nats::TupleCondition::new(&cond.name);
+                            if let Some(ctx) = cond.context {
+                                for (key, value) in ctx {
+                                    condition = condition.with_context(key, value);
+                                }
+                            }
+                            op = op.with_condition(condition);
                         }
                     }
                     Ok(op)

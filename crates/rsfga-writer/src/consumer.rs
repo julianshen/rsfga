@@ -26,7 +26,7 @@
 //! ## Parse Failures
 //! - Malformed messages are logged with details and acked to prevent queue blocking
 //! - These are tracked via `messages_failed` metric
-//! - **TODO**: Consider publishing to a Dead Letter Queue (DLQ) subject for analysis
+//! - Parse failures are published to Dead Letter Queue (DLQ) for analysis
 //!
 //! ## Event Publish Failures
 //! - Retried 3 times with exponential backoff (100ms, 200ms, 400ms)
@@ -40,7 +40,6 @@
 //! - Backoff resets on successful batch processing
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -52,7 +51,7 @@ use tracing::{debug, error, info, warn};
 
 use rsfga_nats::{
     CommittedEvent, EventPublisher, NatsClient, TupleKey, TupleOperation, WriteRequest,
-    STREAM_WRITES,
+    STREAM_WRITES, SUBJECT_DLQ_PREFIX,
 };
 use rsfga_storage::{DataStore, StoredTuple};
 
@@ -67,6 +66,9 @@ pub const MAX_BATCH_SIZE: usize = 10_000;
 pub const MIN_BATCH_TIMEOUT: Duration = Duration::from_millis(10);
 /// Maximum batch timeout.
 pub const MAX_BATCH_TIMEOUT: Duration = Duration::from_secs(60);
+/// Maximum pending queue size (prevents memory exhaustion under load).
+/// When queue reaches this size, processing is forced before fetching more.
+pub const MAX_PENDING_QUEUE_SIZE: usize = 50_000;
 
 /// Consumer configuration.
 #[derive(Debug, Clone)]
@@ -115,6 +117,8 @@ struct PendingMessage {
     request: WriteRequest,
     /// Ack handle for the message.
     ack: JsMessage,
+    /// NATS stream sequence number (persistent, unique).
+    stream_sequence: u64,
 }
 
 /// Batch of writes grouped by store_id.
@@ -124,6 +128,8 @@ struct StoreBatch {
     deletes: Vec<StoredTuple>,
     request_ids: Vec<String>,
     messages: Vec<JsMessage>,
+    /// Maximum NATS stream sequence in this batch (used for CommittedEvent).
+    max_stream_sequence: u64,
 }
 
 /// Write consumer for NATS JetStream.
@@ -133,21 +139,6 @@ pub struct WriteConsumer {
     publisher: EventPublisher,
     metrics: Arc<WriterMetrics>,
     config: ConsumerConfig,
-    /// Global sequence counter for CommittedEvent ordering.
-    ///
-    /// # Known Limitation
-    ///
-    /// This counter is global (not per-store) and resets on daemon restart.
-    /// This means:
-    /// - Sequence numbers may reset after restart, breaking ordering guarantees
-    /// - Multiple stores share the same counter (not isolated)
-    ///
-    /// For production deployments requiring strict ordering:
-    /// - Consider persisting sequence per store_id in storage
-    /// - Or use NATS stream sequence numbers directly
-    ///
-    /// TODO: Implement per-store persistent sequence tracking (see ADR-017)
-    sequence_counter: AtomicU64,
 }
 
 impl WriteConsumer {
@@ -169,13 +160,7 @@ impl WriteConsumer {
             publisher,
             metrics,
             config,
-            sequence_counter: AtomicU64::new(0),
         })
-    }
-
-    /// Get next sequence number.
-    fn next_sequence(&self) -> u64 {
-        self.sequence_counter.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     /// Run the consumer loop.
@@ -232,26 +217,52 @@ impl WriteConsumer {
                         match serde_json::from_slice::<WriteRequest>(&msg.payload) {
                             Ok(request) => {
                                 let store_id = request.store_id.clone();
-                                pending
-                                    .entry(store_id)
-                                    .or_default()
-                                    .push(PendingMessage { request, ack: msg });
+                                // Get NATS stream sequence for persistent ordering
+                                let stream_sequence =
+                                    msg.info().map(|info| info.stream_sequence).unwrap_or(0);
+                                pending.entry(store_id).or_default().push(PendingMessage {
+                                    request,
+                                    ack: msg,
+                                    stream_sequence,
+                                });
                             }
                             Err(e) => {
                                 // Parse failures are typically permanent (malformed data)
-                                // Log details for debugging, ack to prevent blocking, track in metrics
+                                // Publish to DLQ for analysis, then ack to prevent blocking
+                                let stream_seq =
+                                    msg.info().map(|info| info.stream_sequence).unwrap_or(0);
+
                                 error!(
                                     error = %e,
                                     payload_size = msg.payload.len(),
                                     subject = %msg.subject,
-                                    "Failed to parse write request - message will be skipped (consider DLQ)"
+                                    stream_sequence = stream_seq,
+                                    "Failed to parse write request - sending to DLQ"
                                 );
+
+                                // Publish to Dead Letter Queue
+                                let dlq_subject =
+                                    format!("{}.parse_error.{}", SUBJECT_DLQ_PREFIX, stream_seq);
+                                if let Err(dlq_err) = self
+                                    .client
+                                    .client()
+                                    .publish(dlq_subject.clone(), msg.payload.clone())
+                                    .await
+                                {
+                                    warn!(
+                                        error = %dlq_err,
+                                        subject = %dlq_subject,
+                                        "Failed to publish to DLQ"
+                                    );
+                                } else {
+                                    debug!(subject = %dlq_subject, "Message sent to DLQ");
+                                }
+
                                 batch_had_failures = true;
 
                                 // Ack to prevent poison message blocking queue
-                                // In production, consider publishing to a DLQ subject first
-                                if let Err(e) = msg.ack().await {
-                                    error!(error = %e, "Failed to ack invalid message");
+                                if let Err(ack_err) = msg.ack().await {
+                                    error!(error = %ack_err, "Failed to ack invalid message");
                                 }
                                 self.metrics.record_message_failed();
                             }
@@ -265,12 +276,22 @@ impl WriteConsumer {
             }
 
             // Process pending batches if we have any
+            let total_pending: usize = pending.values().map(|v| v.len()).sum();
             let should_flush =
                 !pending.is_empty() && batch_timer.elapsed() >= self.config.batch_timeout;
-            let total_pending: usize = pending.values().map(|v| v.len()).sum();
             let batch_full = total_pending >= self.config.batch_size;
+            // Force processing if queue is at capacity to prevent memory exhaustion
+            let queue_at_capacity = total_pending >= MAX_PENDING_QUEUE_SIZE;
 
-            if should_flush || batch_full {
+            if queue_at_capacity {
+                warn!(
+                    total_pending,
+                    max_pending = MAX_PENDING_QUEUE_SIZE,
+                    "Pending queue at capacity, forcing batch processing"
+                );
+            }
+
+            if should_flush || batch_full || queue_at_capacity {
                 match self.process_pending_batches(&mut pending).await {
                     Ok(_) => {
                         // Reset backoff on successful batch processing
@@ -339,9 +360,9 @@ impl WriteConsumer {
         self.metrics.record_tuples_deleted(delete_count);
 
         // Publish CommittedEvent to RSFGA_EVENTS with retry
-        let sequence = self.next_sequence();
-        let event =
-            CommittedEvent::new(&batch.store_id, sequence).with_request_ids(batch.request_ids);
+        // Use NATS stream sequence for persistent, unique ordering
+        let event = CommittedEvent::new(&batch.store_id, batch.max_stream_sequence)
+            .with_request_ids(batch.request_ids);
 
         let mut event_published = false;
         let mut last_error = None;
@@ -444,10 +465,13 @@ impl WriteConsumer {
         let mut deletes = Vec::new();
         let mut request_ids = Vec::new();
         let mut ack_handles = Vec::new();
+        let mut max_stream_sequence: u64 = 0;
 
         for msg in messages {
             request_ids.push(msg.request.request_id.clone());
             ack_handles.push(msg.ack);
+            // Track maximum stream sequence for persistent ordering
+            max_stream_sequence = max_stream_sequence.max(msg.stream_sequence);
 
             // Convert writes
             for op in msg.request.writes {
@@ -470,6 +494,7 @@ impl WriteConsumer {
             deletes,
             request_ids,
             messages: ack_handles,
+            max_stream_sequence,
         }
     }
 }
