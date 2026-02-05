@@ -38,6 +38,7 @@ COPY crates/rsfga-api/Cargo.toml crates/rsfga-api/
 COPY crates/rsfga-server/Cargo.toml crates/rsfga-server/
 COPY crates/rsfga-domain/Cargo.toml crates/rsfga-domain/
 COPY crates/rsfga-storage/Cargo.toml crates/rsfga-storage/
+COPY crates/rsfga-nats/Cargo.toml crates/rsfga-nats/
 COPY crates/compatibility-tests/Cargo.toml crates/compatibility-tests/
 
 # Create dummy source files for dependency caching
@@ -45,12 +46,14 @@ RUN mkdir -p crates/rsfga-api/src \
     && mkdir -p crates/rsfga-server/src \
     && mkdir -p crates/rsfga-domain/src \
     && mkdir -p crates/rsfga-storage/src \
+    && mkdir -p crates/rsfga-nats/src \
     && mkdir -p crates/compatibility-tests/src \
     && echo "fn main() {}" > crates/rsfga-api/src/main.rs \
     && echo "pub fn dummy() {}" > crates/rsfga-api/src/lib.rs \
     && echo "pub fn dummy() {}" > crates/rsfga-server/src/lib.rs \
     && echo "pub fn dummy() {}" > crates/rsfga-domain/src/lib.rs \
     && echo "pub fn dummy() {}" > crates/rsfga-storage/src/lib.rs \
+    && echo "pub fn dummy() {}" > crates/rsfga-nats/src/lib.rs \
     && echo "pub fn dummy() {}" > crates/compatibility-tests/src/lib.rs
 
 # Copy proto files (needed for build)
@@ -69,6 +72,7 @@ COPY crates/rsfga-domain/src crates/rsfga-domain/src
 COPY crates/rsfga-domain/benches crates/rsfga-domain/benches
 COPY crates/rsfga-storage/src crates/rsfga-storage/src
 COPY crates/rsfga-storage/benches crates/rsfga-storage/benches
+COPY crates/rsfga-nats/src crates/rsfga-nats/src
 COPY crates/compatibility-tests/src crates/compatibility-tests/src
 
 # Touch files to invalidate the cache for actual source
@@ -76,7 +80,8 @@ RUN touch crates/rsfga-api/src/main.rs \
     && touch crates/rsfga-api/src/lib.rs \
     && touch crates/rsfga-server/src/lib.rs \
     && touch crates/rsfga-domain/src/lib.rs \
-    && touch crates/rsfga-storage/src/lib.rs
+    && touch crates/rsfga-storage/src/lib.rs \
+    && touch crates/rsfga-nats/src/lib.rs
 
 # Build the release binary
 RUN cargo build --release --bin rsfga
