@@ -31,6 +31,9 @@ pub struct WriterMetrics {
 
     /// Total committed events published.
     pub events_published: AtomicU64,
+
+    /// Total event publish failures (after retries).
+    pub event_publish_failures: AtomicU64,
 }
 
 impl WriterMetrics {
@@ -82,6 +85,12 @@ impl WriterMetrics {
     pub fn record_event_published(&self) {
         self.events_published.fetch_add(1, Ordering::Relaxed);
         counter!("rsfga_writer_events_published_total").increment(1);
+    }
+
+    /// Record an event publish failure (after retries exhausted).
+    pub fn record_event_publish_failure(&self) {
+        self.event_publish_failures.fetch_add(1, Ordering::Relaxed);
+        counter!("rsfga_writer_event_publish_failures_total").increment(1);
     }
 
     /// Record storage write latency.

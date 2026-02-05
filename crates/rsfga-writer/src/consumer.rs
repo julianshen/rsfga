@@ -242,28 +242,55 @@ impl WriteConsumer {
         self.metrics.record_tuples_written(write_count);
         self.metrics.record_tuples_deleted(delete_count);
 
-        // Publish CommittedEvent to RSFGA_EVENTS
+        // Publish CommittedEvent to RSFGA_EVENTS with retry
         let sequence = self.next_sequence();
         let event =
             CommittedEvent::new(&batch.store_id, sequence).with_request_ids(batch.request_ids);
 
-        if let Err(e) = self.publisher.publish_committed_event(&event).await {
-            warn!(
-                store_id = %batch.store_id,
-                error = %e,
-                "Failed to publish committed event (will retry on next batch)"
-            );
-        } else {
-            self.metrics.record_event_published();
+        let mut event_published = false;
+        let mut last_error = None;
+
+        // Retry event publishing up to 3 times with exponential backoff
+        for attempt in 0..3 {
+            match self.publisher.publish_committed_event(&event).await {
+                Ok(_) => {
+                    self.metrics.record_event_published();
+                    event_published = true;
+                    break;
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < 2 {
+                        let delay = Duration::from_millis(100 * (1 << attempt));
+                        warn!(
+                            store_id = %batch.store_id,
+                            attempt = attempt + 1,
+                            delay_ms = delay.as_millis(),
+                            "Failed to publish committed event, retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
         }
 
-        // Ack all messages after successful commit + publish
-        for msg in batch.messages {
-            if let Err(e) = msg.ack().await {
-                error!(error = %e, "Failed to ack message");
-            } else {
-                self.metrics.record_message_processed();
+        // Only ack messages if event was successfully published
+        // If event publishing fails after retries, messages will be redelivered
+        if event_published {
+            for msg in batch.messages {
+                if let Err(e) = msg.ack().await {
+                    error!(error = %e, "Failed to ack message");
+                } else {
+                    self.metrics.record_message_processed();
+                }
             }
+        } else {
+            error!(
+                store_id = %batch.store_id,
+                error = ?last_error,
+                "Failed to publish committed event after retries, not acking messages"
+            );
+            self.metrics.record_event_publish_failure();
         }
 
         debug!(
