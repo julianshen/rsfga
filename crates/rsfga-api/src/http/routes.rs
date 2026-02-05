@@ -1987,7 +1987,7 @@ fn convert_tuples_for_nats_event(
             if let Some(ref cond_name) = t.condition_name {
                 let condition = rsfga_nats::TupleCondition {
                     name: cond_name.clone(),
-                    context: t.condition_context.clone(),
+                    context: t.condition_context.clone().unwrap_or_default(),
                 };
                 op = op.with_condition(condition);
             }
