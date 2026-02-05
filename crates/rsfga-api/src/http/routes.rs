@@ -2924,6 +2924,21 @@ pub struct WriteTicketBody {
 /// - 404: Store not found
 /// - 503: NATS publisher not configured or unavailable
 #[cfg(feature = "nats")]
+/// Async write tuples endpoint for high-throughput writes via NATS.
+///
+/// # Performance Note
+///
+/// While this endpoint publishes to NATS for async processing, it still performs
+/// synchronous validation (store existence, model fetch, tuple validation) before
+/// publishing. This provides the same data integrity guarantees as the sync path.
+///
+/// For use cases requiring absolute minimal latency:
+/// - Consider pre-validating tuples client-side
+/// - Model caching (planned for future release) will reduce validation latency
+/// - The consumer will still reject invalid tuples, but without client notification
+///
+/// Trade-off: We chose to maintain validation to prevent invalid data in the queue,
+/// which would cause silent failures in the consumer.
 async fn async_write_tuples<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,

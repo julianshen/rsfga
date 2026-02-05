@@ -343,9 +343,14 @@ impl EventPublisher {
             }
 
             // Build publish request with message ID for deduplication
-            let publish = Publish::build()
-                .payload(payload.clone())
-                .message_id(msg_id.unwrap_or(""));
+            // Only set message_id when provided and non-empty for proper NATS deduplication
+            let mut publish = Publish::build().payload(payload.clone());
+            if let Some(id) = msg_id {
+                if !id.is_empty() {
+                    publish = publish.message_id(id);
+                }
+            }
+            let publish = publish;
 
             match timeout(
                 config.publish_timeout,

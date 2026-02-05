@@ -52,6 +52,10 @@ pub enum ConnectionState {
 impl NatsClient {
     /// Connect to NATS server with the given configuration.
     ///
+    /// Retries connection up to `reconnect.max_attempts` times with exponential
+    /// backoff on initial connection failure. This ensures the daemon can start
+    /// even if NATS is temporarily unavailable.
+    ///
     /// # Examples
     ///
     /// ```rust,no_run
@@ -73,30 +77,67 @@ impl NatsClient {
         // Create state tracking that will be shared with the event callback
         let state = Arc::new(RwLock::new(ConnectionState::Reconnecting));
 
-        let options = Self::build_connect_options(&config, state.clone()).await?;
-        let client = options.connect(&config.servers).await?;
+        // Retry initial connection with exponential backoff
+        let max_attempts = config.reconnect.max_attempts.max(1) as usize;
+        let mut last_error = None;
 
-        // Mark as connected after successful initial connection
-        *state.write().await = ConnectionState::Connected;
-        info!("Connected to NATS successfully");
+        for attempt in 1..=max_attempts {
+            let options = Self::build_connect_options(&config, state.clone()).await?;
+            match options.connect(&config.servers).await {
+                Ok(client) => {
+                    // Mark as connected after successful initial connection
+                    *state.write().await = ConnectionState::Connected;
+                    info!(attempt, "Connected to NATS successfully");
 
-        // Create JetStream context
-        let jetstream = if let Some(ref domain) = config.jetstream.domain {
-            jetstream::with_domain(client.clone(), domain.clone())
-        } else {
-            jetstream::new(client.clone())
-        };
+                    // Create JetStream context
+                    let jetstream = if let Some(ref domain) = config.jetstream.domain {
+                        jetstream::with_domain(client.clone(), domain.clone())
+                    } else {
+                        jetstream::new(client.clone())
+                    };
 
-        let inner = NatsClientInner {
-            client,
-            jetstream,
-            config,
-            state,
-        };
+                    let inner = NatsClientInner {
+                        client,
+                        jetstream,
+                        config,
+                        state,
+                    };
 
-        Ok(Self {
-            inner: Arc::new(inner),
-        })
+                    return Ok(Self {
+                        inner: Arc::new(inner),
+                    });
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < max_attempts {
+                        // Calculate backoff with jitter, capped at max_delay
+                        let base_delay = config.reconnect.initial_delay;
+                        let backoff = base_delay * 2u32.pow((attempt - 1) as u32);
+                        let capped_backoff = backoff.min(config.reconnect.max_delay);
+                        let jitter =
+                            (capped_backoff.as_millis() as f64 * rand_factor() * 0.3) as u64;
+                        let delay = capped_backoff + Duration::from_millis(jitter);
+
+                        warn!(
+                            attempt,
+                            max_attempts,
+                            delay_ms = delay.as_millis(),
+                            error = ?last_error,
+                            "NATS connection failed, retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+        }
+
+        // All retries exhausted
+        Err(NatsError::Connection(format!(
+            "failed to connect to {} after {} attempts: {:?}",
+            config.servers.join(", "),
+            max_attempts,
+            last_error
+        )))
     }
 
     /// Build connection options from configuration.

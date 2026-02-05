@@ -213,13 +213,28 @@ impl WriteConsumer {
                     Ok(msg) => {
                         self.metrics.record_message_consumed();
 
+                        // Get NATS stream sequence for persistent ordering
+                        // This is critical for CommittedEvent ordering
+                        let stream_sequence = match msg.info() {
+                            Ok(info) => info.stream_sequence,
+                            Err(e) => {
+                                // This should never happen for JetStream messages
+                                // If it does, don't ack - let message be redelivered
+                                error!(
+                                    error = %e,
+                                    subject = %msg.subject,
+                                    "Failed to get message info - not processing"
+                                );
+                                self.metrics.record_message_failed();
+                                batch_had_failures = true;
+                                continue;
+                            }
+                        };
+
                         // Parse the write request
                         match serde_json::from_slice::<WriteRequest>(&msg.payload) {
                             Ok(request) => {
                                 let store_id = request.store_id.clone();
-                                // Get NATS stream sequence for persistent ordering
-                                let stream_sequence =
-                                    msg.info().map(|info| info.stream_sequence).unwrap_or(0);
                                 pending.entry(store_id).or_default().push(PendingMessage {
                                     request,
                                     ack: msg,
@@ -229,20 +244,20 @@ impl WriteConsumer {
                             Err(e) => {
                                 // Parse failures are typically permanent (malformed data)
                                 // Publish to DLQ for analysis, then ack to prevent blocking
-                                let stream_seq =
-                                    msg.info().map(|info| info.stream_sequence).unwrap_or(0);
 
                                 error!(
                                     error = %e,
                                     payload_size = msg.payload.len(),
                                     subject = %msg.subject,
-                                    stream_sequence = stream_seq,
+                                    stream_sequence,
                                     "Failed to parse write request - sending to DLQ"
                                 );
 
                                 // Publish to Dead Letter Queue
-                                let dlq_subject =
-                                    format!("{}.parse_error.{}", SUBJECT_DLQ_PREFIX, stream_seq);
+                                let dlq_subject = format!(
+                                    "{}.parse_error.{}",
+                                    SUBJECT_DLQ_PREFIX, stream_sequence
+                                );
                                 if let Err(dlq_err) = self
                                     .client
                                     .client()
