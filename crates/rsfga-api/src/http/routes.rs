@@ -1792,6 +1792,14 @@ async fn write_tuples<S: DataStore>(
     )
     .map_err(|e| ApiError::validation_error(e.to_string()))?;
 
+    // Clone tuple data for NATS event publishing (only when feature enabled)
+    #[cfg(feature = "nats")]
+    let nats_event_data = if state.has_publisher() {
+        Some(convert_tuples_for_nats_event(&writes, &deletes))
+    } else {
+        None
+    };
+
     state
         .storage
         .write_tuples(&store_id, writes, deletes)
@@ -1800,6 +1808,32 @@ async fn write_tuples<S: DataStore>(
     // Invalidate cache for this store to prevent stale auth decisions.
     // This is a coarse-grained stopgap until fine-grained invalidation is wired.
     state.cache.invalidate_store(&store_id).await;
+
+    // Fire-and-forget event publishing to RSFGA_EVENTS stream (Milestone 2.0.2.3)
+    #[cfg(feature = "nats")]
+    if let Some((nats_writes, nats_deletes)) = nats_event_data {
+        if let Some(publisher) = state.publisher() {
+            let publisher = Arc::clone(publisher);
+            let store_id_clone = store_id.clone();
+            tokio::spawn(async move {
+                use rsfga_nats::CommittedEvent;
+
+                let event = CommittedEvent::new(&store_id_clone)
+                    .with_writes(nats_writes)
+                    .with_deletes(nats_deletes);
+
+                if let Err(e) = publisher.publish_committed_event(&event).await {
+                    // Log error but don't fail the request (fire-and-forget)
+                    tracing::warn!(
+                        store_id = %store_id_clone,
+                        error = %e,
+                        "Failed to publish committed event to RSFGA_EVENTS (fire-and-forget)"
+                    );
+                    // Metrics are tracked inside the publisher
+                }
+            });
+        }
+    }
 
     Ok(Json(serde_json::json!({})))
 }
@@ -1923,6 +1957,63 @@ fn parse_tuple_fields(
         // Set created_at at write time (note: deletes don't use this timestamp)
         created_at: Some(Utc::now()),
     })
+}
+
+/// Converts StoredTuples to NATS event types for sync path event publishing.
+///
+/// This function is feature-gated to only compile when the `nats` feature is enabled.
+/// It converts the internal StoredTuple representation to the NATS TupleOperation/TupleKey types.
+#[cfg(feature = "nats")]
+fn convert_tuples_for_nats_event(
+    writes: &[rsfga_storage::StoredTuple],
+    deletes: &[rsfga_storage::StoredTuple],
+) -> (Vec<rsfga_nats::TupleOperation>, Vec<rsfga_nats::TupleKey>) {
+    let nats_writes: Vec<rsfga_nats::TupleOperation> = writes
+        .iter()
+        .map(|t| {
+            // Format user as "type:id" or "type:id#relation" for usersets
+            let user = if let Some(ref user_rel) = t.user_relation {
+                format!("{}:{}#{}", t.user_type, t.user_id, user_rel)
+            } else {
+                format!("{}:{}", t.user_type, t.user_id)
+            };
+
+            // Format object as "type:id"
+            let object = format!("{}:{}", t.object_type, t.object_id);
+
+            // Create TupleOperation with optional condition
+            let mut op = rsfga_nats::TupleOperation::new(user, t.relation.clone(), object);
+
+            if let Some(ref cond_name) = t.condition_name {
+                let condition = rsfga_nats::TupleCondition {
+                    name: cond_name.clone(),
+                    context: t.condition_context.clone(),
+                };
+                op = op.with_condition(condition);
+            }
+
+            op
+        })
+        .collect();
+
+    let nats_deletes: Vec<rsfga_nats::TupleKey> = deletes
+        .iter()
+        .map(|t| {
+            // Format user as "type:id" or "type:id#relation" for usersets
+            let user = if let Some(ref user_rel) = t.user_relation {
+                format!("{}:{}#{}", t.user_type, t.user_id, user_rel)
+            } else {
+                format!("{}:{}", t.user_type, t.user_id)
+            };
+
+            // Format object as "type:id"
+            let object = format!("{}:{}", t.object_type, t.object_id);
+
+            rsfga_nats::TupleKey::new(user, t.relation.clone(), object)
+        })
+        .collect();
+
+    (nats_writes, nats_deletes)
 }
 
 // ============================================================

@@ -2003,7 +2003,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Milestone 2.0.2: Async API Endpoints (Week 3-4)
+### Milestone 2.0.2: Async API Endpoints (Week 3-4) ✅ COMPLETE
 
 **Goal**: New `/async` write endpoints that publish to NATS
 
@@ -2020,10 +2020,10 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 - [x] Publish model update event to NATS
 - [x] Return write ticket for RYOW
 
-**2.0.2.3 Sync Path Event Publishing**
-- [ ] Original `/write` endpoint publishes to RSFGA_EVENTS after storage commit
-- [ ] Fire-and-forget (spawned task, doesn't block response)
-- [ ] Metrics for event publish failures
+**2.0.2.3 Sync Path Event Publishing** ✅
+- [x] Original `/write` endpoint publishes to RSFGA_EVENTS after storage commit
+- [x] Fire-and-forget (spawned task, doesn't block response)
+- [x] Metrics for event publish failures (tracked inside EventPublisher)
 
 **Validation Criteria**:
 - [ ] Async endpoint returns in <5ms (without storage wait)
