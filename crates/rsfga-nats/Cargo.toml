@@ -50,6 +50,8 @@ rsfga-domain = { path = "../rsfga-domain" }
 tokio-test = "0.4"
 proptest = { workspace = true }
 tempfile = { workspace = true }
+testcontainers = { workspace = true }
+testcontainers-modules = { version = "0.14", features = ["nats"] }
 
 [build-dependencies]
 prost-build = { workspace = true }

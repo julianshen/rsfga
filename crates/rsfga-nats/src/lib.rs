@@ -53,9 +53,11 @@ pub mod publisher;
 pub use config::NatsConfig;
 pub use connection::NatsClient;
 pub use error::{NatsError, Result};
-pub use events::{CommittedEvent, TupleOperation, WriteRequest};
+pub use events::{
+    CommittedEvent, TupleCondition, TupleKey, TupleOperation, WriteRequest, WriteTicket,
+};
 pub use jetstream::JetStreamManager;
-pub use publisher::EventPublisher;
+pub use publisher::{EventPublisher, PublisherConfig, PublisherStats};
 
 /// Stream name for write requests (WorkQueue retention)
 pub const STREAM_WRITES: &str = "RSFGA_WRITES";
