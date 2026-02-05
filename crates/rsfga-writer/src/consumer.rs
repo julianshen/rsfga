@@ -79,12 +79,6 @@ pub struct ConsumerConfig {
     pub batch_size: usize,
     /// Batch timeout (flush if no messages for this duration).
     pub batch_timeout: Duration,
-    /// Number of parallel workers for processing batches.
-    ///
-    /// **Note:** Currently unused. Reserved for future parallel batch processing.
-    /// The consumer processes batches sequentially for simplicity and correctness.
-    #[allow(dead_code)]
-    pub workers: usize,
 }
 
 impl ConsumerConfig {
@@ -163,8 +157,21 @@ impl WriteConsumer {
         })
     }
 
-    /// Run the consumer loop.
-    pub async fn run(&self) -> Result<()> {
+    /// Run the consumer loop until shutdown is signaled.
+    ///
+    /// # Graceful Shutdown
+    ///
+    /// When `shutdown` receives a value:
+    /// 1. Stops fetching new messages from NATS
+    /// 2. Processes all pending messages in the queue
+    /// 3. Acknowledges all successfully processed messages
+    /// 4. Returns gracefully
+    ///
+    /// This ensures no messages are lost during shutdown.
+    pub async fn run_with_shutdown(
+        &self,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()> {
         // Create or get the durable pull consumer
         let consumer = self.create_consumer().await?;
 
@@ -182,6 +189,11 @@ impl WriteConsumer {
         const MAX_BACKOFF_MS: u64 = 30_000; // 30 seconds max backoff
 
         loop {
+            // Check for shutdown signal
+            if *shutdown.borrow() {
+                info!("Shutdown signal received, processing pending messages");
+                break;
+            }
             // Apply backoff if we've had consecutive failures
             if consecutive_failures > 0 {
                 let backoff_ms = std::cmp::min(
@@ -328,6 +340,22 @@ impl WriteConsumer {
                 consecutive_failures = 0;
             }
         }
+
+        // Process any remaining pending messages before shutdown
+        if !pending.is_empty() {
+            let remaining: usize = pending.values().map(|v| v.len()).sum();
+            info!(
+                remaining,
+                "Processing remaining pending messages before shutdown"
+            );
+            if let Err(e) = self.process_pending_batches(&mut pending).await {
+                error!(error = %e, "Failed to process remaining messages during shutdown");
+                return Err(e);
+            }
+        }
+
+        info!("Consumer shutdown complete");
+        Ok(())
     }
 
     /// Process all pending batches.
@@ -628,5 +656,70 @@ mod tests {
     fn test_parse_object_invalid() {
         let result = parse_object("invalid");
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_consumer_config_valid() {
+        let config = ConsumerConfig {
+            consumer_name: "test-consumer".to_string(),
+            batch_size: 100,
+            batch_timeout: Duration::from_millis(50),
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_consumer_config_empty_name() {
+        let config = ConsumerConfig {
+            consumer_name: "".to_string(),
+            batch_size: 100,
+            batch_timeout: Duration::from_millis(50),
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("consumer_name"));
+    }
+
+    #[test]
+    fn test_consumer_config_batch_size_too_small() {
+        let config = ConsumerConfig {
+            consumer_name: "test".to_string(),
+            batch_size: 0,
+            batch_timeout: Duration::from_millis(50),
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("batch_size"));
+    }
+
+    #[test]
+    fn test_consumer_config_batch_size_too_large() {
+        let config = ConsumerConfig {
+            consumer_name: "test".to_string(),
+            batch_size: MAX_BATCH_SIZE + 1,
+            batch_timeout: Duration::from_millis(50),
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("batch_size"));
+    }
+
+    #[test]
+    fn test_consumer_config_timeout_too_small() {
+        let config = ConsumerConfig {
+            consumer_name: "test".to_string(),
+            batch_size: 100,
+            batch_timeout: Duration::from_millis(1),
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("batch_timeout"));
+    }
+
+    #[test]
+    fn test_consumer_config_timeout_too_large() {
+        let config = ConsumerConfig {
+            consumer_name: "test".to_string(),
+            batch_size: 100,
+            batch_timeout: MAX_BATCH_TIMEOUT + Duration::from_secs(1),
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("batch_timeout"));
     }
 }

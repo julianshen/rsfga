@@ -116,6 +116,24 @@ impl WriteRequest {
 /// Published to the RSFGA_WRITES stream when a client calls the async
 /// model update endpoint. Contains the full authorization model to be
 /// written to storage.
+///
+/// # Model ID Generation ("Burning" Behavior)
+///
+/// The `model_id` is pre-generated when this request is created (either by the
+/// caller or automatically via `new()`). This ID is returned to the client
+/// immediately for RYOW (Read-Your-Own-Writes) consistency.
+///
+/// **Important**: If the async write fails after the request is created but
+/// before it's committed to storage, the pre-generated `model_id` is "burned"
+/// (consumed but never stored). This means:
+///
+/// - Model IDs are not guaranteed to be contiguous
+/// - A client may receive a `model_id` that never becomes valid in storage
+/// - Subsequent model writes will have higher/later IDs
+///
+/// This trade-off enables fast async acknowledgment while maintaining RYOW
+/// semantics. Callers should verify model existence via `GetAuthorizationModel`
+/// when strict consistency is required.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelWriteRequest {
     /// Unique request ID (ULID)
@@ -124,7 +142,8 @@ pub struct ModelWriteRequest {
     /// Store ID
     pub store_id: String,
 
-    /// Pre-generated model ID (ULID) for RYOW consistency
+    /// Pre-generated model ID (ULID) for RYOW consistency.
+    /// May be "burned" if async write fails - see struct docs.
     pub model_id: String,
 
     /// Schema version (e.g., "1.1", "1.2")

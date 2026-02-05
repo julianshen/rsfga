@@ -1,7 +1,7 @@
 # RSFGA - High-Performance Rust Implementation of OpenFGA
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/julianshen/rsfga/actions/workflows/ci.yml/badge.svg)](https://github.com/julianshen/rsfga/actions)
 
 **RSFGA** is a high-performance, 100% API-compatible Rust implementation of [OpenFGA](https://openfga.dev/), an authorization/permission engine inspired by Google Zanzibar.
@@ -63,7 +63,7 @@ docker run -p 8080:8080 -p 50051:50051 \
 
 ### Prerequisites (for building from source)
 
-- Rust 1.75+ ([Install Rust](https://rustup.rs/))
+- Rust 1.80+ ([Install Rust](https://rustup.rs/)) - MSRV (Minimum Supported Rust Version)
 - PostgreSQL 14+ / MySQL 8.0+ / CockroachDB (optional, for persistent storage)
 
 ### Installation

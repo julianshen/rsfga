@@ -103,10 +103,6 @@ struct Args {
     #[arg(long, env = "BATCH_TIMEOUT_MS", default_value = "100")]
     batch_timeout_ms: u64,
 
-    /// Number of parallel workers for processing batches
-    #[arg(long, env = "WORKERS", default_value = "4")]
-    workers: usize,
-
     /// Storage backend (memory, postgres, mysql, rocksdb)
     #[arg(long, env = "STORAGE_BACKEND", default_value = "memory")]
     storage_backend: String,
@@ -144,7 +140,6 @@ async fn main() -> Result<()> {
         nats_url = %redact_url(&args.nats_url),
         batch_size = args.batch_size,
         batch_timeout_ms = args.batch_timeout_ms,
-        workers = args.workers,
         storage_backend = %args.storage_backend,
         "Starting RSFGA Writer daemon"
     );
@@ -176,22 +171,25 @@ async fn main() -> Result<()> {
             consumer_name: args.consumer_name,
             batch_size: args.batch_size,
             batch_timeout: std::time::Duration::from_millis(args.batch_timeout_ms),
-            workers: args.workers,
         },
     )
     .await?;
 
-    // Run until shutdown signal
-    tokio::select! {
-        result = consumer.run() => {
-            if let Err(e) = result {
-                error!(error = %e, "Consumer error");
-                return Err(e);
-            }
+    // Set up graceful shutdown signal
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // Spawn shutdown signal handler
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            info!("Received shutdown signal, initiating graceful shutdown");
+            let _ = shutdown_tx.send(true);
         }
-        _ = tokio::signal::ctrl_c() => {
-            info!("Received shutdown signal");
-        }
+    });
+
+    // Run consumer with graceful shutdown
+    if let Err(e) = consumer.run_with_shutdown(shutdown_rx).await {
+        error!(error = %e, "Consumer error");
+        return Err(e);
     }
 
     info!("RSFGA Writer daemon stopped");

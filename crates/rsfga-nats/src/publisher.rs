@@ -545,4 +545,81 @@ mod tests {
 
         assert_eq!(request.subject(), "rsfga.writes.my-store");
     }
+
+    #[test]
+    fn test_circuit_breaker_opens_after_threshold() {
+        let cb = AtomicCircuitBreaker::default();
+        let threshold = 3;
+
+        // Record failures up to threshold
+        for _ in 0..threshold {
+            cb.record_failure(threshold);
+        }
+
+        // Circuit should now be open
+        assert!(cb.is_open());
+    }
+
+    #[test]
+    fn test_circuit_breaker_success_resets_failure_count() {
+        let cb = AtomicCircuitBreaker::default();
+        let threshold = 5;
+
+        // Record some failures (below threshold)
+        cb.record_failure(threshold);
+        cb.record_failure(threshold);
+        assert_eq!(cb.failure_count.load(Ordering::Relaxed), 2);
+
+        // Record success should reset count
+        cb.record_success();
+        assert_eq!(cb.failure_count.load(Ordering::Relaxed), 0);
+        assert!(!cb.is_open());
+    }
+
+    #[test]
+    fn test_circuit_breaker_manual_reset() {
+        let cb = AtomicCircuitBreaker::default();
+        let threshold = 2;
+
+        // Open the circuit
+        cb.record_failure(threshold);
+        cb.record_failure(threshold);
+        assert!(cb.is_open());
+
+        // Manual reset
+        cb.reset();
+        assert!(!cb.is_open());
+        assert_eq!(cb.failure_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_circuit_breaker_check_rejects_when_open() {
+        let cb = AtomicCircuitBreaker::default();
+        let threshold = 1;
+        let reset_duration = Duration::from_secs(3600); // Long reset
+
+        // Small delay to ensure elapsed time is non-zero when circuit opens
+        std::thread::sleep(Duration::from_millis(1));
+
+        // Open the circuit
+        cb.record_failure(threshold);
+        assert!(cb.is_open());
+
+        // Verify opened_at_ms was set (non-zero)
+        assert!(cb.opened_at_ms.load(Ordering::Relaxed) > 0);
+
+        // Check should fail
+        let result = cb.check(reset_duration);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_circuit_breaker_check_allows_when_closed() {
+        let cb = AtomicCircuitBreaker::default();
+        let reset_duration = Duration::from_secs(30);
+
+        // Check should succeed when circuit is closed
+        let result = cb.check(reset_duration);
+        assert!(result.is_ok());
+    }
 }
