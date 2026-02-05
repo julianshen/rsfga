@@ -3012,7 +3012,7 @@ async fn async_write_tuples<S: DataStore>(
                 .enumerate()
                 .map(|(i, tk)| {
                     // Validate tuple format
-                    let _ = parse_tuple_key_for_validation(&tk).map_err(|e| {
+                    parse_tuple_key_for_validation(&tk).map_err(|e| {
                         ApiError::validation_error(format!(
                             "invalid tuple at index {i}: user={}, object={}, reason={}",
                             e.user, e.object, e.reason
