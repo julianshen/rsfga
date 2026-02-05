@@ -1818,7 +1818,9 @@ async fn write_tuples<S: DataStore>(
             tokio::spawn(async move {
                 use rsfga_nats::CommittedEvent;
 
-                let event = CommittedEvent::new(&store_id_clone)
+                // Sequence 0 for sync path - fire-and-forget notification,
+                // not used for RYOW consistency (async path handles that)
+                let event = CommittedEvent::new(&store_id_clone, 0)
                     .with_writes(nats_writes)
                     .with_deletes(nats_deletes);
 
