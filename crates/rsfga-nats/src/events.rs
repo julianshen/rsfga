@@ -124,6 +124,9 @@ pub struct ModelWriteRequest {
     /// Store ID
     pub store_id: String,
 
+    /// Pre-generated model ID (ULID) for RYOW consistency
+    pub model_id: String,
+
     /// Schema version (e.g., "1.1", "1.2")
     pub schema_version: String,
 
@@ -148,12 +151,19 @@ impl ModelWriteRequest {
         Self {
             request_id: ulid::Ulid::new().to_string(),
             store_id: store_id.into(),
+            model_id: ulid::Ulid::new().to_string(),
             schema_version: schema_version.into(),
             type_definitions: serde_json::Value::Array(vec![]),
             conditions: None,
             timestamp: Utc::now(),
             metadata: RequestMetadata::default(),
         }
+    }
+
+    /// Set model ID (for RYOW consistency when client provides pre-generated ID).
+    pub fn with_model_id(mut self, model_id: impl Into<String>) -> Self {
+        self.model_id = model_id.into();
+        self
     }
 
     /// Set type definitions.

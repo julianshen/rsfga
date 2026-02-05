@@ -3248,8 +3248,9 @@ async fn async_write_authorization_model<S: DataStore>(
     // Generate a new ULID for the model (generated upfront for RYOW)
     let model_id = ulid::Ulid::new().to_string();
 
-    // Build the model write request
+    // Build the model write request with pre-generated model_id for RYOW consistency
     let mut request = ModelWriteRequest::new(&store_id, &body.schema_version)
+        .with_model_id(&model_id)
         .with_type_definitions(serde_json::json!(body.type_definitions));
 
     if let Some(ref conditions) = body.conditions {

@@ -27,6 +27,15 @@ use rsfga_storage::{DataStore, StoredTuple};
 use crate::error::{Result, WriterError};
 use crate::metrics::WriterMetrics;
 
+/// Minimum allowed batch size.
+pub const MIN_BATCH_SIZE: usize = 1;
+/// Maximum allowed batch size (prevents memory exhaustion).
+pub const MAX_BATCH_SIZE: usize = 10_000;
+/// Minimum batch timeout.
+pub const MIN_BATCH_TIMEOUT: Duration = Duration::from_millis(10);
+/// Maximum batch timeout.
+pub const MAX_BATCH_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Consumer configuration.
 #[derive(Debug, Clone)]
 pub struct ConsumerConfig {
@@ -39,6 +48,28 @@ pub struct ConsumerConfig {
     /// Number of parallel workers for processing batches (reserved for future use).
     #[allow(dead_code)]
     pub workers: usize,
+}
+
+impl ConsumerConfig {
+    /// Validate configuration values.
+    pub fn validate(&self) -> Result<()> {
+        if self.consumer_name.is_empty() {
+            return Err(WriterError::Config("consumer_name cannot be empty".to_string()));
+        }
+        if self.batch_size < MIN_BATCH_SIZE || self.batch_size > MAX_BATCH_SIZE {
+            return Err(WriterError::Config(format!(
+                "batch_size must be between {} and {}, got {}",
+                MIN_BATCH_SIZE, MAX_BATCH_SIZE, self.batch_size
+            )));
+        }
+        if self.batch_timeout < MIN_BATCH_TIMEOUT || self.batch_timeout > MAX_BATCH_TIMEOUT {
+            return Err(WriterError::Config(format!(
+                "batch_timeout must be between {:?} and {:?}, got {:?}",
+                MIN_BATCH_TIMEOUT, MAX_BATCH_TIMEOUT, self.batch_timeout
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Pending message with ack handle.
@@ -78,6 +109,9 @@ impl WriteConsumer {
         metrics: Arc<WriterMetrics>,
         config: ConsumerConfig,
     ) -> Result<Self> {
+        // Validate configuration
+        config.validate()?;
+
         let publisher = EventPublisher::new(client.clone());
 
         Ok(Self {

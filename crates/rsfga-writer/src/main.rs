@@ -27,6 +27,25 @@ use crate::consumer::WriteConsumer;
 use crate::error::Result;
 use crate::metrics::WriterMetrics;
 
+/// Redact credentials from URLs for safe logging.
+///
+/// Replaces password in URLs like `postgres://user:password@host` with `***`.
+fn redact_url(url: &str) -> String {
+    // Match pattern: scheme://user:password@rest
+    if let Some(scheme_end) = url.find("://") {
+        let after_scheme = &url[scheme_end + 3..];
+        if let Some(at_pos) = after_scheme.find('@') {
+            let user_pass = &after_scheme[..at_pos];
+            if let Some(colon_pos) = user_pass.find(':') {
+                let user = &user_pass[..colon_pos];
+                let rest = &after_scheme[at_pos..];
+                return format!("{}://{}:***{}", &url[..scheme_end], user, rest);
+            }
+        }
+    }
+    url.to_string()
+}
+
 /// RSFGA Writer - Storage consumer daemon for async writes
 #[derive(Parser, Debug)]
 #[command(name = "rsfga-writer")]
@@ -87,7 +106,7 @@ async fn main() -> Result<()> {
     info!(
         version = env!("CARGO_PKG_VERSION"),
         consumer_name = %args.consumer_name,
-        nats_url = %args.nats_url,
+        nats_url = %redact_url(&args.nats_url),
         batch_size = args.batch_size,
         batch_timeout_ms = args.batch_timeout_ms,
         workers = args.workers,
@@ -177,7 +196,7 @@ async fn create_storage(args: &Args) -> Result<Arc<dyn DataStore>> {
                     "DATABASE_URL required for postgres backend".to_string(),
                 )
             })?;
-            info!(url = %url, "Using PostgreSQL storage backend");
+            info!(url = %redact_url(url), "Using PostgreSQL storage backend");
             let config = rsfga_storage::PostgresConfig {
                 database_url: url.clone(),
                 ..Default::default()
@@ -191,7 +210,7 @@ async fn create_storage(args: &Args) -> Result<Arc<dyn DataStore>> {
                     "DATABASE_URL required for mysql backend".to_string(),
                 )
             })?;
-            info!(url = %url, "Using MySQL storage backend");
+            info!(url = %redact_url(url), "Using MySQL storage backend");
             let config = rsfga_storage::MySQLConfig {
                 database_url: url.clone(),
                 ..Default::default()
