@@ -5,7 +5,7 @@
 
 use crate::connection::NatsClient;
 use crate::error::{NatsError, Result};
-use crate::events::{CommittedEvent, WriteRequest, WriteTicket};
+use crate::events::{CommittedEvent, ModelWriteRequest, WriteRequest, WriteTicket};
 use async_nats::jetstream::context::Publish;
 use async_nats::jetstream::publish::PublishAck;
 use bytes::Bytes;
@@ -225,6 +225,54 @@ impl EventPublisher {
             sequence = ack.sequence,
             stream = %ack.stream,
             "Write request published"
+        );
+
+        // Create write ticket with configured TTL
+        let ticket = WriteTicket::with_ttl(
+            &request.store_id,
+            ack.sequence,
+            &request.request_id,
+            self.inner.config.write_ticket_ttl,
+        );
+
+        Ok(ticket)
+    }
+
+    /// Publish a model write request to RSFGA_WRITES stream.
+    ///
+    /// Returns a `WriteTicket` that can be used for read-your-own-writes.
+    #[instrument(skip(self, request), fields(store_id = %request.store_id, request_id = %request.request_id))]
+    pub async fn publish_model_write_request(
+        &self,
+        request: &ModelWriteRequest,
+    ) -> Result<WriteTicket> {
+        // Check circuit breaker
+        self.check_circuit_breaker()?;
+
+        self.inner
+            .metrics
+            .publish_attempts
+            .fetch_add(1, Ordering::Relaxed);
+
+        let subject = request.subject();
+        let payload = request.to_bytes()?;
+
+        // Use request_id as message ID for deduplication during retries
+        let msg_id = &request.request_id;
+
+        // Publish with retry and deduplication
+        let ack = self
+            .publish_with_retry(&subject, Bytes::from(payload), Some(msg_id))
+            .await?;
+
+        // Record success
+        self.record_success();
+
+        debug!(
+            subject = %subject,
+            sequence = ack.sequence,
+            stream = %ack.stream,
+            "Model write request published"
         );
 
         // Create write ticket with configured TTL

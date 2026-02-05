@@ -2010,15 +2010,15 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 #### Tasks
 
 **2.0.2.1 Async Write Handler**
-- [ ] Implement `POST /async/stores/{store_id}/write` endpoint
-- [ ] Validation (same as sync path)
-- [ ] Publish `WriteRequest` to RSFGA_WRITES stream
-- [ ] Return `request_id`, `sequence`, `write_ticket`
+- [x] Implement `POST /async/stores/{store_id}/write` endpoint
+- [x] Validation (same as sync path)
+- [x] Publish `WriteRequest` to RSFGA_WRITES stream
+- [x] Return `request_id`, `sequence`, `write_ticket`
 
 **2.0.2.2 Async Model Update Handler**
-- [ ] Implement `POST /async/stores/{store_id}/write-model` endpoint
-- [ ] Publish model update event to NATS
-- [ ] Return write ticket for RYOW
+- [x] Implement `POST /async/stores/{store_id}/authorization-models` endpoint
+- [x] Publish model update event to NATS
+- [x] Return write ticket for RYOW
 
 **2.0.2.3 Sync Path Event Publishing**
 - [ ] Original `/write` endpoint publishes to RSFGA_EVENTS after storage commit

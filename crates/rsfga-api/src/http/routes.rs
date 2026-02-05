@@ -112,10 +112,15 @@ fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
 
     // Add async write routes when NATS feature is enabled
     #[cfg(feature = "nats")]
-    let router = router.route(
-        "/async/stores/:store_id/write",
-        post(async_write_tuples::<S>),
-    );
+    let router = router
+        .route(
+            "/async/stores/:store_id/write",
+            post(async_write_tuples::<S>),
+        )
+        .route(
+            "/async/stores/:store_id/authorization-models",
+            post(async_write_authorization_model::<S>),
+        );
 
     router
 }
@@ -3070,6 +3075,120 @@ fn parse_tuple_key_for_validation(tk: &TupleKeyBody) -> Result<(), TupleKeyParse
     }
 
     Ok(())
+}
+
+/// Response body for async model write operation.
+#[cfg(feature = "nats")]
+#[derive(Debug, Serialize)]
+pub struct AsyncModelWriteResponseBody {
+    /// Generated authorization model ID.
+    pub authorization_model_id: String,
+    /// Unique request ID for this write operation.
+    pub request_id: String,
+    /// JetStream sequence number for ordering.
+    pub sequence: u64,
+    /// Write ticket for RYOW consistency.
+    pub write_ticket: WriteTicketBody,
+}
+
+/// Async model write endpoint that publishes to NATS JetStream.
+///
+/// This endpoint validates the authorization model (same as sync path) but
+/// instead of writing directly to storage, it publishes a `ModelWriteRequest`
+/// event to the RSFGA_WRITES JetStream stream.
+///
+/// # Note
+///
+/// The model ID is generated upfront and included in the response. The actual
+/// storage write happens asynchronously via the storage consumer.
+///
+/// # Errors
+///
+/// - 400: Invalid model format or validation error
+/// - 404: Store not found
+/// - 503: NATS publisher not configured or unavailable
+#[cfg(feature = "nats")]
+async fn async_write_authorization_model<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(store_id): Path<String>,
+    JsonBadRequest(body): JsonBadRequest<WriteAuthorizationModelRequest>,
+) -> ApiResult<impl IntoResponse> {
+    use rsfga_nats::ModelWriteRequest;
+
+    // Check if NATS publisher is configured
+    let publisher = state.publisher().ok_or_else(|| {
+        ApiError::service_unavailable("async writes not available: NATS not configured")
+    })?;
+
+    // Validate store exists
+    let _ = state.storage.get_store(&store_id).await?;
+
+    // Validate type_definitions is not empty (OpenFGA requirement)
+    if body.type_definitions.is_empty() {
+        return Err(ApiError::type_definitions_too_few_items(
+            "type_definitions requires at least 1 item",
+        ));
+    }
+
+    // Serialize the model data to JSON for validation
+    let mut model_json = serde_json::json!({
+        "type_definitions": body.type_definitions,
+    });
+    if let Some(ref conditions) = body.conditions {
+        if !conditions.is_null() {
+            model_json["conditions"] = conditions.clone();
+        }
+    }
+
+    // Validate model semantics (same as sync path)
+    crate::adapters::validate_authorization_model_json(&model_json, &body.schema_version)
+        .map_err(|e| ApiError::validation_error(e.to_string()))?;
+
+    // Validate model size
+    let model_json_str = model_json.to_string();
+    if model_json_str.len() > MAX_AUTHORIZATION_MODEL_SIZE {
+        return Err(ApiError::validation_error(format!(
+            "authorization model exceeds maximum size of {MAX_AUTHORIZATION_MODEL_SIZE} bytes"
+        )));
+    }
+
+    // Generate a new ULID for the model (generated upfront for RYOW)
+    let model_id = ulid::Ulid::new().to_string();
+
+    // Build the model write request
+    let mut request = ModelWriteRequest::new(&store_id, &body.schema_version)
+        .with_type_definitions(serde_json::json!(body.type_definitions));
+
+    if let Some(ref conditions) = body.conditions {
+        if !conditions.is_null() {
+            request = request.with_conditions(conditions.clone());
+        }
+    }
+
+    // Publish to NATS
+    let ticket = publisher
+        .publish_model_write_request(&request)
+        .await
+        .map_err(|e| {
+            error!("Failed to publish model write request to NATS: {e}");
+            ApiError::service_unavailable(format!("failed to publish model write request: {e}"))
+        })?;
+
+    // Return response with model ID and write ticket
+    Ok((
+        StatusCode::CREATED,
+        Json(AsyncModelWriteResponseBody {
+            authorization_model_id: model_id,
+            request_id: request.request_id.clone(),
+            sequence: ticket.sequence,
+            write_ticket: WriteTicketBody {
+                store_id: ticket.store_id.clone(),
+                sequence: ticket.sequence,
+                request_id: ticket.request_id.clone(),
+                expires_at: ticket.expires_at.to_rfc3339(),
+            },
+        }),
+    ))
 }
 
 // ============================================================================

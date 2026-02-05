@@ -54,7 +54,8 @@ pub use config::NatsConfig;
 pub use connection::NatsClient;
 pub use error::{NatsError, Result};
 pub use events::{
-    CommittedEvent, TupleCondition, TupleKey, TupleOperation, WriteRequest, WriteTicket,
+    CommittedEvent, ModelWriteRequest, TupleCondition, TupleKey, TupleOperation, WriteRequest,
+    WriteTicket,
 };
 pub use jetstream::JetStreamManager;
 pub use publisher::{EventPublisher, PublisherConfig, PublisherStats};
