@@ -12,7 +12,7 @@
 //! This consumer implements **at-least-once** delivery:
 //!
 //! - Messages are only acknowledged after BOTH storage write AND event publish succeed
-//! - If event publishing fails after retries, messages are NOT acknowledged
+//! - If event publishing fails after 3 retries, messages are NOT acknowledged
 //! - Unacknowledged messages will be redelivered by NATS after ack_wait timeout
 //! - Storage writes use ON CONFLICT (upsert) for idempotency on redelivery
 //!
@@ -20,6 +20,24 @@
 //! - Writes may be applied more than once (but idempotently)
 //! - CommittedEvents may be published more than once for the same batch
 //! - Downstream consumers should handle duplicate events
+//!
+//! # Error Handling
+//!
+//! ## Parse Failures
+//! - Malformed messages are logged with details and acked to prevent queue blocking
+//! - These are tracked via `messages_failed` metric
+//! - **TODO**: Consider publishing to a Dead Letter Queue (DLQ) subject for analysis
+//!
+//! ## Event Publish Failures
+//! - Retried 3 times with exponential backoff (100ms, 200ms, 400ms)
+//! - If all retries fail, messages are NOT acked (will be redelivered)
+//! - Tracked via `event_publish_failures` metric
+//! - **Note**: This can cause duplicate storage writes on redelivery (idempotent)
+//!
+//! ## Consecutive Failures
+//! - Consumer applies exponential backoff (100ms to 30s) on consecutive failures
+//! - This prevents tight loop on persistent errors (e.g., storage unavailable)
+//! - Backoff resets on successful batch processing
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -173,8 +191,24 @@ impl WriteConsumer {
         // Main consumer loop - fetch messages in batches
         let mut pending: HashMap<String, Vec<PendingMessage>> = HashMap::new();
         let mut batch_timer = Instant::now();
+        let mut consecutive_failures: u32 = 0;
+        const MAX_BACKOFF_MS: u64 = 30_000; // 30 seconds max backoff
 
         loop {
+            // Apply backoff if we've had consecutive failures
+            if consecutive_failures > 0 {
+                let backoff_ms = std::cmp::min(
+                    100 * (1u64 << std::cmp::min(consecutive_failures, 10)),
+                    MAX_BACKOFF_MS,
+                );
+                warn!(
+                    consecutive_failures,
+                    backoff_ms,
+                    "Backing off due to consecutive failures"
+                );
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            }
+
             // Fetch a batch of messages
             let mut messages = consumer
                 .fetch()
@@ -183,6 +217,9 @@ impl WriteConsumer {
                 .messages()
                 .await
                 .map_err(|e| WriterError::Consumer(format!("Failed to fetch messages: {}", e)))?;
+
+            // Track if this batch had any failures
+            let mut batch_had_failures = false;
 
             // Process fetched messages
             while let Some(msg_result) = messages.next().await {
@@ -200,7 +237,18 @@ impl WriteConsumer {
                                     .push(PendingMessage { request, ack: msg });
                             }
                             Err(e) => {
-                                warn!(error = %e, "Failed to parse write request, acking to skip");
+                                // Parse failures are typically permanent (malformed data)
+                                // Log details for debugging, ack to prevent blocking, track in metrics
+                                error!(
+                                    error = %e,
+                                    payload_size = msg.payload.len(),
+                                    subject = %msg.subject,
+                                    "Failed to parse write request - message will be skipped (consider DLQ)"
+                                );
+                                batch_had_failures = true;
+
+                                // Ack to prevent poison message blocking queue
+                                // In production, consider publishing to a DLQ subject first
                                 if let Err(e) = msg.ack().await {
                                     error!(error = %e, "Failed to ack invalid message");
                                 }
@@ -210,6 +258,7 @@ impl WriteConsumer {
                     }
                     Err(e) => {
                         warn!(error = %e, "Error receiving message");
+                        batch_had_failures = true;
                     }
                 }
             }
@@ -221,8 +270,25 @@ impl WriteConsumer {
             let batch_full = total_pending >= self.config.batch_size;
 
             if should_flush || batch_full {
-                self.process_pending_batches(&mut pending).await?;
+                match self.process_pending_batches(&mut pending).await {
+                    Ok(_) => {
+                        // Reset backoff on successful batch processing
+                        consecutive_failures = 0;
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to process batches");
+                        batch_had_failures = true;
+                    }
+                }
                 batch_timer = Instant::now();
+            }
+
+            // Update consecutive failures counter for backoff
+            if batch_had_failures {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+            } else if !pending.is_empty() || total_pending > 0 {
+                // Only reset if we actually processed something successfully
+                consecutive_failures = 0;
             }
         }
     }
