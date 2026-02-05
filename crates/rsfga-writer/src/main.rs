@@ -157,10 +157,10 @@ async fn create_storage(args: &Args) -> Result<Arc<dyn DataStore>> {
                 use rsfga_storage::{RocksDBConfig, RocksDBDataStore};
                 info!(path = %args.rocksdb_path, "Using RocksDB storage backend");
                 let config = RocksDBConfig {
-                    path: args.rocksdb_path.clone().into(),
+                    path: args.rocksdb_path.clone(),
                     ..Default::default()
                 };
-                let storage = RocksDBDataStore::open(config)
+                let storage = RocksDBDataStore::new(config)
                     .map_err(|e| crate::error::WriterError::Config(e.to_string()))?;
                 Ok(Arc::new(storage))
             }
