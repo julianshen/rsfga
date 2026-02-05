@@ -3514,6 +3514,7 @@ dependencies = [
  "prost-build",
  "prost-types 0.12.6",
  "rsfga-domain",
+ "rsfga-nats",
  "rsfga-server",
  "rsfga-storage",
  "serde",

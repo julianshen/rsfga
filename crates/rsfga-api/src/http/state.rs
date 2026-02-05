@@ -8,6 +8,9 @@ use rsfga_domain::resolver::{GraphResolver, ResolverConfig};
 use rsfga_server::handlers::batch::BatchCheckHandler;
 use rsfga_storage::DataStore;
 
+#[cfg(feature = "nats")]
+use rsfga_nats::EventPublisher;
+
 use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
 
 /// Stored assertion for testing authorization models.
@@ -86,6 +89,9 @@ pub struct AppState<S: DataStore> {
     pub cache: Arc<CheckCache>,
     /// In-memory assertions storage (store_id, model_id) -> assertions.
     pub assertions: Arc<DashMap<AssertionKey, Vec<StoredAssertion>>>,
+    /// Optional NATS event publisher for async writes.
+    #[cfg(feature = "nats")]
+    pub publisher: Option<Arc<EventPublisher>>,
 }
 
 impl<S: DataStore> AppState<S> {
@@ -173,6 +179,30 @@ impl<S: DataStore> AppState<S> {
             resolver,
             cache,
             assertions: Arc::new(DashMap::new()),
+            #[cfg(feature = "nats")]
+            publisher: None,
         }
+    }
+
+    /// Sets the NATS event publisher for async write operations.
+    ///
+    /// When a publisher is configured, the async write endpoints become available
+    /// and the sync write endpoint will publish events to RSFGA_EVENTS after commit.
+    #[cfg(feature = "nats")]
+    pub fn with_publisher(mut self, publisher: Arc<EventPublisher>) -> Self {
+        self.publisher = Some(publisher);
+        self
+    }
+
+    /// Returns whether NATS async writes are enabled.
+    #[cfg(feature = "nats")]
+    pub fn has_publisher(&self) -> bool {
+        self.publisher.is_some()
+    }
+
+    /// Gets the NATS event publisher, if configured.
+    #[cfg(feature = "nats")]
+    pub fn publisher(&self) -> Option<&Arc<EventPublisher>> {
+        self.publisher.as_ref()
     }
 }
