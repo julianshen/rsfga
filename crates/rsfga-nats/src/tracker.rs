@@ -212,12 +212,23 @@ impl WriteTracker {
 
     /// Remove closed/dropped waiter entries for a given key.
     /// If all entries are closed, removes the entire key from the map.
+    ///
+    /// Uses `get_mut()` for in-place filtering to avoid a race condition where
+    /// a concurrent `wait_for_commit` could register a new waiter between a
+    /// `remove` and `insert`, causing that waiter to be silently dropped.
     fn cleanup_closed_waiters(&self, key: &(String, u64)) {
-        if let Some((removed_key, mut entries)) = self.waiters.remove(key) {
-            entries.retain(|e| !e.sender.is_closed());
-            if !entries.is_empty() {
-                self.waiters.insert(removed_key, entries);
+        let should_remove = {
+            if let Some(mut entries) = self.waiters.get_mut(key) {
+                entries.retain(|e| !e.sender.is_closed());
+                entries.is_empty()
+            } else {
+                false
             }
+        };
+        if should_remove {
+            // Only remove if still empty after releasing the lock - another thread
+            // may have added a new waiter between our check and this remove.
+            self.waiters.remove_if(key, |_, entries| entries.is_empty());
         }
     }
 
@@ -290,15 +301,22 @@ impl WriteTracker {
                     .map(|entry| entry.key().clone())
                     .collect();
 
+                let mut empty_keys = Vec::new();
                 for key in &all_keys {
-                    if let Some((removed_key, mut entries)) = tracker.waiters.remove(key) {
+                    if let Some(mut entries) = tracker.waiters.get_mut(key) {
                         let before = entries.len();
                         entries.retain(|e| now.duration_since(e.created_at) < ttl);
                         ttl_expired += before - entries.len();
-                        if !entries.is_empty() {
-                            tracker.waiters.insert(removed_key, entries);
+                        if entries.is_empty() {
+                            empty_keys.push(key.clone());
                         }
                     }
+                }
+                // Remove empty entries after releasing get_mut locks
+                for key in &empty_keys {
+                    tracker
+                        .waiters
+                        .remove_if(key, |_, entries| entries.is_empty());
                 }
 
                 if committed_cleaned > 0 || ttl_expired > 0 {
@@ -328,6 +346,16 @@ impl WriteTracker {
                 }
             }
         })
+    }
+}
+
+impl std::fmt::Debug for WriteTracker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteTracker")
+            .field("tracked_stores", &self.committed.len())
+            .field("active_waiters", &self.active_waiter_count())
+            .field("config", &self.config)
+            .finish()
     }
 }
 
