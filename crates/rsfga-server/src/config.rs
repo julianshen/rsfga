@@ -52,6 +52,10 @@ pub struct ServerConfig {
     /// Tracing settings
     #[serde(default)]
     pub tracing: TracingSettings,
+
+    /// NATS settings for async writes and RYOW consistency
+    #[serde(default)]
+    pub nats: NatsSettings,
 }
 
 /// Server network settings.
@@ -300,6 +304,76 @@ fn default_jaeger_endpoint() -> String {
 
 fn default_service_name() -> String {
     "rsfga".to_string()
+}
+
+/// NATS settings for async writes and RYOW consistency.
+///
+/// When enabled, the server connects to NATS JetStream for:
+/// - Async write endpoints (`POST /async/stores/{id}/write`)
+/// - RYOW consistency via write tickets
+/// - Event publishing for edge sync and cache invalidation
+///
+/// Environment variables:
+/// - `RSFGA_NATS__ENABLED=true` - Enable NATS integration
+/// - `RSFGA_NATS__URL=nats://localhost:4222` - NATS server URL
+/// - `RSFGA_NATS__NAME=rsfga-api` - Connection name
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct NatsSettings {
+    /// Enable NATS integration.
+    ///
+    /// When false (default), async write endpoints are unavailable
+    /// and all writes go through the sync path.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// NATS server URL (e.g., "nats://localhost:4222").
+    #[serde(default = "default_nats_url")]
+    pub url: String,
+
+    /// Connection name for identification in NATS server.
+    #[serde(default = "default_nats_name")]
+    pub name: String,
+
+    /// RYOW wait timeout in seconds for read handlers.
+    ///
+    /// Maximum time a read handler (Check, ListObjects, Expand, ListUsers)
+    /// will wait for a write ticket to be committed before returning 504.
+    #[serde(default = "default_ryow_timeout")]
+    pub ryow_timeout_secs: u64,
+
+    /// Write ticket TTL in seconds.
+    ///
+    /// How long a write ticket remains valid for RYOW consistency checks.
+    #[serde(default = "default_write_ticket_ttl_secs")]
+    pub write_ticket_ttl_secs: u64,
+}
+
+impl Default for NatsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: default_nats_url(),
+            name: default_nats_name(),
+            ryow_timeout_secs: default_ryow_timeout(),
+            write_ticket_ttl_secs: default_write_ticket_ttl_secs(),
+        }
+    }
+}
+
+fn default_nats_url() -> String {
+    "nats://localhost:4222".to_string()
+}
+
+fn default_nats_name() -> String {
+    "rsfga-api".to_string()
+}
+
+fn default_ryow_timeout() -> u64 {
+    30
+}
+
+fn default_write_ticket_ttl_secs() -> u64 {
+    60
 }
 
 /// Error type for configuration loading.
@@ -651,6 +725,50 @@ storage:
         assert_eq!(config.logging.level, "info");
         assert!(!config.logging.json);
         assert!(config.metrics.enabled);
+    }
+
+    /// Test: NATS settings have correct defaults
+    #[test]
+    fn test_nats_settings_defaults() {
+        let config = ServerConfig::default();
+        assert!(!config.nats.enabled);
+        assert_eq!(config.nats.url, "nats://localhost:4222");
+        assert_eq!(config.nats.name, "rsfga-api");
+        assert_eq!(config.nats.ryow_timeout_secs, 30);
+        assert_eq!(config.nats.write_ticket_ttl_secs, 60);
+    }
+
+    /// Test: NATS settings can be loaded from YAML
+    #[test]
+    #[serial]
+    fn test_nats_settings_from_yaml() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+storage:
+  backend: memory
+
+nats:
+  enabled: true
+  url: "nats://nats-server:4222"
+  name: "my-rsfga"
+  ryow_timeout_secs: 15
+  write_ticket_ttl_secs: 120
+"#
+        )
+        .unwrap();
+
+        let config = ServerConfig::load(file.path()).unwrap();
+        assert!(config.nats.enabled);
+        assert_eq!(config.nats.url, "nats://nats-server:4222");
+        assert_eq!(config.nats.name, "my-rsfga");
+        assert_eq!(config.nats.ryow_timeout_secs, 15);
+        assert_eq!(config.nats.write_ticket_ttl_secs, 120);
     }
 
     /// Test: from_env loads defaults with env overrides

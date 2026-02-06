@@ -1512,6 +1512,9 @@ pub struct ExpandRequestBody {
     pub tuple_key: ExpandTupleKeyBody,
     #[serde(default)]
     pub authorization_model_id: Option<String>,
+    /// Consistency preferences for RYOW support.
+    #[serde(default)]
+    pub consistency: Option<ConsistencyPreference>,
 }
 
 /// Response for expand operation.
@@ -1741,6 +1744,9 @@ async fn expand<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<ExpandRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
+    // RYOW: Wait for write ticket if consistency preferences are specified.
+    wait_for_consistency(&state, body.consistency.as_ref(), &store_id).await?;
+
     // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     use rsfga_domain::resolver::ExpandRequest;
 
@@ -2761,6 +2767,9 @@ pub struct ListUsersRequestBody {
     pub contextual_tuples: Option<ContextualTuplesBody>,
     #[serde(default)]
     pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// Consistency preferences for RYOW support.
+    #[serde(default)]
+    pub consistency: Option<ConsistencyPreference>,
 }
 
 /// Object reference in ListUsers request.
@@ -2818,6 +2827,9 @@ async fn list_users<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<ListUsersRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
+    // RYOW: Wait for write ticket if consistency preferences are specified.
+    wait_for_consistency(&state, body.consistency.as_ref(), &store_id).await?;
+
     use crate::validation::{
         estimate_context_size, json_exceeds_max_depth, validate_relation_format,
         MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
