@@ -1103,20 +1103,79 @@ async fn list_authorization_models<S: DataStore>(
 // Check Operation
 // ============================================================
 
-/// Consistency preferences for read operations (RYOW support).
+/// Consistency preferences for read operations.
 ///
-/// When using async writes via NATS, clients can specify consistency
-/// requirements to ensure their reads see their own writes.
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+/// Supports two formats for API compatibility:
+/// - **OpenFGA string format**: `"MINIMIZE_LATENCY"`, `"HIGHER_CONSISTENCY"` (accepted and mapped)
+/// - **RYOW object format**: `{"minimize_latency": true, "write_ticket": {...}}` (for async writes)
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ConsistencyPreference {
     /// If true, skip RYOW wait to minimize latency (eventual consistency).
-    #[serde(default)]
     pub minimize_latency: bool,
     /// Write ticket from a previous async write operation.
     /// If present, the server will wait for this write to be committed
     /// before executing the read operation.
-    #[serde(default)]
     pub write_ticket: Option<WriteTicketParam>,
+}
+
+impl<'de> serde::Deserialize<'de> for ConsistencyPreference {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct ConsistencyVisitor;
+
+        impl<'de> de::Visitor<'de> for ConsistencyVisitor {
+            type Value = ConsistencyPreference;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str(
+                    "a consistency string (\"MINIMIZE_LATENCY\", \"HIGHER_CONSISTENCY\") or an object with optional minimize_latency and write_ticket fields",
+                )
+            }
+
+            // Accept OpenFGA string format: "MINIMIZE_LATENCY", "HIGHER_CONSISTENCY", etc.
+            fn visit_str<E>(self, value: &str) -> Result<ConsistencyPreference, E>
+            where
+                E: de::Error,
+            {
+                match value {
+                    "MINIMIZE_LATENCY" => Ok(ConsistencyPreference {
+                        minimize_latency: true,
+                        write_ticket: None,
+                    }),
+                    // For any other string (including "HIGHER_CONSISTENCY",
+                    // "UNSPECIFIED"), treat as default (no special handling needed)
+                    _ => Ok(ConsistencyPreference::default()),
+                }
+            }
+
+            // Accept RYOW object format: {"minimize_latency": true, "write_ticket": {...}}
+            fn visit_map<M>(self, map: M) -> Result<ConsistencyPreference, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                #[derive(Deserialize)]
+                struct ConsistencyFields {
+                    #[serde(default)]
+                    minimize_latency: bool,
+                    #[serde(default)]
+                    write_ticket: Option<WriteTicketParam>,
+                }
+
+                let fields =
+                    ConsistencyFields::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(ConsistencyPreference {
+                    minimize_latency: fields.minimize_latency,
+                    write_ticket: fields.write_ticket,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(ConsistencyVisitor)
+    }
 }
 
 /// Write ticket parameter for RYOW consistency.

@@ -298,11 +298,11 @@ async fn test_relation_not_found_returns_400_not_500() {
 /// for unknown types. This is consistent with OpenFGA behavior where
 /// listing returns empty results rather than errors.
 #[tokio::test]
-async fn test_list_objects_unknown_type_returns_empty_results() {
+async fn test_list_objects_unknown_type_returns_error() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    let (status, response) = post_json(
+    let (status, _response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/list-objects"),
         serde_json::json!({
@@ -313,29 +313,23 @@ async fn test_list_objects_unknown_type_returns_empty_results() {
     )
     .await;
 
+    // Non-existent type returns 400 Bad Request (matching OpenFGA behavior)
     assert_eq!(
         status,
-        StatusCode::OK,
-        "ListObjects with unknown type returns 200 with empty results"
-    );
-    // Verify empty results
-    let objects = response["objects"].as_array();
-    assert!(
-        objects.is_none() || objects.unwrap().is_empty(),
-        "Should return empty objects for unknown type"
+        StatusCode::BAD_REQUEST,
+        "ListObjects with unknown type returns 400 Bad Request"
     );
 }
 
-/// Test: ListObjects with unknown relation returns 200 with empty results
+/// Test: ListObjects with unknown relation returns 400 Bad Request
 ///
-/// Note: Unlike Check/Expand, ListObjects returns 200 with empty objects
-/// for unknown relations. This is consistent with OpenFGA behavior.
+/// Matching OpenFGA behavior: unknown relations return an error.
 #[tokio::test]
-async fn test_list_objects_unknown_relation_returns_empty_results() {
+async fn test_list_objects_unknown_relation_returns_error() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    let (status, response) = post_json(
+    let (status, _response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/list-objects"),
         serde_json::json!({
@@ -346,16 +340,11 @@ async fn test_list_objects_unknown_relation_returns_empty_results() {
     )
     .await;
 
+    // Non-existent relation returns 400 Bad Request (matching OpenFGA behavior)
     assert_eq!(
         status,
-        StatusCode::OK,
-        "ListObjects with unknown relation returns 200 with empty results"
-    );
-    // Verify empty results
-    let objects = response["objects"].as_array();
-    assert!(
-        objects.is_none() || objects.unwrap().is_empty(),
-        "Should return empty objects for unknown relation"
+        StatusCode::BAD_REQUEST,
+        "ListObjects with unknown relation returns 400 Bad Request"
     );
 }
 
