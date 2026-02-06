@@ -78,7 +78,7 @@ pub const DEFAULT_BODY_LIMIT: usize = 1024 * 1024;
 ///
 /// This consolidates all OpenFGA-compatible routes in one place to avoid duplication.
 fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
-    Router::new()
+    let router = Router::new()
         // Store management
         .route("/stores", post(create_store::<S>).get(list_stores::<S>))
         .route(
@@ -108,7 +108,21 @@ fn api_routes<S: DataStore>() -> Router<Arc<AppState<S>>> {
         .route(
             "/stores/:store_id/assertions/:authorization_model_id",
             axum::routing::put(write_assertions::<S>).get(read_assertions::<S>),
+        );
+
+    // Add async write routes when NATS feature is enabled
+    #[cfg(feature = "nats")]
+    let router = router
+        .route(
+            "/async/stores/:store_id/write",
+            post(async_write_tuples::<S>),
         )
+        .route(
+            "/async/stores/:store_id/authorization-models",
+            post(async_write_authorization_model::<S>),
+        );
+
+    router
 }
 
 /// Creates the HTTP router with all OpenFGA-compatible endpoints.
@@ -1125,6 +1139,16 @@ pub struct TupleKeyBody {
     pub condition: Option<RelationshipConditionBody>,
 }
 
+// Implement TupleKeyLike for TupleKeyBody to enable shared validation
+impl crate::validation::TupleKeyLike for TupleKeyBody {
+    fn user(&self) -> &str {
+        &self.user
+    }
+    fn object(&self) -> &str {
+        &self.object
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ContextualTuplesBody {
@@ -1629,6 +1653,16 @@ pub struct TupleKeyWithoutConditionBody {
     pub object: String,
 }
 
+// Implement TupleKeyLike for TupleKeyWithoutConditionBody to enable shared validation
+impl crate::validation::TupleKeyLike for TupleKeyWithoutConditionBody {
+    fn user(&self) -> &str {
+        &self.user
+    }
+    fn object(&self) -> &str {
+        &self.object
+    }
+}
+
 async fn write_tuples<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
@@ -1646,38 +1680,12 @@ async fn write_tuples<S: DataStore>(
     }
 
     // Validate user/object ID lengths before processing (OpenFGA limits)
-    if let Some(ref writes) = body.writes {
-        for (i, tk) in writes.tuple_keys.iter().enumerate() {
-            if let Some(err) = validate_user_id_length(&tk.user) {
-                return Err(ApiError::validation_error(format!(
-                    "write tuple at index {}: {}",
-                    i, err
-                )));
-            }
-            if let Some(err) = validate_object_id_length(&tk.object) {
-                return Err(ApiError::validation_error(format!(
-                    "write tuple at index {}: {}",
-                    i, err
-                )));
-            }
-        }
-    }
-    if let Some(ref deletes) = body.deletes {
-        for (i, tk) in deletes.tuple_keys.iter().enumerate() {
-            if let Some(err) = validate_user_id_length(&tk.user) {
-                return Err(ApiError::validation_error(format!(
-                    "delete tuple at index {}: {}",
-                    i, err
-                )));
-            }
-            if let Some(err) = validate_object_id_length(&tk.object) {
-                return Err(ApiError::validation_error(format!(
-                    "delete tuple at index {}: {}",
-                    i, err
-                )));
-            }
-        }
-    }
+    // Uses shared validation to eliminate DRY violation with async endpoint
+    validate_tuple_id_lengths(
+        body.writes.as_ref().map(|w| w.tuple_keys.as_slice()),
+        body.deletes.as_ref().map(|d| d.tuple_keys.as_slice()),
+    )
+    .map_err(ApiError::validation_error)?;
 
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
@@ -1778,6 +1786,14 @@ async fn write_tuples<S: DataStore>(
     )
     .map_err(|e| ApiError::validation_error(e.to_string()))?;
 
+    // Clone tuple data for NATS event publishing (only when feature enabled)
+    #[cfg(feature = "nats")]
+    let nats_event_data = if state.has_publisher() {
+        Some(convert_tuples_for_nats_event(&writes, &deletes))
+    } else {
+        None
+    };
+
     state
         .storage
         .write_tuples(&store_id, writes, deletes)
@@ -1787,13 +1803,41 @@ async fn write_tuples<S: DataStore>(
     // This is a coarse-grained stopgap until fine-grained invalidation is wired.
     state.cache.invalidate_store(&store_id).await;
 
+    // Fire-and-forget event publishing to RSFGA_EVENTS stream (Milestone 2.0.2.3)
+    #[cfg(feature = "nats")]
+    if let Some((nats_writes, nats_deletes)) = nats_event_data {
+        if let Some(publisher) = state.publisher() {
+            let publisher = Arc::clone(publisher);
+            let store_id_clone = store_id.clone();
+            tokio::spawn(async move {
+                use rsfga_nats::CommittedEvent;
+
+                // Sequence 0 for sync path - fire-and-forget notification,
+                // not used for RYOW consistency (async path handles that)
+                let event = CommittedEvent::new(&store_id_clone, 0)
+                    .with_writes(nats_writes)
+                    .with_deletes(nats_deletes);
+
+                if let Err(e) = publisher.publish_committed_event(&event).await {
+                    // Log error but don't fail the request (fire-and-forget)
+                    tracing::warn!(
+                        store_id = %store_id_clone,
+                        error = %e,
+                        "Failed to publish committed event to RSFGA_EVENTS (fire-and-forget)"
+                    );
+                    // Metrics are tracked inside the publisher
+                }
+            });
+        }
+    }
+
     Ok(Json(serde_json::json!({})))
 }
 
 // Use shared validation functions from the validation module
 use crate::validation::{
-    is_valid_condition_name, json_exceeds_max_depth, validate_object_id_length,
-    validate_tuple_count, validate_user_id_length, MAX_CONDITION_CONTEXT_SIZE,
+    is_valid_condition_name, json_exceeds_max_depth, validate_tuple_count,
+    validate_tuple_id_lengths, MAX_CONDITION_CONTEXT_SIZE,
 };
 
 /// Error returned when tuple key parsing fails.
@@ -1909,6 +1953,63 @@ fn parse_tuple_fields(
         // Set created_at at write time (note: deletes don't use this timestamp)
         created_at: Some(Utc::now()),
     })
+}
+
+/// Converts StoredTuples to NATS event types for sync path event publishing.
+///
+/// This function is feature-gated to only compile when the `nats` feature is enabled.
+/// It converts the internal StoredTuple representation to the NATS TupleOperation/TupleKey types.
+#[cfg(feature = "nats")]
+fn convert_tuples_for_nats_event(
+    writes: &[rsfga_storage::StoredTuple],
+    deletes: &[rsfga_storage::StoredTuple],
+) -> (Vec<rsfga_nats::TupleOperation>, Vec<rsfga_nats::TupleKey>) {
+    let nats_writes: Vec<rsfga_nats::TupleOperation> = writes
+        .iter()
+        .map(|t| {
+            // Format user as "type:id" or "type:id#relation" for usersets
+            let user = if let Some(ref user_rel) = t.user_relation {
+                format!("{}:{}#{}", t.user_type, t.user_id, user_rel)
+            } else {
+                format!("{}:{}", t.user_type, t.user_id)
+            };
+
+            // Format object as "type:id"
+            let object = format!("{}:{}", t.object_type, t.object_id);
+
+            // Create TupleOperation with optional condition
+            let mut op = rsfga_nats::TupleOperation::new(user, t.relation.clone(), object);
+
+            if let Some(ref cond_name) = t.condition_name {
+                let condition = rsfga_nats::TupleCondition {
+                    name: cond_name.clone(),
+                    context: t.condition_context.clone().unwrap_or_default(),
+                };
+                op = op.with_condition(condition);
+            }
+
+            op
+        })
+        .collect();
+
+    let nats_deletes: Vec<rsfga_nats::TupleKey> = deletes
+        .iter()
+        .map(|t| {
+            // Format user as "type:id" or "type:id#relation" for usersets
+            let user = if let Some(ref user_rel) = t.user_relation {
+                format!("{}:{}#{}", t.user_type, t.user_id, user_rel)
+            } else {
+                format!("{}:{}", t.user_type, t.user_id)
+            };
+
+            // Format object as "type:id"
+            let object = format!("{}:{}", t.object_type, t.object_id);
+
+            rsfga_nats::TupleKey::new(user, t.relation.clone(), object)
+        })
+        .collect();
+
+    (nats_writes, nats_deletes)
 }
 
 // ============================================================
@@ -2754,6 +2855,422 @@ async fn list_users<S: DataStore>(
         users,
         excluded_users,
     }))
+}
+
+// ============================================================================
+// Async Write Operation (NATS-based)
+// ============================================================================
+
+/// Response body for async write operation.
+///
+/// The async write endpoint publishes the write request to NATS JetStream
+/// instead of writing directly to storage. This provides:
+/// - Lower latency (publish vs. database write)
+/// - Higher throughput (batch processing)
+/// - Decoupled storage processing
+///
+/// The write ticket can be used for read-your-own-writes (RYOW) consistency.
+#[cfg(feature = "nats")]
+#[derive(Debug, Serialize)]
+pub struct AsyncWriteResponseBody {
+    /// Unique request ID for this write operation.
+    pub request_id: String,
+    /// JetStream sequence number for ordering.
+    pub sequence: u64,
+    /// Write ticket for RYOW consistency.
+    pub write_ticket: WriteTicketBody,
+}
+
+/// Write ticket for read-your-own-writes consistency.
+#[cfg(feature = "nats")]
+#[derive(Debug, Serialize)]
+pub struct WriteTicketBody {
+    /// Store ID.
+    pub store_id: String,
+    /// Expected sequence number after commit.
+    pub sequence: u64,
+    /// Request ID for correlation.
+    pub request_id: String,
+    /// ISO 8601 timestamp when the ticket expires.
+    pub expires_at: String,
+}
+
+/// Async write endpoint that publishes to NATS JetStream.
+///
+/// This endpoint validates the write request (same as sync path) but instead
+/// of writing directly to storage, it publishes a `WriteRequest` event to the
+/// RSFGA_WRITES JetStream stream.
+///
+/// # Advantages
+///
+/// - **Low latency**: Returns in <5ms (vs. 15-20ms for sync writes)
+/// - **High throughput**: JetStream buffers writes for batch processing
+/// - **Decoupled**: Storage writes happen asynchronously
+///
+/// # Consistency
+///
+/// The response includes a `write_ticket` that can be used to wait for the
+/// write to be committed (read-your-own-writes consistency).
+///
+/// # Errors
+///
+/// - 400: Invalid tuple format or validation error
+/// - 404: Store not found
+/// - 503: NATS publisher not configured or unavailable
+///
+/// # Performance Note
+///
+/// While this endpoint publishes to NATS for async processing, it still performs
+/// synchronous validation (store existence, model fetch, tuple validation) before
+/// publishing. This provides the same data integrity guarantees as the sync path.
+///
+/// For use cases requiring absolute minimal latency:
+/// - Consider pre-validating tuples client-side
+/// - Model caching (planned for future release) will reduce validation latency
+/// - The consumer will still reject invalid tuples, but without client notification
+///
+/// Trade-off: We chose to maintain validation to prevent invalid data in the queue,
+/// which would cause silent failures in the consumer.
+#[cfg(feature = "nats")]
+async fn async_write_tuples<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(store_id): Path<String>,
+    JsonBadRequest(body): JsonBadRequest<WriteRequestBody>,
+) -> ApiResult<impl IntoResponse> {
+    use rsfga_nats::{TupleKey, TupleOperation, WriteRequest};
+
+    // Check if NATS publisher is configured
+    let publisher = state.publisher().ok_or_else(|| {
+        ApiError::service_unavailable("async writes not available: NATS not configured")
+    })?;
+
+    // Validate tuple count (same as sync path)
+    let write_count = body.writes.as_ref().map_or(0, |w| w.tuple_keys.len());
+    let delete_count = body.deletes.as_ref().map_or(0, |d| d.tuple_keys.len());
+    let total_count = write_count + delete_count;
+    if let Some(err) = validate_tuple_count(total_count) {
+        return Err(ApiError::validation_error(err));
+    }
+
+    // Validate user/object ID lengths (same as sync path)
+    // Uses shared validation to eliminate DRY violation
+    validate_tuple_id_lengths(
+        body.writes.as_ref().map(|w| w.tuple_keys.as_slice()),
+        body.deletes.as_ref().map(|d| d.tuple_keys.as_slice()),
+    )
+    .map_err(ApiError::validation_error)?;
+
+    // Validate store exists
+    let _ = state.storage.get_store(&store_id).await?;
+
+    // Get the latest authorization model to validate tuples against
+    let stored_model = state
+        .storage
+        .get_latest_authorization_model(&store_id)
+        .await
+        .map_err(|e| match e {
+            StorageError::ModelNotFound { .. } => ApiError::validation_error(
+                "cannot write tuples: no authorization model exists for this store",
+            ),
+            other => ApiError::from(other),
+        })?;
+
+    let model =
+        crate::adapters::parse_model_json(&stored_model.model_json, &stored_model.schema_version)
+            .map_err(|e| {
+            error!(
+                "Failed to parse stored authorization model for store {}: {e}",
+                store_id
+            );
+            ApiError::internal_error("failed to parse authorization model")
+        })?;
+
+    // Convert and validate write tuples
+    let writes: Vec<TupleOperation> = body
+        .writes
+        .map(|w| {
+            w.tuple_keys
+                .into_iter()
+                .enumerate()
+                .map(|(i, tk)| {
+                    // Validate tuple format
+                    parse_tuple_key_for_validation(&tk).map_err(|e| {
+                        ApiError::validation_error(format!(
+                            "invalid tuple at index {i}: user={}, object={}, reason={}",
+                            e.user, e.object, e.reason
+                        ))
+                    })?;
+
+                    // Convert to NATS TupleOperation
+                    let mut op = TupleOperation::new(&tk.user, &tk.relation, &tk.object);
+                    if let Some(cond) = tk.condition {
+                        if !cond.name.is_empty() {
+                            // Create condition with both name and context
+                            let mut condition = rsfga_nats::TupleCondition::new(&cond.name);
+                            if let Some(ctx) = cond.context {
+                                for (key, value) in ctx {
+                                    condition = condition.with_context(key, value);
+                                }
+                            }
+                            op = op.with_condition(condition);
+                        }
+                    }
+                    Ok(op)
+                })
+                .collect::<Result<Vec<_>, ApiError>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    // Convert delete tuples
+    let deletes: Vec<TupleKey> = body
+        .deletes
+        .map(|d| {
+            d.tuple_keys
+                .into_iter()
+                .enumerate()
+                .map(|(i, tk)| {
+                    // Validate tuple format
+                    let _ = parse_tuple_fields(&tk.user, &tk.relation, &tk.object).ok_or_else(
+                        || {
+                            ApiError::validation_error(format!(
+                            "invalid tuple at index {i}: user={}, object={}, reason=invalid format",
+                            tk.user, tk.object
+                        ))
+                        },
+                    )?;
+                    Ok(TupleKey::new(&tk.user, &tk.relation, &tk.object))
+                })
+                .collect::<Result<Vec<_>, ApiError>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    // Validate all tuples against the authorization model (same as sync path)
+    // Collect validation data first (object_type, relation, condition_name)
+    let write_validation_data: Vec<(String, String, Option<String>)> = writes
+        .iter()
+        .map(|t| {
+            let obj_type = t.key.object.split(':').next().unwrap_or("").to_string();
+            let relation = t.key.relation.clone();
+            let cond_name = t.condition.as_ref().map(|c| c.name.clone());
+            (obj_type, relation, cond_name)
+        })
+        .collect();
+
+    crate::adapters::validate_tuples_batch(
+        &model,
+        write_validation_data
+            .iter()
+            .enumerate()
+            .map(|(i, (obj_type, relation, cond_name))| {
+                (
+                    i,
+                    obj_type.as_str(),
+                    relation.as_str(),
+                    cond_name.as_deref(),
+                )
+            }),
+        false,
+    )
+    .map_err(|e| ApiError::validation_error(e.to_string()))?;
+
+    let delete_validation_data: Vec<(String, String)> = deletes
+        .iter()
+        .map(|t| {
+            let obj_type = t.object.split(':').next().unwrap_or("").to_string();
+            let relation = t.relation.clone();
+            (obj_type, relation)
+        })
+        .collect();
+
+    crate::adapters::validate_tuples_batch(
+        &model,
+        delete_validation_data
+            .iter()
+            .enumerate()
+            .map(|(i, (obj_type, relation))| {
+                (i, obj_type.as_str(), relation.as_str(), None::<&str>)
+            }),
+        true,
+    )
+    .map_err(|e| ApiError::validation_error(e.to_string()))?;
+
+    // Build the write request
+    let mut request = WriteRequest::new(&store_id);
+    if let Some(model_id) = body.authorization_model_id {
+        request = request.with_model_id(model_id);
+    }
+    request = request.writes(writes).deletes(deletes);
+
+    // Publish to NATS
+    let ticket = publisher
+        .publish_write_request(&request)
+        .await
+        .map_err(|e| {
+            error!("Failed to publish write request to NATS: {e}");
+            ApiError::service_unavailable(format!("failed to publish write request: {e}"))
+        })?;
+
+    // Return response with write ticket
+    Ok(Json(AsyncWriteResponseBody {
+        request_id: request.request_id.clone(),
+        sequence: ticket.sequence,
+        write_ticket: WriteTicketBody {
+            store_id: ticket.store_id.clone(),
+            sequence: ticket.sequence,
+            request_id: ticket.request_id.clone(),
+            expires_at: ticket.expires_at.to_rfc3339(),
+        },
+    }))
+}
+
+/// Helper to validate tuple key format without creating a StoredTuple.
+/// Used by async write handler to validate tuples before publishing to NATS.
+#[cfg(feature = "nats")]
+fn parse_tuple_key_for_validation(tk: &TupleKeyBody) -> Result<(), TupleKeyParseError> {
+    // Parse user
+    let _ = parse_user(&tk.user).ok_or_else(|| TupleKeyParseError {
+        user: tk.user.clone(),
+        object: tk.object.clone(),
+        reason: "invalid user format",
+    })?;
+
+    // Parse object
+    let _ = parse_object(&tk.object).ok_or_else(|| TupleKeyParseError {
+        user: tk.user.clone(),
+        object: tk.object.clone(),
+        reason: "invalid object format",
+    })?;
+
+    // Validate condition if present
+    if let Some(ref cond) = tk.condition {
+        if !cond.name.is_empty() && !is_valid_condition_name(&cond.name) {
+            return Err(TupleKeyParseError {
+                user: tk.user.clone(),
+                object: tk.object.clone(),
+                reason:
+                    "invalid condition name: must be alphanumeric/underscore/hyphen, max 256 chars",
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Response body for async model write operation.
+#[cfg(feature = "nats")]
+#[derive(Debug, Serialize)]
+pub struct AsyncModelWriteResponseBody {
+    /// Generated authorization model ID.
+    pub authorization_model_id: String,
+    /// Unique request ID for this write operation.
+    pub request_id: String,
+    /// JetStream sequence number for ordering.
+    pub sequence: u64,
+    /// Write ticket for RYOW consistency.
+    pub write_ticket: WriteTicketBody,
+}
+
+/// Async model write endpoint that publishes to NATS JetStream.
+///
+/// This endpoint validates the authorization model (same as sync path) but
+/// instead of writing directly to storage, it publishes a `ModelWriteRequest`
+/// event to the RSFGA_WRITES JetStream stream.
+///
+/// # Note
+///
+/// The model ID is generated upfront and included in the response. The actual
+/// storage write happens asynchronously via the storage consumer.
+///
+/// # Errors
+///
+/// - 400: Invalid model format or validation error
+/// - 404: Store not found
+/// - 503: NATS publisher not configured or unavailable
+#[cfg(feature = "nats")]
+async fn async_write_authorization_model<S: DataStore>(
+    State(state): State<Arc<AppState<S>>>,
+    Path(store_id): Path<String>,
+    JsonBadRequest(body): JsonBadRequest<WriteAuthorizationModelRequest>,
+) -> ApiResult<impl IntoResponse> {
+    use rsfga_nats::ModelWriteRequest;
+
+    // Check if NATS publisher is configured
+    let publisher = state.publisher().ok_or_else(|| {
+        ApiError::service_unavailable("async writes not available: NATS not configured")
+    })?;
+
+    // Validate store exists
+    let _ = state.storage.get_store(&store_id).await?;
+
+    // Validate type_definitions is not empty (OpenFGA requirement)
+    if body.type_definitions.is_empty() {
+        return Err(ApiError::type_definitions_too_few_items(
+            "type_definitions requires at least 1 item",
+        ));
+    }
+
+    // Serialize the model data to JSON for validation
+    let mut model_json = serde_json::json!({
+        "type_definitions": body.type_definitions,
+    });
+    if let Some(ref conditions) = body.conditions {
+        if !conditions.is_null() {
+            model_json["conditions"] = conditions.clone();
+        }
+    }
+
+    // Validate model semantics (same as sync path)
+    crate::adapters::validate_authorization_model_json(&model_json, &body.schema_version)
+        .map_err(|e| ApiError::validation_error(e.to_string()))?;
+
+    // Validate model size
+    let model_json_str = model_json.to_string();
+    if model_json_str.len() > MAX_AUTHORIZATION_MODEL_SIZE {
+        return Err(ApiError::validation_error(format!(
+            "authorization model exceeds maximum size of {MAX_AUTHORIZATION_MODEL_SIZE} bytes"
+        )));
+    }
+
+    // Generate a new ULID for the model (generated upfront for RYOW)
+    let model_id = ulid::Ulid::new().to_string();
+
+    // Build the model write request with pre-generated model_id for RYOW consistency
+    let mut request = ModelWriteRequest::new(&store_id, &body.schema_version)
+        .with_model_id(&model_id)
+        .with_type_definitions(serde_json::json!(body.type_definitions));
+
+    if let Some(ref conditions) = body.conditions {
+        if !conditions.is_null() {
+            request = request.with_conditions(conditions.clone());
+        }
+    }
+
+    // Publish to NATS
+    let ticket = publisher
+        .publish_model_write_request(&request)
+        .await
+        .map_err(|e| {
+            error!("Failed to publish model write request to NATS: {e}");
+            ApiError::service_unavailable(format!("failed to publish model write request: {e}"))
+        })?;
+
+    // Return response with model ID and write ticket
+    Ok((
+        StatusCode::CREATED,
+        Json(AsyncModelWriteResponseBody {
+            authorization_model_id: model_id,
+            request_id: request.request_id.clone(),
+            sequence: ticket.sequence,
+            write_ticket: WriteTicketBody {
+                store_id: ticket.store_id.clone(),
+                sequence: ticket.sequence,
+                request_id: ticket.request_id.clone(),
+                expires_at: ticket.expires_at.to_rfc3339(),
+            },
+        }),
+    ))
 }
 
 // ============================================================================

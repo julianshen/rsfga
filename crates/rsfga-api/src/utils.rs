@@ -1,6 +1,10 @@
 //! Shared utility functions for API layer.
 //!
 //! Contains common parsing and formatting functions used by both HTTP and gRPC handlers.
+//!
+//! **Note**: These functions perform stricter validation than the equivalent functions
+//! in `rsfga_nats::utils`. The API layer rejects empty type/id/relation parts while
+//! the NATS layer allows them (validation happens earlier in the API path).
 
 /// Maximum number of checks allowed in a single batch request.
 /// This matches the OpenFGA specification limit.

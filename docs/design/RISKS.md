@@ -485,6 +485,62 @@ This document catalogs identified risks, their likelihood, impact, and mitigatio
 
 ---
 
+### R-018: Eventual Consistency Window for Revocations
+**Category**: Security
+**Likelihood**: Medium
+**Impact**: High
+**Priority**: 🟠 High
+
+**Description**: When using async write path, permission revocations have a delay before taking effect, creating a window where revoked permissions may still be granted.
+
+**Impact Analysis**:
+- Revoked users may retain access for 20-100ms (typical)
+- Security-sensitive applications may not tolerate any delay
+- Compliance requirements may mandate immediate revocation
+
+**Mitigation**:
+- ✅ Document async path behavior clearly
+- ✅ Recommend sync `/write` endpoint for revocations (DELETE operations)
+- ✅ Provide `async_allow_deletes: false` config option
+- ⏸️ Consider "revocation fast path" bypassing queue
+
+**Owner**: Security Team
+**Status**: Mitigated with documentation and configuration options
+
+---
+
+### R-019: Sequence Counter Non-Persistence
+**Category**: Operational
+**Likelihood**: High
+**Impact**: Medium
+**Priority**: 🟠 High
+
+**Description**: The `rsfga-writer` daemon uses an in-memory global sequence counter that resets on restart, potentially breaking event ordering guarantees for downstream consumers.
+
+**Impact Analysis**:
+- Sequence numbers reset to 0 on daemon restart
+- Downstream consumers may see duplicate sequence numbers across restarts
+- Event ordering cannot be guaranteed across restarts
+- Edge sync consumers may process events out of order
+- Cache invalidation may miss events during restart window
+
+**Mitigation**:
+- ✅ Document limitation in ADR-020 Known Limitations
+- ✅ Document in consumer.rs code comments
+- ⏸️ Use NATS stream sequence numbers as alternative (already unique/persistent)
+- ⏸️ Implement per-store persistent sequence tracking in storage
+- ⏸️ Add sequence recovery on startup from last committed event
+
+**Workarounds**:
+- Use NATS message sequence instead of custom sequence for strict ordering
+- Design downstream consumers to be idempotent and handle sequence gaps
+- Implement "catch-up" logic on consumer startup
+
+**Owner**: Infrastructure Team
+**Status**: Active Risk - Documented, workarounds available
+
+---
+
 ## Risk Review Triggers
 
 ### Automatic Review Required When:
@@ -515,11 +571,11 @@ None yet.
 |------|-------------|
 | Architecture Team | R-001 |
 | Performance Team | R-002, R-004, R-008, R-009 |
-| Security Team | R-003, R-007 |
+| Security Team | R-003, R-007, R-018 |
 | Domain Team | R-005, R-010, R-011 |
 | Edge Team | R-006, R-014 |
 | API Team | R-013 |
-| Infrastructure Team | R-015, R-016 |
+| Infrastructure Team | R-015, R-016, R-019 |
 | Precomputation Team | R-012 |
 | Project Management | R-016 |
 | Technical Lead | R-017 |

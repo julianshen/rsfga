@@ -2106,3 +2106,102 @@ fn test_api_error_constructors_produce_correct_codes() {
         error_codes::AUTHORIZATION_MODEL_RESOLUTION_TOO_COMPLEX
     );
 }
+
+// ============================================================================
+// Async Write Endpoint Tests (NATS feature required)
+// ============================================================================
+
+/// Test: POST /async/stores/{store_id}/write returns 503 when NATS not configured
+///
+/// When the NATS publisher is not configured (default state), the async write
+/// endpoint should return 503 Service Unavailable.
+#[cfg(feature = "nats")]
+#[tokio::test]
+async fn test_async_write_returns_503_when_nats_not_configured() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
+
+    // Create state without NATS publisher (default)
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/async/stores{store_id}/write"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "writes": {
+                            "tuple_keys": [
+                                {"user": "user:alice", "relation": "viewer", "object": "document:readme"}
+                            ]
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["message"]
+        .as_str()
+        .unwrap()
+        .contains("NATS not configured"));
+}
+
+/// Test: POST /async/stores/{store_id}/authorization-models returns 503 when NATS not configured
+///
+/// When the NATS publisher is not configured (default state), the async model write
+/// endpoint should return 503 Service Unavailable.
+#[cfg(feature = "nats")]
+#[tokio::test]
+async fn test_async_model_write_returns_503_when_nats_not_configured() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = test_store_id();
+    storage.create_store(&store_id, "Test Store").await.unwrap();
+
+    // Create state without NATS publisher (default)
+    let state = AppState::new(storage);
+    let app = create_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/async/stores{store_id}/authorization-models"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "schema_version": "1.1",
+                        "type_definitions": [
+                            {"type": "user"},
+                            {"type": "document", "relations": {"viewer": {}}}
+                        ]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["message"]
+        .as_str()
+        .unwrap()
+        .contains("NATS not configured"));
+}

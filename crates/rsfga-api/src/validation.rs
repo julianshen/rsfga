@@ -297,6 +297,64 @@ pub fn validate_relation_format(relation: &str) -> Option<&'static str> {
     None // Valid
 }
 
+/// Validates user/object ID lengths for all tuples in a write request.
+///
+/// This function validates both writes and deletes arrays against OpenFGA
+/// length limits. Used by both sync and async write endpoints to eliminate
+/// DRY violation.
+///
+/// # Type Parameters
+///
+/// * `W` - Tuple key type for writes that implements the `TupleKeyLike` trait
+/// * `D` - Tuple key type for deletes that implements the `TupleKeyLike` trait
+///
+/// # Arguments
+///
+/// * `writes` - Optional slice of tuple keys to write
+/// * `deletes` - Optional slice of tuple keys to delete
+///
+/// # Returns
+///
+/// Returns `Ok(())` if all tuples are valid, `Err(String)` with a descriptive
+/// error message if any tuple fails validation.
+pub fn validate_tuple_id_lengths<W: TupleKeyLike, D: TupleKeyLike>(
+    writes: Option<&[W]>,
+    deletes: Option<&[D]>,
+) -> Result<(), String> {
+    if let Some(writes) = writes {
+        for (i, tk) in writes.iter().enumerate() {
+            if let Some(err) = validate_user_id_length(tk.user()) {
+                return Err(format!("write tuple at index {}: {}", i, err));
+            }
+            if let Some(err) = validate_object_id_length(tk.object()) {
+                return Err(format!("write tuple at index {}: {}", i, err));
+            }
+        }
+    }
+    if let Some(deletes) = deletes {
+        for (i, tk) in deletes.iter().enumerate() {
+            if let Some(err) = validate_user_id_length(tk.user()) {
+                return Err(format!("delete tuple at index {}: {}", i, err));
+            }
+            if let Some(err) = validate_object_id_length(tk.object()) {
+                return Err(format!("delete tuple at index {}: {}", i, err));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Trait for types that can provide user and object fields for validation.
+///
+/// Implemented by both HTTP request body types and internal types to allow
+/// generic tuple validation across different representations.
+pub trait TupleKeyLike {
+    /// Returns the user field of the tuple key.
+    fn user(&self) -> &str;
+    /// Returns the object field of the tuple key.
+    fn object(&self) -> &str;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,5 +539,147 @@ mod tests {
         let result = validate_tuple_count(101);
         assert!(result.is_some());
         assert!(result.unwrap().contains("maximum 100 tuples"));
+    }
+
+    // Test struct implementing TupleKeyLike for validate_tuple_id_lengths tests
+    struct TestTupleKey {
+        user: String,
+        object: String,
+    }
+
+    impl TupleKeyLike for TestTupleKey {
+        fn user(&self) -> &str {
+            &self.user
+        }
+        fn object(&self) -> &str {
+            &self.object
+        }
+    }
+
+    #[test]
+    fn test_validate_tuple_id_lengths_valid() {
+        let writes = vec![
+            TestTupleKey {
+                user: "user:alice".to_string(),
+                object: "document:readme".to_string(),
+            },
+            TestTupleKey {
+                user: "user:bob".to_string(),
+                object: "folder:root".to_string(),
+            },
+        ];
+        let deletes = vec![TestTupleKey {
+            user: "user:charlie".to_string(),
+            object: "document:old".to_string(),
+        }];
+
+        let result = validate_tuple_id_lengths(Some(&writes), Some(&deletes));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_tuple_id_lengths_none_inputs() {
+        // Both None should pass
+        let result: Result<(), String> =
+            validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(None, None);
+        assert!(result.is_ok());
+
+        // Only writes
+        let writes = vec![TestTupleKey {
+            user: "user:alice".to_string(),
+            object: "document:readme".to_string(),
+        }];
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
+        assert!(result.is_ok());
+
+        // Only deletes
+        let deletes = vec![TestTupleKey {
+            user: "user:bob".to_string(),
+            object: "folder:docs".to_string(),
+        }];
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(None, Some(&deletes));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_tuple_id_lengths_user_too_long() {
+        let long_user = "x".repeat(513);
+        let writes = vec![TestTupleKey {
+            user: long_user,
+            object: "document:readme".to_string(),
+        }];
+
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("write tuple at index 0"));
+        assert!(err.contains("exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_validate_tuple_id_lengths_object_too_long() {
+        let long_id = "x".repeat(257);
+        let writes = vec![TestTupleKey {
+            user: "user:alice".to_string(),
+            object: format!("document:{}", long_id),
+        }];
+
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("write tuple at index 0"));
+        assert!(err.contains("exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_validate_tuple_id_lengths_delete_user_too_long() {
+        let long_user = "x".repeat(513);
+        let deletes = vec![TestTupleKey {
+            user: long_user,
+            object: "document:readme".to_string(),
+        }];
+
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(None, Some(&deletes));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("delete tuple at index 0"));
+        assert!(err.contains("exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_validate_tuple_id_lengths_object_no_colon() {
+        let writes = vec![TestTupleKey {
+            user: "user:alice".to_string(),
+            object: "invalidobject".to_string(), // Missing colon
+        }];
+
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("write tuple at index 0"));
+        assert!(err.contains("must be in 'type:id' format"));
+    }
+
+    #[test]
+    fn test_validate_tuple_id_lengths_error_at_correct_index() {
+        let writes = vec![
+            TestTupleKey {
+                user: "user:alice".to_string(),
+                object: "document:readme".to_string(),
+            },
+            TestTupleKey {
+                user: "user:bob".to_string(),
+                object: "document:valid".to_string(),
+            },
+            TestTupleKey {
+                user: "x".repeat(513), // Too long - at index 2
+                object: "document:test".to_string(),
+            },
+        ];
+
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("write tuple at index 2"));
     }
 }

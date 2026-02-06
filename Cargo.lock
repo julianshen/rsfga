@@ -3514,6 +3514,7 @@ dependencies = [
  "prost-build",
  "prost-types 0.12.6",
  "rsfga-domain",
+ "rsfga-nats",
  "rsfga-server",
  "rsfga-storage",
  "serde",
@@ -3579,6 +3580,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "testcontainers",
+ "testcontainers-modules",
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
@@ -3638,6 +3641,36 @@ dependencies = [
  "tokio",
  "tracing",
  "ulid",
+]
+
+[[package]]
+name = "rsfga-writer"
+version = "1.0.1"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "async-trait",
+ "chrono",
+ "clap",
+ "config",
+ "futures",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "rsfga-nats",
+ "rsfga-storage",
+ "serde",
+ "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+ "url",
+ "uuid",
 ]
 
 [[package]]

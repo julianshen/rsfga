@@ -111,6 +111,114 @@ impl WriteRequest {
     }
 }
 
+/// Model write request for async model updates.
+///
+/// Published to the RSFGA_WRITES stream when a client calls the async
+/// model update endpoint. Contains the full authorization model to be
+/// written to storage.
+///
+/// # Model ID Generation ("Burning" Behavior)
+///
+/// The `model_id` is pre-generated when this request is created (either by the
+/// caller or automatically via `new()`). This ID is returned to the client
+/// immediately for RYOW (Read-Your-Own-Writes) consistency.
+///
+/// **Important**: If the async write fails after the request is created but
+/// before it's committed to storage, the pre-generated `model_id` is "burned"
+/// (consumed but never stored). This means:
+///
+/// - Model IDs are not guaranteed to be contiguous
+/// - A client may receive a `model_id` that never becomes valid in storage
+/// - Subsequent model writes will have higher/later IDs
+///
+/// This trade-off enables fast async acknowledgment while maintaining RYOW
+/// semantics. Callers should verify model existence via `GetAuthorizationModel`
+/// when strict consistency is required.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelWriteRequest {
+    /// Unique request ID (ULID)
+    pub request_id: String,
+
+    /// Store ID
+    pub store_id: String,
+
+    /// Pre-generated model ID (ULID) for RYOW consistency.
+    /// May be "burned" if async write fails - see struct docs.
+    pub model_id: String,
+
+    /// Schema version (e.g., "1.1", "1.2")
+    pub schema_version: String,
+
+    /// Type definitions for the authorization model
+    pub type_definitions: serde_json::Value,
+
+    /// Conditions defined in the model (optional)
+    #[serde(default)]
+    pub conditions: Option<serde_json::Value>,
+
+    /// Request timestamp
+    pub timestamp: DateTime<Utc>,
+
+    /// Request metadata for tracing
+    #[serde(default)]
+    pub metadata: RequestMetadata,
+}
+
+impl ModelWriteRequest {
+    /// Create a new model write request.
+    pub fn new(store_id: impl Into<String>, schema_version: impl Into<String>) -> Self {
+        Self {
+            request_id: ulid::Ulid::new().to_string(),
+            store_id: store_id.into(),
+            model_id: ulid::Ulid::new().to_string(),
+            schema_version: schema_version.into(),
+            type_definitions: serde_json::Value::Array(vec![]),
+            conditions: None,
+            timestamp: Utc::now(),
+            metadata: RequestMetadata::default(),
+        }
+    }
+
+    /// Set model ID (for RYOW consistency when client provides pre-generated ID).
+    pub fn with_model_id(mut self, model_id: impl Into<String>) -> Self {
+        self.model_id = model_id.into();
+        self
+    }
+
+    /// Set type definitions.
+    pub fn with_type_definitions(mut self, type_definitions: serde_json::Value) -> Self {
+        self.type_definitions = type_definitions;
+        self
+    }
+
+    /// Set conditions.
+    pub fn with_conditions(mut self, conditions: serde_json::Value) -> Self {
+        self.conditions = Some(conditions);
+        self
+    }
+
+    /// Set metadata.
+    pub fn with_metadata(mut self, metadata: RequestMetadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    /// Get the NATS subject for this request.
+    pub fn subject(&self) -> String {
+        format!("{}.models.{}", crate::SUBJECT_WRITES_PREFIX, self.store_id)
+    }
+
+    /// Serialize to JSON bytes.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        serde_json::to_vec(self)
+    }
+
+    /// Deserialize from JSON bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
 /// Tuple operation for a write request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TupleOperation {

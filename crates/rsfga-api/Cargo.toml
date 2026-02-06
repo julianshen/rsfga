@@ -23,6 +23,7 @@ tokio = { workspace = true }
 rsfga-server = { path = "../rsfga-server" }
 rsfga-domain = { path = "../rsfga-domain" }
 rsfga-storage = { path = "../rsfga-storage", features = ["rocksdb"] }
+rsfga-nats = { path = "../rsfga-nats", optional = true }
 
 # HTTP server
 axum = { workspace = true }
@@ -83,3 +84,7 @@ criterion = { workspace = true }
 [[bench]]
 name = "parse_bench"
 harness = false
+
+[features]
+default = []
+nats = ["dep:rsfga-nats"]

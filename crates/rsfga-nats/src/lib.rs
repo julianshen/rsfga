@@ -48,14 +48,18 @@ pub mod error;
 pub mod events;
 pub mod jetstream;
 pub mod publisher;
+pub mod utils;
 
 // Re-export main types
 pub use config::NatsConfig;
 pub use connection::NatsClient;
 pub use error::{NatsError, Result};
-pub use events::{CommittedEvent, TupleOperation, WriteRequest};
+pub use events::{
+    CommittedEvent, ModelWriteRequest, TupleCondition, TupleKey, TupleOperation, WriteRequest,
+    WriteTicket,
+};
 pub use jetstream::JetStreamManager;
-pub use publisher::EventPublisher;
+pub use publisher::{EventPublisher, PublisherConfig, PublisherStats};
 
 /// Stream name for write requests (WorkQueue retention)
 pub const STREAM_WRITES: &str = "RSFGA_WRITES";
@@ -63,11 +67,17 @@ pub const STREAM_WRITES: &str = "RSFGA_WRITES";
 /// Stream name for committed events (Limits retention)
 pub const STREAM_EVENTS: &str = "RSFGA_EVENTS";
 
+/// Stream name for dead letter queue (Limits retention)
+pub const STREAM_DLQ: &str = "RSFGA_DLQ";
+
 /// Subject prefix for write requests
 pub const SUBJECT_WRITES_PREFIX: &str = "rsfga.writes";
 
 /// Subject prefix for committed events
 pub const SUBJECT_EVENTS_PREFIX: &str = "rsfga.events";
+
+/// Subject prefix for dead letter queue
+pub const SUBJECT_DLQ_PREFIX: &str = "rsfga.dlq";
 
 #[cfg(test)]
 mod tests {
@@ -77,7 +87,9 @@ mod tests {
     fn test_stream_constants() {
         assert_eq!(STREAM_WRITES, "RSFGA_WRITES");
         assert_eq!(STREAM_EVENTS, "RSFGA_EVENTS");
+        assert_eq!(STREAM_DLQ, "RSFGA_DLQ");
         assert_eq!(SUBJECT_WRITES_PREFIX, "rsfga.writes");
         assert_eq!(SUBJECT_EVENTS_PREFIX, "rsfga.events");
+        assert_eq!(SUBJECT_DLQ_PREFIX, "rsfga.dlq");
     }
 }

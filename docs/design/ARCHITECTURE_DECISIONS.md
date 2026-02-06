@@ -40,7 +40,7 @@ Each ADR follows this structure:
 | ADR-017 | CEL Expression Caching | ✅ Accepted | 2026-01-14 | Cache performance issues |
 | ADR-018 | ListObjects ReverseExpand | ✅ Accepted | 2026-01-29 | ListObjects p95 > 100ms |
 | ADR-019 | RocksDB Embedded Storage | ✅ Accepted | 2026-01-30 | Edge deployment requirements change |
-| ADR-020 | NATS-First Write Architecture | 📋 Proposed | 2026-02-04 | Before Version 2.0.0 implementation |
+| ADR-020 | NATS-First Write Architecture | ✅ Accepted | 2026-02-04 | NATS performance issues OR consistency problems |
 
 ## Validation Status Summary
 
@@ -67,7 +67,7 @@ This section tracks the validation status of each ADR's criteria.
 | ADR-017 | ✅ Validated | CEL cache implemented with bounded capacity |
 | ADR-018 | ✅ Validated | ReverseExpand implemented: p95=5.9ms, 176 req/s (2400x improvement) |
 | ADR-019 | ✅ Validated | RocksDB: 11,800+ writes/s (5.9x target), <92µs write latency |
-| ADR-020 | 📋 Proposed | NATS-first write architecture - pending Version 2.0.0 |
+| ADR-020 | ✅ Implemented | NATS-first write architecture - Milestone 2.0.x complete |
 
 **Note**: All performance-related ADRs (001, 002, 003, 005, 012) validated on 2026-01-29 via k6 load testing against PostgreSQL backend. Results exceed all targets.
 
@@ -1344,10 +1344,10 @@ xcode-select --install
 
 ## ADR-020: NATS-First Write Architecture
 
-**Status**: 📋 Proposed (Version 2.0.0)
+**Status**: ✅ Accepted (Implemented in Milestone 2.0.x)
 **Date**: 2026-02-04
 **Deciders**: Architecture Team
-**Review Trigger**: Before Version 2.0.0 implementation OR NATS proves insufficient in prototyping
+**Review Trigger**: NATS performance issues OR consistency problems require redesign
 
 **Context**:
 
@@ -1473,6 +1473,132 @@ See [NATS_ASYNC_WRITES_DESIGN.md](NATS_ASYNC_WRITES_DESIGN.md) for complete desi
 - Read-your-own-writes (RYOW) with write tickets
 - Circuit breaker and fallback handling
 - Edge synchronization consumer
+
+**Known Limitations** (as of Milestone 2.0.3):
+
+1. **Sequence Counter**: ✅ **RESOLVED** - Now uses NATS stream sequence numbers which are:
+   - Persistent across daemon restarts
+   - Unique per message in the stream
+   - Monotonically increasing within the stream
+
+2. **Delivery Semantics**: The consumer implements **at-least-once** delivery:
+   - Messages are acknowledged only after both storage write AND event publish succeed
+   - Unacked messages are redelivered after ack_wait timeout
+   - Storage writes are idempotent (ON CONFLICT upsert)
+   - Downstream consumers should handle duplicate CommittedEvents
+
+**Async Path Validation Trade-off**:
+
+The async write endpoints (`/async/write`, `/async/write-authorization-model`) perform **full validation before publishing to NATS**. This is a deliberate architectural trade-off:
+
+| Approach | Latency | Data Integrity | Error Handling |
+|----------|---------|----------------|----------------|
+| **Validate before publish** (chosen) | Higher (+5-10ms) | Strong | Clear client errors |
+| **Validate in consumer** | Lower | Weak | DLQ, silent failures |
+
+**Why we validate in the endpoint (not consumer)**:
+
+1. **Data Integrity**: Invalid tuples never enter the queue. The consumer can trust all messages.
+
+2. **Clear Error Feedback**: Clients receive immediate 400/422 errors with details:
+   ```json
+   {
+     "code": "validation_error",
+     "message": "invalid tuple at index 2: user=invalid, reason=invalid user format"
+   }
+   ```
+
+3. **No Dead Letter Queue Pollution**: Invalid requests don't consume DLQ space.
+
+4. **Consistent with Sync Path**: Same validation as `/write` endpoint (OpenFGA compatibility).
+
+**What is validated**:
+
+- Tuple count limits (max 100 per request)
+- User/object ID length limits (max 512/256 chars)
+- User/object format validation (`type:id`, `type:id#relation`)
+- Authorization model existence (tuples must reference valid types/relations)
+- Condition name format (alphanumeric, underscores, hyphens, max 256 chars)
+- Model schema validation (for model write requests)
+
+**Performance Note**: Validation adds ~5-10ms latency for typical requests. This is acceptable because:
+- The async path's primary benefit is decoupling storage write latency
+- Invalid requests would fail eventually anyway (better to fail fast)
+- Model fetch is cached after first access
+
+**Code Reference**: `crates/rsfga-api/src/http/routes.rs:2942-3159` (async_write_tuples)
+
+**Message Ordering Semantics**:
+
+The async write architecture provides the following ordering guarantees:
+
+1. **Per-Store FIFO Ordering**:
+   - Messages are published to subject `rsfga.writes.<store_id>`
+   - JetStream maintains FIFO order within each subject
+   - Writes to the SAME store are processed in order
+   - Writes to DIFFERENT stores may be processed concurrently
+
+2. **Sequence Numbers**:
+   - Each message has a unique NATS stream sequence number (monotonically increasing)
+   - CommittedEvent includes `sequence` derived from max stream sequence in batch
+   - Downstream consumers can use sequence for ordering/deduplication
+   - Sequence gaps are normal (DLQ, redelivery, multi-partition)
+
+3. **Batching Impact on Ordering**:
+   - Messages are batched by store_id for efficient storage writes
+   - All messages in a batch are committed atomically
+   - CommittedEvent reflects the batch's max sequence number
+   - Individual message order within a batch is preserved
+
+4. **Ordering Limitations**:
+   - No global ordering across stores (by design, for scalability)
+   - Redelivered messages may appear "out of order" from client perspective
+   - Batch sequence represents batch commit, not individual message order
+   - Clock skew between instances doesn't affect ordering (sequence-based)
+
+5. **Consumer Ordering Recommendations**:
+   - Use `sequence` field for deduplication and ordering
+   - Handle duplicate events (same sequence may arrive multiple times)
+   - For strict ordering within a store, wait for sequential sequences
+   - For cross-store coordination, use external synchronization
+
+**Rate Limiting for Async Writes**:
+
+Async writes can generate high message volumes to NATS. Operators should configure rate limiting at the deployment level to prevent:
+
+1. **NATS Stream Saturation**: Unbounded write rates can overwhelm the JetStream stream, causing backpressure
+2. **Consumer Lag**: Storage consumers may fall behind if write rate exceeds processing capacity
+3. **Storage Backend Overload**: Batched writes can still overwhelm databases during traffic spikes
+
+**Recommended Rate Limits**:
+
+| Endpoint | Recommended Limit | Notes |
+|----------|-------------------|-------|
+| `/stores/{store_id}/async/write` | 100-500 req/s per store | Adjust based on consumer throughput |
+| `/stores/{store_id}/async/write-authorization-model` | 10 req/s per store | Model writes are heavyweight |
+
+**Rate Limit Response** (429 Too Many Requests):
+
+```json
+{
+  "code": "rate_limit_exceeded",
+  "message": "Async write rate limit exceeded",
+  "details": {
+    "limit": 100,
+    "window": "1s",
+    "retry_after": 0.5
+  }
+}
+```
+
+**Configuration Options**:
+
+- **Per-store limits**: Different stores may have different throughput requirements
+- **Per-client limits**: Use `client_id` in RequestMetadata for per-client tracking
+- **Burst allowance**: Allow short bursts above steady-state limits
+- **Monitoring**: Track `X-RateLimit-*` headers in responses
+
+**Note**: Rate limiting middleware is typically deployed externally (e.g., API Gateway, Envoy, nginx). The RSFGA server does not enforce rate limits internally - this is a deployment concern.
 
 **Related Risks**:
 

@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Project**: High-performance Rust implementation of OpenFGA
 **Methodology**: Kent Beck's Test-Driven Development (TDD) + Tidy First principles
-**Language**: Rust 1.75+ (Edition 2021)
+**Language**: Rust 1.80+ (Edition 2021) - MSRV enforced in Cargo.toml
 **Test Coverage Target**: >90%
 **Current Phase**: Phase 1 (MVP) ✅ Complete | Phase 1.15 (ListUsers API) 🏗️ In Progress
 

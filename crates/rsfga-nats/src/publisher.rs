@@ -5,7 +5,7 @@
 
 use crate::connection::NatsClient;
 use crate::error::{NatsError, Result};
-use crate::events::{CommittedEvent, WriteRequest, WriteTicket};
+use crate::events::{CommittedEvent, ModelWriteRequest, WriteRequest, WriteTicket};
 use async_nats::jetstream::context::Publish;
 use async_nats::jetstream::publish::PublishAck;
 use bytes::Bytes;
@@ -92,7 +92,13 @@ impl Default for AtomicCircuitBreaker {
 
 impl AtomicCircuitBreaker {
     /// Check if circuit allows requests, attempting reset if timeout elapsed.
+    ///
+    /// Performance: Fast path (circuit closed) is a single atomic load.
+    /// When open, elapsed time calculation is O(1) on most systems.
+    /// Caching reset time was considered but adds complexity for marginal gain
+    /// since the circuit is typically closed during normal operation.
     fn check(&self, reset_timeout: Duration) -> Result<()> {
+        // Fast path: circuit closed (most common case)
         if !self.open.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -238,6 +244,54 @@ impl EventPublisher {
         Ok(ticket)
     }
 
+    /// Publish a model write request to RSFGA_WRITES stream.
+    ///
+    /// Returns a `WriteTicket` that can be used for read-your-own-writes.
+    #[instrument(skip(self, request), fields(store_id = %request.store_id, request_id = %request.request_id))]
+    pub async fn publish_model_write_request(
+        &self,
+        request: &ModelWriteRequest,
+    ) -> Result<WriteTicket> {
+        // Check circuit breaker
+        self.check_circuit_breaker()?;
+
+        self.inner
+            .metrics
+            .publish_attempts
+            .fetch_add(1, Ordering::Relaxed);
+
+        let subject = request.subject();
+        let payload = request.to_bytes()?;
+
+        // Use request_id as message ID for deduplication during retries
+        let msg_id = &request.request_id;
+
+        // Publish with retry and deduplication
+        let ack = self
+            .publish_with_retry(&subject, Bytes::from(payload), Some(msg_id))
+            .await?;
+
+        // Record success
+        self.record_success();
+
+        debug!(
+            subject = %subject,
+            sequence = ack.sequence,
+            stream = %ack.stream,
+            "Model write request published"
+        );
+
+        // Create write ticket with configured TTL
+        let ticket = WriteTicket::with_ttl(
+            &request.store_id,
+            ack.sequence,
+            &request.request_id,
+            self.inner.config.write_ticket_ttl,
+        );
+
+        Ok(ticket)
+    }
+
     /// Publish a committed event to RSFGA_EVENTS stream.
     #[instrument(skip(self, event), fields(store_id = %event.store_id, sequence = event.sequence))]
     pub async fn publish_committed_event(&self, event: &CommittedEvent) -> Result<PublishAck> {
@@ -295,9 +349,14 @@ impl EventPublisher {
             }
 
             // Build publish request with message ID for deduplication
-            let publish = Publish::build()
-                .payload(payload.clone())
-                .message_id(msg_id.unwrap_or(""));
+            // Only set message_id when provided and non-empty for proper NATS deduplication
+            let mut publish = Publish::build().payload(payload.clone());
+            if let Some(id) = msg_id {
+                if !id.is_empty() {
+                    publish = publish.message_id(id);
+                }
+            }
+            let publish = publish;
 
             match timeout(
                 config.publish_timeout,
@@ -491,5 +550,82 @@ mod tests {
         ));
 
         assert_eq!(request.subject(), "rsfga.writes.my-store");
+    }
+
+    #[test]
+    fn test_circuit_breaker_opens_after_threshold() {
+        let cb = AtomicCircuitBreaker::default();
+        let threshold = 3;
+
+        // Record failures up to threshold
+        for _ in 0..threshold {
+            cb.record_failure(threshold);
+        }
+
+        // Circuit should now be open
+        assert!(cb.is_open());
+    }
+
+    #[test]
+    fn test_circuit_breaker_success_resets_failure_count() {
+        let cb = AtomicCircuitBreaker::default();
+        let threshold = 5;
+
+        // Record some failures (below threshold)
+        cb.record_failure(threshold);
+        cb.record_failure(threshold);
+        assert_eq!(cb.failure_count.load(Ordering::Relaxed), 2);
+
+        // Record success should reset count
+        cb.record_success();
+        assert_eq!(cb.failure_count.load(Ordering::Relaxed), 0);
+        assert!(!cb.is_open());
+    }
+
+    #[test]
+    fn test_circuit_breaker_manual_reset() {
+        let cb = AtomicCircuitBreaker::default();
+        let threshold = 2;
+
+        // Open the circuit
+        cb.record_failure(threshold);
+        cb.record_failure(threshold);
+        assert!(cb.is_open());
+
+        // Manual reset
+        cb.reset();
+        assert!(!cb.is_open());
+        assert_eq!(cb.failure_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_circuit_breaker_check_rejects_when_open() {
+        let cb = AtomicCircuitBreaker::default();
+        let threshold = 1;
+        let reset_duration = Duration::from_secs(3600); // Long reset
+
+        // Small delay to ensure elapsed time is non-zero when circuit opens
+        std::thread::sleep(Duration::from_millis(1));
+
+        // Open the circuit
+        cb.record_failure(threshold);
+        assert!(cb.is_open());
+
+        // Verify opened_at_ms was set (non-zero)
+        assert!(cb.opened_at_ms.load(Ordering::Relaxed) > 0);
+
+        // Check should fail
+        let result = cb.check(reset_duration);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_circuit_breaker_check_allows_when_closed() {
+        let cb = AtomicCircuitBreaker::default();
+        let reset_duration = Duration::from_secs(30);
+
+        // Check should succeed when circuit is closed
+        let result = cb.check(reset_duration);
+        assert!(result.is_ok());
     }
 }

@@ -1,62 +1,62 @@
 [package]
-name = "rsfga-nats"
+name = "rsfga-writer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-repository.workspace = true
-homepage.workspace = true
-keywords.workspace = true
-categories.workspace = true
-description = "NATS JetStream integration for RSFGA async writes"
+description = "Storage consumer daemon for RSFGA async writes"
+
+[[bin]]
+name = "rsfga-writer"
+path = "src/main.rs"
+
+[features]
+default = []
+rocksdb = ["rsfga-storage/rocksdb"]
 
 [dependencies]
-# Workspace dependencies
+# Async runtime
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-async-trait = { workspace = true }
+tokio-stream = { workspace = true }
 futures = { workspace = true }
-
-# NATS
+async-trait = { workspace = true }
 async-nats = { workspace = true }
-nkeys = "0.4"
+
+# Internal crates
+rsfga-nats = { path = "../rsfga-nats" }
+rsfga-storage = { path = "../rsfga-storage" }
 
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
-prost = { workspace = true }
-prost-types = { workspace = true }
-bytes = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
-# Observability
+# Tracing and observability
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
 
 # Utilities
 uuid = { workspace = true }
 ulid = { workspace = true }
 chrono = { workspace = true }
-humantime-serde = "1.1"
 
-# Internal crates
-rsfga-domain = { path = "../rsfga-domain" }
+# CLI
+clap = { workspace = true }
+
+# URL parsing for secure credential redaction
+url = "2"
+
+# Configuration
+config = { workspace = true }
 
 [dev-dependencies]
-tokio-test = "0.4"
-proptest = { workspace = true }
-tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 testcontainers = { workspace = true }
 testcontainers-modules = { version = "0.14", features = ["nats"] }
-
-[build-dependencies]
-prost-build = { workspace = true }
-
-[features]
-default = []
-# Feature flag for future integration test support
-test-support = []
