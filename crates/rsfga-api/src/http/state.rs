@@ -9,6 +9,8 @@ use rsfga_server::handlers::batch::BatchCheckHandler;
 use rsfga_storage::DataStore;
 
 #[cfg(feature = "nats")]
+use rsfga_nats::config::WriteMode;
+#[cfg(feature = "nats")]
 use rsfga_nats::EventPublisher;
 #[cfg(feature = "nats")]
 use rsfga_nats::WriteTracker;
@@ -97,6 +99,9 @@ pub struct AppState<S: DataStore> {
     /// Optional write tracker for RYOW consistency.
     #[cfg(feature = "nats")]
     pub write_tracker: Option<Arc<WriteTracker>>,
+    /// Write mode: Nats (async-only), Direct (sync-only), Auto (try async, fallback to sync).
+    #[cfg(feature = "nats")]
+    pub write_mode: WriteMode,
 }
 
 impl<S: DataStore> AppState<S> {
@@ -188,6 +193,8 @@ impl<S: DataStore> AppState<S> {
             publisher: None,
             #[cfg(feature = "nats")]
             write_tracker: None,
+            #[cfg(feature = "nats")]
+            write_mode: WriteMode::Direct,
         }
     }
 
@@ -229,5 +236,23 @@ impl<S: DataStore> AppState<S> {
     #[cfg(feature = "nats")]
     pub fn write_tracker(&self) -> Option<&Arc<WriteTracker>> {
         self.write_tracker.as_ref()
+    }
+
+    /// Sets the write mode for async write endpoints.
+    ///
+    /// - `WriteMode::Nats`: Only use NATS (fail if unavailable)
+    /// - `WriteMode::Direct`: Only use sync storage writes (default)
+    /// - `WriteMode::Auto`: Try NATS, fallback to sync on failure
+    #[cfg(feature = "nats")]
+    #[must_use]
+    pub fn with_write_mode(mut self, mode: WriteMode) -> Self {
+        self.write_mode = mode;
+        self
+    }
+
+    /// Gets the configured write mode.
+    #[cfg(feature = "nats")]
+    pub fn write_mode(&self) -> WriteMode {
+        self.write_mode
     }
 }

@@ -135,6 +135,16 @@ pub enum WriteMode {
     Auto,
 }
 
+impl std::fmt::Display for WriteMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriteMode::Nats => write!(f, "nats"),
+            WriteMode::Direct => write!(f, "direct"),
+            WriteMode::Auto => write!(f, "auto"),
+        }
+    }
+}
+
 /// Reconnection configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReconnectConfig {
@@ -552,6 +562,18 @@ mod tests {
         // Should NOT contain actual password
         assert!(!debug_output.contains("secretpass"));
         assert!(!debug_output.contains("user:"));
+    }
+
+    #[test]
+    fn test_write_mode_display() {
+        assert_eq!(WriteMode::Nats.to_string(), "nats");
+        assert_eq!(WriteMode::Direct.to_string(), "direct");
+        assert_eq!(WriteMode::Auto.to_string(), "auto");
+    }
+
+    #[test]
+    fn test_write_mode_default_is_direct() {
+        assert_eq!(WriteMode::default(), WriteMode::Direct);
     }
 
     #[test]

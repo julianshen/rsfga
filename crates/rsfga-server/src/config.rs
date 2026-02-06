@@ -346,6 +346,20 @@ pub struct NatsSettings {
     /// How long a write ticket remains valid for RYOW consistency checks.
     #[serde(default = "default_write_ticket_ttl_secs")]
     pub write_ticket_ttl_secs: u64,
+
+    /// Write mode for async write endpoints.
+    ///
+    /// - `"nats"`: Only use NATS async path (fail if NATS is unavailable)
+    /// - `"direct"`: Only use sync storage writes (default, no NATS needed)
+    /// - `"auto"`: Try NATS first, fall back to sync if NATS fails
+    ///
+    /// When `enabled` is true, this controls the behavior of write endpoints:
+    /// - `nats`: Write requests are published to NATS JetStream (async)
+    /// - `auto`: Try NATS first; if circuit breaker is open or publish fails,
+    ///   fall back to direct storage write (sync) transparently
+    /// - `direct`: All writes go to storage directly (sync path only)
+    #[serde(default = "default_write_mode")]
+    pub write_mode: String,
 }
 
 impl Default for NatsSettings {
@@ -356,6 +370,7 @@ impl Default for NatsSettings {
             name: default_nats_name(),
             ryow_timeout_secs: default_ryow_timeout(),
             write_ticket_ttl_secs: default_write_ticket_ttl_secs(),
+            write_mode: default_write_mode(),
         }
     }
 }
@@ -374,6 +389,10 @@ fn default_ryow_timeout() -> u64 {
 
 fn default_write_ticket_ttl_secs() -> u64 {
     60
+}
+
+fn default_write_mode() -> String {
+    "auto".to_string()
 }
 
 /// Error type for configuration loading.

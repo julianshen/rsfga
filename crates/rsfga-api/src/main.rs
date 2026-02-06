@@ -212,10 +212,14 @@ where
         // Wire up NATS publisher and write tracker if available
         #[cfg(feature = "nats")]
         let state = if let Some(nats) = nats_state {
-            info!("NATS async writes and RYOW consistency enabled");
+            info!(
+                write_mode = %nats.write_mode,
+                "NATS async writes and RYOW consistency enabled"
+            );
             state
                 .with_publisher(nats.publisher)
                 .with_write_tracker(nats.write_tracker)
+                .with_write_mode(nats.write_mode)
         } else {
             state
         };
@@ -354,6 +358,7 @@ async fn shutdown_signal() {
 struct NatsState {
     publisher: Arc<rsfga_nats::EventPublisher>,
     write_tracker: Arc<rsfga_nats::WriteTracker>,
+    write_mode: rsfga_nats::config::WriteMode,
     /// Background task handles (event subscriber, cleanup task).
     /// Stored to prevent them from being dropped.
     _handles: Vec<tokio::task::JoinHandle<()>>,
@@ -413,9 +418,23 @@ async fn setup_nats(
     let subscriber_handle = subscriber.start().await?;
     info!("NATS event subscriber started for RYOW consistency");
 
+    // Parse write mode from config string
+    use rsfga_nats::config::WriteMode;
+    let write_mode = match nats_settings.write_mode.to_lowercase().as_str() {
+        "nats" => WriteMode::Nats,
+        "direct" => WriteMode::Direct,
+        "auto" => WriteMode::Auto,
+        other => {
+            info!(mode = other, "Unknown write_mode, defaulting to 'auto'");
+            WriteMode::Auto
+        }
+    };
+    info!(write_mode = ?write_mode, "Write mode configured");
+
     Ok(NatsState {
         publisher,
         write_tracker,
+        write_mode,
         _handles: vec![cleanup_handle, subscriber_handle],
     })
 }
