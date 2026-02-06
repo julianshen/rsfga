@@ -48,6 +48,7 @@ pub mod error;
 pub mod events;
 pub mod jetstream;
 pub mod publisher;
+pub mod utils;
 
 // Re-export main types
 pub use config::NatsConfig;

@@ -589,8 +589,7 @@ mod tests {
             user: "user:alice".to_string(),
             object: "document:readme".to_string(),
         }];
-        let result =
-            validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
         assert!(result.is_ok());
 
         // Only deletes
@@ -598,8 +597,7 @@ mod tests {
             user: "user:bob".to_string(),
             object: "folder:docs".to_string(),
         }];
-        let result =
-            validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(None, Some(&deletes));
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(None, Some(&deletes));
         assert!(result.is_ok());
     }
 
@@ -611,8 +609,7 @@ mod tests {
             object: "document:readme".to_string(),
         }];
 
-        let result =
-            validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("write tuple at index 0"));
@@ -627,8 +624,7 @@ mod tests {
             object: format!("document:{}", long_id),
         }];
 
-        let result =
-            validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("write tuple at index 0"));
@@ -643,8 +639,7 @@ mod tests {
             object: "document:readme".to_string(),
         }];
 
-        let result =
-            validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(None, Some(&deletes));
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(None, Some(&deletes));
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("delete tuple at index 0"));
@@ -658,8 +653,7 @@ mod tests {
             object: "invalidobject".to_string(), // Missing colon
         }];
 
-        let result =
-            validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("write tuple at index 0"));
@@ -683,8 +677,7 @@ mod tests {
             },
         ];
 
-        let result =
-            validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
+        let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("write tuple at index 2"));

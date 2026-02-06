@@ -58,6 +58,7 @@ use futures::StreamExt;
 use tracing::{debug, error, info, warn};
 
 use rsfga_nats::{
+    utils::{parse_object, parse_user},
     CommittedEvent, EventPublisher, NatsClient, TupleKey, TupleOperation, WriteRequest,
     STREAM_WRITES, SUBJECT_DLQ_PREFIX,
 };
@@ -221,6 +222,7 @@ impl WriteConsumer {
                             circuit_open = false;
                             storage_failures = 0;
                             consecutive_failures = 0;
+                            self.metrics.update_circuit_breaker_state(false);
                         }
                         Ok(status) => {
                             warn!(
@@ -241,8 +243,8 @@ impl WriteConsumer {
 
                 if circuit_open {
                     // Sleep until next probe time
-                    let remaining = STORAGE_HEALTH_PROBE_INTERVAL
-                        .saturating_sub(last_health_probe.elapsed());
+                    let remaining =
+                        STORAGE_HEALTH_PROBE_INTERVAL.saturating_sub(last_health_probe.elapsed());
                     if !remaining.is_zero() {
                         tokio::time::sleep(remaining).await;
                     }
@@ -337,6 +339,7 @@ impl WriteConsumer {
                                         subject = %dlq_subject,
                                         "Failed to publish to DLQ"
                                     );
+                                    self.metrics.record_dlq_publish_failure();
                                 } else {
                                     debug!(subject = %dlq_subject, "Message sent to DLQ");
                                 }
@@ -388,6 +391,7 @@ impl WriteConsumer {
                         // Track storage failures separately for circuit breaker
                         if matches!(e, WriterError::Storage(_)) {
                             storage_failures = storage_failures.saturating_add(1);
+                            self.metrics.record_storage_failure();
 
                             // Open circuit breaker if storage failures exceed threshold
                             if storage_failures >= STORAGE_CIRCUIT_BREAKER_THRESHOLD {
@@ -398,6 +402,7 @@ impl WriteConsumer {
                                 );
                                 circuit_open = true;
                                 last_health_probe = Instant::now();
+                                self.metrics.update_circuit_breaker_state(true);
                             }
                         }
                     }
@@ -432,10 +437,15 @@ impl WriteConsumer {
     }
 
     /// Process all pending batches.
+    ///
+    /// Returns the first error encountered, if any. All batches are attempted
+    /// even if one fails, to maximize throughput.
     async fn process_pending_batches(
         &self,
         pending: &mut HashMap<String, Vec<PendingMessage>>,
     ) -> Result<()> {
+        let mut first_error: Option<WriterError> = None;
+
         for (store_id, messages) in pending.drain() {
             if messages.is_empty() {
                 continue;
@@ -446,9 +456,17 @@ impl WriteConsumer {
 
             if let Err(e) = self.process_batch(batch).await {
                 error!(error = %e, "Failed to process batch");
+                // Keep first error to return, but continue processing other batches
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
             }
         }
-        Ok(())
+
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// Process a single batch.
@@ -671,65 +689,9 @@ fn convert_key_to_tuple(key: &TupleKey) -> Option<StoredTuple> {
     })
 }
 
-/// Parse a user string into (type, id, optional_relation).
-///
-/// Formats:
-/// - "user:alice" -> ("user", "alice", None)
-/// - "team:eng#member" -> ("team", "eng", Some("member"))
-///
-/// TODO: Extract to shared crate (rsfga-domain?) to avoid duplication with rsfga-api/src/utils.rs
-fn parse_user(user: &str) -> Option<(&str, &str, Option<&str>)> {
-    let (type_part, rest) = user.split_once(':')?;
-
-    if let Some((id, relation)) = rest.split_once('#') {
-        Some((type_part, id, Some(relation)))
-    } else {
-        Some((type_part, rest, None))
-    }
-}
-
-/// Parse an object string into (type, id).
-///
-/// Format: "document:readme" -> ("document", "readme")
-///
-/// TODO: Extract to shared crate (rsfga-domain?) to avoid duplication with rsfga-api/src/utils.rs
-fn parse_object(object: &str) -> Option<(&str, &str)> {
-    object.split_once(':')
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_user_simple() {
-        let result = parse_user("user:alice");
-        assert_eq!(result, Some(("user", "alice", None)));
-    }
-
-    #[test]
-    fn test_parse_user_with_relation() {
-        let result = parse_user("team:eng#member");
-        assert_eq!(result, Some(("team", "eng", Some("member"))));
-    }
-
-    #[test]
-    fn test_parse_user_invalid() {
-        let result = parse_user("invalid");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_parse_object() {
-        let result = parse_object("document:readme");
-        assert_eq!(result, Some(("document", "readme")));
-    }
-
-    #[test]
-    fn test_parse_object_invalid() {
-        let result = parse_object("invalid");
-        assert_eq!(result, None);
-    }
 
     #[test]
     fn test_consumer_config_valid() {

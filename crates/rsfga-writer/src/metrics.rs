@@ -34,6 +34,12 @@ pub struct WriterMetrics {
 
     /// Total event publish failures (after retries).
     pub event_publish_failures: AtomicU64,
+
+    /// Total DLQ publish failures.
+    pub dlq_publish_failures: AtomicU64,
+
+    /// Total storage failures (for circuit breaker tracking).
+    pub storage_failures: AtomicU64,
 }
 
 impl WriterMetrics {
@@ -103,6 +109,24 @@ impl WriterMetrics {
     #[allow(dead_code)]
     pub fn update_consumer_lag(&self, lag: u64) {
         gauge!("rsfga_writer_consumer_lag_messages").set(lag as f64);
+    }
+
+    /// Record a DLQ publish failure.
+    pub fn record_dlq_publish_failure(&self) {
+        self.dlq_publish_failures.fetch_add(1, Ordering::Relaxed);
+        counter!("rsfga_writer_dlq_publish_failures_total").increment(1);
+    }
+
+    /// Record a storage failure (tracked for circuit breaker).
+    pub fn record_storage_failure(&self) {
+        self.storage_failures.fetch_add(1, Ordering::Relaxed);
+        counter!("rsfga_writer_storage_failures_total").increment(1);
+    }
+
+    /// Update circuit breaker state gauge.
+    /// 0 = closed (normal operation), 1 = open (blocking requests)
+    pub fn update_circuit_breaker_state(&self, is_open: bool) {
+        gauge!("rsfga_writer_circuit_breaker_open").set(if is_open { 1.0 } else { 0.0 });
     }
 }
 
