@@ -219,6 +219,7 @@ impl<S: DataStore> AppState<S> {
     /// a `write_ticket` parameter and wait for the corresponding async write
     /// to be committed before proceeding.
     #[cfg(feature = "nats")]
+    #[must_use]
     pub fn with_write_tracker(mut self, tracker: Arc<WriteTracker>) -> Self {
         self.write_tracker = Some(tracker);
         self

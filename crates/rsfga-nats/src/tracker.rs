@@ -33,7 +33,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tokio::sync::oneshot;
@@ -41,8 +41,19 @@ use tracing::{debug, warn};
 
 /// Error returned when a wait operation times out.
 #[derive(Debug, thiserror::Error)]
-#[error("write not committed within timeout")]
-pub struct WriteTrackerTimeout;
+#[error("write not committed within timeout (store_id: {store_id}, sequence: {sequence})")]
+pub struct WriteTrackerTimeout {
+    /// The store ID that was being waited on.
+    pub store_id: String,
+    /// The sequence number that was being waited on.
+    pub sequence: u64,
+}
+
+/// A waiter entry that tracks when it was created for TTL-based cleanup.
+struct WaiterEntry {
+    sender: oneshot::Sender<()>,
+    created_at: Instant,
+}
 
 /// Configuration for the `WriteTracker`.
 #[derive(Debug, Clone)]
@@ -69,8 +80,8 @@ impl Default for WriteTrackerConfig {
 pub struct WriteTracker {
     /// Map of store_id -> last committed sequence number.
     committed: DashMap<String, Arc<AtomicU64>>,
-    /// Waiters for specific (store_id, sequence) pairs.
-    waiters: DashMap<(String, u64), Vec<oneshot::Sender<()>>>,
+    /// Waiters for specific (store_id, sequence) pairs, with creation timestamps for TTL cleanup.
+    waiters: DashMap<(String, u64), Vec<WaiterEntry>>,
     /// Configuration.
     config: WriteTrackerConfig,
 }
@@ -117,11 +128,11 @@ impl WriteTracker {
             .collect();
 
         for key in to_wake {
-            if let Some((_, senders)) = self.waiters.remove(&key) {
-                let count = senders.len();
-                for sender in senders {
+            if let Some((_, entries)) = self.waiters.remove(&key) {
+                let count = entries.len();
+                for entry in entries {
                     // Ignore send errors - receiver may have been dropped (timeout)
-                    let _ = sender.send(());
+                    let _ = entry.sender.send(());
                 }
                 if count > 0 {
                     debug!(
@@ -144,12 +155,18 @@ impl WriteTracker {
     ///
     /// Returns `WriteTrackerTimeout` if the sequence is not committed within
     /// the specified timeout duration.
+    #[must_use = "this returns a future that must be awaited"]
     pub async fn wait_for_commit(
         &self,
         store_id: &str,
         sequence: u64,
         timeout: Duration,
     ) -> Result<(), WriteTrackerTimeout> {
+        let make_timeout = || WriteTrackerTimeout {
+            store_id: store_id.to_string(),
+            sequence,
+        };
+
         // Fast path: check if already committed
         if let Some(committed) = self.committed.get(store_id) {
             if committed.load(Ordering::SeqCst) >= sequence {
@@ -159,27 +176,49 @@ impl WriteTracker {
 
         // Register a waiter
         let (tx, rx) = oneshot::channel();
+        let key = (store_id.to_string(), sequence);
         self.waiters
-            .entry((store_id.to_string(), sequence))
+            .entry(key.clone())
             .or_default()
-            .push(tx);
+            .push(WaiterEntry {
+                sender: tx,
+                created_at: Instant::now(),
+            });
 
-        // Check again after registering to avoid race condition:
+        // Double-check after registering to avoid TOCTOU race condition:
         // The sequence may have been committed between our first check and
         // registering the waiter.
         if let Some(committed) = self.committed.get(store_id) {
             if committed.load(Ordering::SeqCst) >= sequence {
-                // Already committed - remove our waiter entry if we can
-                // (it may have already been consumed by mark_committed)
+                // Already committed - clean up the waiter we just registered
+                // to prevent memory leak.
+                self.cleanup_closed_waiters(&key);
                 return Ok(());
             }
         }
 
         // Wait with timeout
-        tokio::time::timeout(timeout, rx)
-            .await
-            .map_err(|_| WriteTrackerTimeout)?
-            .map_err(|_| WriteTrackerTimeout)
+        let result = tokio::time::timeout(timeout, rx).await;
+
+        match result {
+            Ok(Ok(())) => Ok(()),
+            _ => {
+                // On timeout or channel error, clean up our waiter entry to prevent leak
+                self.cleanup_closed_waiters(&key);
+                Err(make_timeout())
+            }
+        }
+    }
+
+    /// Remove closed/dropped waiter entries for a given key.
+    /// If all entries are closed, removes the entire key from the map.
+    fn cleanup_closed_waiters(&self, key: &(String, u64)) {
+        if let Some((removed_key, mut entries)) = self.waiters.remove(key) {
+            entries.retain(|e| !e.sender.is_closed());
+            if !entries.is_empty() {
+                self.waiters.insert(removed_key, entries);
+            }
+        }
     }
 
     /// Get the last committed sequence for a store, if any.
@@ -189,7 +228,7 @@ impl WriteTracker {
             .map(|v| v.load(Ordering::SeqCst))
     }
 
-    /// Get the number of active waiters across all stores.
+    /// Get the number of active waiter entries across all stores.
     pub fn active_waiter_count(&self) -> usize {
         self.waiters.iter().map(|entry| entry.value().len()).sum()
     }
@@ -215,6 +254,9 @@ impl WriteTracker {
             loop {
                 timer.tick().await;
 
+                let mut committed_cleaned = 0usize;
+                let mut ttl_expired = 0usize;
+
                 // Remove waiters for already-committed sequences
                 let committed_keys: Vec<(String, u64)> = tracker
                     .waiters
@@ -230,17 +272,39 @@ impl WriteTracker {
                     .collect();
 
                 for key in &committed_keys {
-                    if let Some((_, senders)) = tracker.waiters.remove(key) {
-                        for sender in senders {
-                            let _ = sender.send(());
+                    if let Some((_, entries)) = tracker.waiters.remove(key) {
+                        committed_cleaned += entries.len();
+                        for entry in entries {
+                            let _ = entry.sender.send(());
                         }
                     }
                 }
 
-                if !committed_keys.is_empty() {
+                // TTL-based cleanup: remove waiters that have exceeded their TTL.
+                // This prevents unbounded memory growth from waiters for sequences
+                // that are never committed (e.g., non-existent store IDs).
+                let now = Instant::now();
+                let all_keys: Vec<(String, u64)> = tracker
+                    .waiters
+                    .iter()
+                    .map(|entry| entry.key().clone())
+                    .collect();
+
+                for key in &all_keys {
+                    if let Some((removed_key, mut entries)) = tracker.waiters.remove(key) {
+                        let before = entries.len();
+                        entries.retain(|e| now.duration_since(e.created_at) < ttl);
+                        ttl_expired += before - entries.len();
+                        if !entries.is_empty() {
+                            tracker.waiters.insert(removed_key, entries);
+                        }
+                    }
+                }
+
+                if committed_cleaned > 0 || ttl_expired > 0 {
                     debug!(
-                        count = committed_keys.len(),
-                        "Cleaned up waiters for committed sequences"
+                        committed_cleaned,
+                        ttl_expired, "WriteTracker cleanup completed"
                     );
                 }
 
@@ -476,7 +540,10 @@ mod tests {
             .waiters
             .entry(("store1".to_string(), 5))
             .or_default()
-            .push(tx);
+            .push(WaiterEntry {
+                sender: tx,
+                created_at: Instant::now(),
+            });
 
         assert_eq!(tracker.active_waiter_count(), 1);
 
@@ -497,6 +564,82 @@ mod tests {
         );
 
         handle.abort();
+    }
+
+    /// Test: cleanup task removes expired waiters based on TTL.
+    /// This prevents unbounded memory growth from waiters for non-existent stores.
+    #[tokio::test]
+    async fn test_cleanup_task_removes_expired_waiters_by_ttl() {
+        let config = WriteTrackerConfig {
+            cleanup_interval: Duration::from_millis(50),
+            waiter_ttl: Duration::from_millis(100), // Short TTL for testing
+        };
+        let tracker = Arc::new(WriteTracker::new(config));
+
+        // Register a waiter for a non-existent store (sequence never commits)
+        let (tx, _rx) = oneshot::channel();
+        tracker
+            .waiters
+            .entry(("nonexistent-store".to_string(), 999))
+            .or_default()
+            .push(WaiterEntry {
+                sender: tx,
+                created_at: Instant::now(),
+            });
+
+        assert_eq!(tracker.active_waiter_count(), 1);
+
+        // Start cleanup task
+        let handle = tracker.start_cleanup_task();
+
+        // Wait for TTL to expire and cleanup to run
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        // Waiter should have been cleaned up by TTL expiration
+        assert_eq!(
+            tracker.active_waiter_count(),
+            0,
+            "Cleanup should remove waiters that exceeded TTL"
+        );
+
+        handle.abort();
+    }
+
+    /// Test: wait_for_commit cleans up waiter on timeout (no leak).
+    #[tokio::test]
+    async fn test_wait_timeout_cleans_up_waiter() {
+        let tracker = WriteTracker::default();
+
+        // Wait with a short timeout - should timeout and clean up
+        let result = tracker
+            .wait_for_commit("store1", 999, Duration::from_millis(50))
+            .await;
+
+        assert!(result.is_err());
+
+        // The waiter should have been cleaned up after timeout
+        assert_eq!(
+            tracker.active_waiter_count(),
+            0,
+            "Waiter should be cleaned up after timeout"
+        );
+    }
+
+    /// Test: timeout error includes store_id and sequence for debugging.
+    #[tokio::test]
+    async fn test_timeout_error_includes_context() {
+        let tracker = WriteTracker::default();
+
+        let err = tracker
+            .wait_for_commit("my-store", 42, Duration::from_millis(50))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.store_id, "my-store");
+        assert_eq!(err.sequence, 42);
+        let msg = err.to_string();
+        assert!(msg.contains("my-store"), "Error should contain store_id");
+        assert!(msg.contains("42"), "Error should contain sequence");
     }
 
     /// Test: WriteTracker stats methods work correctly.
