@@ -1020,9 +1020,9 @@ Follow this process precisely, always prioritizing:
   - Milestone 2.0.2 (Async API Endpoints): ✅ Complete
   - Milestone 2.0.3 (Storage Consumer Daemon): ✅ Complete
   - Milestone 2.0.4 (RYOW & Write Tracker): ✅ Complete
-  - Milestone 2.0.5 (Failure Handling): ⏸️ Partial (circuit breaker done, fallback/DLQ pending)
+  - Milestone 2.0.5 (Failure Handling): ⏸️ Partial (circuit breaker + sync fallback done, DLQ pending)
   - Milestone 2.0.6 (Edge Sync Consumer): ⏸️ Pending
 
-**Next Step**: Milestone 2.0.5 - Failure Handling (sync fallback, DLQ) or Milestone 2.0.6 - Edge Sync Consumer
+**Next Step**: Milestone 2.0.5 - DLQ message handling or Milestone 2.0.6 - Edge Sync Consumer
 
 **To continue**: Say "go" to proceed with the next milestone or specify what you'd like to work on!

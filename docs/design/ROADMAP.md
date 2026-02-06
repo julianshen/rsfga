@@ -1938,7 +1938,7 @@ CockroachDB's BIGSERIAL emulation works correctly with our PostgreSQL migrations
 
 **Duration Estimate**: 9 weeks
 
-**Status**: 🏗️ In Progress (Milestones 2.0.1-2.0.4 complete, 2.0.5 partial, 2.0.6 pending)
+**Status**: 🏗️ In Progress (Milestones 2.0.1-2.0.4 complete, 2.0.5 partial [CB+fallback done, DLQ pending], 2.0.6 pending)
 
 **Design Document**: [NATS_ASYNC_WRITES_DESIGN.md](NATS_ASYNC_WRITES_DESIGN.md)
 
@@ -2149,10 +2149,14 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 - [x] Half-open state for recovery testing (probes after reset)
 - [x] Circuit breaker in WriteConsumer for storage failures
 
-**2.0.5.2 Fallback to Sync**
-- [ ] Auto-fallback to direct storage write when NATS unavailable
-- [ ] Metric for fallback writes
-- [ ] Still publish event (best effort) after fallback
+**2.0.5.2 Fallback to Sync** ✅ COMPLETE
+- [x] Auto-fallback to direct storage write when NATS unavailable
+- [x] WriteMode config (Nats/Direct/Auto) in NatsSettings and AppState
+- [x] Sync fallback in async_write_tuples with tuple conversion
+- [x] Sync fallback in async_write_authorization_model with cache invalidation
+- [x] Metric for fallback writes (total, success, failure counters)
+- [x] Response body indicates fallback (optional write_ticket, fallback flag)
+- [x] 11 unit tests for conversion functions, serialization, WriteMode
 
 **2.0.5.3 Dead Letter Queue**
 - [x] RSFGA_DLQ stream created on startup
@@ -2167,7 +2171,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 **Validation Criteria**:
 - [x] Circuit breaker opens after threshold failures
-- [ ] Fallback writes succeed when NATS down
+- [x] Fallback writes succeed when NATS down
 - [ ] Poison messages end up in DLQ
 - [x] Consumer recovers after restart
 
@@ -2175,7 +2179,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 - ✅ Circuit breaker (NATS publisher + storage consumer)
 - ✅ Consumer recovery (durable consumer)
 - ⏸️ DLQ message handling
-- ⏸️ Sync fallback path
+- ✅ Sync fallback path (WriteMode Auto/Nats/Direct)
 
 ---
 
@@ -2231,9 +2235,10 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 | Config Tests (NatsSettings) | 2 | ✅ |
 | Circuit Breaker Tests | ~8 | ✅ |
 | Async API Integration Tests | ~15 | ✅ |
-| Sync fallback / DLQ tests | 0 | ⏸️ |
+| Sync fallback tests | 11 | ✅ |
+| DLQ tests | 0 | ⏸️ |
 | Edge sync tests | 0 | ⏸️ |
-| **Total Implemented** | **~140** | - |
+| **Total Implemented** | **~151** | - |
 
 ---
 
