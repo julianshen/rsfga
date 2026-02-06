@@ -2,12 +2,19 @@
 //!
 //! This module provides configuration structures for connecting to NATS,
 //! including server addresses, authentication, TLS, and JetStream settings.
+//!
+//! **Security Note**: All configuration types implement custom `Debug` traits
+//! that redact sensitive information (passwords, tokens, credentials embedded
+//! in URLs) to prevent accidental exposure in logs.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Configuration for NATS connection and JetStream.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// **Security**: Debug output redacts credentials that may be embedded in server URLs
+/// (e.g., `nats://user:password@host:4222` becomes `nats://[REDACTED]@host:4222`).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NatsConfig {
     /// NATS server URLs (e.g., "nats://localhost:4222")
     #[serde(default = "default_servers")]
@@ -64,6 +71,53 @@ impl Default for NatsConfig {
             write_mode: default_write_mode(),
             write_ticket_ttl: default_write_ticket_ttl(),
         }
+    }
+}
+
+impl std::fmt::Debug for NatsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Redact credentials from server URLs (e.g., nats://user:pass@host:4222)
+        let redacted_servers: Vec<String> = self
+            .servers
+            .iter()
+            .map(|s| redact_url_credentials(s))
+            .collect();
+
+        f.debug_struct("NatsConfig")
+            .field("servers", &redacted_servers)
+            .field("name", &self.name)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("request_timeout", &self.request_timeout)
+            .field("reconnect", &self.reconnect)
+            .field("auth", &self.auth)
+            .field("tls", &self.tls)
+            .field("jetstream", &self.jetstream)
+            .field("write_mode", &self.write_mode)
+            .field("write_ticket_ttl", &self.write_ticket_ttl)
+            .finish()
+    }
+}
+
+/// Redact credentials from a URL string.
+///
+/// Handles URLs like `nats://user:password@host:4222` and redacts to
+/// `nats://[REDACTED]@host:4222`. Also handles URLs without scheme.
+fn redact_url_credentials(url: &str) -> String {
+    // Find the @ symbol which separates credentials from host
+    if let Some(at_pos) = url.find('@') {
+        // Find the scheme separator ://
+        if let Some(scheme_pos) = url.find("://") {
+            // Credentials are between :// and @
+            let scheme = &url[..scheme_pos + 3];
+            let after_at = &url[at_pos..];
+            format!("{}[REDACTED]{}", scheme, after_at)
+        } else {
+            // No scheme, credentials are at the start
+            format!("[REDACTED]{}", &url[at_pos..])
+        }
+    } else {
+        // No @ symbol, no credentials to redact
+        url.to_string()
     }
 }
 
@@ -445,5 +499,79 @@ mod tests {
         let json = serde_json::to_string(&auth).unwrap();
         assert!(json.contains("user"));
         assert!(!json.contains("secret"));
+    }
+
+    #[test]
+    fn test_redact_url_credentials_with_credentials() {
+        let url = "nats://user:password@localhost:4222";
+        let redacted = redact_url_credentials(url);
+        assert_eq!(redacted, "nats://[REDACTED]@localhost:4222");
+        assert!(!redacted.contains("password"));
+        assert!(!redacted.contains("user:"));
+    }
+
+    #[test]
+    fn test_redact_url_credentials_without_credentials() {
+        let url = "nats://localhost:4222";
+        let redacted = redact_url_credentials(url);
+        assert_eq!(redacted, "nats://localhost:4222");
+    }
+
+    #[test]
+    fn test_redact_url_credentials_complex() {
+        // Multiple @ symbols (edge case)
+        let url = "nats://user:p@ss@host:4222";
+        let redacted = redact_url_credentials(url);
+        // First @ is used as separator
+        assert_eq!(redacted, "nats://[REDACTED]@ss@host:4222");
+    }
+
+    #[test]
+    fn test_redact_url_credentials_no_scheme() {
+        let url = "user:password@host:4222";
+        let redacted = redact_url_credentials(url);
+        assert_eq!(redacted, "[REDACTED]@host:4222");
+        assert!(!redacted.contains("password"));
+    }
+
+    #[test]
+    fn test_nats_config_debug_redacts_credentials() {
+        let config = NatsConfig {
+            servers: vec![
+                "nats://user:secretpass@server1:4222".to_string(),
+                "nats://localhost:4222".to_string(),
+            ],
+            ..Default::default()
+        };
+        let debug_output = format!("{config:?}");
+
+        // Should contain redacted version
+        assert!(debug_output.contains("nats://[REDACTED]@server1:4222"));
+        // Should contain server without credentials unchanged
+        assert!(debug_output.contains("nats://localhost:4222"));
+        // Should NOT contain actual password
+        assert!(!debug_output.contains("secretpass"));
+        assert!(!debug_output.contains("user:"));
+    }
+
+    #[test]
+    fn test_auth_config_debug_redacts_sensitive_fields() {
+        let auth = AuthConfig {
+            username: Some("testuser".to_string()),
+            password: Some("supersecret".to_string()),
+            token: Some("mytoken123".to_string()),
+            jwt: Some("jwt.token.here".to_string()),
+            ..Default::default()
+        };
+        let debug_output = format!("{auth:?}");
+
+        // Username should be visible
+        assert!(debug_output.contains("testuser"));
+        // Sensitive fields should be redacted
+        assert!(debug_output.contains("[REDACTED]"));
+        // Actual values should NOT appear
+        assert!(!debug_output.contains("supersecret"));
+        assert!(!debug_output.contains("mytoken123"));
+        assert!(!debug_output.contains("jwt.token.here"));
     }
 }

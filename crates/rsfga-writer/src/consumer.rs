@@ -34,6 +34,14 @@
 //! - Tracked via `event_publish_failures` metric
 //! - **Note**: This can cause duplicate storage writes on redelivery (idempotent)
 //!
+//! ## Storage Failures and Circuit Breaker
+//! - Consumer applies exponential backoff (100ms to 30s) on consecutive failures
+//! - After STORAGE_CIRCUIT_BREAKER_THRESHOLD (5) consecutive storage failures:
+//!   - Circuit opens and message fetching stops
+//!   - Periodic health checks probe storage availability
+//!   - Circuit closes when storage health check succeeds
+//! - This prevents overwhelming a failing storage backend with retry traffic
+//!
 //! ## Consecutive Failures
 //! - Consumer applies exponential backoff (100ms to 30s) on consecutive failures
 //! - This prevents tight loop on persistent errors (e.g., storage unavailable)
@@ -69,6 +77,11 @@ pub const MAX_BATCH_TIMEOUT: Duration = Duration::from_secs(60);
 /// Maximum pending queue size (prevents memory exhaustion under load).
 /// When queue reaches this size, processing is forced before fetching more.
 pub const MAX_PENDING_QUEUE_SIZE: usize = 50_000;
+/// Number of consecutive storage failures before opening circuit breaker.
+/// When reached, the consumer stops fetching and waits for storage recovery.
+pub const STORAGE_CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
+/// How often to probe storage health when circuit is open.
+pub const STORAGE_HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Consumer configuration.
 #[derive(Debug, Clone)]
@@ -186,6 +199,9 @@ impl WriteConsumer {
         let mut pending: HashMap<String, Vec<PendingMessage>> = HashMap::new();
         let mut batch_timer = Instant::now();
         let mut consecutive_failures: u32 = 0;
+        let mut storage_failures: u32 = 0;
+        let mut circuit_open = false;
+        let mut last_health_probe = Instant::now();
         const MAX_BACKOFF_MS: u64 = 30_000; // 30 seconds max backoff
 
         loop {
@@ -194,6 +210,46 @@ impl WriteConsumer {
                 info!("Shutdown signal received, processing pending messages");
                 break;
             }
+
+            // Circuit breaker: if open, probe storage health before resuming
+            if circuit_open {
+                if last_health_probe.elapsed() >= STORAGE_HEALTH_PROBE_INTERVAL {
+                    info!("Circuit open - probing storage health");
+                    match self.storage.health_check().await {
+                        Ok(status) if status.healthy => {
+                            info!("Storage health check passed - closing circuit");
+                            circuit_open = false;
+                            storage_failures = 0;
+                            consecutive_failures = 0;
+                        }
+                        Ok(status) => {
+                            warn!(
+                                message = status.message,
+                                "Storage health check failed - circuit remains open"
+                            );
+                            last_health_probe = Instant::now();
+                        }
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                "Storage health check error - circuit remains open"
+                            );
+                            last_health_probe = Instant::now();
+                        }
+                    }
+                }
+
+                if circuit_open {
+                    // Sleep until next probe time
+                    let remaining = STORAGE_HEALTH_PROBE_INTERVAL
+                        .saturating_sub(last_health_probe.elapsed());
+                    if !remaining.is_zero() {
+                        tokio::time::sleep(remaining).await;
+                    }
+                    continue;
+                }
+            }
+
             // Apply backoff if we've had consecutive failures
             if consecutive_failures > 0 {
                 let backoff_ms = std::cmp::min(
@@ -323,10 +379,27 @@ impl WriteConsumer {
                     Ok(_) => {
                         // Reset backoff on successful batch processing
                         consecutive_failures = 0;
+                        storage_failures = 0;
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to process batches");
                         batch_had_failures = true;
+
+                        // Track storage failures separately for circuit breaker
+                        if matches!(e, WriterError::Storage(_)) {
+                            storage_failures = storage_failures.saturating_add(1);
+
+                            // Open circuit breaker if storage failures exceed threshold
+                            if storage_failures >= STORAGE_CIRCUIT_BREAKER_THRESHOLD {
+                                error!(
+                                    storage_failures,
+                                    threshold = STORAGE_CIRCUIT_BREAKER_THRESHOLD,
+                                    "Storage circuit breaker OPEN - stopping message fetch"
+                                );
+                                circuit_open = true;
+                                last_health_probe = Instant::now();
+                            }
+                        }
                     }
                 }
                 batch_timer = Instant::now();

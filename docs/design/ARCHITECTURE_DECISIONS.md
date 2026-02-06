@@ -1487,6 +1487,47 @@ See [NATS_ASYNC_WRITES_DESIGN.md](NATS_ASYNC_WRITES_DESIGN.md) for complete desi
    - Storage writes are idempotent (ON CONFLICT upsert)
    - Downstream consumers should handle duplicate CommittedEvents
 
+**Async Path Validation Trade-off**:
+
+The async write endpoints (`/async/write`, `/async/write-authorization-model`) perform **full validation before publishing to NATS**. This is a deliberate architectural trade-off:
+
+| Approach | Latency | Data Integrity | Error Handling |
+|----------|---------|----------------|----------------|
+| **Validate before publish** (chosen) | Higher (+5-10ms) | Strong | Clear client errors |
+| **Validate in consumer** | Lower | Weak | DLQ, silent failures |
+
+**Why we validate in the endpoint (not consumer)**:
+
+1. **Data Integrity**: Invalid tuples never enter the queue. The consumer can trust all messages.
+
+2. **Clear Error Feedback**: Clients receive immediate 400/422 errors with details:
+   ```json
+   {
+     "code": "validation_error",
+     "message": "invalid tuple at index 2: user=invalid, reason=invalid user format"
+   }
+   ```
+
+3. **No Dead Letter Queue Pollution**: Invalid requests don't consume DLQ space.
+
+4. **Consistent with Sync Path**: Same validation as `/write` endpoint (OpenFGA compatibility).
+
+**What is validated**:
+
+- Tuple count limits (max 100 per request)
+- User/object ID length limits (max 512/256 chars)
+- User/object format validation (`type:id`, `type:id#relation`)
+- Authorization model existence (tuples must reference valid types/relations)
+- Condition name format (alphanumeric, underscores, hyphens, max 256 chars)
+- Model schema validation (for model write requests)
+
+**Performance Note**: Validation adds ~5-10ms latency for typical requests. This is acceptable because:
+- The async path's primary benefit is decoupling storage write latency
+- Invalid requests would fail eventually anyway (better to fail fast)
+- Model fetch is cached after first access
+
+**Code Reference**: `crates/rsfga-api/src/http/routes.rs:2942-3159` (async_write_tuples)
+
 **Message Ordering Semantics**:
 
 The async write architecture provides the following ordering guarantees:
