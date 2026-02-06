@@ -37,6 +37,9 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 metrics = { workspace = true }
 
+# Concurrency
+dashmap = { workspace = true }
+
 # Utilities
 uuid = { workspace = true }
 ulid = { workspace = true }

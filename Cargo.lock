@@ -3568,6 +3568,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "dashmap",
  "futures",
  "humantime-serde",
  "metrics",

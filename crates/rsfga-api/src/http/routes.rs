@@ -1103,6 +1103,29 @@ async fn list_authorization_models<S: DataStore>(
 // Check Operation
 // ============================================================
 
+/// Consistency preferences for read operations (RYOW support).
+///
+/// When using async writes via NATS, clients can specify consistency
+/// requirements to ensure their reads see their own writes.
+#[derive(Debug, Deserialize, Default)]
+pub struct ConsistencyPreference {
+    /// Minimum store ID for consistency (reserved for future use).
+    #[serde(default)]
+    pub minimize_latency: bool,
+    /// Write ticket from a previous async write operation.
+    /// If present, the server will wait for this write to be committed
+    /// before executing the read operation.
+    #[serde(default)]
+    pub write_ticket: Option<WriteTicketParam>,
+}
+
+/// Write ticket parameter for RYOW consistency.
+#[derive(Debug, Deserialize)]
+pub struct WriteTicketParam {
+    pub store_id: String,
+    pub sequence: u64,
+}
+
 /// Request body for check operation.
 // Fields will be used when full resolver is integrated.
 #[allow(dead_code)]
@@ -1117,6 +1140,9 @@ pub struct CheckRequestBody {
     /// Contains values that will be accessible as `request.<key>` in CEL expressions.
     #[serde(default)]
     pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// Consistency preferences for RYOW support.
+    #[serde(default)]
+    pub consistency: Option<ConsistencyPreference>,
 }
 
 /// Relationship condition for conditional tuples.
@@ -1173,11 +1199,48 @@ pub struct CheckResponseBody {
     pub resolution: Option<String>,
 }
 
+/// Wait for a write ticket to be committed if RYOW consistency is requested.
+///
+/// This is a no-op if the NATS feature is disabled, if no WriteTracker is
+/// configured, or if no write_ticket is present in the consistency preferences.
+///
+/// Returns 504 Gateway Timeout if the write is not committed within the timeout.
+#[allow(unused_variables)]
+async fn wait_for_consistency<S: DataStore>(
+    state: &AppState<S>,
+    consistency: Option<&ConsistencyPreference>,
+) -> ApiResult<()> {
+    #[cfg(feature = "nats")]
+    if let Some(pref) = consistency {
+        if let Some(ticket) = &pref.write_ticket {
+            if let Some(tracker) = state.write_tracker() {
+                const RYOW_TIMEOUT_SECS: u64 = 30;
+                tracker
+                    .wait_for_commit(
+                        &ticket.store_id,
+                        ticket.sequence,
+                        std::time::Duration::from_secs(RYOW_TIMEOUT_SECS),
+                    )
+                    .await
+                    .map_err(|_| {
+                        ApiError::gateway_timeout(
+                            "RYOW timeout: write not yet committed".to_string(),
+                        )
+                    })?;
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn check<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<CheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
+    // RYOW: Wait for write ticket if consistency preferences are specified
+    wait_for_consistency(&state, body.consistency.as_ref()).await?;
+
     // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // If a specific authorization_model_id is provided, validate it exists
     if let Some(ref model_id) = body.authorization_model_id {
@@ -2469,6 +2532,9 @@ pub struct ListObjectsRequestBody {
     pub contextual_tuples: Option<ContextualTuplesBody>,
     #[serde(default)]
     pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// Consistency preferences for RYOW support.
+    #[serde(default)]
+    pub consistency: Option<ConsistencyPreference>,
 }
 
 /// Response for list objects operation (stub).
@@ -2483,6 +2549,9 @@ async fn list_objects<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<ListObjectsRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
+    // RYOW: Wait for write ticket if consistency preferences are specified
+    wait_for_consistency(&state, body.consistency.as_ref()).await?;
+
     use crate::validation::{
         estimate_context_size, json_exceeds_max_depth, validate_relation_format,
         validate_user_format, MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
