@@ -48,6 +48,7 @@ pub mod error;
 pub mod events;
 pub mod jetstream;
 pub mod publisher;
+pub mod tracker;
 pub mod utils;
 
 // Re-export main types
@@ -60,6 +61,7 @@ pub use events::{
 };
 pub use jetstream::JetStreamManager;
 pub use publisher::{EventPublisher, PublisherConfig, PublisherStats};
+pub use tracker::{WriteTracker, WriteTrackerConfig, WriteTrackerTimeout};
 
 /// Stream name for write requests (WorkQueue retention)
 pub const STREAM_WRITES: &str = "RSFGA_WRITES";

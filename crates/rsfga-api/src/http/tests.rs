@@ -2120,7 +2120,6 @@ fn test_api_error_constructors_produce_correct_codes() {
 async fn test_async_write_returns_503_when_nats_not_configured() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = test_store_id();
-    storage.create_store(&store_id, "Test Store").await.unwrap();
     setup_store_with_model(&storage, &store_id, "Test Store").await;
 
     // Create state without NATS publisher (default)
@@ -2131,7 +2130,7 @@ async fn test_async_write_returns_503_when_nats_not_configured() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/async/stores{store_id}/write"))
+                .uri(format!("/async/stores/{store_id}/write"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{
@@ -2168,7 +2167,7 @@ async fn test_async_write_returns_503_when_nats_not_configured() {
 async fn test_async_model_write_returns_503_when_nats_not_configured() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = test_store_id();
-    storage.create_store(&store_id, "Test Store").await.unwrap();
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
 
     // Create state without NATS publisher (default)
     let state = AppState::new(storage);
@@ -2178,7 +2177,7 @@ async fn test_async_model_write_returns_503_when_nats_not_configured() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/async/stores{store_id}/authorization-models"))
+                .uri(format!("/async/stores/{store_id}/authorization-models"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{

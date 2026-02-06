@@ -1165,14 +1165,14 @@ async fn test_expand_with_nonexistent_relation_returns_400() {
     );
 }
 
-/// Test: ListObjects with non-existent type returns empty result.
-/// The system gracefully handles non-existent types by returning an empty objects array.
+/// Test: ListObjects with non-existent type returns an error.
+/// OpenFGA returns an error for non-existent types (not empty results).
 #[tokio::test]
-async fn test_list_objects_with_nonexistent_type_returns_empty() {
+async fn test_list_objects_with_nonexistent_type_returns_error() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    let (status, response) = post_json(
+    let (status, _response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/list-objects"),
         serde_json::json!({
@@ -1183,26 +1183,22 @@ async fn test_list_objects_with_nonexistent_type_returns_empty() {
     )
     .await;
 
-    // System returns 200 OK with empty objects array for non-existent types
+    // Non-existent type returns 400 Bad Request (matching OpenFGA behavior)
     assert_eq!(
         status,
-        StatusCode::OK,
-        "ListObjects with non-existent type should return 200 OK"
-    );
-    assert!(
-        response.get("objects").is_some(),
-        "Response should have 'objects' field"
+        StatusCode::BAD_REQUEST,
+        "ListObjects with non-existent type should return 400 Bad Request"
     );
 }
 
-/// Test: ListObjects with non-existent relation returns empty result.
-/// The system gracefully handles non-existent relations by returning an empty objects array.
+/// Test: ListObjects with non-existent relation returns an error.
+/// OpenFGA returns an error for non-existent relations (not empty results).
 #[tokio::test]
-async fn test_list_objects_with_nonexistent_relation_returns_empty() {
+async fn test_list_objects_with_nonexistent_relation_returns_error() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = setup_test_store(&storage).await;
 
-    let (status, response) = post_json(
+    let (status, _response) = post_json(
         create_test_app(&storage),
         &format!("/stores/{store_id}/list-objects"),
         serde_json::json!({
@@ -1213,15 +1209,11 @@ async fn test_list_objects_with_nonexistent_relation_returns_empty() {
     )
     .await;
 
-    // System returns 200 OK with empty objects array for non-existent relations
+    // Non-existent relation returns 400 Bad Request (matching OpenFGA behavior)
     assert_eq!(
         status,
-        StatusCode::OK,
-        "ListObjects with non-existent relation should return 200 OK"
-    );
-    assert!(
-        response.get("objects").is_some(),
-        "Response should have 'objects' field"
+        StatusCode::BAD_REQUEST,
+        "ListObjects with non-existent relation should return 400 Bad Request"
     );
 }
 

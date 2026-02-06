@@ -10,6 +10,8 @@ use rsfga_storage::DataStore;
 
 #[cfg(feature = "nats")]
 use rsfga_nats::EventPublisher;
+#[cfg(feature = "nats")]
+use rsfga_nats::WriteTracker;
 
 use crate::adapters::{DataStoreModelReader, DataStoreTupleReader};
 
@@ -92,6 +94,9 @@ pub struct AppState<S: DataStore> {
     /// Optional NATS event publisher for async writes.
     #[cfg(feature = "nats")]
     pub publisher: Option<Arc<EventPublisher>>,
+    /// Optional write tracker for RYOW consistency.
+    #[cfg(feature = "nats")]
+    pub write_tracker: Option<Arc<WriteTracker>>,
 }
 
 impl<S: DataStore> AppState<S> {
@@ -181,6 +186,8 @@ impl<S: DataStore> AppState<S> {
             assertions: Arc::new(DashMap::new()),
             #[cfg(feature = "nats")]
             publisher: None,
+            #[cfg(feature = "nats")]
+            write_tracker: None,
         }
     }
 
@@ -204,5 +211,23 @@ impl<S: DataStore> AppState<S> {
     #[cfg(feature = "nats")]
     pub fn publisher(&self) -> Option<&Arc<EventPublisher>> {
         self.publisher.as_ref()
+    }
+
+    /// Sets the write tracker for RYOW consistency.
+    ///
+    /// When configured, read handlers (Check, ListObjects, etc.) can accept
+    /// a `write_ticket` parameter and wait for the corresponding async write
+    /// to be committed before proceeding.
+    #[cfg(feature = "nats")]
+    #[must_use]
+    pub fn with_write_tracker(mut self, tracker: Arc<WriteTracker>) -> Self {
+        self.write_tracker = Some(tracker);
+        self
+    }
+
+    /// Gets the write tracker, if configured.
+    #[cfg(feature = "nats")]
+    pub fn write_tracker(&self) -> Option<&Arc<WriteTracker>> {
+        self.write_tracker.as_ref()
     }
 }

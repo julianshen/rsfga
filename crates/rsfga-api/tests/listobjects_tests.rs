@@ -1,15 +1,15 @@
-//! ListObjects API edge case tests for issue #187.
+//! ListObjects API integration tests.
 //!
-//! These tests cover edge cases identified during PR #184 review:
+//! These tests cover:
 //! - Truncation behavior with >1000 candidates
 //! - Performance with 1000 candidates
 //! - Concurrent ListObjects requests (thread safety)
 //! - Timeout handling
 //! - Domain/storage validation alignment
 //! - Error scenario coverage
+//! - End-to-end with complex authorization models
 //!
-//! NOTE: Tests are marked `#[ignore]` until ListObjects is fully implemented.
-//! Run with: cargo test --test listobjects_tests -- --ignored
+//! Milestone 1.16: ListObjects Full Resolver Implementation
 
 mod common;
 
@@ -48,7 +48,6 @@ const LISTOBJECTS_TIMEOUT: Duration = Duration::from_secs(3);
 /// OpenFGA returns at most 1000 objects from ListObjects, even if more
 /// objects match. This test verifies truncation behavior.
 #[tokio::test]
-#[ignore = "ListObjects not yet implemented - returns empty results"]
 async fn test_listobjects_truncates_results_over_1000_candidates() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = create_store_with_model(&storage).await;
@@ -106,7 +105,6 @@ async fn test_listobjects_truncates_results_over_1000_candidates() {
 
 /// Test: ListObjects returns all objects when count is under limit.
 #[tokio::test]
-#[ignore = "ListObjects not yet implemented - returns empty results"]
 async fn test_listobjects_returns_all_when_under_limit() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = create_store_with_model(&storage).await;
@@ -160,7 +158,6 @@ async fn test_listobjects_returns_all_when_under_limit() {
 /// Verifies ListObjects completes within acceptable time bounds
 /// when processing the maximum number of candidates.
 #[tokio::test]
-#[ignore = "ListObjects not yet implemented - returns empty results"]
 async fn test_listobjects_performance_with_1000_candidates() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = create_store_with_model(&storage).await;
@@ -231,7 +228,6 @@ async fn test_listobjects_performance_with_1000_candidates() {
 /// Verifies thread safety by running multiple concurrent ListObjects
 /// requests for different users and checking results are isolated.
 #[tokio::test]
-#[ignore = "ListObjects not yet implemented - returns empty results"]
 async fn test_listobjects_concurrent_requests_are_isolated() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = create_store_with_model(&storage).await;
@@ -306,7 +302,6 @@ async fn test_listobjects_concurrent_requests_are_isolated() {
 
 /// Test: Concurrent ListObjects requests from same user are consistent.
 #[tokio::test]
-#[ignore = "ListObjects not yet implemented - returns empty results"]
 async fn test_listobjects_concurrent_same_user_consistent() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = create_store_with_model(&storage).await;
@@ -386,7 +381,6 @@ async fn test_listobjects_concurrent_same_user_consistent() {
 /// Note: This test requires a way to simulate slow queries. In production,
 /// this would test actual timeout behavior with complex relation graphs.
 #[tokio::test]
-#[ignore = "ListObjects not yet implemented - returns empty results"]
 async fn test_listobjects_timeout_returns_partial_results_or_error() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = create_store_with_model(&storage).await;
@@ -473,7 +467,6 @@ async fn test_listobjects_returns_error_for_nonexistent_store() {
 
 /// Test: ListObjects validates type exists in model.
 #[tokio::test]
-#[ignore = "ListObjects not yet implemented - returns empty results"]
 async fn test_listobjects_returns_error_for_nonexistent_type() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = create_store_with_model(&storage).await;
@@ -501,7 +494,6 @@ async fn test_listobjects_returns_error_for_nonexistent_type() {
 
 /// Test: ListObjects validates relation exists on type.
 #[tokio::test]
-#[ignore = "ListObjects not yet implemented - returns empty results"]
 async fn test_listobjects_returns_error_for_nonexistent_relation() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = create_store_with_model(&storage).await;
@@ -529,7 +521,6 @@ async fn test_listobjects_returns_error_for_nonexistent_relation() {
 
 /// Test: ListObjects validates user format.
 #[tokio::test]
-#[ignore = "ListObjects not yet implemented - returns empty results"]
 async fn test_listobjects_returns_error_for_invalid_user_format() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = create_store_with_model(&storage).await;
@@ -661,7 +652,6 @@ async fn test_listobjects_empty_body_returns_400() {
 
 /// Test: ListObjects with empty string values returns 400.
 #[tokio::test]
-#[ignore = "ListObjects not yet implemented - returns empty results"]
 async fn test_listobjects_empty_string_values_returns_400() {
     let storage = Arc::new(MemoryDataStore::new());
     let store_id = create_store_with_model(&storage).await;
@@ -683,6 +673,218 @@ async fn test_listobjects_empty_string_values_returns_400() {
         "Empty string values should return 400, got {}: {:?}",
         status,
         response
+    );
+}
+
+// =============================================================================
+// Section 7: End-to-End Integration Tests (Milestone 1.16)
+// =============================================================================
+
+/// Test: End-to-end ListObjects with complex model (union of owner + editor + viewer).
+#[tokio::test]
+async fn test_listobjects_end_to_end_with_complex_model() {
+    let storage = Arc::new(MemoryDataStore::new());
+
+    // Create store
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        "/stores",
+        serde_json::json!({ "name": "complex-model-store" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let store_id = response["id"].as_str().unwrap().to_string();
+
+    // Write a model where can_read = union(owner, editor, viewer)
+    let model_json = r#"{
+        "type_definitions": [
+            {"type": "user"},
+            {
+                "type": "document",
+                "relations": {
+                    "owner": {"this": {}},
+                    "editor": {"this": {}},
+                    "viewer": {"this": {}},
+                    "can_read": {
+                        "union": {
+                            "child": [
+                                {"computedUserset": {"relation": "owner"}},
+                                {"computedUserset": {"relation": "editor"}},
+                                {"computedUserset": {"relation": "viewer"}}
+                            ]
+                        }
+                    }
+                }
+            }
+        ]
+    }"#;
+    let model = rsfga_storage::StoredAuthorizationModel::new(
+        ulid::Ulid::new().to_string(),
+        &store_id,
+        "1.1",
+        model_json,
+    );
+    storage.write_authorization_model(model).await.unwrap();
+
+    // Alice is owner of doc1, editor of doc2, viewer of doc3
+    for (doc, relation) in [("doc1", "owner"), ("doc2", "editor"), ("doc3", "viewer")] {
+        let tuple = StoredTuple {
+            user_type: "user".to_string(),
+            user_id: "alice".to_string(),
+            user_relation: None,
+            relation: relation.to_string(),
+            object_type: "document".to_string(),
+            object_id: doc.to_string(),
+            condition_name: None,
+            condition_context: None,
+            created_at: Some(Utc::now()),
+        };
+        storage.write_tuple(&store_id, tuple).await.unwrap();
+    }
+
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/list-objects"),
+        serde_json::json!({
+            "type": "document",
+            "relation": "can_read",
+            "user": "user:alice"
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+
+    let objects: HashSet<String> = response["objects"]
+        .as_array()
+        .expect("Response should have 'objects' array")
+        .iter()
+        .filter_map(|o| o.as_str().map(String::from))
+        .collect();
+
+    assert_eq!(
+        objects.len(),
+        3,
+        "Union of owner+editor+viewer should return 3 objects"
+    );
+    assert!(objects.contains("document:doc1"));
+    assert!(objects.contains("document:doc2"));
+    assert!(objects.contains("document:doc3"));
+}
+
+/// Test: ListObjects results are consistent across multiple calls.
+#[tokio::test]
+async fn test_listobjects_result_consistency() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = create_store_with_model(&storage).await;
+
+    // Write 50 tuples
+    for i in 0..50 {
+        let tuple = StoredTuple {
+            user_type: "user".to_string(),
+            user_id: "consistency_user".to_string(),
+            user_relation: None,
+            relation: "viewer".to_string(),
+            object_type: "document".to_string(),
+            object_id: format!("doc{i}"),
+            condition_name: None,
+            condition_context: None,
+            created_at: Some(Utc::now()),
+        };
+        storage.write_tuple(&store_id, tuple).await.unwrap();
+    }
+
+    // Call ListObjects 5 times and verify consistent results
+    let mut results: Vec<HashSet<String>> = Vec::new();
+    for _ in 0..5 {
+        let (status, response) = post_json(
+            create_test_app(&storage),
+            &format!("/stores/{store_id}/list-objects"),
+            serde_json::json!({
+                "type": "document",
+                "relation": "viewer",
+                "user": "user:consistency_user"
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+
+        let objects: HashSet<String> = response["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|o| o.as_str().map(String::from))
+            .collect();
+
+        results.push(objects);
+    }
+
+    // All results should be identical
+    let first = &results[0];
+    assert_eq!(first.len(), 50);
+    for (i, result) in results.iter().enumerate().skip(1) {
+        assert_eq!(result, first, "Result {} differs from result 0", i);
+    }
+}
+
+/// Test: ListObjects with contextual tuples via API.
+#[tokio::test]
+async fn test_listobjects_with_contextual_tuples_via_api() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = create_store_with_model(&storage).await;
+
+    // Alice views doc1 (stored)
+    let tuple = StoredTuple {
+        user_type: "user".to_string(),
+        user_id: "alice".to_string(),
+        user_relation: None,
+        relation: "viewer".to_string(),
+        object_type: "document".to_string(),
+        object_id: "doc1".to_string(),
+        condition_name: None,
+        condition_context: None,
+        created_at: Some(Utc::now()),
+    };
+    storage.write_tuple(&store_id, tuple).await.unwrap();
+
+    // Request with contextual tuple granting access to doc2
+    let (status, response) = post_json(
+        create_test_app(&storage),
+        &format!("/stores/{store_id}/list-objects"),
+        serde_json::json!({
+            "type": "document",
+            "relation": "viewer",
+            "user": "user:alice",
+            "contextual_tuples": {
+                "tuple_keys": [
+                    {
+                        "user": "user:alice",
+                        "relation": "viewer",
+                        "object": "document:doc2"
+                    }
+                ]
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+
+    let objects: HashSet<String> = response["objects"]
+        .as_array()
+        .expect("Response should have 'objects' array")
+        .iter()
+        .filter_map(|o| o.as_str().map(String::from))
+        .collect();
+
+    assert!(
+        objects.contains("document:doc1"),
+        "Stored tuple should be included"
+    );
+    assert!(
+        objects.contains("document:doc2"),
+        "Contextual tuple should be included"
     );
 }
 

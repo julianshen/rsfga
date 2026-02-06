@@ -1411,22 +1411,11 @@ where
         let mut result_objects: Vec<String> = Vec::new();
 
         // Get the relation definition to understand how access is computed
-        // If the type or relation doesn't exist, return empty results (not an error)
-        let relation_def = match self
+        // If the type or relation doesn't exist, return an error (OpenFGA compatibility - I2)
+        let relation_def = self
             .model_reader
             .get_relation_definition(&request.store_id, &request.object_type, &request.relation)
-            .await
-        {
-            Ok(def) => def,
-            Err(DomainError::TypeNotFound { .. }) | Err(DomainError::RelationNotFound { .. }) => {
-                // Type or relation doesn't exist - return empty results
-                return Ok(super::types::ListObjectsResult {
-                    objects: vec![],
-                    truncated: false,
-                });
-            }
-            Err(e) => return Err(e),
-        };
+            .await?;
 
         // Use ReverseExpand to find all accessible objects
         // visited tracks (object_type, relation) pairs to detect cycles

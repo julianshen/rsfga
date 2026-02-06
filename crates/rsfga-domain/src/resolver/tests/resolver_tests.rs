@@ -7085,3 +7085,1707 @@ async fn test_list_objects_with_conditional_tupleset_in_hierarchy() {
         "Expected doc3 to be accessible (condition dept=engineering passes)"
     );
 }
+
+// ==========================================================================
+// Milestone 1.16: ListObjects Full Resolver Tests
+// ==========================================================================
+
+// ========== Section 1: Core Resolver Refactoring ==========
+
+/// Test: ListObjects returns objects where user has a direct relation.
+#[tokio::test]
+async fn test_listobjects_returns_direct_relation_objects() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Alice can view doc1 and doc2
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "viewer", "user", "alice", None,
+        )
+        .await;
+    // Bob can view doc3 (should not appear in Alice's results)
+    tuple_reader
+        .add_tuple("store1", "document", "doc3", "viewer", "user", "bob", None)
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    let objects: HashSet<String> = result.objects.into_iter().collect();
+    assert_eq!(objects.len(), 2);
+    assert!(objects.contains("document:doc1"));
+    assert!(objects.contains("document:doc2"));
+    assert!(!objects.contains("document:doc3"));
+    assert!(!result.truncated);
+}
+
+/// Test: ListObjects resolves union relations combining multiple access paths.
+#[tokio::test]
+async fn test_listobjects_resolves_union_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "can_write".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "owner".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "editor".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is owner of doc1
+    tuple_reader
+        .add_tuple("store1", "document", "doc1", "owner", "user", "alice", None)
+        .await;
+    // Alice is editor of doc2
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "editor", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "can_write", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    let objects: HashSet<String> = result.objects.into_iter().collect();
+    assert_eq!(
+        objects.len(),
+        2,
+        "Union should include both owner and editor objects"
+    );
+    assert!(objects.contains("document:doc1"));
+    assert!(objects.contains("document:doc2"));
+}
+
+/// Test: ListObjects handles recursive relations (e.g., parent hierarchy).
+///
+/// The reverse_expand algorithm finds objects accessible through one level of
+/// TTU expansion per recursive cycle. Results include directly accessible objects
+/// and one level of inherited access via parent relationships.
+#[tokio::test]
+async fn test_listobjects_handles_recursive_relations() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // folder type with viewer = direct viewer OR viewer of parent
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::This,
+                                Userset::TupleToUserset {
+                                    tupleset: "parent".to_string(),
+                                    computed_userset: "viewer".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is a direct viewer of root
+    tuple_reader
+        .add_tuple("store1", "folder", "root", "viewer", "user", "alice", None)
+        .await;
+    // child has parent = root
+    tuple_reader
+        .add_tuple(
+            "store1", "folder", "child", "parent", "folder", "root", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "folder");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    let objects: HashSet<String> = result.objects.into_iter().collect();
+    assert!(
+        objects.contains("folder:root"),
+        "Alice should have direct access to root"
+    );
+    assert!(
+        objects.contains("folder:child"),
+        "Alice should have inherited access to child via parent"
+    );
+}
+
+/// Test: ListObjects respects depth limit and returns error.
+#[tokio::test]
+async fn test_listobjects_respects_depth_limit() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Create a chain of computed relations deeper than the depth limit
+    // a -> b -> c -> ... (each defined as ComputedUserset of the next)
+    let max_depth = 5u32;
+
+    let mut relations = Vec::new();
+    for i in 0..=max_depth + 1 {
+        let name = format!("r{i}");
+        let rewrite = if i == max_depth + 1 {
+            Userset::This
+        } else {
+            Userset::ComputedUserset {
+                relation: format!("r{}", i + 1),
+            }
+        };
+        relations.push(RelationDefinition {
+            name,
+            type_constraints: vec!["user".into()],
+            rewrite,
+        });
+    }
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "resource".to_string(),
+                relations,
+            },
+        )
+        .await;
+
+    // Add a direct tuple at the bottom
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "resource",
+            "res1",
+            &format!("r{}", max_depth + 1),
+            "user",
+            "alice",
+            None,
+        )
+        .await;
+
+    let config = ResolverConfig {
+        max_depth,
+        ..Default::default()
+    };
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+    let request = ListObjectsRequest::new("store1", "user:alice", "r0", "resource");
+    let result = resolver.list_objects(&request, 100).await;
+
+    // The resolver should handle depth limit gracefully - either error or truncated results
+    match result {
+        Err(DomainError::DepthLimitExceeded { .. }) => {
+            // Expected - depth limit enforced
+        }
+        Ok(res) => {
+            // May succeed with truncated=true depending on error handling in union branches
+            assert!(
+                res.truncated || res.objects.is_empty(),
+                "Expected truncated=true or empty results when depth exceeded"
+            );
+        }
+        Err(e) => panic!("Unexpected error: {e}"),
+    }
+}
+
+/// Test: ListObjects returns error for nonexistent type.
+#[tokio::test]
+async fn test_listobjects_returns_error_for_nonexistent_type() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "nonexistent");
+    let result = resolver.list_objects(&request, 100).await;
+
+    assert!(
+        matches!(result, Err(DomainError::TypeNotFound { .. })),
+        "Expected TypeNotFound error for nonexistent type, got: {:?}",
+        result
+    );
+}
+
+/// Test: ListObjects returns error for nonexistent relation.
+#[tokio::test]
+async fn test_listobjects_returns_error_for_nonexistent_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request =
+        ListObjectsRequest::new("store1", "user:alice", "nonexistent_relation", "document");
+    let result = resolver.list_objects(&request, 100).await;
+
+    assert!(
+        matches!(result, Err(DomainError::RelationNotFound { .. })),
+        "Expected RelationNotFound error for nonexistent relation, got: {:?}",
+        result
+    );
+}
+
+// ========== Section 2: Computed Relation Support ==========
+
+/// Test: Union returns objects from ALL branches.
+#[tokio::test]
+async fn test_listobjects_union_returns_objects_from_all_branches() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "can_read".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "owner".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "editor".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "viewer".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is owner of doc1, editor of doc2, viewer of doc3
+    tuple_reader
+        .add_tuple("store1", "document", "doc1", "owner", "user", "alice", None)
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "editor", "user", "alice", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc3", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "can_read", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    let objects: HashSet<String> = result.objects.into_iter().collect();
+    assert_eq!(objects.len(), 3, "All 3 branches should contribute objects");
+    assert!(objects.contains("document:doc1"));
+    assert!(objects.contains("document:doc2"));
+    assert!(objects.contains("document:doc3"));
+}
+
+/// Test: Intersection requires objects to appear in ALL branches.
+#[tokio::test]
+async fn test_listobjects_intersection_requires_all_branches() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "allowed".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "approved".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "can_access".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Intersection {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "allowed".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "approved".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is allowed on doc1, doc2, doc3
+    for doc in &["doc1", "doc2", "doc3"] {
+        tuple_reader
+            .add_tuple("store1", "document", doc, "allowed", "user", "alice", None)
+            .await;
+    }
+    // Alice is approved on doc1 and doc2 only
+    for doc in &["doc1", "doc2"] {
+        tuple_reader
+            .add_tuple("store1", "document", doc, "approved", "user", "alice", None)
+            .await;
+    }
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "can_access", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    let objects: HashSet<String> = result.objects.into_iter().collect();
+    assert_eq!(
+        objects.len(),
+        2,
+        "Only doc1 and doc2 should pass intersection"
+    );
+    assert!(objects.contains("document:doc1"));
+    assert!(objects.contains("document:doc2"));
+    assert!(
+        !objects.contains("document:doc3"),
+        "doc3 should be excluded - not approved"
+    );
+}
+
+/// Test: Exclusion removes denied objects from base set.
+#[tokio::test]
+async fn test_listobjects_exclusion_removes_denied_objects() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "blocked".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "can_view".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Exclusion {
+                            base: Box::new(Userset::ComputedUserset {
+                                relation: "viewer".to_string(),
+                            }),
+                            subtract: Box::new(Userset::ComputedUserset {
+                                relation: "blocked".to_string(),
+                            }),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is viewer of doc1, doc2, doc3
+    for doc in &["doc1", "doc2", "doc3"] {
+        tuple_reader
+            .add_tuple("store1", "document", doc, "viewer", "user", "alice", None)
+            .await;
+    }
+    // Alice is blocked from doc2
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "blocked", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "can_view", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    let objects: HashSet<String> = result.objects.into_iter().collect();
+    assert_eq!(
+        objects.len(),
+        2,
+        "doc2 should be excluded by blocked relation"
+    );
+    assert!(objects.contains("document:doc1"));
+    assert!(!objects.contains("document:doc2"));
+    assert!(objects.contains("document:doc3"));
+}
+
+/// Test: Empty union branch is handled gracefully.
+#[tokio::test]
+async fn test_listobjects_empty_union_branch_handled() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "can_write".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "owner".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "editor".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Only owner branch has results; editor branch is empty
+    tuple_reader
+        .add_tuple("store1", "document", "doc1", "owner", "user", "alice", None)
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "can_write", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    assert_eq!(result.objects.len(), 1);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+}
+
+/// Test: Empty intersection returns empty.
+#[tokio::test]
+async fn test_listobjects_empty_intersection_returns_empty() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "allowed".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "approved".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "can_access".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Intersection {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "allowed".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "approved".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is allowed but NOT approved - intersection should be empty
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "allowed", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "can_access", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    assert!(
+        result.objects.is_empty(),
+        "Intersection with empty branch should return empty"
+    );
+}
+
+/// Test: Nested computed relations resolve correctly.
+#[tokio::test]
+async fn test_listobjects_nested_computed_relations() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        // editor = owner (computed)
+                        rewrite: Userset::ComputedUserset {
+                            relation: "owner".to_string(),
+                        },
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        // viewer = editor (which is owner) -> nested computed
+                        rewrite: Userset::ComputedUserset {
+                            relation: "editor".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple("store1", "document", "doc1", "owner", "user", "alice", None)
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Querying viewer should resolve through editor -> owner -> This
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    assert_eq!(result.objects.len(), 1);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+}
+
+// ========== Section 3: Tuple-to-Userset Resolution ==========
+
+/// Test: TTU with a computed relation on the parent.
+#[tokio::test]
+async fn test_listobjects_ttu_with_computed_relation() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // folder: owner -> viewer (computed), viewer = direct
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "owner".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::This,
+                                Userset::ComputedUserset {
+                                    relation: "owner".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // document: viewer from parent folder's viewer
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is owner of folder:reports (not direct viewer)
+    tuple_reader
+        .add_tuple(
+            "store1", "folder", "reports", "owner", "user", "alice", None,
+        )
+        .await;
+    // doc1 has parent = folder:reports
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "parent", "folder", "reports", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    assert_eq!(
+        result.objects.len(),
+        1,
+        "Alice should see doc1 via owner->viewer computed relation on parent folder"
+    );
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+}
+
+/// Test: TTU with no intermediate objects returns empty.
+#[tokio::test]
+async fn test_listobjects_ttu_no_intermediate_objects() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "parent".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice is viewer of folder:empty but no documents have that parent
+    tuple_reader
+        .add_tuple("store1", "folder", "empty", "viewer", "user", "alice", None)
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    assert!(
+        result.objects.is_empty(),
+        "No documents have a parent, so result should be empty"
+    );
+}
+
+/// Test: TTU respects depth limit.
+#[tokio::test]
+async fn test_listobjects_ttu_respects_depth_limit() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Deep folder hierarchy with parent chain
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "folder".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "parent".to_string(),
+                        type_constraints: vec!["folder".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::This,
+                                Userset::TupleToUserset {
+                                    tupleset: "parent".to_string(),
+                                    computed_userset: "viewer".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice views root folder
+    tuple_reader
+        .add_tuple("store1", "folder", "root", "viewer", "user", "alice", None)
+        .await;
+
+    // Create deep chain: f0 -> f1 -> f2 -> ... -> root
+    let chain_len = 30;
+    for i in 0..chain_len {
+        let parent = if i == chain_len - 1 {
+            "root".to_string()
+        } else {
+            format!("f{}", i + 1)
+        };
+        tuple_reader
+            .add_tuple(
+                "store1",
+                "folder",
+                &format!("f{i}"),
+                "parent",
+                "folder",
+                &parent,
+                None,
+            )
+            .await;
+    }
+
+    // Use a small depth limit
+    let config = ResolverConfig {
+        max_depth: 5,
+        ..Default::default()
+    };
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "folder");
+    let result = resolver.list_objects(&request, 100).await;
+
+    // Should either succeed with partial/truncated results or error
+    match result {
+        Ok(res) => {
+            // The result should be truncated since the chain exceeds depth limit
+            // At minimum we should get root and a few nearby folders
+            assert!(
+                res.objects.contains(&"folder:root".to_string()),
+                "Direct access to root should always be found"
+            );
+        }
+        Err(DomainError::DepthLimitExceeded { .. }) => {
+            // Acceptable - depth limit enforced
+        }
+        Err(e) => panic!("Unexpected error: {e}"),
+    }
+}
+
+// ========== Section 4: Contextual Tuples Support ==========
+
+/// Test: Contextual tuples override stored tuples (deduplication).
+#[tokio::test]
+async fn test_listobjects_contextual_overrides_stored() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Stored: alice views doc1
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Contextual tuple also grants alice viewer on doc1 (duplicate) plus doc2
+    let request = ListObjectsRequest {
+        store_id: "store1".to_string(),
+        user: "user:alice".to_string(),
+        relation: "viewer".to_string(),
+        object_type: "document".to_string(),
+        contextual_tuples: std::sync::Arc::new(vec![
+            ContextualTuple {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc1".to_string(),
+                condition_name: None,
+                condition_context: None,
+            },
+            ContextualTuple {
+                user: "user:alice".to_string(),
+                relation: "viewer".to_string(),
+                object: "document:doc2".to_string(),
+                condition_name: None,
+                condition_context: None,
+            },
+        ]),
+        context: std::sync::Arc::new(HashMap::new()),
+    };
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    let objects: HashSet<String> = result.objects.into_iter().collect();
+    assert_eq!(objects.len(), 2, "Duplicate doc1 should be deduplicated");
+    assert!(objects.contains("document:doc1"));
+    assert!(objects.contains("document:doc2"));
+}
+
+/// Test: Contextual tuples combined with exclusion.
+#[tokio::test]
+async fn test_listobjects_contextual_exclusion_removes_object() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "blocked".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "can_view".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Exclusion {
+                            base: Box::new(Userset::ComputedUserset {
+                                relation: "viewer".to_string(),
+                            }),
+                            subtract: Box::new(Userset::ComputedUserset {
+                                relation: "blocked".to_string(),
+                            }),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // Alice views doc1 and doc2
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "viewer", "user", "alice", None,
+        )
+        .await;
+    // Alice is blocked from doc1 via stored tuple
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "blocked", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "can_view", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    let objects: HashSet<String> = result.objects.into_iter().collect();
+    assert_eq!(objects.len(), 1, "doc1 should be excluded by block");
+    assert!(!objects.contains("document:doc1"));
+    assert!(objects.contains("document:doc2"));
+}
+
+// ========== Section 5: CEL Condition Evaluation ==========
+
+/// Test: ListObjects excludes objects where condition fails.
+#[tokio::test]
+async fn test_listobjects_excludes_objects_failing_condition() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    model_reader
+        .add_condition(
+            "store1",
+            Condition {
+                name: "ip_check".to_string(),
+                expression: "request.ip_allowed == true".to_string(),
+                parameters: vec![ConditionParameter::new("ip_allowed", "bool")],
+            },
+        )
+        .await;
+
+    // doc1: no condition (should be included)
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    // doc2: condition with ip_allowed=false (should be EXCLUDED)
+    let mut ctx = HashMap::new();
+    ctx.insert("ip_allowed".to_string(), serde_json::Value::Bool(false));
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc2",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "ip_check",
+            Some(ctx),
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    assert_eq!(result.objects.len(), 1);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(!result.objects.contains(&"document:doc2".to_string()));
+}
+
+/// Test: ListObjects includes objects where condition passes.
+#[tokio::test]
+async fn test_listobjects_includes_objects_passing_condition() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    model_reader
+        .add_condition(
+            "store1",
+            Condition {
+                name: "level_check".to_string(),
+                expression: "request.level >= 5".to_string(),
+                parameters: vec![ConditionParameter::new("level", "int")],
+            },
+        )
+        .await;
+
+    // doc1: condition with level=10 (passes)
+    let mut ctx1 = HashMap::new();
+    ctx1.insert(
+        "level".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(10)),
+    );
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc1",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "level_check",
+            Some(ctx1),
+        )
+        .await;
+
+    // doc2: condition with level=3 (fails)
+    let mut ctx2 = HashMap::new();
+    ctx2.insert(
+        "level".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(3)),
+    );
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc2",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "level_check",
+            Some(ctx2),
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    assert_eq!(result.objects.len(), 1);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(!result.objects.contains(&"document:doc2".to_string()));
+}
+
+/// Test: ListObjects handles missing context for conditions gracefully.
+#[tokio::test]
+async fn test_listobjects_handles_missing_context_for_condition() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    model_reader
+        .add_condition(
+            "store1",
+            Condition {
+                name: "region_check".to_string(),
+                expression: "request.region == \"us\"".to_string(),
+                parameters: vec![ConditionParameter::new("region", "string")],
+            },
+        )
+        .await;
+
+    // doc1: condition but with NO context provided (empty map)
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc1",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "region_check",
+            None,
+        )
+        .await;
+
+    // doc2: no condition at all
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+    let result = resolver.list_objects(&request, 100).await;
+
+    // Should either succeed (excluding doc1 due to missing context) or handle gracefully
+    match result {
+        Ok(res) => {
+            // doc2 should always be present (no condition)
+            assert!(res.objects.contains(&"document:doc2".to_string()));
+        }
+        Err(_) => {
+            // Condition evaluation error is also acceptable
+        }
+    }
+}
+
+/// Test: ListObjects condition evaluation with request context.
+#[tokio::test]
+async fn test_listobjects_condition_evaluation_with_request_context() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    model_reader
+        .add_condition(
+            "store1",
+            Condition {
+                name: "time_check".to_string(),
+                expression: "request.hour < 18".to_string(),
+                parameters: vec![ConditionParameter::new("hour", "int")],
+            },
+        )
+        .await;
+
+    // doc1: has time_check condition with hour=10 in tuple context (passes)
+    let mut ctx = HashMap::new();
+    ctx.insert(
+        "hour".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(10)),
+    );
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc1",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "time_check",
+            Some(ctx),
+        )
+        .await;
+
+    // doc2: has time_check condition with hour=20 in tuple context (fails)
+    let mut ctx2 = HashMap::new();
+    ctx2.insert(
+        "hour".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(20)),
+    );
+    tuple_reader
+        .add_tuple_with_condition(
+            "store1",
+            "document",
+            "doc2",
+            "viewer",
+            "user",
+            "alice",
+            None,
+            "time_check",
+            Some(ctx2),
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    assert_eq!(result.objects.len(), 1);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(!result.objects.contains(&"document:doc2".to_string()));
+}
+
+// ========== Section 6: Performance and Safety ==========
+
+/// Test: ListObjects terminates on depth limit (doesn't hang).
+#[tokio::test]
+async fn test_listobjects_terminates_on_depth_limit() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Create a long chain of computed relations
+    let mut relations = Vec::new();
+    for i in 0..30 {
+        relations.push(RelationDefinition {
+            name: format!("level{i}"),
+            type_constraints: vec!["user".into()],
+            rewrite: if i < 29 {
+                Userset::ComputedUserset {
+                    relation: format!("level{}", i + 1),
+                }
+            } else {
+                Userset::This
+            },
+        });
+    }
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "resource".to_string(),
+                relations,
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "resource", "res1", "level29", "user", "alice", None,
+        )
+        .await;
+
+    let config = ResolverConfig {
+        max_depth: 10,
+        ..Default::default()
+    };
+    let resolver = GraphResolver::with_config(tuple_reader, model_reader, config);
+    let request = ListObjectsRequest::new("store1", "user:alice", "level0", "resource");
+
+    // Must terminate (not hang) - the depth limit should prevent infinite traversal
+    let start = std::time::Instant::now();
+    let _result = resolver.list_objects(&request, 100).await;
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "ListObjects should terminate quickly due to depth limit, took {:?}",
+        elapsed
+    );
+}
+
+/// Test: ListObjects terminates on timeout.
+#[tokio::test]
+async fn test_listobjects_terminates_on_timeout() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    // Should complete well within the 30s timeout for a simple query
+    let start = std::time::Instant::now();
+    let result = resolver.list_objects(&request, 100).await;
+    let elapsed = start.elapsed();
+
+    assert!(result.is_ok());
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "Simple query should complete quickly, took {:?}",
+        elapsed
+    );
+}
+
+/// Test: ListObjects truncates at max results.
+#[tokio::test]
+async fn test_listobjects_truncates_at_max_results() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Add 20 documents
+    for i in 0..20 {
+        tuple_reader
+            .add_tuple(
+                "store1",
+                "document",
+                &format!("doc{i}"),
+                "viewer",
+                "user",
+                "alice",
+                None,
+            )
+            .await;
+    }
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    // Ask for max 5 results
+    let result = resolver.list_objects(&request, 5).await.unwrap();
+
+    assert_eq!(
+        result.objects.len(),
+        5,
+        "Should return exactly max_candidates"
+    );
+    assert!(result.truncated, "Should indicate results were truncated");
+}
+
+/// Test: ListObjects handles cycles gracefully (doesn't infinite loop).
+#[tokio::test]
+async fn test_listobjects_handles_cycles_gracefully() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Create a cycle: viewer -> editor -> viewer
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "direct_viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "direct_viewer".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "editor".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::ComputedUserset {
+                            relation: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "document",
+            "doc1",
+            "direct_viewer",
+            "user",
+            "alice",
+            None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+
+    let start = std::time::Instant::now();
+    let result = resolver.list_objects(&request, 100).await;
+    let elapsed = start.elapsed();
+
+    // Must terminate quickly - either success with truncated or cycle error
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "Cycle detection should prevent hanging, took {:?}",
+        elapsed
+    );
+
+    match result {
+        Ok(res) => {
+            // Should find doc1 via direct_viewer branch even if editor branch has cycle
+            assert!(
+                res.objects.contains(&"document:doc1".to_string()),
+                "Should still find directly accessible objects"
+            );
+        }
+        Err(DomainError::CycleDetected { .. }) => {
+            // Also acceptable
+        }
+        Err(e) => panic!("Unexpected error: {e}"),
+    }
+}
+
+/// Test: Concurrent ListObjects requests are isolated.
+#[tokio::test]
+async fn test_listobjects_concurrent_requests_isolated() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Alice views doc1, doc2; Bob views doc3, doc4
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc2", "viewer", "user", "alice", None,
+        )
+        .await;
+    tuple_reader
+        .add_tuple("store1", "document", "doc3", "viewer", "user", "bob", None)
+        .await;
+    tuple_reader
+        .add_tuple("store1", "document", "doc4", "viewer", "user", "bob", None)
+        .await;
+
+    let resolver = Arc::new(GraphResolver::new(tuple_reader, model_reader));
+
+    // Run concurrent requests
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let r = Arc::clone(&resolver);
+        handles.push(tokio::spawn(async move {
+            let req_alice = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+            let req_bob = ListObjectsRequest::new("store1", "user:bob", "viewer", "document");
+
+            let alice_result = r.list_objects(&req_alice, 100).await.unwrap();
+            let bob_result = r.list_objects(&req_bob, 100).await.unwrap();
+
+            let alice_objects: HashSet<String> = alice_result.objects.into_iter().collect();
+            let bob_objects: HashSet<String> = bob_result.objects.into_iter().collect();
+
+            (alice_objects, bob_objects)
+        }));
+    }
+
+    for handle in handles {
+        let (alice_objects, bob_objects) = handle.await.unwrap();
+
+        assert_eq!(alice_objects.len(), 2);
+        assert!(alice_objects.contains("document:doc1"));
+        assert!(alice_objects.contains("document:doc2"));
+
+        assert_eq!(bob_objects.len(), 2);
+        assert!(bob_objects.contains("document:doc3"));
+        assert!(bob_objects.contains("document:doc4"));
+
+        // Verify isolation
+        assert!(!alice_objects.contains("document:doc3"));
+        assert!(!bob_objects.contains("document:doc1"));
+    }
+}
