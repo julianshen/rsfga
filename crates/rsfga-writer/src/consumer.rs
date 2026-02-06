@@ -42,6 +42,13 @@
 //!   - Circuit closes when storage health check succeeds
 //! - This prevents overwhelming a failing storage backend with retry traffic
 //!
+//! **Note**: Circuit breaker state is local to the consumer process. On restart,
+//! state resets even if storage is still down. This is by design for simplicity:
+//! - First health check after restart will detect ongoing storage issues
+//! - Circuit will re-open quickly if storage is still unavailable
+//! - Shared state (e.g., Redis) adds complexity and failure modes
+//! - Metrics (rsfga_writer_circuit_breaker_open) provide visibility
+//!
 //! ## Consecutive Failures
 //! - Consumer applies exponential backoff (100ms to 30s) on consecutive failures
 //! - This prevents tight loop on persistent errors (e.g., storage unavailable)
@@ -55,6 +62,7 @@ use async_nats::jetstream::consumer::pull::Config as PullConfig;
 use async_nats::jetstream::consumer::AckPolicy;
 use async_nats::jetstream::Message as JsMessage;
 use futures::StreamExt;
+use metrics::gauge;
 use tracing::{debug, error, info, warn};
 
 use rsfga_nats::{
@@ -265,6 +273,46 @@ impl WriteConsumer {
                 tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
             }
 
+            // Check queue size BEFORE fetching to prevent memory exhaustion
+            let total_pending: usize = pending.values().map(|v| v.len()).sum();
+            if total_pending >= MAX_PENDING_QUEUE_SIZE {
+                warn!(
+                    total_pending,
+                    max_pending = MAX_PENDING_QUEUE_SIZE,
+                    "Pending queue at capacity - processing before fetching more"
+                );
+                // Process existing queue before fetching more
+                match self.process_pending_batches(&mut pending).await {
+                    Ok(_) => {
+                        consecutive_failures = 0;
+                        storage_failures = 0;
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to process batches at capacity");
+                        if matches!(e, WriterError::Storage(_)) {
+                            storage_failures = storage_failures.saturating_add(1);
+                            self.metrics.record_storage_failure();
+                            if storage_failures >= STORAGE_CIRCUIT_BREAKER_THRESHOLD {
+                                error!(
+                                    storage_failures,
+                                    threshold = STORAGE_CIRCUIT_BREAKER_THRESHOLD,
+                                    "Storage circuit breaker OPEN"
+                                );
+                                circuit_open = true;
+                                last_health_probe = Instant::now();
+                                self.metrics.update_circuit_breaker_state(true);
+                            }
+                        }
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                    }
+                }
+                batch_timer = Instant::now();
+                continue; // Re-check queue size before fetching
+            }
+
+            // Update pending queue size metric
+            gauge!("rsfga_writer_pending_queue_size").set(total_pending as f64);
+
             // Fetch a batch of messages
             let mut messages = consumer
                 .fetch()
@@ -361,23 +409,14 @@ impl WriteConsumer {
                 }
             }
 
-            // Process pending batches if we have any
-            let total_pending: usize = pending.values().map(|v| v.len()).sum();
+            // Process pending batches based on timeout or batch size
+            // Note: capacity check is done BEFORE fetching to prevent unbounded growth
+            let current_pending: usize = pending.values().map(|v| v.len()).sum();
             let should_flush =
                 !pending.is_empty() && batch_timer.elapsed() >= self.config.batch_timeout;
-            let batch_full = total_pending >= self.config.batch_size;
-            // Force processing if queue is at capacity to prevent memory exhaustion
-            let queue_at_capacity = total_pending >= MAX_PENDING_QUEUE_SIZE;
+            let batch_full = current_pending >= self.config.batch_size;
 
-            if queue_at_capacity {
-                warn!(
-                    total_pending,
-                    max_pending = MAX_PENDING_QUEUE_SIZE,
-                    "Pending queue at capacity, forcing batch processing"
-                );
-            }
-
-            if should_flush || batch_full || queue_at_capacity {
+            if should_flush || batch_full {
                 match self.process_pending_batches(&mut pending).await {
                     Ok(_) => {
                         // Reset backoff on successful batch processing
@@ -525,8 +564,10 @@ impl WriteConsumer {
             }
         }
 
-        // Only ack messages if event was successfully published
-        // If event publishing fails after retries, messages will be redelivered
+        // Ack messages and handle event publish failures
+        // Note: Acks are sequential because async-nats Message::ack() borrows self,
+        // preventing parallel futures. This is typically fast (~1ms per ack) and
+        // batches are bounded by batch_size (default 100, max 10000).
         if event_published {
             for msg in batch.messages {
                 if let Err(e) = msg.ack().await {
@@ -536,12 +577,51 @@ impl WriteConsumer {
                 }
             }
         } else {
+            // Event publish failed after retries - storage is already committed!
+            // Send to DLQ for recovery, then ack to prevent infinite redelivery
             error!(
                 store_id = %batch.store_id,
                 error = ?last_error,
-                "Failed to publish committed event after retries, not acking messages"
+                "Failed to publish committed event after retries - sending to DLQ"
             );
             self.metrics.record_event_publish_failure();
+
+            // Publish failed event to DLQ for later recovery
+            let dlq_subject = format!(
+                "{}.event_publish_failed.{}",
+                SUBJECT_DLQ_PREFIX, batch.max_stream_sequence
+            );
+            let dlq_payload = serde_json::to_vec(&event).unwrap_or_default();
+            if let Err(dlq_err) = self
+                .client
+                .client()
+                .publish(dlq_subject.clone(), dlq_payload.into())
+                .await
+            {
+                // DLQ publish also failed - this is critical
+                error!(
+                    error = %dlq_err,
+                    subject = %dlq_subject,
+                    store_id = %batch.store_id,
+                    "CRITICAL: Failed to publish failed event to DLQ"
+                );
+                self.metrics.record_dlq_publish_failure();
+            } else {
+                warn!(
+                    subject = %dlq_subject,
+                    store_id = %batch.store_id,
+                    "Failed event sent to DLQ for recovery"
+                );
+            }
+
+            // Ack messages since storage is committed (prevent duplicate writes)
+            for msg in batch.messages {
+                if let Err(e) = msg.ack().await {
+                    error!(error = %e, "Failed to ack message after DLQ");
+                } else {
+                    self.metrics.record_message_processed();
+                }
+            }
         }
 
         debug!(

@@ -2917,8 +2917,6 @@ pub struct WriteTicketBody {
 /// - 400: Invalid tuple format or validation error
 /// - 404: Store not found
 /// - 503: NATS publisher not configured or unavailable
-#[cfg(feature = "nats")]
-/// Async write tuples endpoint for high-throughput writes via NATS.
 ///
 /// # Performance Note
 ///
@@ -2933,6 +2931,7 @@ pub struct WriteTicketBody {
 ///
 /// Trade-off: We chose to maintain validation to prevent invalid data in the queue,
 /// which would cause silent failures in the consumer.
+#[cfg(feature = "nats")]
 async fn async_write_tuples<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,

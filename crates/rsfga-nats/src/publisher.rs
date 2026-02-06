@@ -92,7 +92,13 @@ impl Default for AtomicCircuitBreaker {
 
 impl AtomicCircuitBreaker {
     /// Check if circuit allows requests, attempting reset if timeout elapsed.
+    ///
+    /// Performance: Fast path (circuit closed) is a single atomic load.
+    /// When open, elapsed time calculation is O(1) on most systems.
+    /// Caching reset time was considered but adds complexity for marginal gain
+    /// since the circuit is typically closed during normal operation.
     fn check(&self, reset_timeout: Duration) -> Result<()> {
+        // Fast path: circuit closed (most common case)
         if !self.open.load(Ordering::Acquire) {
             return Ok(());
         }
