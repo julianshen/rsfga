@@ -116,32 +116,35 @@ impl WriteTracker {
             "Marked sequence as committed"
         );
 
-        // Wake any waiters for this or earlier sequences
-        let to_wake: Vec<(String, u64)> = self
-            .waiters
-            .iter()
-            .filter(|entry| {
-                let (ref s, seq) = *entry.key();
-                s == store_id && seq <= sequence
-            })
-            .map(|entry| entry.key().clone())
-            .collect();
+        // Wake any waiters for this or earlier sequences.
+        // Uses retain() for atomic per-shard processing: each shard's lock is held
+        // while we drain matching entries, eliminating the race window that exists
+        // between a separate iter() and remove() where concurrent operations could
+        // interfere.
+        let mut to_send: Vec<(u64, Vec<WaiterEntry>)> = Vec::new();
+        self.waiters.retain(|key, entries| {
+            let (ref s, seq) = *key;
+            if s == store_id && seq <= sequence {
+                to_send.push((seq, std::mem::take(entries)));
+                false // remove the key
+            } else {
+                true // keep the key
+            }
+        });
 
-        for key in to_wake {
-            if let Some((_, entries)) = self.waiters.remove(&key) {
-                let count = entries.len();
-                for entry in entries {
-                    // Ignore send errors - receiver may have been dropped (timeout)
-                    let _ = entry.sender.send(());
-                }
-                if count > 0 {
-                    debug!(
-                        store_id = store_id,
-                        sequence = key.1,
-                        waiters = count,
-                        "Woke waiters for committed sequence"
-                    );
-                }
+        for (seq, entries) in to_send {
+            let count = entries.len();
+            for entry in entries {
+                // Ignore send errors - receiver may have been dropped (timeout)
+                let _ = entry.sender.send(());
+            }
+            if count > 0 {
+                debug!(
+                    store_id = store_id,
+                    sequence = seq,
+                    waiters = count,
+                    "Woke waiters for committed sequence"
+                );
             }
         }
     }
@@ -190,8 +193,10 @@ impl WriteTracker {
         // registering the waiter.
         if let Some(committed) = self.committed.get(store_id) {
             if committed.load(Ordering::SeqCst) >= sequence {
-                // Already committed - clean up the waiter we just registered
-                // to prevent memory leak.
+                // Drop the receiver FIRST so that sender.is_closed() returns true.
+                // Without this, cleanup_closed_waiters would see the sender as still
+                // active (rx alive) and retain it, causing a memory leak.
+                drop(rx);
                 self.cleanup_closed_waiters(&key);
                 return Ok(());
             }
@@ -267,56 +272,40 @@ impl WriteTracker {
 
                 let mut committed_cleaned = 0usize;
                 let mut ttl_expired = 0usize;
-
-                // Remove waiters for already-committed sequences
-                let committed_keys: Vec<(String, u64)> = tracker
-                    .waiters
-                    .iter()
-                    .filter(|entry| {
-                        let (ref store_id, seq) = *entry.key();
-                        tracker
-                            .committed
-                            .get(store_id)
-                            .is_some_and(|c| c.load(Ordering::SeqCst) >= seq)
-                    })
-                    .map(|entry| entry.key().clone())
-                    .collect();
-
-                for key in &committed_keys {
-                    if let Some((_, entries)) = tracker.waiters.remove(key) {
-                        committed_cleaned += entries.len();
-                        for entry in entries {
-                            let _ = entry.sender.send(());
-                        }
-                    }
-                }
-
-                // TTL-based cleanup: remove waiters that have exceeded their TTL.
-                // This prevents unbounded memory growth from waiters for sequences
-                // that are never committed (e.g., non-existent store IDs).
                 let now = Instant::now();
-                let all_keys: Vec<(String, u64)> = tracker
-                    .waiters
-                    .iter()
-                    .map(|entry| entry.key().clone())
-                    .collect();
 
-                let mut empty_keys = Vec::new();
-                for key in &all_keys {
-                    if let Some(mut entries) = tracker.waiters.get_mut(key) {
-                        let before = entries.len();
-                        entries.retain(|e| now.duration_since(e.created_at) < ttl);
-                        ttl_expired += before - entries.len();
-                        if entries.is_empty() {
-                            empty_keys.push(key.clone());
-                        }
+                // Single atomic-per-shard pass: remove committed waiters and
+                // TTL-expired entries. Using retain() ensures each shard's lock
+                // is held during processing, eliminating race windows.
+                let mut to_send: Vec<WaiterEntry> = Vec::new();
+                tracker.waiters.retain(|key, entries| {
+                    let (ref store_id, seq) = *key;
+
+                    // If the sequence is already committed, wake all waiters
+                    let is_committed = tracker
+                        .committed
+                        .get(store_id.as_str())
+                        .is_some_and(|c| c.load(Ordering::SeqCst) >= seq);
+
+                    if is_committed {
+                        committed_cleaned += entries.len();
+                        to_send.append(entries);
+                        return false; // remove the key
                     }
-                }
-                // Remove empty entries after releasing get_mut locks
-                for key in &empty_keys {
-                    tracker
-                        .waiters
-                        .remove_if(key, |_, entries| entries.is_empty());
+
+                    // TTL-based cleanup: remove waiters that have exceeded their TTL.
+                    // This prevents unbounded memory growth from waiters for sequences
+                    // that are never committed (e.g., non-existent store IDs).
+                    let before = entries.len();
+                    entries.retain(|e| now.duration_since(e.created_at) < ttl);
+                    ttl_expired += before - entries.len();
+
+                    !entries.is_empty() // remove key if all entries expired
+                });
+
+                // Wake committed waiters outside the shard lock
+                for entry in to_send {
+                    let _ = entry.sender.send(());
                 }
 
                 if committed_cleaned > 0 || ttl_expired > 0 {
@@ -668,6 +657,147 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("my-store"), "Error should contain store_id");
         assert!(msg.contains("42"), "Error should contain sequence");
+    }
+
+    /// Regression test: TOCTOU double-check path must not leak waiter entries.
+    ///
+    /// Scenario: A waiter is registered, then the double-check finds the sequence
+    /// already committed. The receiver must be dropped BEFORE cleanup so that
+    /// sender.is_closed() returns true and the entry is removed.
+    #[tokio::test]
+    async fn test_toctou_double_check_does_not_leak_waiter() {
+        let tracker = WriteTracker::default();
+
+        // Manually simulate the TOCTOU scenario:
+        // 1. Register a waiter (as wait_for_commit does)
+        let (tx, rx) = oneshot::channel::<()>();
+        let key = ("store1".to_string(), 5u64);
+        tracker
+            .waiters
+            .entry(key.clone())
+            .or_default()
+            .push(WaiterEntry {
+                sender: tx,
+                created_at: Instant::now(),
+            });
+        assert_eq!(tracker.active_waiter_count(), 1);
+
+        // 2. Commit happens concurrently (but mark_committed's iter missed our entry)
+        tracker
+            .committed
+            .entry("store1".to_string())
+            .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+            .fetch_max(10, Ordering::SeqCst);
+
+        // 3. Double-check finds committed >= 5. The fix: drop rx first.
+        drop(rx);
+        tracker.cleanup_closed_waiters(&key);
+
+        // 4. Waiter must be cleaned up — no leak
+        assert_eq!(
+            tracker.active_waiter_count(),
+            0,
+            "TOCTOU double-check path must not leak waiter entries"
+        );
+    }
+
+    /// Regression test: verify that without dropping rx, cleanup would NOT
+    /// remove the entry (demonstrating why drop(rx) is required).
+    #[tokio::test]
+    async fn test_toctou_leak_without_drop_rx() {
+        let tracker = WriteTracker::default();
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let key = ("store1".to_string(), 5u64);
+        tracker
+            .waiters
+            .entry(key.clone())
+            .or_default()
+            .push(WaiterEntry {
+                sender: tx,
+                created_at: Instant::now(),
+            });
+
+        // Cleanup while rx is still alive — sender.is_closed() returns false
+        tracker.cleanup_closed_waiters(&key);
+
+        // Entry should still be there (sender is not closed)
+        assert_eq!(
+            tracker.active_waiter_count(),
+            1,
+            "Without drop(rx), sender.is_closed() is false, entry retained"
+        );
+
+        // Now drop rx and cleanup again — should remove the entry
+        drop(rx);
+        tracker.cleanup_closed_waiters(&key);
+        assert_eq!(
+            tracker.active_waiter_count(),
+            0,
+            "After drop(rx), cleanup removes the entry"
+        );
+    }
+
+    /// Regression test: concurrent waiters and commits must not hang.
+    /// Exercises the atomic retain-based mark_committed under contention.
+    #[tokio::test]
+    async fn test_concurrent_mark_and_wait_no_hangs() {
+        let tracker = Arc::new(WriteTracker::default());
+        let mut handles = Vec::new();
+
+        // Spawn 100 concurrent waiters for different sequences
+        for seq in 1..=100u64 {
+            let t = Arc::clone(&tracker);
+            handles.push(tokio::spawn(async move {
+                t.wait_for_commit("store1", seq, Duration::from_secs(5))
+                    .await
+            }));
+        }
+
+        // Let waiters register
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Commit all at once
+        tracker.mark_committed("store1", 100);
+
+        // All must complete without hanging (2s timeout per handle)
+        for handle in handles {
+            let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+            assert!(result.is_ok(), "Waiter should not hang");
+            assert!(
+                result.unwrap().unwrap().is_ok(),
+                "Waiter should succeed after commit"
+            );
+        }
+
+        assert_eq!(
+            tracker.active_waiter_count(),
+            0,
+            "No waiters should remain after all committed"
+        );
+    }
+
+    /// Regression test: wait_for_commit via the fast path leaves no leaked entries.
+    #[tokio::test]
+    async fn test_fast_path_no_leak() {
+        let tracker = WriteTracker::default();
+
+        // Pre-commit
+        tracker.mark_committed("store1", 10);
+
+        // Many fast-path calls should not leak
+        for seq in 1..=10u64 {
+            let result = tracker
+                .wait_for_commit("store1", seq, Duration::from_millis(100))
+                .await;
+            assert!(result.is_ok());
+        }
+
+        assert_eq!(
+            tracker.active_waiter_count(),
+            0,
+            "Fast path should never leave waiters"
+        );
     }
 
     /// Test: WriteTracker stats methods work correctly.
