@@ -1139,6 +1139,16 @@ pub struct TupleKeyBody {
     pub condition: Option<RelationshipConditionBody>,
 }
 
+// Implement TupleKeyLike for TupleKeyBody to enable shared validation
+impl crate::validation::TupleKeyLike for TupleKeyBody {
+    fn user(&self) -> &str {
+        &self.user
+    }
+    fn object(&self) -> &str {
+        &self.object
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ContextualTuplesBody {
@@ -1643,6 +1653,16 @@ pub struct TupleKeyWithoutConditionBody {
     pub object: String,
 }
 
+// Implement TupleKeyLike for TupleKeyWithoutConditionBody to enable shared validation
+impl crate::validation::TupleKeyLike for TupleKeyWithoutConditionBody {
+    fn user(&self) -> &str {
+        &self.user
+    }
+    fn object(&self) -> &str {
+        &self.object
+    }
+}
+
 async fn write_tuples<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
@@ -1660,38 +1680,12 @@ async fn write_tuples<S: DataStore>(
     }
 
     // Validate user/object ID lengths before processing (OpenFGA limits)
-    if let Some(ref writes) = body.writes {
-        for (i, tk) in writes.tuple_keys.iter().enumerate() {
-            if let Some(err) = validate_user_id_length(&tk.user) {
-                return Err(ApiError::validation_error(format!(
-                    "write tuple at index {}: {}",
-                    i, err
-                )));
-            }
-            if let Some(err) = validate_object_id_length(&tk.object) {
-                return Err(ApiError::validation_error(format!(
-                    "write tuple at index {}: {}",
-                    i, err
-                )));
-            }
-        }
-    }
-    if let Some(ref deletes) = body.deletes {
-        for (i, tk) in deletes.tuple_keys.iter().enumerate() {
-            if let Some(err) = validate_user_id_length(&tk.user) {
-                return Err(ApiError::validation_error(format!(
-                    "delete tuple at index {}: {}",
-                    i, err
-                )));
-            }
-            if let Some(err) = validate_object_id_length(&tk.object) {
-                return Err(ApiError::validation_error(format!(
-                    "delete tuple at index {}: {}",
-                    i, err
-                )));
-            }
-        }
-    }
+    // Uses shared validation to eliminate DRY violation with async endpoint
+    validate_tuple_id_lengths(
+        body.writes.as_ref().map(|w| w.tuple_keys.as_slice()),
+        body.deletes.as_ref().map(|d| d.tuple_keys.as_slice()),
+    )
+    .map_err(ApiError::validation_error)?;
 
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;
@@ -1842,8 +1836,8 @@ async fn write_tuples<S: DataStore>(
 
 // Use shared validation functions from the validation module
 use crate::validation::{
-    is_valid_condition_name, json_exceeds_max_depth, validate_object_id_length,
-    validate_tuple_count, validate_user_id_length, MAX_CONDITION_CONTEXT_SIZE,
+    is_valid_condition_name, json_exceeds_max_depth, validate_tuple_count,
+    validate_tuple_id_lengths, MAX_CONDITION_CONTEXT_SIZE,
 };
 
 /// Error returned when tuple key parsing fails.
@@ -2960,38 +2954,12 @@ async fn async_write_tuples<S: DataStore>(
     }
 
     // Validate user/object ID lengths (same as sync path)
-    if let Some(ref writes) = body.writes {
-        for (i, tk) in writes.tuple_keys.iter().enumerate() {
-            if let Some(err) = validate_user_id_length(&tk.user) {
-                return Err(ApiError::validation_error(format!(
-                    "write tuple at index {}: {}",
-                    i, err
-                )));
-            }
-            if let Some(err) = validate_object_id_length(&tk.object) {
-                return Err(ApiError::validation_error(format!(
-                    "write tuple at index {}: {}",
-                    i, err
-                )));
-            }
-        }
-    }
-    if let Some(ref deletes) = body.deletes {
-        for (i, tk) in deletes.tuple_keys.iter().enumerate() {
-            if let Some(err) = validate_user_id_length(&tk.user) {
-                return Err(ApiError::validation_error(format!(
-                    "delete tuple at index {}: {}",
-                    i, err
-                )));
-            }
-            if let Some(err) = validate_object_id_length(&tk.object) {
-                return Err(ApiError::validation_error(format!(
-                    "delete tuple at index {}: {}",
-                    i, err
-                )));
-            }
-        }
-    }
+    // Uses shared validation to eliminate DRY violation
+    validate_tuple_id_lengths(
+        body.writes.as_ref().map(|w| w.tuple_keys.as_slice()),
+        body.deletes.as_ref().map(|d| d.tuple_keys.as_slice()),
+    )
+    .map_err(ApiError::validation_error)?;
 
     // Validate store exists
     let _ = state.storage.get_store(&store_id).await?;

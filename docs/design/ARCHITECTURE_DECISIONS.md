@@ -1487,7 +1487,39 @@ See [NATS_ASYNC_WRITES_DESIGN.md](NATS_ASYNC_WRITES_DESIGN.md) for complete desi
    - Storage writes are idempotent (ON CONFLICT upsert)
    - Downstream consumers should handle duplicate CommittedEvents
 
-3. **Workers Configuration**: The `workers` config parameter is reserved but not yet implemented. Batch processing is currently sequential.
+**Message Ordering Semantics**:
+
+The async write architecture provides the following ordering guarantees:
+
+1. **Per-Store FIFO Ordering**:
+   - Messages are published to subject `rsfga.writes.<store_id>`
+   - JetStream maintains FIFO order within each subject
+   - Writes to the SAME store are processed in order
+   - Writes to DIFFERENT stores may be processed concurrently
+
+2. **Sequence Numbers**:
+   - Each message has a unique NATS stream sequence number (monotonically increasing)
+   - CommittedEvent includes `sequence` derived from max stream sequence in batch
+   - Downstream consumers can use sequence for ordering/deduplication
+   - Sequence gaps are normal (DLQ, redelivery, multi-partition)
+
+3. **Batching Impact on Ordering**:
+   - Messages are batched by store_id for efficient storage writes
+   - All messages in a batch are committed atomically
+   - CommittedEvent reflects the batch's max sequence number
+   - Individual message order within a batch is preserved
+
+4. **Ordering Limitations**:
+   - No global ordering across stores (by design, for scalability)
+   - Redelivered messages may appear "out of order" from client perspective
+   - Batch sequence represents batch commit, not individual message order
+   - Clock skew between instances doesn't affect ordering (sequence-based)
+
+5. **Consumer Ordering Recommendations**:
+   - Use `sequence` field for deduplication and ordering
+   - Handle duplicate events (same sequence may arrive multiple times)
+   - For strict ordering within a store, wait for sequential sequences
+   - For cross-store coordination, use external synchronization
 
 **Related Risks**:
 
