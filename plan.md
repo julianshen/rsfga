@@ -1384,15 +1384,304 @@ CI validation for these artifacts is planned for future enhancement.
 
 **OpenFGA Compatibility**: ✅ Verified in M1.7
 
-**Next**: Phase 2 - Precomputation Engine (Optional)
+**Next**: Phase 2 - NATS Async Writes (Version 2.0.0)
 
 ---
 
-## Phase 2: Precomputation Engine (Future)
+## Phase 2: NATS Async Writes (Version 2.0.0) 🏗️ In Progress
+
+**Goal**: High-throughput async write path using NATS JetStream for improved performance, edge synchronization, and multi-region replication.
+
+**Design Document**: [NATS_ASYNC_WRITES_DESIGN.md](docs/design/NATS_ASYNC_WRITES_DESIGN.md)
+
+**Architecture**:
+```text
+Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
+           (fast, durable)     (batched writes)
+                 │
+                 ├──▶ Edge Sync Consumer
+                 ├──▶ Cache Invalidation Consumer
+                 └──▶ Audit/Analytics Consumer
+```
+
+**Performance Targets**:
+| Metric | Current (v1.0) | Target (v2.0.0) | Improvement |
+|--------|----------------|---------------|-------------|
+| Write Latency (p99) | 15-20ms | 2-5ms | 4-10x faster |
+| Throughput | 150-300/sec | 5,000-10,000/sec | 20-50x higher |
+| Burst Handling | Limited by DB | JetStream buffer | Much better |
+
+---
+
+### Milestone 2.0.1: Core NATS Integration ✅ COMPLETE
+
+**Goal**: Basic NATS connectivity and event publishing infrastructure
+
+**2.0.1.1 NATS Dependencies & Configuration**
+- [x] Add `async-nats` crate to workspace
+- [x] Define NATS configuration structure (`NatsConfig` with auth, TLS, JetStream)
+- [x] Implement connection manager with reconnection (exponential backoff, jitter)
+- [x] Add TLS and authentication support (user/pass, token, NKey, JWT, creds file)
+
+**2.0.1.2 Event Schema (JSON)**
+- [x] Define `WriteRequest` message for RSFGA_WRITES stream
+- [x] Define `CommittedEvent` message for RSFGA_EVENTS stream
+- [x] Define `ModelWriteRequest` for async model updates
+- [x] Define `WriteTicket` for RYOW consistency
+- [x] JSON serialization/deserialization with builders
+
+**2.0.1.3 JetStream Setup**
+- [x] Create RSFGA_WRITES stream (WorkQueue retention)
+- [x] Create RSFGA_EVENTS stream (Limits retention, 7-day)
+- [x] Create RSFGA_DLQ stream (dead letter queue)
+- [x] Implement stream creation/verification on startup
+- [x] Add deduplication window configuration
+
+**Validation Criteria**:
+- [x] NATS connection established with TLS
+- [x] Streams created and accessible
+- [x] JSON serialization/deserialization works
+- [x] Unit tests pass (35 tests)
+- [x] Integration tests with testcontainers (22 tests)
+
+**Deliverables**:
+- ✅ `rsfga-nats/` crate with NATS integration
+- ✅ JSON event schema definitions
+- ✅ Integration tests with testcontainers
+
+---
+
+### Milestone 2.0.2: Async API Endpoints ✅ COMPLETE
+
+**Goal**: New async write endpoints that publish to NATS
+
+**2.0.2.1 Async Write Handler**
+- [x] Implement `POST /v1/stores/{store_id}/write` async path (nats feature)
+- [x] Full validation (same as sync path)
+- [x] Publish `WriteRequest` to RSFGA_WRITES stream
+- [x] Return `request_id`, `sequence`, `write_ticket`
+
+**2.0.2.2 Async Model Update Handler**
+- [x] Implement `PUT /v1/stores/{store_id}/authorization-models` async path
+- [x] Pre-generate ULID model_id for RYOW consistency
+- [x] Publish model update event to NATS
+- [x] Return write ticket for RYOW
+
+**2.0.2.3 Sync Path Event Publishing**
+- [x] Original `/write` endpoint publishes to RSFGA_EVENTS after storage commit
+- [x] Fire-and-forget (spawned task, doesn't block response)
+- [x] Metrics for event publish failures
+
+**Deliverables**:
+- ✅ Async write API endpoints (behind `nats` feature flag)
+- ✅ Event publishing in sync path
+
+---
+
+### Milestone 2.0.3: Storage Consumer Daemon ✅ COMPLETE
+
+**Goal**: Separate `rsfga-writer` daemon that batches NATS events to storage
+
+**2.0.3.1 Consumer Implementation**
+- [x] Create `rsfga-writer` binary with CLI arguments
+- [x] Implement pull consumer for RSFGA_WRITES
+- [x] Batch messages (500 msgs or 100ms timeout)
+- [x] Group by store_id for sequential per-store processing
+
+**2.0.3.2 Batch Storage Writes**
+- [x] Aggregate writes/deletes per store
+- [x] Single transaction per store batch
+- [x] Idempotent writes (ON CONFLICT upserts)
+
+**2.0.3.3 Event Publishing**
+- [x] Publish `CommittedEvent` to RSFGA_EVENTS after storage commit
+- [x] Include sequence number for ordering
+- [x] Ack NATS messages only after commit + publish succeed
+
+**2.0.3.4 Error Handling**
+- [x] Circuit breaker for storage failures (5 consecutive failures threshold)
+- [x] Exponential backoff (100ms to 30s) on failures
+- [x] Health probes when circuit is open
+- [x] Parse failures logged and acked (don't block queue)
+
+**2.0.3.5 Metrics & Monitoring**
+- [x] Batch size histogram
+- [x] Storage write latency histogram
+- [x] Tuples committed counter
+- [x] Prometheus metrics export on port 9090
+
+**2.0.3.6 Graceful Shutdown**
+- [x] Stop fetching new messages
+- [x] Process all pending messages in queue
+- [x] Acknowledge successfully processed messages
+
+**Deliverables**:
+- ✅ `rsfga-writer` binary (separate daemon)
+- ✅ Consumer metrics (Prometheus)
+- ✅ Durable consumer with crash recovery
+
+---
+
+### Milestone 2.0.4: RYOW & Write Tracker ✅ COMPLETE
+
+**Goal**: Read-your-own-writes consistency support
+
+**2.0.4.1 Write Tracker**
+- [x] Track committed sequences per store (DashMap + AtomicU64)
+- [x] Notify waiters when sequence committed (tokio::sync::Notify)
+- [x] Handle timeout for wait operations (configurable, default 30s)
+- [x] Per-store isolation
+- [x] TOCTOU race condition protection (double-check pattern)
+- [x] TTL-based cleanup task to prevent memory leaks
+- [x] Leak detection (warning at 10,000+ active waiters)
+- [x] Comprehensive test suite (17 tests including stress tests)
+
+**2.0.4.2 Event Subscriber**
+- [x] `EventSubscriber` subscribes to RSFGA_EVENTS stream
+- [x] Pull consumer with durable subscription
+- [x] Parses `CommittedEvent` and calls `WriteTracker.mark_committed()`
+- [x] Handles malformed messages gracefully (ack to skip)
+- [x] Automatic reconnection on stream disconnect
+- [x] Unit tests (6 tests)
+
+**2.0.4.3 Read Handler Integration**
+- [x] Check endpoint accepts `write_ticket` via `ConsistencyPreference`
+- [x] ListObjects endpoint accepts `write_ticket`
+- [x] Expand endpoint accepts `write_ticket`
+- [x] ListUsers endpoint accepts `write_ticket`
+- [x] `wait_for_consistency()` validates store_id match (prevents cross-store attacks)
+- [x] Wait for sequence before executing read
+- [x] Timeout returns 504 Gateway Timeout (not stale result)
+
+**2.0.4.4 Server Configuration & Wiring**
+- [x] `NatsSettings` in `ServerConfig` (enabled, url, name, ryow_timeout, write_ticket_ttl)
+- [x] YAML and environment variable configuration support
+- [x] NATS integration wiring in main.rs (publisher, tracker, subscriber)
+- [x] Feature-gated (`nats` feature flag) - no impact when disabled
+
+**2.0.4.5 Consistency Options** ⏸️ DEFERRED
+- [ ] `X-Consistency: eventual` header support
+- [ ] `X-Consistency: strong` header support
+- [ ] Sync write escape hatch (`sync: true` in request)
+
+**Validation Criteria**:
+- [x] RYOW works with write ticket (all 4 read handlers)
+- [x] Wait timeout returns 504 error
+- [x] Cross-store ticket validation returns 400
+- [x] Unit tests for WriteTracker (17 tests)
+- [x] Unit tests for EventSubscriber (6 tests)
+- [x] Config tests (2 tests)
+
+**Deliverables**:
+- ✅ WriteTracker implementation (lock-free, production-ready)
+- ✅ EventSubscriber for RYOW notifications
+- ✅ RYOW integration in all 4 read handlers
+- ✅ Server configuration and wiring
+- ⏸️ Consistency header support (deferred)
+
+---
+
+### Milestone 2.0.5: Failure Handling & Resilience ⏸️ PARTIAL
+
+**Goal**: Robust handling of NATS and storage failures
+
+**2.0.5.1 Circuit Breaker** ✅ COMPLETE
+- [x] Circuit breaker for NATS publishing (lock-free AtomicCircuitBreaker)
+- [x] Configurable failure threshold and reset timeout
+- [x] Half-open state for recovery testing (probes after reset timeout)
+- [x] Circuit breaker in WriteConsumer for storage failures
+
+**2.0.5.2 Fallback to Sync**
+- [ ] Auto-fallback to direct storage write when NATS unavailable
+- [ ] Metric for fallback writes
+- [ ] Still publish event (best effort) after fallback
+
+**2.0.5.3 Dead Letter Queue**
+- [x] RSFGA_DLQ stream created on startup
+- [ ] Move poison messages to DLQ after max retries
+- [ ] Include error metadata in DLQ message
+- [ ] DLQ monitoring endpoint
+
+**2.0.5.4 Consumer Recovery** ✅ COMPLETE
+- [x] Resume from last acked position (durable consumer)
+- [x] Handle NATS reconnection gracefully (connection manager)
+- [x] Reprocess unacked messages (at-least-once semantics)
+
+**Validation Criteria**:
+- [x] Circuit breaker opens after threshold failures
+- [ ] Fallback writes succeed when NATS down
+- [ ] Poison messages end up in DLQ
+- [x] Consumer recovers after restart
+
+**Deliverables**:
+- ✅ Circuit breaker (NATS publisher + storage consumer)
+- ✅ Consumer recovery (durable consumer)
+- ⏸️ DLQ message handling
+- ⏸️ Sync fallback path
+
+---
+
+### Milestone 2.0.6: Edge Sync Consumer ⏸️ PENDING
+
+**Goal**: Edge node synchronization via NATS events
+
+**2.0.6.1 Edge Consumer Daemon**
+- [ ] Create `rsfga-edge` binary
+- [ ] Subscribe to RSFGA_EVENTS with store filter
+- [ ] Apply committed events to local storage
+- [ ] Track sync position per store
+
+**2.0.6.2 Idempotency**
+- [ ] Skip already-processed sequences
+- [ ] Handle out-of-order event delivery
+- [ ] Store sync watermark in local DB
+
+**2.0.6.3 Cache Invalidation**
+- [ ] Invalidate local cache on event receipt
+- [ ] Metric for cache invalidations
+
+**2.0.6.4 Bootstrap Sync**
+- [ ] Initial full sync from central
+- [ ] Resume from NATS after bootstrap
+- [ ] Graceful handling of large datasets
+
+**Validation Criteria**:
+- [ ] Edge receives events within 100ms
+- [ ] Local storage matches central after sync
+- [ ] Duplicate events handled correctly
+- [ ] Bootstrap completes for 100k tuples
+
+**Deliverables**:
+- `rsfga-edge` binary
+- Edge sync documentation
+- Bootstrap procedure
+
+---
+
+### Version 2.0.0 Test Summary
+
+| Category | Count | Status |
+|----------|-------|--------|
+| NATS Connection & Config Unit Tests | 35 | ✅ |
+| NATS Integration Tests (testcontainers) | 22 | ✅ |
+| Event Publisher Unit Tests | ~15 | ✅ |
+| Write Tracker Unit Tests | 17 | ✅ |
+| Event Subscriber Unit Tests | 6 | ✅ |
+| Storage Consumer (rsfga-writer) Tests | ~20 | ✅ |
+| Config Tests (NatsSettings) | 2 | ✅ |
+| Circuit Breaker Tests | ~8 | ✅ |
+| Async API Integration Tests | ~15 | ✅ |
+| Sync fallback / DLQ tests | 0 | ⏸️ |
+| Edge sync tests | 0 | ⏸️ |
+| **Total Implemented** | **~140** | - |
+
+---
+
+## Phase 3: Precomputed Check (Future)
 
 **Goal**: Sub-millisecond check latency through on-write precomputation
 
-**Status**: 📋 Proposed (awaits Phase 1 completion)
+**Status**: 📋 Proposed
 
 **Key Features**:
 - Valkey/Redis for precomputed results
@@ -1408,14 +1697,14 @@ See [ARCHITECTURE_DECISIONS.md - ADR-013](docs/design/ARCHITECTURE_DECISIONS.md#
 
 ---
 
-## Phase 3: Distributed Edge (Future)
+## Phase 4: Distributed Edge (Future)
 
 **Goal**: Global <10ms check latency through edge deployment
 
-**Status**: 📋 Proposed (awaits Phase 2 completion)
+**Status**: 📋 Proposed (requires Phase 2 NATS integration)
 
 **Key Features**:
-- NATS JetStream for sync
+- NATS JetStream for sync (leverages Phase 2 infrastructure)
 - Product-based data partitioning
 - Edge, Regional, Central topology
 - Automatic fallback
@@ -1638,6 +1927,14 @@ Phase 1 completion status:
 - Milestone 1.14: ListObjects API ✅ COMPLETE (partial - API validation complete, resolver integration pending)
 - Milestone 1.15: ListUsers API ✅ COMPLETE (22 tests)
 - Milestone 1.16: ListObjects Full Resolver ⏸️ PENDING (~35 tests planned)
+
+**Phase 2**: 🏗️ NATS Async Writes - IN PROGRESS (~140 tests)
+- Milestone 2.0.1: Core NATS Integration ✅ COMPLETE (35 unit + 22 integration tests)
+- Milestone 2.0.2: Async API Endpoints ✅ COMPLETE
+- Milestone 2.0.3: Storage Consumer Daemon ✅ COMPLETE
+- Milestone 2.0.4: RYOW & Write Tracker ✅ COMPLETE (25 tests)
+- Milestone 2.0.5: Failure Handling & Resilience ⏸️ PARTIAL (circuit breaker done, fallback/DLQ pending)
+- Milestone 2.0.6: Edge Sync Consumer ⏸️ PENDING
 
 ---
 

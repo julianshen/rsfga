@@ -1938,7 +1938,7 @@ CockroachDB's BIGSERIAL emulation works correctly with our PostgreSQL migrations
 
 **Duration Estimate**: 9 weeks
 
-**Status**: 📋 Planned
+**Status**: 🏗️ In Progress (Milestones 2.0.1-2.0.4 complete, 2.0.5 partial, 2.0.6 pending)
 
 **Design Document**: [NATS_ASYNC_WRITES_DESIGN.md](NATS_ASYNC_WRITES_DESIGN.md)
 
@@ -2079,50 +2079,75 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Milestone 2.0.4: RYOW & Write Tracker (Week 7)
+### Milestone 2.0.4: RYOW & Write Tracker (Week 7) ✅ COMPLETE
 
 **Goal**: Read-your-own-writes consistency support
 
 #### Tasks
 
-**2.0.4.1 Write Tracker**
-- [ ] Track committed sequences per store
-- [ ] Notify waiters when sequence committed
-- [ ] Handle timeout for wait operations
-- [ ] Per-store isolation
+**2.0.4.1 Write Tracker** ✅
+- [x] Track committed sequences per store (DashMap + AtomicU64)
+- [x] Notify waiters when sequence committed (tokio::sync::Notify)
+- [x] Handle timeout for wait operations (configurable, default 30s)
+- [x] Per-store isolation
+- [x] TOCTOU race condition protection
+- [x] TTL-based cleanup task (prevent memory leaks)
+- [x] Leak detection (warning at 10,000+ active waiters)
+- [x] Comprehensive test suite (17 tests)
 
-**2.0.4.2 Read Handler Integration**
-- [ ] Check endpoint accepts `write_ticket`
-- [ ] Wait for sequence before executing check
-- [ ] Timeout returns error (not stale result)
+**2.0.4.2 Event Subscriber** ✅
+- [x] `EventSubscriber` subscribes to RSFGA_EVENTS stream
+- [x] Pull consumer with durable subscription
+- [x] Parses `CommittedEvent` and calls `WriteTracker.mark_committed()`
+- [x] Handles malformed messages gracefully
+- [x] Automatic reconnection on stream disconnect
+- [x] Unit tests (6 tests)
 
-**2.0.4.3 Consistency Options**
-- [ ] `X-Consistency: eventual` (default)
-- [ ] `X-Consistency: strong` (wait for all pending)
+**2.0.4.3 Read Handler Integration** ✅
+- [x] Check endpoint accepts `write_ticket` via `ConsistencyPreference`
+- [x] ListObjects endpoint accepts `write_ticket`
+- [x] Expand endpoint accepts `write_ticket`
+- [x] ListUsers endpoint accepts `write_ticket`
+- [x] `wait_for_consistency()` validates store_id match
+- [x] Wait for sequence before executing read
+- [x] Timeout returns 504 Gateway Timeout
+
+**2.0.4.4 Server Configuration & Wiring** ✅
+- [x] `NatsSettings` in `ServerConfig` (enabled, url, name, ryow_timeout, write_ticket_ttl)
+- [x] YAML and environment variable support
+- [x] NATS integration wiring in main.rs (publisher, tracker, subscriber)
+- [x] Feature-gated (`nats` feature flag)
+
+**2.0.4.5 Consistency Options** ⏸️ DEFERRED
+- [ ] `X-Consistency: eventual` header support
+- [ ] `X-Consistency: strong` header support
 - [ ] Sync write escape hatch (`sync: true` in request)
 
 **Validation Criteria**:
-- [ ] RYOW works with write ticket
-- [ ] Wait timeout returns appropriate error
-- [ ] Sync fallback works when requested
+- [x] RYOW works with write ticket (all 4 read handlers)
+- [x] Wait timeout returns 504 error
+- [x] Cross-store ticket validation returns 400
 
 **Deliverables**:
-- WriteTracker implementation
-- RYOW integration in read handlers
-- Documentation for consistency options
+- ✅ WriteTracker implementation (lock-free, production-ready)
+- ✅ EventSubscriber for RYOW notifications
+- ✅ RYOW integration in all 4 read handlers
+- ✅ Server configuration and wiring
+- ⏸️ Consistency header support (deferred)
 
 ---
 
-### Milestone 2.0.5: Failure Handling & Resilience (Week 8)
+### Milestone 2.0.5: Failure Handling & Resilience (Week 8) ⏸️ PARTIAL
 
 **Goal**: Robust handling of NATS and storage failures
 
 #### Tasks
 
-**2.0.5.1 Circuit Breaker**
-- [ ] Implement circuit breaker for NATS publishing
-- [ ] Configurable failure threshold and reset timeout
-- [ ] Half-open state for recovery testing
+**2.0.5.1 Circuit Breaker** ✅ COMPLETE
+- [x] Implement circuit breaker for NATS publishing (lock-free AtomicCircuitBreaker)
+- [x] Configurable failure threshold and reset timeout
+- [x] Half-open state for recovery testing (probes after reset)
+- [x] Circuit breaker in WriteConsumer for storage failures
 
 **2.0.5.2 Fallback to Sync**
 - [ ] Auto-fallback to direct storage write when NATS unavailable
@@ -2130,25 +2155,27 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 - [ ] Still publish event (best effort) after fallback
 
 **2.0.5.3 Dead Letter Queue**
+- [x] RSFGA_DLQ stream created on startup
 - [ ] Move poison messages to DLQ after max retries
 - [ ] Include error metadata in DLQ message
-- [ ] DLQ monitoring and alerting
+- [ ] DLQ monitoring endpoint
 
-**2.0.5.4 Consumer Recovery**
-- [ ] Resume from last acked position
-- [ ] Handle NATS reconnection gracefully
-- [ ] Reprocess unacked messages
+**2.0.5.4 Consumer Recovery** ✅ COMPLETE
+- [x] Resume from last acked position (durable consumer)
+- [x] Handle NATS reconnection gracefully (connection manager)
+- [x] Reprocess unacked messages (at-least-once semantics)
 
 **Validation Criteria**:
-- [ ] Circuit breaker opens after threshold failures
+- [x] Circuit breaker opens after threshold failures
 - [ ] Fallback writes succeed when NATS down
 - [ ] Poison messages end up in DLQ
-- [ ] Consumer recovers after restart
+- [x] Consumer recovers after restart
 
 **Deliverables**:
-- Circuit breaker implementation
-- DLQ handling
-- Failure recovery tests
+- ✅ Circuit breaker (NATS publisher + storage consumer)
+- ✅ Consumer recovery (durable consumer)
+- ⏸️ DLQ message handling
+- ⏸️ Sync fallback path
 
 ---
 
@@ -2193,17 +2220,20 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ### Version 2.0.0 Test Summary
 
-| Category | Test Count | Coverage Target |
-|----------|------------|-----------------|
-| NATS Publisher Unit Tests | 15+ | >90% |
-| Storage Consumer Unit Tests | 25+ | >95% |
-| Write Tracker Unit Tests | 10+ | >90% |
-| Circuit Breaker Unit Tests | 8+ | >95% |
-| Async API Integration Tests | 20+ | >90% |
-| E2E Flow Tests | 15+ | - |
-| Failure & Recovery Tests | 15+ | - |
-| Performance Tests | 10+ | - |
-| **Total** | **~120** | - |
+| Category | Count | Status |
+|----------|-------|--------|
+| NATS Connection & Config Unit Tests | 35 | ✅ |
+| NATS Integration Tests (testcontainers) | 22 | ✅ |
+| Event Publisher Unit Tests | ~15 | ✅ |
+| Write Tracker Unit Tests | 17 | ✅ |
+| Event Subscriber Unit Tests | 6 | ✅ |
+| Storage Consumer (rsfga-writer) Tests | ~20 | ✅ |
+| Config Tests (NatsSettings) | 2 | ✅ |
+| Circuit Breaker Tests | ~8 | ✅ |
+| Async API Integration Tests | ~15 | ✅ |
+| Sync fallback / DLQ tests | 0 | ⏸️ |
+| Edge sync tests | 0 | ⏸️ |
+| **Total Implemented** | **~140** | - |
 
 ---
 
