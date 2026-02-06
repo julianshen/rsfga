@@ -1521,6 +1521,44 @@ The async write architecture provides the following ordering guarantees:
    - For strict ordering within a store, wait for sequential sequences
    - For cross-store coordination, use external synchronization
 
+**Rate Limiting for Async Writes**:
+
+Async writes can generate high message volumes to NATS. Operators should configure rate limiting at the deployment level to prevent:
+
+1. **NATS Stream Saturation**: Unbounded write rates can overwhelm the JetStream stream, causing backpressure
+2. **Consumer Lag**: Storage consumers may fall behind if write rate exceeds processing capacity
+3. **Storage Backend Overload**: Batched writes can still overwhelm databases during traffic spikes
+
+**Recommended Rate Limits**:
+
+| Endpoint | Recommended Limit | Notes |
+|----------|-------------------|-------|
+| `/stores/{store_id}/async/write` | 100-500 req/s per store | Adjust based on consumer throughput |
+| `/stores/{store_id}/async/write-authorization-model` | 10 req/s per store | Model writes are heavyweight |
+
+**Rate Limit Response** (429 Too Many Requests):
+
+```json
+{
+  "code": "rate_limit_exceeded",
+  "message": "Async write rate limit exceeded",
+  "details": {
+    "limit": 100,
+    "window": "1s",
+    "retry_after": 0.5
+  }
+}
+```
+
+**Configuration Options**:
+
+- **Per-store limits**: Different stores may have different throughput requirements
+- **Per-client limits**: Use `client_id` in RequestMetadata for per-client tracking
+- **Burst allowance**: Allow short bursts above steady-state limits
+- **Monitoring**: Track `X-RateLimit-*` headers in responses
+
+**Note**: Rate limiting middleware is typically deployed externally (e.g., API Gateway, Envoy, nginx). The RSFGA server does not enforce rate limits internally - this is a deployment concern.
+
 **Related Risks**:
 
 - R-006 (NATS Edge Sync Lag)
