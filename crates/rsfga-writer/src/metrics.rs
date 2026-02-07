@@ -38,6 +38,9 @@ pub struct WriterMetrics {
     /// Total DLQ publish failures.
     pub dlq_publish_failures: AtomicU64,
 
+    /// Total DLQ messages successfully sent.
+    pub dlq_messages_sent: AtomicU64,
+
     /// Total storage failures (for circuit breaker tracking).
     pub storage_failures: AtomicU64,
 }
@@ -109,6 +112,12 @@ impl WriterMetrics {
     #[allow(dead_code)]
     pub fn update_consumer_lag(&self, lag: u64) {
         gauge!("rsfga_writer_consumer_lag_messages").set(lag as f64);
+    }
+
+    /// Record a DLQ message successfully sent.
+    pub fn record_dlq_message_sent(&self) {
+        self.dlq_messages_sent.fetch_add(1, Ordering::Relaxed);
+        counter!("rsfga_writer_dlq_messages_sent_total").increment(1);
     }
 
     /// Record a DLQ publish failure.

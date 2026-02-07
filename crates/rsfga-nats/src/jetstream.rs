@@ -241,6 +241,33 @@ impl JetStreamManager {
         }
     }
 
+    /// Get a summary of Dead Letter Queue contents.
+    ///
+    /// Returns message counts and byte usage for the RSFGA_DLQ stream.
+    /// Useful for monitoring and alerting on poison message accumulation.
+    pub async fn dlq_summary(&self) -> Result<DlqSummary> {
+        let js = self.client.jetstream();
+        let mut stream = js
+            .get_stream(STREAM_DLQ)
+            .await
+            .map_err(|e| NatsError::Stream {
+                stream: STREAM_DLQ.to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let info = stream.info().await.map_err(|e| NatsError::Stream {
+            stream: STREAM_DLQ.to_string(),
+            reason: e.to_string(),
+        })?;
+
+        Ok(DlqSummary {
+            total_messages: info.state.messages,
+            total_bytes: info.state.bytes,
+            first_sequence: info.state.first_sequence,
+            last_sequence: info.state.last_sequence,
+        })
+    }
+
     /// Get information about a stream.
     pub async fn stream_info(&self, stream_name: &str) -> Result<StreamInfo> {
         let js = self.client.jetstream();
@@ -305,6 +332,19 @@ impl JetStreamManager {
     }
 }
 
+/// Summary of Dead Letter Queue contents.
+#[derive(Debug, Clone)]
+pub struct DlqSummary {
+    /// Total messages in the DLQ stream
+    pub total_messages: u64,
+    /// Total bytes consumed by DLQ messages
+    pub total_bytes: u64,
+    /// First sequence number in the stream
+    pub first_sequence: u64,
+    /// Last sequence number in the stream
+    pub last_sequence: u64,
+}
+
 /// Stream information.
 #[derive(Debug, Clone)]
 pub struct StreamInfo {
@@ -360,5 +400,33 @@ mod tests {
         assert_eq!(info.name, "TEST");
         assert_eq!(info.messages, 100);
         assert_eq!(info.consumer_count, 2);
+    }
+
+    #[test]
+    fn test_dlq_summary_creation() {
+        let summary = DlqSummary {
+            total_messages: 42,
+            total_bytes: 10240,
+            first_sequence: 1,
+            last_sequence: 42,
+        };
+
+        assert_eq!(summary.total_messages, 42);
+        assert_eq!(summary.total_bytes, 10240);
+        assert_eq!(summary.first_sequence, 1);
+        assert_eq!(summary.last_sequence, 42);
+    }
+
+    #[test]
+    fn test_dlq_summary_empty() {
+        let summary = DlqSummary {
+            total_messages: 0,
+            total_bytes: 0,
+            first_sequence: 0,
+            last_sequence: 0,
+        };
+
+        assert_eq!(summary.total_messages, 0);
+        assert_eq!(summary.total_bytes, 0);
     }
 }
