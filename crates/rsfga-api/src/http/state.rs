@@ -102,6 +102,9 @@ pub struct AppState<S: DataStore> {
     /// Write mode: Nats (async-only), Direct (sync-only), Auto (try async, fallback to sync).
     #[cfg(feature = "nats")]
     pub write_mode: WriteMode,
+    /// RYOW wait timeout in seconds for read handlers.
+    #[cfg(feature = "nats")]
+    pub ryow_timeout_secs: u64,
 }
 
 impl<S: DataStore> AppState<S> {
@@ -195,6 +198,8 @@ impl<S: DataStore> AppState<S> {
             write_tracker: None,
             #[cfg(feature = "nats")]
             write_mode: WriteMode::Direct,
+            #[cfg(feature = "nats")]
+            ryow_timeout_secs: 30,
         }
     }
 
@@ -254,5 +259,19 @@ impl<S: DataStore> AppState<S> {
     #[cfg(feature = "nats")]
     pub fn write_mode(&self) -> WriteMode {
         self.write_mode
+    }
+
+    /// Sets the RYOW wait timeout in seconds.
+    #[cfg(feature = "nats")]
+    #[must_use]
+    pub fn with_ryow_timeout_secs(mut self, secs: u64) -> Self {
+        self.ryow_timeout_secs = secs;
+        self
+    }
+
+    /// Gets the RYOW wait timeout in seconds.
+    #[cfg(feature = "nats")]
+    pub fn ryow_timeout_secs(&self) -> u64 {
+        self.ryow_timeout_secs
     }
 }

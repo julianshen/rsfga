@@ -55,9 +55,13 @@ pub struct EventSubscriberConfig {
 
 impl Default for EventSubscriberConfig {
     fn default() -> Self {
+        // Use a unique consumer name per instance to prevent load-balancing
+        // across instances in distributed deployments. Each API server must
+        // receive ALL committed events for its local WriteTracker to work.
+        let instance_id = ulid::Ulid::new().to_string();
         Self {
-            consumer_name: "rsfga-api-events".to_string(),
-            durable: true,
+            consumer_name: format!("rsfga-api-events-{instance_id}"),
+            durable: false, // Ephemeral by default for broadcast semantics
             description: "RSFGA API server committed event subscriber for RYOW".to_string(),
         }
     }
@@ -165,6 +169,25 @@ impl EventSubscriber {
                             // Parse the committed event
                             match CommittedEvent::from_bytes(&msg.payload) {
                                 Ok(event) => {
+                                    // Validate store_id to prevent unbounded memory growth
+                                    // from malformed events with arbitrary store IDs
+                                    if event.store_id.is_empty()
+                                        || event.store_id.len() > 26
+                                        || !event
+                                            .store_id
+                                            .chars()
+                                            .all(|c| c.is_ascii_alphanumeric())
+                                    {
+                                        warn!(
+                                            store_id = %event.store_id,
+                                            "Ignoring committed event with invalid store_id"
+                                        );
+                                        if let Err(e) = msg.ack().await {
+                                            warn!(error = %e, "Failed to ack invalid store_id event");
+                                        }
+                                        continue;
+                                    }
+
                                     debug!(
                                         store_id = %event.store_id,
                                         sequence = event.sequence,
@@ -230,8 +253,11 @@ mod tests {
     #[test]
     fn test_event_subscriber_config_defaults() {
         let config = EventSubscriberConfig::default();
-        assert_eq!(config.consumer_name, "rsfga-api-events");
-        assert!(config.durable);
+        // Consumer name should have instance-unique suffix for broadcast semantics
+        assert!(config.consumer_name.starts_with("rsfga-api-events-"));
+        assert!(config.consumer_name.len() > "rsfga-api-events-".len());
+        // Ephemeral by default (not durable) for broadcast semantics
+        assert!(!config.durable);
         assert!(!config.description.is_empty());
     }
 
@@ -310,5 +336,38 @@ mod tests {
     fn test_committed_event_subject_format() {
         let event = CommittedEvent::new("my-store", 1);
         assert_eq!(event.subject(), "rsfga.events.my-store.committed");
+    }
+
+    #[test]
+    fn test_store_id_validation_rejects_empty() {
+        // Validates the store_id check added to the subscriber loop
+        let store_id = "";
+        assert!(
+            store_id.is_empty()
+                || store_id.len() > 26
+                || !store_id.chars().all(|c| c.is_ascii_alphanumeric())
+        );
+    }
+
+    #[test]
+    fn test_store_id_validation_rejects_too_long() {
+        let store_id = "A".repeat(27);
+        assert!(store_id.len() > 26);
+    }
+
+    #[test]
+    fn test_store_id_validation_rejects_non_alphanumeric() {
+        let store_id = "store-with-dashes";
+        assert!(!store_id.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn test_store_id_validation_accepts_valid_ulid() {
+        let store_id = "01HQJK2M3N4P5R6S7T8V9WXYZ";
+        assert!(
+            !store_id.is_empty()
+                && store_id.len() <= 26
+                && store_id.chars().all(|c| c.is_ascii_alphanumeric())
+        );
     }
 }

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use clap::Parser;
 use tokio::signal;
 use tokio::sync::broadcast;
-use tracing::{error, info, Level};
+use tracing::{error, info, warn, Level};
 
 use rsfga_api::grpc::{run_grpc_server_with_shutdown, GrpcServerConfig};
 use rsfga_api::http::{create_router_with_observability, AppState};
@@ -220,6 +220,7 @@ where
                 .with_publisher(nats.publisher)
                 .with_write_tracker(nats.write_tracker)
                 .with_write_mode(nats.write_mode)
+                .with_ryow_timeout_secs(nats.ryow_timeout_secs)
         } else {
             state
         };
@@ -359,6 +360,7 @@ struct NatsState {
     publisher: Arc<rsfga_nats::EventPublisher>,
     write_tracker: Arc<rsfga_nats::WriteTracker>,
     write_mode: rsfga_nats::config::WriteMode,
+    ryow_timeout_secs: u64,
     /// Background task handles (event subscriber, cleanup task).
     /// Stored to prevent them from being dropped.
     _handles: Vec<tokio::task::JoinHandle<()>>,
@@ -425,8 +427,11 @@ async fn setup_nats(
         "direct" => WriteMode::Direct,
         "auto" => WriteMode::Auto,
         other => {
-            info!(mode = other, "Unknown write_mode, defaulting to 'auto'");
-            WriteMode::Auto
+            warn!(
+                mode = other,
+                "Unknown write_mode, defaulting to 'direct' (safe default)"
+            );
+            WriteMode::Direct
         }
     };
     info!(write_mode = ?write_mode, "Write mode configured");
@@ -435,6 +440,7 @@ async fn setup_nats(
         publisher,
         write_tracker,
         write_mode,
+        ryow_timeout_secs: nats_settings.ryow_timeout_secs,
         _handles: vec![cleanup_handle, subscriber_handle],
     })
 }
