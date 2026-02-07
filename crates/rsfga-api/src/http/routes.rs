@@ -1288,20 +1288,32 @@ async fn wait_for_consistency<S: DataStore>(
             }
 
             if let Some(tracker) = state.write_tracker() {
-                const RYOW_TIMEOUT_SECS: u64 = 30;
-                tracker
+                let timeout_secs = state.ryow_timeout_secs();
+                let start = std::time::Instant::now();
+
+                metrics::counter!("rsfga_api_ryow_wait_total").increment(1);
+
+                match tracker
                     .wait_for_commit(
                         &ticket.store_id,
                         ticket.sequence,
-                        std::time::Duration::from_secs(RYOW_TIMEOUT_SECS),
+                        std::time::Duration::from_secs(timeout_secs),
                     )
                     .await
-                    .map_err(|e| {
-                        ApiError::gateway_timeout(format!(
+                {
+                    Ok(()) => {
+                        let elapsed_ms = start.elapsed().as_millis() as f64;
+                        metrics::histogram!("rsfga_api_ryow_wait_duration_ms").record(elapsed_ms);
+                        metrics::counter!("rsfga_api_ryow_wait_success_total").increment(1);
+                    }
+                    Err(e) => {
+                        metrics::counter!("rsfga_api_ryow_wait_timeout_total").increment(1);
+                        return Err(ApiError::gateway_timeout(format!(
                             "RYOW timeout: write not yet committed (store_id: {}, sequence: {})",
                             e.store_id, e.sequence
-                        ))
-                    })?;
+                        )));
+                    }
+                }
             }
         }
     }
@@ -1512,6 +1524,9 @@ pub struct ExpandRequestBody {
     pub tuple_key: ExpandTupleKeyBody,
     #[serde(default)]
     pub authorization_model_id: Option<String>,
+    /// Consistency preferences for RYOW support.
+    #[serde(default)]
+    pub consistency: Option<ConsistencyPreference>,
 }
 
 /// Response for expand operation.
@@ -1741,6 +1756,9 @@ async fn expand<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<ExpandRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
+    // RYOW: Wait for write ticket if consistency preferences are specified.
+    wait_for_consistency(&state, body.consistency.as_ref(), &store_id).await?;
+
     // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     use rsfga_domain::resolver::ExpandRequest;
 
@@ -2150,6 +2168,84 @@ fn convert_tuples_for_nats_event(
         .collect();
 
     (nats_writes, nats_deletes)
+}
+
+/// Converts NATS TupleOperations back to StoredTuples for sync fallback writes.
+///
+/// This is the reverse of `convert_tuples_for_nats_event`. Used when NATS is unavailable
+/// and we need to fall back to direct storage writes (WriteMode::Auto).
+///
+/// Returns an error if any tuple cannot be parsed, rather than silently
+/// dropping tuples (which could cause data loss).
+#[cfg(feature = "nats")]
+fn nats_tuples_to_stored(
+    ops: &[rsfga_nats::TupleOperation],
+) -> Result<Vec<rsfga_storage::StoredTuple>, ApiError> {
+    ops.iter()
+        .enumerate()
+        .map(|(i, op)| {
+            let mut tuple = parse_tuple_fields(&op.key.user, &op.key.relation, &op.key.object)
+                .ok_or_else(|| {
+                    ApiError::internal_error(format!(
+                        "sync fallback: failed to parse tuple at index {i}: \
+                             user={}, relation={}, object={}",
+                        op.key.user, op.key.relation, op.key.object
+                    ))
+                })?;
+
+            // Attach condition if present, with validation
+            if let Some(ref cond) = op.condition {
+                // Validate condition name length and format (same checks as sync path)
+                if !crate::validation::is_valid_condition_name(&cond.name) {
+                    return Err(ApiError::validation_error(format!(
+                        "invalid condition name at index {i}: '{}' \
+                         (must be non-empty, <= {} chars, alphanumeric/underscore/dash)",
+                        cond.name,
+                        crate::validation::MAX_CONDITION_NAME_LENGTH
+                    )));
+                }
+                tuple.condition_name = Some(cond.name.clone());
+                if !cond.context.is_empty() {
+                    // Validate condition context depth to prevent DoS via deep nesting
+                    let context_json = serde_json::to_value(&cond.context).map_err(|e| {
+                        ApiError::internal_error(format!(
+                            "sync fallback: failed to serialize condition context at index {i}: {e}"
+                        ))
+                    })?;
+                    if crate::validation::json_exceeds_max_depth(&context_json, 0) {
+                        return Err(ApiError::validation_error(format!(
+                            "condition context at index {i} exceeds maximum nesting depth"
+                        )));
+                    }
+                    tuple.condition_context = Some(cond.context.clone());
+                }
+            }
+
+            Ok(tuple)
+        })
+        .collect()
+}
+
+/// Converts NATS TupleKeys to StoredTuples for sync fallback deletes.
+///
+/// Returns an error if any tuple key cannot be parsed, rather than silently
+/// dropping it (which could cause partial deletes and data inconsistency).
+#[cfg(feature = "nats")]
+fn nats_keys_to_stored(
+    keys: &[rsfga_nats::TupleKey],
+) -> Result<Vec<rsfga_storage::StoredTuple>, ApiError> {
+    keys.iter()
+        .enumerate()
+        .map(|(i, key)| {
+            parse_tuple_fields(&key.user, &key.relation, &key.object).ok_or_else(|| {
+                ApiError::internal_error(format!(
+                    "sync fallback: failed to parse delete key at index {i}: \
+                     user={}, relation={}, object={}",
+                    key.user, key.relation, key.object
+                ))
+            })
+        })
+        .collect()
 }
 
 // ============================================================
@@ -2761,6 +2857,9 @@ pub struct ListUsersRequestBody {
     pub contextual_tuples: Option<ContextualTuplesBody>,
     #[serde(default)]
     pub context: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// Consistency preferences for RYOW support.
+    #[serde(default)]
+    pub consistency: Option<ConsistencyPreference>,
 }
 
 /// Object reference in ListUsers request.
@@ -2818,6 +2917,9 @@ async fn list_users<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<ListUsersRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
+    // RYOW: Wait for write ticket if consistency preferences are specified.
+    wait_for_consistency(&state, body.consistency.as_ref(), &store_id).await?;
+
     use crate::validation::{
         estimate_context_size, json_exceeds_max_depth, validate_relation_format,
         MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
@@ -3026,7 +3128,17 @@ pub struct AsyncWriteResponseBody {
     /// JetStream sequence number for ordering.
     pub sequence: u64,
     /// Write ticket for RYOW consistency.
-    pub write_ticket: WriteTicketBody,
+    /// None when the write was handled via sync fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_ticket: Option<WriteTicketBody>,
+    /// Whether this write was handled via sync fallback (NATS was unavailable).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fallback: bool,
+}
+
+#[cfg(feature = "nats")]
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 /// Write ticket for read-your-own-writes consistency.
@@ -3251,25 +3363,89 @@ async fn async_write_tuples<S: DataStore>(
     }
     request = request.writes(writes).deletes(deletes);
 
-    // Publish to NATS
-    let ticket = publisher
-        .publish_write_request(&request)
+    // Check write mode BEFORE attempting NATS publish.
+    // WriteMode::Direct should go straight to sync storage, never touching NATS.
+    use rsfga_nats::config::WriteMode;
+    if state.write_mode() == WriteMode::Direct {
+        return sync_fallback_write_tuples(&state, &store_id, &request).await;
+    }
+
+    // Attempt NATS publish (WriteMode::Nats or WriteMode::Auto)
+    match publisher.publish_write_request(&request).await {
+        Ok(ticket) => {
+            // NATS publish succeeded - return async response with write ticket
+            Ok(Json(AsyncWriteResponseBody {
+                request_id: request.request_id.clone(),
+                sequence: ticket.sequence,
+                write_ticket: Some(WriteTicketBody {
+                    store_id: ticket.store_id.clone(),
+                    sequence: ticket.sequence,
+                    request_id: ticket.request_id.clone(),
+                    expires_at: ticket.expires_at.to_rfc3339(),
+                }),
+                fallback: false,
+            }))
+        }
+        Err(nats_err) => {
+            if state.write_mode() == WriteMode::Auto {
+                // Auto-fallback: try direct storage write
+                tracing::warn!(
+                    store_id = %store_id,
+                    error = %nats_err,
+                    "NATS publish failed, falling back to sync write"
+                );
+                sync_fallback_write_tuples(&state, &store_id, &request).await
+            } else {
+                // WriteMode::Nats: don't fall back, return error
+                error!("Failed to publish write request to NATS: {nats_err}");
+                Err(ApiError::service_unavailable(format!(
+                    "failed to publish write request: {nats_err}"
+                )))
+            }
+        }
+    }
+}
+
+/// Shared sync fallback helper for tuple writes.
+///
+/// Converts NATS tuple operations to StoredTuples and writes them directly
+/// to storage. Used by WriteMode::Direct and WriteMode::Auto fallback.
+#[cfg(feature = "nats")]
+async fn sync_fallback_write_tuples<S: DataStore>(
+    state: &AppState<S>,
+    store_id: &str,
+    request: &rsfga_nats::WriteRequest,
+) -> ApiResult<Json<AsyncWriteResponseBody>> {
+    metrics::counter!("rsfga_api_write_fallback_total").increment(1);
+
+    // Convert NATS tuples to StoredTuples for the sync path
+    let stored_writes = nats_tuples_to_stored(&request.writes)?;
+    let stored_deletes = nats_keys_to_stored(&request.deletes)?;
+
+    state
+        .storage
+        .write_tuples(store_id, stored_writes, stored_deletes)
         .await
         .map_err(|e| {
-            error!("Failed to publish write request to NATS: {e}");
-            ApiError::service_unavailable(format!("failed to publish write request: {e}"))
+            metrics::counter!("rsfga_api_write_fallback_failure_total").increment(1);
+            error!(
+                store_id = %store_id,
+                error = %e,
+                "Sync fallback write failed"
+            );
+            ApiError::from(e)
         })?;
 
-    // Return response with write ticket
+    // Invalidate cache after successful write
+    state.cache.invalidate_store(store_id).await;
+
+    metrics::counter!("rsfga_api_write_fallback_success_total").increment(1);
+
     Ok(Json(AsyncWriteResponseBody {
         request_id: request.request_id.clone(),
-        sequence: ticket.sequence,
-        write_ticket: WriteTicketBody {
-            store_id: ticket.store_id.clone(),
-            sequence: ticket.sequence,
-            request_id: ticket.request_id.clone(),
-            expires_at: ticket.expires_at.to_rfc3339(),
-        },
+        sequence: 0, // No NATS sequence for sync fallback
+        write_ticket: None,
+        fallback: true,
     }))
 }
 
@@ -3317,7 +3493,12 @@ pub struct AsyncModelWriteResponseBody {
     /// JetStream sequence number for ordering.
     pub sequence: u64,
     /// Write ticket for RYOW consistency.
-    pub write_ticket: WriteTicketBody,
+    /// None when the write was handled via sync fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_ticket: Option<WriteTicketBody>,
+    /// Whether this write was handled via sync fallback (NATS was unavailable).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fallback: bool,
 }
 
 /// Async model write endpoint that publishes to NATS JetStream.
@@ -3395,28 +3576,104 @@ async fn async_write_authorization_model<S: DataStore>(
         }
     }
 
-    // Publish to NATS
-    let ticket = publisher
-        .publish_model_write_request(&request)
+    // Check write mode BEFORE attempting NATS publish.
+    // WriteMode::Direct should go straight to sync storage, never touching NATS.
+    use rsfga_nats::config::WriteMode;
+    if state.write_mode() == WriteMode::Direct {
+        return sync_fallback_write_model(&state, &store_id, &model_id, &model_json_str, &request)
+            .await;
+    }
+
+    // Attempt NATS publish (WriteMode::Nats or WriteMode::Auto)
+    match publisher.publish_model_write_request(&request).await {
+        Ok(ticket) => {
+            // NATS publish succeeded - return async response with write ticket
+            Ok((
+                StatusCode::CREATED,
+                Json(AsyncModelWriteResponseBody {
+                    authorization_model_id: model_id,
+                    request_id: request.request_id.clone(),
+                    sequence: ticket.sequence,
+                    write_ticket: Some(WriteTicketBody {
+                        store_id: ticket.store_id.clone(),
+                        sequence: ticket.sequence,
+                        request_id: ticket.request_id.clone(),
+                        expires_at: ticket.expires_at.to_rfc3339(),
+                    }),
+                    fallback: false,
+                }),
+            ))
+        }
+        Err(nats_err) => {
+            if state.write_mode() == WriteMode::Auto {
+                // Auto-fallback: write model directly to storage
+                tracing::warn!(
+                    store_id = %store_id,
+                    error = %nats_err,
+                    "NATS model publish failed, falling back to sync write"
+                );
+                sync_fallback_write_model(&state, &store_id, &model_id, &model_json_str, &request)
+                    .await
+            } else {
+                // WriteMode::Nats: don't fall back, return error
+                error!("Failed to publish model write request to NATS: {nats_err}");
+                Err(ApiError::service_unavailable(format!(
+                    "failed to publish model write request: {nats_err}"
+                )))
+            }
+        }
+    }
+}
+
+/// Shared sync fallback helper for model writes.
+///
+/// Writes the authorization model directly to storage, bypassing NATS.
+/// Used by WriteMode::Direct and WriteMode::Auto fallback.
+#[cfg(feature = "nats")]
+async fn sync_fallback_write_model<S: DataStore>(
+    state: &AppState<S>,
+    store_id: &str,
+    model_id: &str,
+    model_json_str: &str,
+    request: &rsfga_nats::ModelWriteRequest,
+) -> ApiResult<(StatusCode, Json<AsyncModelWriteResponseBody>)> {
+    metrics::counter!("rsfga_api_model_write_fallback_total").increment(1);
+
+    let model = StoredAuthorizationModel::new(
+        model_id,
+        store_id,
+        &request.schema_version,
+        model_json_str.to_string(),
+    );
+
+    // Invalidate caches BEFORE writing to prevent stale reads (same as sync path)
+    global_cache().invalidate_all();
+    state.cache.invalidate_store(store_id).await;
+
+    state
+        .storage
+        .write_authorization_model(model)
         .await
         .map_err(|e| {
-            error!("Failed to publish model write request to NATS: {e}");
-            ApiError::service_unavailable(format!("failed to publish model write request: {e}"))
+            metrics::counter!("rsfga_api_model_write_fallback_failure_total").increment(1);
+            error!(
+                store_id = %store_id,
+                error = %e,
+                "Sync fallback model write failed"
+            );
+            ApiError::from(e)
         })?;
 
-    // Return response with model ID and write ticket
+    metrics::counter!("rsfga_api_model_write_fallback_success_total").increment(1);
+
     Ok((
         StatusCode::CREATED,
         Json(AsyncModelWriteResponseBody {
-            authorization_model_id: model_id,
+            authorization_model_id: model_id.to_string(),
             request_id: request.request_id.clone(),
-            sequence: ticket.sequence,
-            write_ticket: WriteTicketBody {
-                store_id: ticket.store_id.clone(),
-                sequence: ticket.sequence,
-                request_id: ticket.request_id.clone(),
-                expires_at: ticket.expires_at.to_rfc3339(),
-            },
+            sequence: 0,
+            write_ticket: None,
+            fallback: true,
         }),
     ))
 }
@@ -3656,5 +3913,188 @@ mod tests {
             "computedUserset should omit object field, got: {}",
             json
         );
+    }
+
+    // ====================================================================
+    // Sync fallback conversion tests (Milestone 2.0.5)
+    // ====================================================================
+
+    #[cfg(feature = "nats")]
+    mod nats_fallback_tests {
+        use super::*;
+        use rsfga_nats::{TupleCondition, TupleKey, TupleOperation};
+
+        #[test]
+        fn test_nats_tuples_to_stored_basic() {
+            let ops = vec![TupleOperation {
+                key: TupleKey::new("user:alice", "viewer", "document:readme"),
+                condition: None,
+            }];
+
+            let stored = nats_tuples_to_stored(&ops).unwrap();
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].user_type, "user");
+            assert_eq!(stored[0].user_id, "alice");
+            assert_eq!(stored[0].relation, "viewer");
+            assert_eq!(stored[0].object_type, "document");
+            assert_eq!(stored[0].object_id, "readme");
+            assert!(stored[0].condition_name.is_none());
+            assert!(stored[0].condition_context.is_none());
+        }
+
+        #[test]
+        fn test_nats_tuples_to_stored_with_condition() {
+            let ops = vec![TupleOperation {
+                key: TupleKey::new("user:bob", "editor", "folder:docs"),
+                condition: Some(
+                    TupleCondition::new("time_bound")
+                        .with_context("start_time", serde_json::json!("2024-01-01T00:00:00Z")),
+                ),
+            }];
+
+            let stored = nats_tuples_to_stored(&ops).unwrap();
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].condition_name.as_deref(), Some("time_bound"));
+            assert!(stored[0].condition_context.is_some());
+            let ctx = stored[0].condition_context.as_ref().unwrap();
+            assert!(ctx.contains_key("start_time"));
+        }
+
+        #[test]
+        fn test_nats_tuples_to_stored_with_empty_condition_context() {
+            let ops = vec![TupleOperation {
+                key: TupleKey::new("user:carol", "viewer", "document:report"),
+                condition: Some(TupleCondition::new("always_true")),
+            }];
+
+            let stored = nats_tuples_to_stored(&ops).unwrap();
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].condition_name.as_deref(), Some("always_true"));
+            // Empty context should not be set
+            assert!(stored[0].condition_context.is_none());
+        }
+
+        #[test]
+        fn test_nats_tuples_to_stored_with_userset() {
+            let ops = vec![TupleOperation {
+                key: TupleKey::new("team:engineering#member", "viewer", "document:readme"),
+                condition: None,
+            }];
+
+            let stored = nats_tuples_to_stored(&ops).unwrap();
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].user_type, "team");
+            assert_eq!(stored[0].user_id, "engineering");
+            assert_eq!(stored[0].user_relation, Some("member".to_string()));
+        }
+
+        #[test]
+        fn test_nats_tuples_to_stored_returns_error_on_invalid_tuple() {
+            let ops = vec![TupleOperation {
+                key: TupleKey::new("", "viewer", "document:readme"), // invalid: empty user
+                condition: None,
+            }];
+
+            let result = nats_tuples_to_stored(&ops);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_nats_keys_to_stored() {
+            let keys = vec![
+                TupleKey::new("user:alice", "viewer", "document:readme"),
+                TupleKey::new("user:bob", "editor", "folder:docs"),
+            ];
+
+            let stored = nats_keys_to_stored(&keys).unwrap();
+            assert_eq!(stored.len(), 2);
+            assert_eq!(stored[0].user_id, "alice");
+            assert_eq!(stored[1].user_id, "bob");
+        }
+
+        #[test]
+        fn test_nats_keys_to_stored_returns_error_on_invalid_key() {
+            let keys = vec![TupleKey::new("user:alice", "viewer", "invalid")]; // no colon
+
+            let result = nats_keys_to_stored(&keys);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_async_write_response_body_serialization_normal() {
+            let body = AsyncWriteResponseBody {
+                request_id: "req-1".to_string(),
+                sequence: 42,
+                write_ticket: Some(WriteTicketBody {
+                    store_id: "store1".to_string(),
+                    sequence: 42,
+                    request_id: "req-1".to_string(),
+                    expires_at: "2024-01-01T00:00:00Z".to_string(),
+                }),
+                fallback: false,
+            };
+
+            let json = serde_json::to_value(&body).unwrap();
+            assert_eq!(json["request_id"], "req-1");
+            assert_eq!(json["sequence"], 42);
+            assert!(json["write_ticket"].is_object());
+            // fallback=false should be skipped
+            assert!(json.get("fallback").is_none());
+        }
+
+        #[test]
+        fn test_async_write_response_body_serialization_fallback() {
+            let body = AsyncWriteResponseBody {
+                request_id: "req-2".to_string(),
+                sequence: 0,
+                write_ticket: None,
+                fallback: true,
+            };
+
+            let json = serde_json::to_value(&body).unwrap();
+            assert_eq!(json["request_id"], "req-2");
+            assert_eq!(json["sequence"], 0);
+            // write_ticket should be omitted when None
+            assert!(json.get("write_ticket").is_none());
+            // fallback=true should be present
+            assert_eq!(json["fallback"], true);
+        }
+
+        #[test]
+        fn test_async_model_write_response_body_serialization_normal() {
+            let body = AsyncModelWriteResponseBody {
+                authorization_model_id: "model-1".to_string(),
+                request_id: "req-1".to_string(),
+                sequence: 10,
+                write_ticket: Some(WriteTicketBody {
+                    store_id: "store1".to_string(),
+                    sequence: 10,
+                    request_id: "req-1".to_string(),
+                    expires_at: "2024-01-01T00:00:00Z".to_string(),
+                }),
+                fallback: false,
+            };
+
+            let json = serde_json::to_value(&body).unwrap();
+            assert_eq!(json["authorization_model_id"], "model-1");
+            assert!(json["write_ticket"].is_object());
+            assert!(json.get("fallback").is_none());
+        }
+
+        #[test]
+        fn test_async_model_write_response_body_serialization_fallback() {
+            let body = AsyncModelWriteResponseBody {
+                authorization_model_id: "model-2".to_string(),
+                request_id: "req-3".to_string(),
+                sequence: 0,
+                write_ticket: None,
+                fallback: true,
+            };
+
+            let json = serde_json::to_value(&body).unwrap();
+            assert_eq!(json["authorization_model_id"], "model-2");
+            assert!(json.get("write_ticket").is_none());
+            assert_eq!(json["fallback"], true);
+        }
     }
 }

@@ -52,6 +52,10 @@ pub struct ServerConfig {
     /// Tracing settings
     #[serde(default)]
     pub tracing: TracingSettings,
+
+    /// NATS settings for async writes and RYOW consistency
+    #[serde(default)]
+    pub nats: NatsSettings,
 }
 
 /// Server network settings.
@@ -302,6 +306,95 @@ fn default_service_name() -> String {
     "rsfga".to_string()
 }
 
+/// NATS settings for async writes and RYOW consistency.
+///
+/// When enabled, the server connects to NATS JetStream for:
+/// - Async write endpoints (`POST /async/stores/{id}/write`)
+/// - RYOW consistency via write tickets
+/// - Event publishing for edge sync and cache invalidation
+///
+/// Environment variables:
+/// - `RSFGA_NATS__ENABLED=true` - Enable NATS integration
+/// - `RSFGA_NATS__URL=nats://localhost:4222` - NATS server URL
+/// - `RSFGA_NATS__NAME=rsfga-api` - Connection name
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct NatsSettings {
+    /// Enable NATS integration.
+    ///
+    /// When false (default), async write endpoints are unavailable
+    /// and all writes go through the sync path.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// NATS server URL (e.g., "nats://localhost:4222").
+    #[serde(default = "default_nats_url")]
+    pub url: String,
+
+    /// Connection name for identification in NATS server.
+    #[serde(default = "default_nats_name")]
+    pub name: String,
+
+    /// RYOW wait timeout in seconds for read handlers.
+    ///
+    /// Maximum time a read handler (Check, ListObjects, Expand, ListUsers)
+    /// will wait for a write ticket to be committed before returning 504.
+    #[serde(default = "default_ryow_timeout")]
+    pub ryow_timeout_secs: u64,
+
+    /// Write ticket TTL in seconds.
+    ///
+    /// How long a write ticket remains valid for RYOW consistency checks.
+    #[serde(default = "default_write_ticket_ttl_secs")]
+    pub write_ticket_ttl_secs: u64,
+
+    /// Write mode for async write endpoints.
+    ///
+    /// - `"nats"`: Only use NATS async path (fail if NATS is unavailable)
+    /// - `"direct"`: Only use sync storage writes (default, no NATS needed)
+    /// - `"auto"`: Try NATS first, fall back to sync if NATS fails
+    ///
+    /// When `enabled` is true, this controls the behavior of write endpoints:
+    /// - `nats`: Write requests are published to NATS JetStream (async)
+    /// - `auto`: Try NATS first; if circuit breaker is open or publish fails,
+    ///   fall back to direct storage write (sync) transparently
+    /// - `direct`: All writes go to storage directly (sync path only)
+    #[serde(default = "default_write_mode")]
+    pub write_mode: String,
+}
+
+impl Default for NatsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: default_nats_url(),
+            name: default_nats_name(),
+            ryow_timeout_secs: default_ryow_timeout(),
+            write_ticket_ttl_secs: default_write_ticket_ttl_secs(),
+            write_mode: default_write_mode(),
+        }
+    }
+}
+
+fn default_nats_url() -> String {
+    "nats://localhost:4222".to_string()
+}
+
+fn default_nats_name() -> String {
+    "rsfga-api".to_string()
+}
+
+fn default_ryow_timeout() -> u64 {
+    30
+}
+
+fn default_write_ticket_ttl_secs() -> u64 {
+    60
+}
+
+fn default_write_mode() -> String {
+    "direct".to_string()
+}
+
 /// Error type for configuration loading.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigLoadError {
@@ -443,6 +536,19 @@ impl ServerConfig {
                     valid_levels, self.logging.level
                 ),
             });
+        }
+
+        // Validate NATS write_mode if NATS is enabled
+        if self.nats.enabled {
+            let valid_write_modes = ["nats", "direct", "auto"];
+            if !valid_write_modes.contains(&self.nats.write_mode.to_lowercase().as_str()) {
+                return Err(ConfigLoadError::Invalid {
+                    message: format!(
+                        "nats.write_mode must be one of: {:?}, got: '{}'",
+                        valid_write_modes, self.nats.write_mode
+                    ),
+                });
+            }
         }
 
         Ok(())
@@ -651,6 +757,79 @@ storage:
         assert_eq!(config.logging.level, "info");
         assert!(!config.logging.json);
         assert!(config.metrics.enabled);
+    }
+
+    /// Test: NATS settings have correct defaults
+    #[test]
+    fn test_nats_settings_defaults() {
+        let config = ServerConfig::default();
+        assert!(!config.nats.enabled);
+        assert_eq!(config.nats.url, "nats://localhost:4222");
+        assert_eq!(config.nats.name, "rsfga-api");
+        assert_eq!(config.nats.ryow_timeout_secs, 30);
+        assert_eq!(config.nats.write_ticket_ttl_secs, 60);
+        assert_eq!(config.nats.write_mode, "direct");
+    }
+
+    #[test]
+    fn test_nats_write_mode_validation_rejects_invalid() {
+        let mut config = ServerConfig::default();
+        config.nats.enabled = true;
+        config.nats.write_mode = "direkt".to_string(); // typo
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("nats.write_mode"));
+    }
+
+    #[test]
+    fn test_nats_write_mode_validation_accepts_valid() {
+        for mode in &["nats", "direct", "auto"] {
+            let mut config = ServerConfig::default();
+            config.nats.enabled = true;
+            config.nats.write_mode = mode.to_string();
+            // Should not error on write_mode (may error on other fields)
+            let result = config.validate();
+            if let Err(e) = &result {
+                assert!(
+                    !e.to_string().contains("nats.write_mode"),
+                    "write_mode '{mode}' should be valid, got error: {e}"
+                );
+            }
+        }
+    }
+
+    /// Test: NATS settings can be loaded from YAML
+    #[test]
+    #[serial]
+    fn test_nats_settings_from_yaml() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+storage:
+  backend: memory
+
+nats:
+  enabled: true
+  url: "nats://nats-server:4222"
+  name: "my-rsfga"
+  ryow_timeout_secs: 15
+  write_ticket_ttl_secs: 120
+"#
+        )
+        .unwrap();
+
+        let config = ServerConfig::load(file.path()).unwrap();
+        assert!(config.nats.enabled);
+        assert_eq!(config.nats.url, "nats://nats-server:4222");
+        assert_eq!(config.nats.name, "my-rsfga");
+        assert_eq!(config.nats.ryow_timeout_secs, 15);
+        assert_eq!(config.nats.write_ticket_ttl_secs, 120);
     }
 
     /// Test: from_env loads defaults with env overrides

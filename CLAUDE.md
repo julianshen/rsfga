@@ -1015,7 +1015,14 @@ Follow this process precisely, always prioritizing:
   - Milestone 1.13 (Expand API): ✅ Complete
   - Milestone 1.14 (ListObjects API): ✅ Complete
   - Milestone 1.15 (ListUsers API): ✅ Complete
+- Phase 2 (NATS Async Writes): 🏗️ In Progress (~140 tests)
+  - Milestone 2.0.1 (Core NATS Integration): ✅ Complete
+  - Milestone 2.0.2 (Async API Endpoints): ✅ Complete
+  - Milestone 2.0.3 (Storage Consumer Daemon): ✅ Complete
+  - Milestone 2.0.4 (RYOW & Write Tracker): ✅ Complete
+  - Milestone 2.0.5 (Failure Handling): ⏸️ Partial (circuit breaker + sync fallback done, DLQ pending)
+  - Milestone 2.0.6 (Edge Sync Consumer): ⏸️ Pending
 
-**Next Step**: Phase 2 - Precomputation Engine (Optional) or Phase 3 - Edge Deployment with NATS (Future)
+**Next Step**: Milestone 2.0.5 - DLQ message handling or Milestone 2.0.6 - Edge Sync Consumer
 
-**To continue**: Say "go" to proceed with Phase 2 or specify what you'd like to work on next!
+**To continue**: Say "go" to proceed with the next milestone or specify what you'd like to work on!

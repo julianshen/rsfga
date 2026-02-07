@@ -18,7 +18,7 @@ use std::sync::Arc;
 use clap::Parser;
 use tokio::signal;
 use tokio::sync::broadcast;
-use tracing::{error, info, Level};
+use tracing::{error, info, warn, Level};
 
 use rsfga_api::grpc::{run_grpc_server_with_shutdown, GrpcServerConfig};
 use rsfga_api::http::{create_router_with_observability, AppState};
@@ -188,11 +188,43 @@ where
     // Create shutdown broadcast channel
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
+    // Optionally set up NATS integration for async writes and RYOW consistency
+    #[cfg(feature = "nats")]
+    let nats_state = if config.nats.enabled {
+        match setup_nats(&config.nats).await {
+            Ok(state) => Some(state),
+            Err(e) => {
+                error!(error = %e, "Failed to initialize NATS integration");
+                return Err(e);
+            }
+        }
+    } else {
+        info!("NATS integration disabled");
+        None
+    };
+
     // Prepare HTTP server future
     let http_storage = Arc::clone(&storage);
     let http_shutdown_rx = shutdown_tx.subscribe();
     let http_future = async move {
         let state = AppState::new(http_storage);
+
+        // Wire up NATS publisher and write tracker if available
+        #[cfg(feature = "nats")]
+        let state = if let Some(nats) = nats_state {
+            info!(
+                write_mode = %nats.write_mode,
+                "NATS async writes and RYOW consistency enabled"
+            );
+            state
+                .with_publisher(nats.publisher)
+                .with_write_tracker(nats.write_tracker)
+                .with_write_mode(nats.write_mode)
+                .with_ryow_timeout_secs(nats.ryow_timeout_secs)
+        } else {
+            state
+        };
+
         let router = create_router_with_observability(state, metrics_state);
         run_http_server(router, http_addr, http_shutdown_rx).await
     };
@@ -320,6 +352,89 @@ async fn shutdown_signal() {
             info!("Received SIGTERM, initiating graceful shutdown");
         }
     }
+}
+
+/// State returned from NATS setup, containing the publisher, tracker, and background handles.
+#[cfg(feature = "nats")]
+struct NatsState {
+    publisher: Arc<rsfga_nats::EventPublisher>,
+    write_tracker: Arc<rsfga_nats::WriteTracker>,
+    write_mode: rsfga_nats::config::WriteMode,
+    ryow_timeout_secs: u64,
+    /// Background task handles (event subscriber, cleanup task).
+    /// Stored to prevent them from being dropped.
+    _handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+/// Set up NATS integration: connect, create publisher, write tracker, and event subscriber.
+#[cfg(feature = "nats")]
+async fn setup_nats(
+    nats_settings: &rsfga_server::config::NatsSettings,
+) -> anyhow::Result<NatsState> {
+    use rsfga_nats::{
+        EventPublisher, EventSubscriber, JetStreamManager, NatsClient, NatsConfig, PublisherConfig,
+        WriteTracker, WriteTrackerConfig,
+    };
+    use std::time::Duration;
+
+    info!(url = %nats_settings.url, name = %nats_settings.name, "Connecting to NATS");
+
+    // Build NATS config from server settings
+    let nats_config = NatsConfig {
+        servers: vec![nats_settings.url.clone()],
+        name: nats_settings.name.clone(),
+        ..Default::default()
+    };
+
+    // Connect to NATS
+    let client = NatsClient::connect(nats_config).await?;
+    info!("NATS connection established");
+
+    // Set up JetStream streams (creates them if they don't exist)
+    let js_manager = JetStreamManager::new(client.clone());
+    js_manager.setup_streams().await?;
+    info!("JetStream streams configured");
+
+    // Create the event publisher
+    let publisher_config = PublisherConfig {
+        write_ticket_ttl: Duration::from_secs(nats_settings.write_ticket_ttl_secs),
+        ..Default::default()
+    };
+    let publisher = Arc::new(EventPublisher::with_config(
+        client.clone(),
+        publisher_config,
+    ));
+
+    // Create the write tracker for RYOW consistency
+    let tracker_config = WriteTrackerConfig {
+        waiter_ttl: Duration::from_secs(nats_settings.ryow_timeout_secs + 10),
+        cleanup_interval: Duration::from_secs(30),
+    };
+    let write_tracker = Arc::new(WriteTracker::new(tracker_config));
+
+    // Start the background cleanup task for expired waiters
+    let cleanup_handle = write_tracker.start_cleanup_task();
+
+    // Start the event subscriber that feeds committed events to the write tracker
+    let subscriber = EventSubscriber::new(client, Arc::clone(&write_tracker));
+    let subscriber_handle = subscriber.start().await?;
+    info!("NATS event subscriber started for RYOW consistency");
+
+    // Parse write mode from config string using FromStr
+    use rsfga_nats::config::WriteMode;
+    let write_mode: WriteMode = nats_settings.write_mode.parse().unwrap_or_else(|e| {
+        warn!(error = %e, "Invalid write_mode, defaulting to 'direct' (safe default)");
+        WriteMode::Direct
+    });
+    info!(write_mode = %write_mode, "Write mode configured");
+
+    Ok(NatsState {
+        publisher,
+        write_tracker,
+        write_mode,
+        ryow_timeout_secs: nats_settings.ryow_timeout_secs,
+        _handles: vec![cleanup_handle, subscriber_handle],
+    })
 }
 
 /// Parse log level from string.

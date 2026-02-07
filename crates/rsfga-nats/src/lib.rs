@@ -45,6 +45,7 @@
 pub mod config;
 pub mod connection;
 pub mod error;
+pub mod event_subscriber;
 pub mod events;
 pub mod jetstream;
 pub mod publisher;
@@ -55,6 +56,7 @@ pub mod utils;
 pub use config::NatsConfig;
 pub use connection::NatsClient;
 pub use error::{NatsError, Result};
+pub use event_subscriber::{EventSubscriber, EventSubscriberConfig};
 pub use events::{
     CommittedEvent, ModelWriteRequest, TupleCondition, TupleKey, TupleOperation, WriteRequest,
     WriteTicket,

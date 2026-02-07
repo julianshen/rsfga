@@ -135,6 +135,31 @@ pub enum WriteMode {
     Auto,
 }
 
+impl std::fmt::Display for WriteMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriteMode::Nats => write!(f, "nats"),
+            WriteMode::Direct => write!(f, "direct"),
+            WriteMode::Auto => write!(f, "auto"),
+        }
+    }
+}
+
+impl std::str::FromStr for WriteMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "nats" => Ok(WriteMode::Nats),
+            "direct" => Ok(WriteMode::Direct),
+            "auto" => Ok(WriteMode::Auto),
+            other => Err(format!(
+                "invalid write_mode '{other}': must be one of 'nats', 'direct', 'auto'"
+            )),
+        }
+    }
+}
+
 /// Reconnection configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReconnectConfig {
@@ -552,6 +577,38 @@ mod tests {
         // Should NOT contain actual password
         assert!(!debug_output.contains("secretpass"));
         assert!(!debug_output.contains("user:"));
+    }
+
+    #[test]
+    fn test_write_mode_display() {
+        assert_eq!(WriteMode::Nats.to_string(), "nats");
+        assert_eq!(WriteMode::Direct.to_string(), "direct");
+        assert_eq!(WriteMode::Auto.to_string(), "auto");
+    }
+
+    #[test]
+    fn test_write_mode_from_str() {
+        assert_eq!("nats".parse::<WriteMode>().unwrap(), WriteMode::Nats);
+        assert_eq!("direct".parse::<WriteMode>().unwrap(), WriteMode::Direct);
+        assert_eq!("auto".parse::<WriteMode>().unwrap(), WriteMode::Auto);
+        // Case insensitive
+        assert_eq!("NATS".parse::<WriteMode>().unwrap(), WriteMode::Nats);
+        assert_eq!("Direct".parse::<WriteMode>().unwrap(), WriteMode::Direct);
+        assert_eq!("AUTO".parse::<WriteMode>().unwrap(), WriteMode::Auto);
+    }
+
+    #[test]
+    fn test_write_mode_from_str_rejects_invalid() {
+        assert!("direkt".parse::<WriteMode>().is_err());
+        assert!("".parse::<WriteMode>().is_err());
+        assert!("sync".parse::<WriteMode>().is_err());
+        let err = "invalid".parse::<WriteMode>().unwrap_err();
+        assert!(err.contains("invalid write_mode"));
+    }
+
+    #[test]
+    fn test_write_mode_default_is_direct() {
+        assert_eq!(WriteMode::default(), WriteMode::Direct);
     }
 
     #[test]
