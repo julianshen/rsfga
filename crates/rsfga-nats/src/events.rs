@@ -455,6 +455,25 @@ impl std::fmt::Display for DlqCategory {
 /// Wraps the original payload with diagnostic information for analysis
 /// and recovery. Published to the RSFGA_DLQ stream when messages cannot
 /// be processed.
+///
+/// # Security Considerations
+///
+/// The `original_payload` field contains the full original message, which may
+/// include sensitive data such as:
+///
+/// - **Condition context values**: CEL condition parameters may carry PII,
+///   API keys, tokens, or other secrets passed in tuple conditions.
+/// - **User identifiers**: User and object IDs may be considered PII under
+///   regulations like GDPR.
+/// - **Request metadata**: Trace IDs, client IDs, source IPs, and user agents.
+///
+/// **Operators should:**
+/// - Apply the same access controls to the RSFGA_DLQ stream as to the
+///   RSFGA_WRITES stream (both contain write request data).
+/// - Configure NATS DLQ stream `max_age` (default: 7 days) to limit
+///   retention of potentially sensitive payloads.
+/// - Consider encrypting NATS storage at rest if payloads contain secrets.
+/// - Audit DLQ access in compliance-sensitive environments.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DlqMessage {
     /// Error category
@@ -478,7 +497,9 @@ pub struct DlqMessage {
     /// Size of the original payload in bytes
     pub payload_size: usize,
 
-    /// Original payload (base64-encoded for safe JSON transport)
+    /// Original payload (base64-encoded for safe JSON transport).
+    ///
+    /// **Security**: May contain sensitive data. See struct-level docs.
     #[serde(with = "base64_bytes")]
     pub original_payload: Vec<u8>,
 

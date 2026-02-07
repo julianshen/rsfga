@@ -91,6 +91,9 @@ pub const MAX_PENDING_QUEUE_SIZE: usize = 50_000;
 pub const STORAGE_CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
 /// How often to probe storage health when circuit is open.
 pub const STORAGE_HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(10);
+/// Timeout for DLQ publish operations. Prevents the consumer from blocking
+/// indefinitely if NATS is slow or unresponsive during DLQ writes.
+pub const DLQ_PUBLISH_TIMEOUT: Duration = Duration::from_secs(5);
 /// Default maximum delivery attempts before a message is considered poison.
 pub const DEFAULT_MAX_DELIVERY_COUNT: u64 = 5;
 
@@ -355,10 +358,11 @@ impl WriteConsumer {
 
                         // Poison message detection: if max_delivery_count is set
                         // and this message has been delivered too many times, send
-                        // to DLQ and ack to prevent infinite redelivery
+                        // to DLQ and ack to prevent infinite redelivery.
+                        // Uses >= so that max_delivery_count=5 triggers on the 5th attempt.
                         let num_delivered_u64 = num_delivered.max(0) as u64;
                         if self.config.max_delivery_count > 0
-                            && num_delivered_u64 > self.config.max_delivery_count
+                            && num_delivered_u64 >= self.config.max_delivery_count
                         {
                             warn!(
                                 stream_sequence,
@@ -654,38 +658,54 @@ impl WriteConsumer {
     }
 
     /// Publish a structured message to the Dead Letter Queue.
+    ///
+    /// Applies [`DLQ_PUBLISH_TIMEOUT`] to prevent blocking the consumer
+    /// if NATS is slow or unresponsive.
     async fn publish_to_dlq(&self, dlq_msg: &DlqMessage) {
         let dlq_subject = dlq_msg.subject();
-        match dlq_msg.to_bytes() {
-            Ok(payload) => {
-                if let Err(dlq_err) = self
-                    .client
-                    .client()
-                    .publish(dlq_subject.clone(), payload.into())
-                    .await
-                {
-                    error!(
-                        error = %dlq_err,
-                        subject = %dlq_subject,
-                        category = %dlq_msg.category,
-                        "CRITICAL: Failed to publish to DLQ"
-                    );
-                    self.metrics.record_dlq_publish_failure();
-                } else {
-                    debug!(
-                        subject = %dlq_subject,
-                        category = %dlq_msg.category,
-                        stream_sequence = dlq_msg.stream_sequence,
-                        "Message sent to DLQ"
-                    );
-                    self.metrics.record_dlq_message_sent();
-                }
-            }
+        let payload = match dlq_msg.to_bytes() {
+            Ok(p) => p,
             Err(e) => {
                 error!(
                     error = %e,
                     category = %dlq_msg.category,
                     "Failed to serialize DLQ message"
+                );
+                self.metrics.record_dlq_publish_failure();
+                return;
+            }
+        };
+
+        let publish_fut = self
+            .client
+            .client()
+            .publish(dlq_subject.clone(), payload.into());
+
+        match tokio::time::timeout(DLQ_PUBLISH_TIMEOUT, publish_fut).await {
+            Ok(Ok(())) => {
+                debug!(
+                    subject = %dlq_subject,
+                    category = %dlq_msg.category,
+                    stream_sequence = dlq_msg.stream_sequence,
+                    "Message sent to DLQ"
+                );
+                self.metrics.record_dlq_message_sent();
+            }
+            Ok(Err(dlq_err)) => {
+                error!(
+                    error = %dlq_err,
+                    subject = %dlq_subject,
+                    category = %dlq_msg.category,
+                    "CRITICAL: Failed to publish to DLQ"
+                );
+                self.metrics.record_dlq_publish_failure();
+            }
+            Err(_elapsed) => {
+                error!(
+                    subject = %dlq_subject,
+                    category = %dlq_msg.category,
+                    timeout_secs = DLQ_PUBLISH_TIMEOUT.as_secs(),
+                    "DLQ publish timed out"
                 );
                 self.metrics.record_dlq_publish_failure();
             }
