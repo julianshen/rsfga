@@ -392,7 +392,7 @@ fn default_write_ticket_ttl_secs() -> u64 {
 }
 
 fn default_write_mode() -> String {
-    "auto".to_string()
+    "direct".to_string()
 }
 
 /// Error type for configuration loading.
@@ -536,6 +536,19 @@ impl ServerConfig {
                     valid_levels, self.logging.level
                 ),
             });
+        }
+
+        // Validate NATS write_mode if NATS is enabled
+        if self.nats.enabled {
+            let valid_write_modes = ["nats", "direct", "auto"];
+            if !valid_write_modes.contains(&self.nats.write_mode.to_lowercase().as_str()) {
+                return Err(ConfigLoadError::Invalid {
+                    message: format!(
+                        "nats.write_mode must be one of: {:?}, got: '{}'",
+                        valid_write_modes, self.nats.write_mode
+                    ),
+                });
+            }
         }
 
         Ok(())
@@ -755,6 +768,35 @@ storage:
         assert_eq!(config.nats.name, "rsfga-api");
         assert_eq!(config.nats.ryow_timeout_secs, 30);
         assert_eq!(config.nats.write_ticket_ttl_secs, 60);
+        assert_eq!(config.nats.write_mode, "direct");
+    }
+
+    #[test]
+    fn test_nats_write_mode_validation_rejects_invalid() {
+        let mut config = ServerConfig::default();
+        config.nats.enabled = true;
+        config.nats.write_mode = "direkt".to_string(); // typo
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("nats.write_mode"));
+    }
+
+    #[test]
+    fn test_nats_write_mode_validation_accepts_valid() {
+        for mode in &["nats", "direct", "auto"] {
+            let mut config = ServerConfig::default();
+            config.nats.enabled = true;
+            config.nats.write_mode = mode.to_string();
+            // Should not error on write_mode (may error on other fields)
+            let result = config.validate();
+            if let Err(e) = &result {
+                assert!(
+                    !e.to_string().contains("nats.write_mode"),
+                    "write_mode '{mode}' should be valid, got error: {e}"
+                );
+            }
+        }
     }
 
     /// Test: NATS settings can be loaded from YAML

@@ -420,21 +420,13 @@ async fn setup_nats(
     let subscriber_handle = subscriber.start().await?;
     info!("NATS event subscriber started for RYOW consistency");
 
-    // Parse write mode from config string
+    // Parse write mode from config string using FromStr
     use rsfga_nats::config::WriteMode;
-    let write_mode = match nats_settings.write_mode.to_lowercase().as_str() {
-        "nats" => WriteMode::Nats,
-        "direct" => WriteMode::Direct,
-        "auto" => WriteMode::Auto,
-        other => {
-            warn!(
-                mode = other,
-                "Unknown write_mode, defaulting to 'direct' (safe default)"
-            );
-            WriteMode::Direct
-        }
-    };
-    info!(write_mode = ?write_mode, "Write mode configured");
+    let write_mode: WriteMode = nats_settings.write_mode.parse().unwrap_or_else(|e| {
+        warn!(error = %e, "Invalid write_mode, defaulting to 'direct' (safe default)");
+        WriteMode::Direct
+    });
+    info!(write_mode = %write_mode, "Write mode configured");
 
     Ok(NatsState {
         publisher,

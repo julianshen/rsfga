@@ -2193,8 +2193,17 @@ fn nats_tuples_to_stored(
                     ))
                 })?;
 
-            // Attach condition if present
+            // Attach condition if present, with validation
             if let Some(ref cond) = op.condition {
+                // Validate condition name length and format (same checks as sync path)
+                if !crate::validation::is_valid_condition_name(&cond.name) {
+                    return Err(ApiError::validation_error(format!(
+                        "invalid condition name at index {i}: '{}' \
+                         (must be non-empty, <= {} chars, alphanumeric/underscore/dash)",
+                        cond.name,
+                        crate::validation::MAX_CONDITION_NAME_LENGTH
+                    )));
+                }
                 tuple.condition_name = Some(cond.name.clone());
                 if !cond.context.is_empty() {
                     // Validate condition context depth to prevent DoS via deep nesting
