@@ -31,6 +31,7 @@
 //! ```
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tracing::{debug, error, info, warn};
 
@@ -39,18 +40,32 @@ use crate::error::{NatsError, Result};
 use crate::events::CommittedEvent;
 use crate::tracker::WriteTracker;
 
+/// Default inactive threshold for durable consumers (5 minutes).
+/// After this period of inactivity, the NATS server will clean up the consumer.
+/// This prevents stale consumers from accumulating when API instances are terminated.
+const DEFAULT_INACTIVE_THRESHOLD: Duration = Duration::from_secs(300);
+
 /// Configuration for the event subscriber.
 #[derive(Debug, Clone)]
 pub struct EventSubscriberConfig {
-    /// Consumer name (must be unique per API server instance for push-based,
-    /// or shared for pull-based load balancing).
+    /// Consumer name (must be unique per API server instance for broadcast semantics).
+    /// Each API server needs ALL committed events for its local WriteTracker to work,
+    /// so each instance gets its own durable consumer.
     pub consumer_name: String,
 
     /// Whether to create the consumer as durable.
+    /// Defaults to `true` so that on restart, the consumer replays events from
+    /// where it left off (DeliverAll policy), preventing missed committed events
+    /// that would cause RYOW waiters to timeout.
     pub durable: bool,
 
     /// Description for the consumer.
     pub description: String,
+
+    /// Inactive threshold after which the NATS server auto-deletes the consumer.
+    /// This cleans up consumers from terminated API server instances.
+    /// Defaults to 5 minutes.
+    pub inactive_threshold: Duration,
 }
 
 impl Default for EventSubscriberConfig {
@@ -61,8 +76,9 @@ impl Default for EventSubscriberConfig {
         let instance_id = ulid::Ulid::new().to_string();
         Self {
             consumer_name: format!("rsfga-api-events-{instance_id}"),
-            durable: false, // Ephemeral by default for broadcast semantics
+            durable: true, // Durable so restarts replay from last acked position
             description: "RSFGA API server committed event subscriber for RYOW".to_string(),
+            inactive_threshold: DEFAULT_INACTIVE_THRESHOLD,
         }
     }
 }
@@ -107,7 +123,7 @@ impl EventSubscriber {
     /// The consumer will automatically reconnect on transient errors.
     pub async fn start(&self) -> Result<tokio::task::JoinHandle<()>> {
         use async_nats::jetstream::consumer::pull::Config as PullConfig;
-        use async_nats::jetstream::consumer::AckPolicy;
+        use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy};
         use futures::StreamExt;
 
         let js = self.client.jetstream();
@@ -118,7 +134,12 @@ impl EventSubscriber {
             NatsError::JetStream(format!("Failed to get stream {stream_name}: {e}"))
         })?;
 
-        // Create or get the pull consumer for committed events
+        // Create or get the durable pull consumer for committed events.
+        // Key design decisions:
+        // - Durable: Survives restarts, replays from last acked position
+        // - DeliverAll: On first creation, starts from the oldest available message
+        // - inactive_threshold: Auto-cleans consumers from terminated instances
+        // - Per-instance name: Each API server gets ALL events (broadcast semantics)
         let consumer_config = PullConfig {
             durable_name: if self.config.durable {
                 Some(self.config.consumer_name.clone())
@@ -129,6 +150,8 @@ impl EventSubscriber {
             description: Some(self.config.description.clone()),
             filter_subject: format!("{}.*.committed", crate::SUBJECT_EVENTS_PREFIX),
             ack_policy: AckPolicy::Explicit,
+            deliver_policy: DeliverPolicy::All,
+            inactive_threshold: self.config.inactive_threshold,
             ..Default::default()
         };
 
@@ -140,6 +163,8 @@ impl EventSubscriber {
         info!(
             consumer_name = %self.config.consumer_name,
             stream = stream_name,
+            durable = self.config.durable,
+            inactive_threshold_secs = self.config.inactive_threshold.as_secs(),
             "Event subscriber started"
         );
 
@@ -256,9 +281,19 @@ mod tests {
         // Consumer name should have instance-unique suffix for broadcast semantics
         assert!(config.consumer_name.starts_with("rsfga-api-events-"));
         assert!(config.consumer_name.len() > "rsfga-api-events-".len());
-        // Ephemeral by default (not durable) for broadcast semantics
-        assert!(!config.durable);
+        // Durable by default so restarts replay from last acked position
+        assert!(config.durable);
         assert!(!config.description.is_empty());
+        // Inactive threshold should be 5 minutes for auto-cleanup of dead instances
+        assert_eq!(config.inactive_threshold, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_event_subscriber_config_unique_per_instance() {
+        let config1 = EventSubscriberConfig::default();
+        let config2 = EventSubscriberConfig::default();
+        // Each instance gets a unique consumer name (ULID-based)
+        assert_ne!(config1.consumer_name, config2.consumer_name);
     }
 
     #[test]
@@ -368,6 +403,143 @@ mod tests {
             !store_id.is_empty()
                 && store_id.len() <= 26
                 && store_id.chars().all(|c| c.is_ascii_alphanumeric())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ryow_end_to_end_multiple_stores() {
+        // RYOW end-to-end: multiple stores with independent sequence tracking.
+        // Simulates the EventSubscriber receiving committed events for different
+        // stores and waking the correct waiters.
+        let tracker = Arc::new(WriteTracker::default());
+
+        // Spawn waiters for two different stores
+        let t1 = Arc::clone(&tracker);
+        let waiter_store1 = tokio::spawn(async move {
+            t1.wait_for_commit("store1", 10, Duration::from_secs(5))
+                .await
+        });
+
+        let t2 = Arc::clone(&tracker);
+        let waiter_store2 = tokio::spawn(async move {
+            t2.wait_for_commit("store2", 5, Duration::from_secs(5))
+                .await
+        });
+
+        // Let waiters register
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Simulate EventSubscriber processing committed events
+        // Store2 commits first — should only wake store2's waiter
+        let event2 = CommittedEvent::new("store2", 5);
+        let bytes2 = event2.to_bytes().unwrap();
+        let parsed2 = CommittedEvent::from_bytes(&bytes2).unwrap();
+        tracker.mark_committed(&parsed2.store_id, parsed2.sequence);
+
+        // Store2's waiter should complete
+        let result2 = tokio::time::timeout(Duration::from_secs(1), waiter_store2)
+            .await
+            .expect("store2 waiter should not timeout")
+            .unwrap();
+        assert!(result2.is_ok(), "store2 waiter should succeed");
+
+        // Store1's waiter is still waiting (sequence 10 not committed yet)
+        // Now commit store1 at sequence 10
+        let event1 = CommittedEvent::new("store1", 10);
+        let bytes1 = event1.to_bytes().unwrap();
+        let parsed1 = CommittedEvent::from_bytes(&bytes1).unwrap();
+        tracker.mark_committed(&parsed1.store_id, parsed1.sequence);
+
+        // Store1's waiter should now complete
+        let result1 = tokio::time::timeout(Duration::from_secs(1), waiter_store1)
+            .await
+            .expect("store1 waiter should not timeout")
+            .unwrap();
+        assert!(result1.is_ok(), "store1 waiter should succeed");
+
+        // Verify final committed sequences
+        assert_eq!(tracker.get_committed_sequence("store1"), Some(10));
+        assert_eq!(tracker.get_committed_sequence("store2"), Some(5));
+    }
+
+    #[tokio::test]
+    async fn test_ryow_end_to_end_progressive_commits() {
+        // Tests that progressive sequence commits correctly wake waiters.
+        // Simulates a stream of committed events with increasing sequences.
+        let tracker = Arc::new(WriteTracker::default());
+
+        // Waiter is waiting for sequence 15
+        let t = Arc::clone(&tracker);
+        let waiter = tokio::spawn(async move {
+            t.wait_for_commit("store1", 15, Duration::from_secs(5))
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Simulate progressive commits (5, 10, 15) — like a writer
+        // processing batches of events
+        for seq in [5u64, 10, 15] {
+            let event = CommittedEvent::new("store1", seq);
+            let bytes = event.to_bytes().unwrap();
+            let parsed = CommittedEvent::from_bytes(&bytes).unwrap();
+            tracker.mark_committed(&parsed.store_id, parsed.sequence);
+        }
+
+        // Waiter should be woken when sequence reaches 15
+        let result = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter should not timeout")
+            .unwrap();
+        assert!(result.is_ok(), "waiter should succeed after sequence 15");
+    }
+
+    #[tokio::test]
+    async fn test_ryow_end_to_end_waiter_timeout() {
+        // Tests that a waiter correctly times out when the expected sequence
+        // is never committed. This ensures RYOW doesn't hang indefinitely.
+        let tracker = Arc::new(WriteTracker::default());
+
+        let t = Arc::clone(&tracker);
+        let waiter = tokio::spawn(async move {
+            // Very short timeout for test speed
+            t.wait_for_commit("store1", 100, Duration::from_millis(100))
+                .await
+        });
+
+        // Commit a lower sequence — not enough to satisfy the waiter
+        let event = CommittedEvent::new("store1", 50);
+        let bytes = event.to_bytes().unwrap();
+        let parsed = CommittedEvent::from_bytes(&bytes).unwrap();
+        tracker.mark_committed(&parsed.store_id, parsed.sequence);
+
+        // Waiter should timeout since sequence 100 was never committed
+        let result = waiter.await.unwrap();
+        assert!(
+            result.is_err(),
+            "waiter should timeout when sequence not reached"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ryow_already_committed_returns_immediately() {
+        // Tests that if the sequence is already committed when a waiter registers,
+        // it returns immediately without blocking.
+        let tracker = Arc::new(WriteTracker::default());
+
+        // Pre-commit sequence 20
+        let event = CommittedEvent::new("store1", 20);
+        let bytes = event.to_bytes().unwrap();
+        let parsed = CommittedEvent::from_bytes(&bytes).unwrap();
+        tracker.mark_committed(&parsed.store_id, parsed.sequence);
+
+        // Now wait for sequence 15 (already satisfied by committed 20)
+        let result = tracker
+            .wait_for_commit("store1", 15, Duration::from_millis(100))
+            .await;
+        assert!(
+            result.is_ok(),
+            "should return immediately for already-committed sequence"
         );
     }
 }
