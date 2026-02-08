@@ -7,6 +7,7 @@ members = [
     "crates/rsfga-storage",
     "crates/rsfga-nats",
     "crates/rsfga-writer",
+    "crates/rsfga-edge",
     "crates/compatibility-tests",
 ]
 
@@ -89,6 +90,7 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 ulid = "1.1"
 chrono = { version = "0.4", features = ["serde"] }
 bytes = "1.5"
+url = "2"
 
 # CLI (for server binary)
 clap = { version = "4.4", features = ["derive", "env"] }

@@ -9,12 +9,21 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
 
 jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
     steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghcrunner
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -37,9 +46,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build workspace
-        run: cargo build --workspace --all-features
-
       - name: Run tests
         run: cargo test --workspace --all-features --no-fail-fast --exclude compatibility-tests
 
@@ -47,6 +53,14 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghcrunner
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - name: Checkout repository
         uses: actions/checkout@v4
 

@@ -1,0 +1,51 @@
+[package]
+name = "rsfga-edge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Edge sync consumer daemon for RSFGA distributed authorization"
+
+[[bin]]
+name = "rsfga-edge"
+path = "src/main.rs"
+
+[features]
+default = []
+rocksdb = ["rsfga-storage/rocksdb"]
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+async-nats = { workspace = true }
+
+# Internal crates
+rsfga-nats = { path = "../rsfga-nats" }
+rsfga-storage = { path = "../rsfga-storage" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Tracing and observability
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# URL parsing for secure credential redaction
+url = { workspace = true }
+
+# Concurrent data structures
+dashmap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
