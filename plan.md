@@ -1581,7 +1581,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Milestone 2.0.5: Failure Handling & Resilience ✅ COMPLETE
+### Milestone 2.0.5: Failure Handling & Resilience ✅ COMPLETE (integration tests for DLQ in follow-up)
 
 **Goal**: Robust handling of NATS and storage failures
 
@@ -1614,7 +1614,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 **Validation Criteria**:
 - [x] Circuit breaker opens after threshold failures
 - [x] Fallback writes succeed when NATS down
-- [x] Poison messages end up in DLQ
+- [~] Poison messages end up in DLQ (unit tests pass; integration tests with live NATS in follow-up)
 - [x] Consumer recovers after restart
 
 **Deliverables**:
@@ -1622,6 +1622,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 - ✅ Consumer recovery (durable consumer)
 - ✅ DLQ message handling (DlqMessage, poison detection, DlqSummary)
 - ✅ Sync fallback path (WriteMode Auto/Nats/Direct)
+- ⏸️ DLQ integration tests (follow-up: end-to-end with testcontainers NATS)
 
 ---
 
@@ -1676,7 +1677,8 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 | Circuit Breaker Tests | ~8 | ✅ |
 | Async API Integration Tests | ~15 | ✅ |
 | Sync fallback tests | 11 | ✅ |
-| DLQ tests | 17 | ✅ |
+| DLQ unit tests | 17 | ✅ |
+| DLQ integration tests (testcontainers) | 0 | ⏸️ follow-up |
 | Edge sync tests | 0 | ⏸️ |
 | **Total Implemented** | **~151** | - |
 
