@@ -42,7 +42,7 @@ metrics-exporter-prometheus = { workspace = true }
 clap = { workspace = true }
 
 # URL parsing for secure credential redaction
-url = "2"
+url = { workspace = true }
 
 # Concurrent data structures
 dashmap = { workspace = true }

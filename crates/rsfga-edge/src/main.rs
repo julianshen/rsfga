@@ -191,8 +191,7 @@ async fn create_storage(args: &Args) -> Result<Arc<dyn DataStore>> {
                     path: args.rocksdb_path.clone(),
                     ..Default::default()
                 };
-                let storage = RocksDBDataStore::new(config)
-                    .map_err(|e| crate::error::EdgeError::Config(e.to_string()))?;
+                let storage = RocksDBDataStore::new(config)?;
                 Ok(Arc::new(storage))
             }
             #[cfg(not(feature = "rocksdb"))]

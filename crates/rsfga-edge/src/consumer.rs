@@ -22,6 +22,11 @@
 //! metadata and acked to prevent infinite redelivery. These are logged as
 //! warnings for operator investigation.
 //!
+//! Messages that fail deserialization (malformed JSON) are also acked and
+//! counted via the `events_failed` metric. This is intentional: since the
+//! payload cannot be parsed, redelivery would produce the same failure
+//! indefinitely. Operators should monitor `rsfga_edge_events_failed_total`.
+//!
 //! # Store Filtering
 //!
 //! The consumer can optionally filter events by store ID:
