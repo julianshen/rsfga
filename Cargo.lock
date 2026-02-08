@@ -3563,12 +3563,8 @@ dependencies = [
 name = "rsfga-edge"
 version = "1.0.1"
 dependencies = [
- "anyhow",
  "async-nats",
- "async-trait",
- "chrono",
  "clap",
- "config",
  "dashmap",
  "futures",
  "metrics",
@@ -3577,17 +3573,11 @@ dependencies = [
  "rsfga-storage",
  "serde",
  "serde_json",
- "testcontainers",
- "testcontainers-modules",
  "thiserror 1.0.69",
  "tokio",
- "tokio-stream",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
- "ulid",
  "url",
- "uuid",
 ]
 
 [[package]]

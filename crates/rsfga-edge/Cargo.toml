@@ -18,10 +18,7 @@ rocksdb = ["rsfga-storage/rocksdb"]
 [dependencies]
 # Async runtime
 tokio = { workspace = true }
-tokio-util = { workspace = true }
-tokio-stream = { workspace = true }
 futures = { workspace = true }
-async-trait = { workspace = true }
 async-nats = { workspace = true }
 
 # Internal crates
@@ -34,7 +31,6 @@ serde_json = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 
 # Tracing and observability
 tracing = { workspace = true }
@@ -42,24 +38,14 @@ tracing-subscriber = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 
-# Utilities
-uuid = { workspace = true }
-ulid = { workspace = true }
-chrono = { workspace = true }
-
 # CLI
 clap = { workspace = true }
 
 # URL parsing for secure credential redaction
 url = "2"
 
-# Configuration
-config = { workspace = true }
-
 # Concurrent data structures
 dashmap = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
-testcontainers = { workspace = true }
-testcontainers-modules = { version = "0.14", features = ["nats"] }

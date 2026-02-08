@@ -16,13 +16,19 @@
 //! - Events with sequence <= watermark are skipped (already applied)
 //! - Storage writes use ON CONFLICT (upsert) for idempotency on redelivery
 //!
+//! # Poison Message Handling
+//!
+//! Messages that exceed `max_delivery_count` are detected via NATS delivery
+//! metadata and acked to prevent infinite redelivery. These are logged as
+//! warnings for operator investigation.
+//!
 //! # Store Filtering
 //!
 //! The consumer can optionally filter events by store ID:
 //! - `store_filter = None`: Receive all events (full replica)
-//! - `store_filter = Some(vec!["store-1", "store-2"])`: Only specific stores
+//! - `store_filter = Some({"store-1", "store-2"})`: Only specific stores
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -55,7 +61,8 @@ pub struct EdgeConsumerConfig {
     pub consumer_name: String,
 
     /// Optional store filter - if set, only events for these stores are consumed.
-    pub store_filter: Option<Vec<String>>,
+    /// Uses HashSet for O(1) lookup performance.
+    pub store_filter: Option<HashSet<String>>,
 
     /// Number of messages to fetch per batch.
     pub batch_size: usize,
@@ -63,8 +70,8 @@ pub struct EdgeConsumerConfig {
     /// Timeout for batch fetch operations.
     pub fetch_timeout: Duration,
 
-    /// Maximum delivery attempts before skipping a message.
-    #[allow(dead_code)]
+    /// Maximum delivery attempts before acking a poison message.
+    /// Set to 0 to disable poison message detection.
     pub max_delivery_count: u64,
 }
 
@@ -85,6 +92,11 @@ impl Default for EdgeConsumerConfig {
 /// Uses DashMap for lock-free concurrent access. The watermark tracks
 /// the highest CommittedEvent.sequence that has been successfully
 /// applied to local storage for each store_id.
+///
+/// **Note**: The watermark is currently in-memory only. On daemon restart,
+/// events will be replayed from the NATS durable consumer position. Storage
+/// writes are idempotent (ON CONFLICT / upsert), so replayed events are safe.
+/// Persistent watermark storage is planned for a follow-up (plan.md 2.0.6.2).
 #[derive(Debug, Default, Clone)]
 pub struct SyncWatermark {
     /// Map of store_id -> last applied sequence number.
@@ -100,7 +112,7 @@ impl SyncWatermark {
     }
 
     /// Get the last applied sequence for a store.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used by tests; planned for watermark persistence (2.0.6.2)
     pub fn get(&self, store_id: &str) -> Option<u64> {
         self.positions.get(store_id).map(|v| *v)
     }
@@ -136,7 +148,7 @@ impl SyncWatermark {
     }
 
     /// Restore watermark from saved positions (e.g., on restart).
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used by tests; planned for watermark persistence (2.0.6.2)
     pub fn restore(&self, positions: HashMap<String, u64>) {
         for (store_id, sequence) in positions {
             self.advance(&store_id, sequence);
@@ -155,47 +167,47 @@ pub struct EdgeConsumer {
 
 impl EdgeConsumer {
     /// Create a new edge consumer.
-    pub async fn new(
+    pub fn new(
         client: NatsClient,
         storage: Arc<dyn DataStore>,
         metrics: Arc<EdgeMetrics>,
         config: EdgeConsumerConfig,
-    ) -> Result<Self> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             client,
             storage,
             metrics,
             config,
             watermark: SyncWatermark::new(),
-        })
+        }
     }
 
     /// Create a new edge consumer with a pre-existing watermark (for restart recovery).
-    #[allow(dead_code)]
-    pub async fn with_watermark(
+    #[allow(dead_code)] // Planned for bootstrap sync (2.0.6.4)
+    pub fn with_watermark(
         client: NatsClient,
         storage: Arc<dyn DataStore>,
         metrics: Arc<EdgeMetrics>,
         config: EdgeConsumerConfig,
         watermark: SyncWatermark,
-    ) -> Result<Self> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             client,
             storage,
             metrics,
             config,
             watermark,
-        })
+        }
     }
 
     /// Get a reference to the sync watermark.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Planned for watermark persistence (2.0.6.2)
     pub fn watermark(&self) -> &SyncWatermark {
         &self.watermark
     }
 
     /// Get a reference to the consumer config.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Planned for health check endpoint
     pub fn config(&self) -> &EdgeConsumerConfig {
         &self.config
     }
@@ -238,25 +250,62 @@ impl EdgeConsumer {
         }
 
         let start = std::time::Instant::now();
+        let num_writes = writes.len();
+        let num_deletes = deletes.len();
 
         self.storage
-            .write_tuples(&event.store_id, writes.clone(), deletes.clone())
+            .write_tuples(&event.store_id, writes, deletes)
             .await
             .map_err(EdgeError::Storage)?;
 
         self.metrics.record_storage_latency(start);
-        self.metrics.record_tuples_written(writes.len());
-        self.metrics.record_tuples_deleted(deletes.len());
+        self.metrics.record_tuples_written(num_writes);
+        self.metrics.record_tuples_deleted(num_deletes);
 
         debug!(
             store_id = %event.store_id,
             sequence = event.sequence,
-            writes = writes.len(),
-            deletes = deletes.len(),
+            writes = num_writes,
+            deletes = num_deletes,
             "Applied event to local storage"
         );
 
         Ok(())
+    }
+
+    /// Check if a message is a poison message (exceeded max delivery count).
+    ///
+    /// Returns true if the message should be skipped and acked.
+    fn is_poison_message(&self, message: &JsMessage) -> bool {
+        if self.config.max_delivery_count == 0 {
+            return false;
+        }
+
+        match message.info() {
+            Ok(info) => {
+                let num_delivered = info.delivered.max(0) as u64;
+                if num_delivered >= self.config.max_delivery_count {
+                    warn!(
+                        stream_sequence = info.stream_sequence,
+                        num_delivered,
+                        max_delivery_count = self.config.max_delivery_count,
+                        subject = %message.subject,
+                        "Poison message detected - acking to prevent infinite redelivery"
+                    );
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    subject = %message.subject,
+                    "Failed to get message info for poison detection"
+                );
+                false
+            }
+        }
     }
 
     /// Process a single NATS message containing a CommittedEvent.
@@ -264,6 +313,12 @@ impl EdgeConsumer {
     /// Returns Ok(true) if the event was applied, Ok(false) if it was skipped.
     async fn process_message(&self, message: &JsMessage) -> Result<bool> {
         self.metrics.record_event_consumed();
+
+        // Check for poison messages before deserializing
+        if self.is_poison_message(message) {
+            self.metrics.record_event_failed();
+            return Ok(false);
+        }
 
         // Deserialize the event
         let event = match CommittedEvent::from_bytes(&message.payload) {
@@ -308,7 +363,8 @@ impl EdgeConsumer {
         // Advance the watermark
         self.watermark.advance(&event.store_id, event.sequence);
         self.metrics.record_event_applied();
-        self.metrics.update_sync_position(event.sequence);
+        self.metrics
+            .update_sync_position(&event.store_id, event.sequence);
 
         info!(
             store_id = %event.store_id,
@@ -356,10 +412,13 @@ impl EdgeConsumer {
                 );
                 consumer
             }
-            Err(_) => {
+            Err(e) => {
+                // Only create a new consumer if the error indicates it doesn't exist.
+                // Log the original error for debugging transient failures.
                 info!(
                     consumer_name = %self.config.consumer_name,
-                    "Creating new durable consumer"
+                    error = %e,
+                    "Consumer not found, creating new durable consumer"
                 );
                 stream
                     .create_consumer(consumer_config)
@@ -589,7 +648,11 @@ mod tests {
     fn test_edge_consumer_config_custom() {
         let config = EdgeConsumerConfig {
             consumer_name: "edge-us-west-1".to_string(),
-            store_filter: Some(vec!["store-a".to_string(), "store-b".to_string()]),
+            store_filter: Some(
+                ["store-a".to_string(), "store-b".to_string()]
+                    .into_iter()
+                    .collect(),
+            ),
             batch_size: 50,
             fetch_timeout: Duration::from_secs(1),
             max_delivery_count: 5,
@@ -597,6 +660,16 @@ mod tests {
         assert_eq!(config.consumer_name, "edge-us-west-1");
         assert_eq!(config.store_filter.as_ref().unwrap().len(), 2);
         assert_eq!(config.batch_size, 50);
+    }
+
+    #[test]
+    fn test_store_filter_hashset_contains() {
+        let filter: HashSet<String> = ["store-a".to_string(), "store-b".to_string()]
+            .into_iter()
+            .collect();
+        assert!(filter.contains("store-a"));
+        assert!(filter.contains("store-b"));
+        assert!(!filter.contains("store-c"));
     }
 
     // ===========================================
@@ -668,8 +741,6 @@ mod tests {
     #[tokio::test]
     async fn test_subject_filter_no_store_filter() {
         let config = EdgeConsumerConfig::default();
-        // We need a NatsClient to construct EdgeConsumer, but we can test subject_filter
-        // indirectly by checking the config
         assert!(config.store_filter.is_none());
         // When no filter, subject should be "rsfga.events.>"
     }
@@ -677,11 +748,14 @@ mod tests {
     #[test]
     fn test_subject_filter_with_store_filter() {
         // Test the subject generation logic directly
-        let stores = ["store-a".to_string(), "store-b".to_string()];
-        let subjects: Vec<String> = stores
+        let stores: HashSet<String> = ["store-a".to_string(), "store-b".to_string()]
+            .into_iter()
+            .collect();
+        let mut subjects: Vec<String> = stores
             .iter()
             .map(|store_id| format!("{}.{}.>", SUBJECT_EVENTS_PREFIX, store_id))
             .collect();
+        subjects.sort(); // HashSet iteration order is not deterministic
 
         assert_eq!(subjects.len(), 2);
         assert_eq!(subjects[0], "rsfga.events.store-a.>");

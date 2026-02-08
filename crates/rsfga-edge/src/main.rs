@@ -14,6 +14,7 @@ mod consumer;
 mod error;
 mod metrics;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -28,11 +29,18 @@ use crate::error::Result;
 use crate::metrics::EdgeMetrics;
 
 /// Redact credentials from URLs for safe logging.
+///
+/// Redacts both the username and password fields of the userinfo section
+/// to prevent token/credential leakage. NATS tokens often appear in the
+/// username field (e.g., `nats://token@localhost:4222`).
 fn redact_url(url_str: &str) -> String {
     match url::Url::parse(url_str) {
         Ok(mut url) => {
-            if url.password().is_some() {
-                let _ = url.set_password(Some("***"));
+            let has_username = !url.username().is_empty();
+            let has_password = url.password().is_some();
+            if has_username || has_password {
+                let _ = url.set_username("***");
+                let _ = url.set_password(None);
             }
             url.to_string()
         }
@@ -86,8 +94,8 @@ struct Args {
     #[arg(long, env = "METRICS_PORT", default_value = "9091")]
     metrics_port: u16,
 
-    /// Log level
-    #[arg(long, env = "RUST_LOG", default_value = "info")]
+    /// Log level (used when RUST_LOG env var is not set)
+    #[arg(long, env = "LOG_LEVEL", default_value = "info")]
     log_level: String,
 }
 
@@ -95,10 +103,12 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize tracing
+    // Initialize tracing: RUST_LOG env var takes precedence over --log-level flag
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&args.log_level));
     tracing_subscriber::registry()
         .with(fmt::layer())
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&args.log_level)))
+        .with(env_filter)
         .init();
 
     info!(
@@ -131,16 +141,18 @@ async fn main() -> Result<()> {
     let storage: Arc<dyn DataStore> = create_storage(&args).await?;
 
     // Create edge consumer config
+    let store_filter: Option<HashSet<String>> = args.store_filter.map(|v| v.into_iter().collect());
+
     let consumer_config = EdgeConsumerConfig {
         consumer_name: args.consumer_name,
-        store_filter: args.store_filter,
+        store_filter,
         batch_size: args.batch_size,
         fetch_timeout: std::time::Duration::from_millis(args.fetch_timeout_ms),
         max_delivery_count: consumer::DEFAULT_MAX_DELIVERY_COUNT,
     };
 
-    // Create and run consumer
-    let consumer = EdgeConsumer::new(nats_client, storage, metrics, consumer_config).await?;
+    // Create consumer (synchronous - no async work needed)
+    let consumer = EdgeConsumer::new(nats_client, storage, metrics, consumer_config);
 
     // Set up graceful shutdown signal
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -230,11 +242,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_redact_url_nats() {
+    fn test_redact_url_with_user_and_password() {
         let url = "nats://admin:secret@localhost:4222";
         let redacted = redact_url(url);
-        assert!(redacted.contains("admin:***@"));
+        assert!(!redacted.contains("admin"));
         assert!(!redacted.contains("secret"));
+        assert!(redacted.contains("***@"));
     }
 
     #[test]
@@ -245,10 +258,20 @@ mod tests {
     }
 
     #[test]
+    fn test_redact_url_token_in_username() {
+        // NATS tokens often appear as just the username: nats://token@host
+        let url = "nats://my-secret-token@localhost:4222";
+        let redacted = redact_url(url);
+        assert!(!redacted.contains("my-secret-token"));
+        assert!(redacted.contains("***@"));
+    }
+
+    #[test]
     fn test_redact_url_postgres() {
         let url = "postgres://user:password@localhost:5432/db";
         let redacted = redact_url(url);
-        assert!(redacted.contains("user:***@"));
+        assert!(!redacted.contains("user"));
         assert!(!redacted.contains("password"));
+        assert!(redacted.contains("***@"));
     }
 }

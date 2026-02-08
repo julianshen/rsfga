@@ -30,7 +30,7 @@ pub struct EdgeMetrics {
     pub tuples_deleted: AtomicU64,
 
     /// Total cache invalidations triggered.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Planned for cache invalidation (2.0.6.3)
     pub cache_invalidations: AtomicU64,
 
     /// Total storage failures.
@@ -82,7 +82,7 @@ impl EdgeMetrics {
     }
 
     /// Record a cache invalidation.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Planned for cache invalidation (2.0.6.3)
     pub fn record_cache_invalidation(&self) {
         self.cache_invalidations.fetch_add(1, Ordering::Relaxed);
         counter!("rsfga_edge_cache_invalidations_total").increment(1);
@@ -101,14 +101,14 @@ impl EdgeMetrics {
     }
 
     /// Update sync lag gauge (events behind the central node).
-    #[allow(dead_code)]
-    pub fn update_sync_lag(&self, lag: u64) {
-        gauge!("rsfga_edge_sync_lag_events").set(lag as f64);
+    #[allow(dead_code)] // Planned for bootstrap sync lag tracking (2.0.6.4)
+    pub fn update_sync_lag(&self, store_id: &str, lag: u64) {
+        gauge!("rsfga_edge_sync_lag_events", "store_id" => store_id.to_string()).set(lag as f64);
     }
 
     /// Update the sync position gauge for a store.
-    pub fn update_sync_position(&self, sequence: u64) {
-        gauge!("rsfga_edge_sync_position").set(sequence as f64);
+    pub fn update_sync_position(&self, store_id: &str, sequence: u64) {
+        gauge!("rsfga_edge_sync_position", "store_id" => store_id.to_string()).set(sequence as f64);
     }
 }
 
