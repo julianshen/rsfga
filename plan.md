@@ -1626,18 +1626,18 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Milestone 2.0.6: Edge Sync Consumer ⏸️ PENDING
+### Milestone 2.0.6: Edge Sync Consumer 🏗️ In Progress
 
 **Goal**: Edge node synchronization via NATS events
 
 **2.0.6.1 Edge Consumer Daemon**
-- [ ] Create `rsfga-edge` binary
-- [ ] Subscribe to RSFGA_EVENTS with store filter
-- [ ] Apply committed events to local storage
-- [ ] Track sync position per store
+- [x] Create `rsfga-edge` binary
+- [x] Subscribe to RSFGA_EVENTS with store filter
+- [x] Apply committed events to local storage
+- [x] Track sync position per store
 
 **2.0.6.2 Idempotency**
-- [ ] Skip already-processed sequences
+- [x] Skip already-processed sequences
 - [ ] Handle out-of-order event delivery
 - [ ] Store sync watermark in local DB
 
@@ -1679,8 +1679,8 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 | Sync fallback tests | 11 | ✅ |
 | DLQ unit tests | 17 | ✅ |
 | DLQ integration tests (testcontainers) | 0 | ⏸️ follow-up |
-| Edge sync tests | 0 | ⏸️ |
-| **Total Implemented** | **~151** | - |
+| Edge sync tests (rsfga-edge) | 29 | 🏗️ |
+| **Total Implemented** | **~180** | - |
 
 ---
 

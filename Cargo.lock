@@ -3560,6 +3560,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsfga-edge"
+version = "1.0.1"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "async-trait",
+ "chrono",
+ "clap",
+ "config",
+ "dashmap",
+ "futures",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "rsfga-nats",
+ "rsfga-storage",
+ "serde",
+ "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "rsfga-nats"
 version = "1.0.1"
 dependencies = [
