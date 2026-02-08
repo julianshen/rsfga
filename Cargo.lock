@@ -3566,6 +3566,7 @@ dependencies = [
  "anyhow",
  "async-nats",
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "dashmap",

@@ -58,10 +58,10 @@ pub use connection::NatsClient;
 pub use error::{NatsError, Result};
 pub use event_subscriber::{EventSubscriber, EventSubscriberConfig};
 pub use events::{
-    CommittedEvent, ModelWriteRequest, TupleCondition, TupleKey, TupleOperation, WriteRequest,
-    WriteTicket,
+    CommittedEvent, DlqCategory, DlqMessage, ModelWriteRequest, TupleCondition, TupleKey,
+    TupleOperation, WriteRequest, WriteTicket,
 };
-pub use jetstream::JetStreamManager;
+pub use jetstream::{DlqSummary, JetStreamManager};
 pub use publisher::{EventPublisher, PublisherConfig, PublisherStats};
 pub use tracker::{WriteTracker, WriteTrackerConfig, WriteTrackerTimeout};
 

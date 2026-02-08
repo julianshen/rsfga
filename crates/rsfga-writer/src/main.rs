@@ -171,6 +171,7 @@ async fn main() -> Result<()> {
             consumer_name: args.consumer_name,
             batch_size: args.batch_size,
             batch_timeout: std::time::Duration::from_millis(args.batch_timeout_ms),
+            max_delivery_count: consumer::DEFAULT_MAX_DELIVERY_COUNT,
         },
     )
     .await?;

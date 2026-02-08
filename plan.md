@@ -1581,7 +1581,7 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-### Milestone 2.0.5: Failure Handling & Resilience ⏸️ PARTIAL
+### Milestone 2.0.5: Failure Handling & Resilience ✅ COMPLETE (integration tests for DLQ in follow-up)
 
 **Goal**: Robust handling of NATS and storage failures
 
@@ -1600,11 +1600,11 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 - [x] Response body indicates fallback (optional write_ticket, fallback flag)
 - [x] 11 unit tests for conversion functions, serialization, WriteMode
 
-**2.0.5.3 Dead Letter Queue**
+**2.0.5.3 Dead Letter Queue** ✅ COMPLETE
 - [x] RSFGA_DLQ stream created on startup
-- [ ] Move poison messages to DLQ after max retries
-- [ ] Include error metadata in DLQ message
-- [ ] DLQ monitoring endpoint
+- [x] Move poison messages to DLQ after max retries (num_delivered tracking)
+- [x] Include error metadata in DLQ message (DlqMessage struct with base64 payload)
+- [x] DLQ monitoring endpoint (DlqSummary via JetStreamManager.dlq_summary())
 
 **2.0.5.4 Consumer Recovery** ✅ COMPLETE
 - [x] Resume from last acked position (durable consumer)
@@ -1614,14 +1614,15 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 **Validation Criteria**:
 - [x] Circuit breaker opens after threshold failures
 - [x] Fallback writes succeed when NATS down
-- [ ] Poison messages end up in DLQ
+- [~] Poison messages end up in DLQ (unit tests pass; integration tests with live NATS in follow-up)
 - [x] Consumer recovers after restart
 
 **Deliverables**:
 - ✅ Circuit breaker (NATS publisher + storage consumer)
 - ✅ Consumer recovery (durable consumer)
-- ⏸️ DLQ message handling
+- ✅ DLQ message handling (DlqMessage, poison detection, DlqSummary)
 - ✅ Sync fallback path (WriteMode Auto/Nats/Direct)
+- ⏸️ DLQ integration tests (follow-up: end-to-end with testcontainers NATS)
 
 ---
 
@@ -1676,7 +1677,8 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 | Circuit Breaker Tests | ~8 | ✅ |
 | Async API Integration Tests | ~15 | ✅ |
 | Sync fallback tests | 11 | ✅ |
-| DLQ tests | 0 | ⏸️ |
+| DLQ unit tests | 17 | ✅ |
+| DLQ integration tests (testcontainers) | 0 | ⏸️ follow-up |
 | Edge sync tests | 0 | ⏸️ |
 | **Total Implemented** | **~151** | - |
 

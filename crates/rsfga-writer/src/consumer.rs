@@ -67,8 +67,8 @@ use tracing::{debug, error, info, warn};
 
 use rsfga_nats::{
     utils::{parse_object, parse_user},
-    CommittedEvent, EventPublisher, NatsClient, TupleKey, TupleOperation, WriteRequest,
-    STREAM_WRITES, SUBJECT_DLQ_PREFIX,
+    CommittedEvent, DlqMessage, EventPublisher, NatsClient, TupleKey, TupleOperation, WriteRequest,
+    STREAM_WRITES,
 };
 use rsfga_storage::{DataStore, StoredTuple};
 
@@ -91,6 +91,11 @@ pub const MAX_PENDING_QUEUE_SIZE: usize = 50_000;
 pub const STORAGE_CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
 /// How often to probe storage health when circuit is open.
 pub const STORAGE_HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(10);
+/// Timeout for DLQ publish operations. Prevents the consumer from blocking
+/// indefinitely if NATS is slow or unresponsive during DLQ writes.
+pub const DLQ_PUBLISH_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default maximum delivery attempts before a message is considered poison.
+pub const DEFAULT_MAX_DELIVERY_COUNT: u64 = 5;
 
 /// Consumer configuration.
 #[derive(Debug, Clone)]
@@ -101,6 +106,9 @@ pub struct ConsumerConfig {
     pub batch_size: usize,
     /// Batch timeout (flush if no messages for this duration).
     pub batch_timeout: Duration,
+    /// Maximum delivery attempts before a message is sent to DLQ as poison.
+    /// Set to 0 to disable poison message detection.
+    pub max_delivery_count: u64,
 }
 
 impl ConsumerConfig {
@@ -331,10 +339,9 @@ impl WriteConsumer {
                     Ok(msg) => {
                         self.metrics.record_message_consumed();
 
-                        // Get NATS stream sequence for persistent ordering
-                        // This is critical for CommittedEvent ordering
-                        let stream_sequence = match msg.info() {
-                            Ok(info) => info.stream_sequence,
+                        // Get NATS stream sequence and delivery count
+                        let (stream_sequence, num_delivered) = match msg.info() {
+                            Ok(info) => (info.stream_sequence, info.delivered),
                             Err(e) => {
                                 // This should never happen for JetStream messages
                                 // If it does, don't ack - let message be redelivered
@@ -349,6 +356,45 @@ impl WriteConsumer {
                             }
                         };
 
+                        // Poison message detection: if max_delivery_count is set
+                        // and this message has been delivered too many times, send
+                        // to DLQ and ack to prevent infinite redelivery.
+                        // Uses >= so that max_delivery_count=5 triggers on the 5th attempt.
+                        let num_delivered_u64 = num_delivered.max(0) as u64;
+                        if self.config.max_delivery_count > 0
+                            && num_delivered_u64 >= self.config.max_delivery_count
+                        {
+                            warn!(
+                                stream_sequence,
+                                num_delivered,
+                                max_delivery_count = self.config.max_delivery_count,
+                                subject = %msg.subject,
+                                "Poison message detected - sending to DLQ"
+                            );
+
+                            // Try to extract store_id from payload for metadata
+                            let store_id = serde_json::from_slice::<WriteRequest>(&msg.payload)
+                                .ok()
+                                .map(|r| r.store_id);
+
+                            let dlq_msg = DlqMessage::max_retries_exceeded(
+                                stream_sequence,
+                                msg.subject.as_str(),
+                                store_id,
+                                msg.payload.to_vec(),
+                                num_delivered_u64,
+                            );
+
+                            self.publish_to_dlq(&dlq_msg).await;
+
+                            if let Err(ack_err) = msg.ack().await {
+                                error!(error = %ack_err, "Failed to ack poison message");
+                            }
+                            self.metrics.record_message_failed();
+                            batch_had_failures = true;
+                            continue;
+                        }
+
                         // Parse the write request
                         match serde_json::from_slice::<WriteRequest>(&msg.payload) {
                             Ok(request) => {
@@ -361,36 +407,26 @@ impl WriteConsumer {
                             }
                             Err(e) => {
                                 // Parse failures are typically permanent (malformed data)
-                                // Publish to DLQ for analysis, then ack to prevent blocking
+                                // Publish structured DLQ message, then ack to prevent blocking
 
                                 error!(
                                     error = %e,
                                     payload_size = msg.payload.len(),
                                     subject = %msg.subject,
                                     stream_sequence,
+                                    num_delivered,
                                     "Failed to parse write request - sending to DLQ"
                                 );
 
-                                // Publish to Dead Letter Queue
-                                let dlq_subject = format!(
-                                    "{}.parse_error.{}",
-                                    SUBJECT_DLQ_PREFIX, stream_sequence
+                                let dlq_msg = DlqMessage::parse_error(
+                                    e.to_string(),
+                                    stream_sequence,
+                                    msg.subject.as_str(),
+                                    msg.payload.to_vec(),
+                                    num_delivered_u64,
                                 );
-                                if let Err(dlq_err) = self
-                                    .client
-                                    .client()
-                                    .publish(dlq_subject.clone(), msg.payload.clone())
-                                    .await
-                                {
-                                    warn!(
-                                        error = %dlq_err,
-                                        subject = %dlq_subject,
-                                        "Failed to publish to DLQ"
-                                    );
-                                    self.metrics.record_dlq_publish_failure();
-                                } else {
-                                    debug!(subject = %dlq_subject, "Message sent to DLQ");
-                                }
+
+                                self.publish_to_dlq(&dlq_msg).await;
 
                                 batch_had_failures = true;
 
@@ -578,41 +614,32 @@ impl WriteConsumer {
             }
         } else {
             // Event publish failed after retries - storage is already committed!
-            // Send to DLQ for recovery, then ack to prevent infinite redelivery
+            // Send structured DLQ message for recovery, then ack to prevent infinite redelivery
+            let error_msg = last_error
+                .as_ref()
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "unknown error".to_string());
             error!(
                 store_id = %batch.store_id,
-                error = ?last_error,
+                error = %error_msg,
                 "Failed to publish committed event after retries - sending to DLQ"
             );
             self.metrics.record_event_publish_failure();
 
-            // Publish failed event to DLQ for later recovery
-            let dlq_subject = format!(
-                "{}.event_publish_failed.{}",
-                SUBJECT_DLQ_PREFIX, batch.max_stream_sequence
+            // Build structured DLQ message with the CommittedEvent as payload
+            let event_payload = serde_json::to_vec(&event).unwrap_or_default();
+            let dlq_msg = DlqMessage::event_publish_failed(
+                error_msg,
+                batch.max_stream_sequence,
+                &batch.store_id,
+                event_payload,
+                // 0 = not applicable. The CommittedEvent is generated by the consumer,
+                // not delivered by NATS, so there's no NATS delivery count. The event
+                // publisher's internal retry count is captured in the error message.
+                0,
             );
-            let dlq_payload = serde_json::to_vec(&event).unwrap_or_default();
-            if let Err(dlq_err) = self
-                .client
-                .client()
-                .publish(dlq_subject.clone(), dlq_payload.into())
-                .await
-            {
-                // DLQ publish also failed - this is critical
-                error!(
-                    error = %dlq_err,
-                    subject = %dlq_subject,
-                    store_id = %batch.store_id,
-                    "CRITICAL: Failed to publish failed event to DLQ"
-                );
-                self.metrics.record_dlq_publish_failure();
-            } else {
-                warn!(
-                    subject = %dlq_subject,
-                    store_id = %batch.store_id,
-                    "Failed event sent to DLQ for recovery"
-                );
-            }
+
+            self.publish_to_dlq(&dlq_msg).await;
 
             // Ack messages since storage is committed (prevent duplicate writes)
             for msg in batch.messages {
@@ -631,6 +658,61 @@ impl WriteConsumer {
         );
 
         Ok(())
+    }
+
+    /// Publish a structured message to the Dead Letter Queue.
+    ///
+    /// Applies [`DLQ_PUBLISH_TIMEOUT`] to prevent blocking the consumer
+    /// if NATS is slow or unresponsive.
+    async fn publish_to_dlq(&self, dlq_msg: &DlqMessage) {
+        let dlq_subject = dlq_msg.subject();
+        let payload = match dlq_msg.to_bytes() {
+            Ok(p) => p,
+            Err(e) => {
+                error!(
+                    error = %e,
+                    category = %dlq_msg.category,
+                    "Failed to serialize DLQ message"
+                );
+                self.metrics.record_dlq_publish_failure();
+                return;
+            }
+        };
+
+        let publish_fut = self
+            .client
+            .client()
+            .publish(dlq_subject.clone(), payload.into());
+
+        match tokio::time::timeout(DLQ_PUBLISH_TIMEOUT, publish_fut).await {
+            Ok(Ok(())) => {
+                debug!(
+                    subject = %dlq_subject,
+                    category = %dlq_msg.category,
+                    stream_sequence = dlq_msg.stream_sequence,
+                    "Message sent to DLQ"
+                );
+                self.metrics.record_dlq_message_sent();
+            }
+            Ok(Err(dlq_err)) => {
+                error!(
+                    error = %dlq_err,
+                    subject = %dlq_subject,
+                    category = %dlq_msg.category,
+                    "CRITICAL: Failed to publish to DLQ"
+                );
+                self.metrics.record_dlq_publish_failure();
+            }
+            Err(_elapsed) => {
+                error!(
+                    subject = %dlq_subject,
+                    category = %dlq_msg.category,
+                    timeout_secs = DLQ_PUBLISH_TIMEOUT.as_secs(),
+                    "DLQ publish timed out"
+                );
+                self.metrics.record_dlq_publish_failure();
+            }
+        }
     }
 
     /// Create or get the durable pull consumer.
@@ -779,6 +861,7 @@ mod tests {
             consumer_name: "test-consumer".to_string(),
             batch_size: 100,
             batch_timeout: Duration::from_millis(50),
+            max_delivery_count: DEFAULT_MAX_DELIVERY_COUNT,
         };
         assert!(config.validate().is_ok());
     }
@@ -789,6 +872,7 @@ mod tests {
             consumer_name: "".to_string(),
             batch_size: 100,
             batch_timeout: Duration::from_millis(50),
+            max_delivery_count: DEFAULT_MAX_DELIVERY_COUNT,
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("consumer_name"));
@@ -800,6 +884,7 @@ mod tests {
             consumer_name: "test".to_string(),
             batch_size: 0,
             batch_timeout: Duration::from_millis(50),
+            max_delivery_count: DEFAULT_MAX_DELIVERY_COUNT,
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("batch_size"));
@@ -811,6 +896,7 @@ mod tests {
             consumer_name: "test".to_string(),
             batch_size: MAX_BATCH_SIZE + 1,
             batch_timeout: Duration::from_millis(50),
+            max_delivery_count: DEFAULT_MAX_DELIVERY_COUNT,
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("batch_size"));
@@ -822,6 +908,7 @@ mod tests {
             consumer_name: "test".to_string(),
             batch_size: 100,
             batch_timeout: Duration::from_millis(1),
+            max_delivery_count: DEFAULT_MAX_DELIVERY_COUNT,
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("batch_timeout"));
@@ -833,8 +920,82 @@ mod tests {
             consumer_name: "test".to_string(),
             batch_size: 100,
             batch_timeout: MAX_BATCH_TIMEOUT + Duration::from_secs(1),
+            max_delivery_count: DEFAULT_MAX_DELIVERY_COUNT,
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("batch_timeout"));
+    }
+
+    #[test]
+    fn test_consumer_config_max_delivery_count_zero_disables() {
+        let config = ConsumerConfig {
+            consumer_name: "test".to_string(),
+            batch_size: 100,
+            batch_timeout: Duration::from_millis(50),
+            max_delivery_count: 0,
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_consumer_config_default_max_delivery_count() {
+        assert_eq!(DEFAULT_MAX_DELIVERY_COUNT, 5);
+    }
+
+    #[test]
+    fn test_convert_operation_to_tuple_simple() {
+        let op = TupleOperation::new("user:alice", "viewer", "document:readme");
+        let tuple = convert_operation_to_tuple(&op).unwrap();
+
+        assert_eq!(tuple.user_type, "user");
+        assert_eq!(tuple.user_id, "alice");
+        assert_eq!(tuple.relation, "viewer");
+        assert_eq!(tuple.object_type, "document");
+        assert_eq!(tuple.object_id, "readme");
+        assert_eq!(tuple.user_relation, None);
+        assert_eq!(tuple.condition_name, None);
+    }
+
+    #[test]
+    fn test_convert_operation_to_tuple_with_userset() {
+        let op = TupleOperation::new("team:eng#member", "viewer", "document:readme");
+        let tuple = convert_operation_to_tuple(&op).unwrap();
+
+        assert_eq!(tuple.user_type, "team");
+        assert_eq!(tuple.user_id, "eng");
+        assert_eq!(tuple.user_relation, Some("member".to_string()));
+    }
+
+    #[test]
+    fn test_convert_operation_to_tuple_with_condition() {
+        let op = TupleOperation::new("user:alice", "viewer", "document:readme")
+            .with_condition(rsfga_nats::TupleCondition::new("ip_range"));
+        let tuple = convert_operation_to_tuple(&op).unwrap();
+
+        assert_eq!(tuple.condition_name, Some("ip_range".to_string()));
+    }
+
+    #[test]
+    fn test_convert_key_to_tuple() {
+        let key = TupleKey::new("user:bob", "editor", "folder:root");
+        let tuple = convert_key_to_tuple(&key).unwrap();
+
+        assert_eq!(tuple.user_type, "user");
+        assert_eq!(tuple.user_id, "bob");
+        assert_eq!(tuple.relation, "editor");
+        assert_eq!(tuple.object_type, "folder");
+        assert_eq!(tuple.object_id, "root");
+    }
+
+    #[test]
+    fn test_convert_operation_invalid_user_returns_none() {
+        let op = TupleOperation::new("invalid", "viewer", "document:readme");
+        assert!(convert_operation_to_tuple(&op).is_none());
+    }
+
+    #[test]
+    fn test_convert_operation_invalid_object_returns_none() {
+        let op = TupleOperation::new("user:alice", "viewer", "invalid");
+        assert!(convert_operation_to_tuple(&op).is_none());
     }
 }
