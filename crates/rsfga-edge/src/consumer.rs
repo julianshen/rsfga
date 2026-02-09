@@ -49,6 +49,7 @@ use rsfga_storage::{DataStore, StoredTuple};
 
 use crate::error::{EdgeError, Result};
 use crate::metrics::EdgeMetrics;
+use crate::watermark_store::{WatermarkSnapshot, WatermarkStore};
 
 /// Default fetch batch size for edge consumer.
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -224,8 +225,14 @@ impl SyncWatermark {
             .collect()
     }
 
+    /// Create a snapshot of the current contiguous positions for persistence.
+    pub fn to_snapshot(&self) -> WatermarkSnapshot {
+        WatermarkSnapshot {
+            positions: self.positions(),
+        }
+    }
+
     /// Restore watermark from saved contiguous positions (e.g., on restart).
-    #[allow(dead_code)] // Used by tests; planned for watermark persistence (2.0.6.2)
     pub fn restore(&self, positions: HashMap<String, u64>) {
         for (store_id, sequence) in positions {
             // Restore sets the contiguous position directly (all seqs up to it are assumed applied)
@@ -253,6 +260,7 @@ pub struct EdgeConsumer {
     metrics: Arc<EdgeMetrics>,
     config: EdgeConsumerConfig,
     watermark: SyncWatermark,
+    watermark_store: Option<Arc<dyn WatermarkStore>>,
 }
 
 impl EdgeConsumer {
@@ -269,7 +277,41 @@ impl EdgeConsumer {
             metrics,
             config,
             watermark: SyncWatermark::new(),
+            watermark_store: None,
         }
+    }
+
+    /// Create a new edge consumer with persistent watermark storage.
+    ///
+    /// Loads the watermark from the store on creation and saves after each batch.
+    #[allow(dead_code)] // Will be wired into main.rs CLI in follow-up
+    pub async fn with_watermark_store(
+        client: NatsClient,
+        storage: Arc<dyn DataStore>,
+        metrics: Arc<EdgeMetrics>,
+        config: EdgeConsumerConfig,
+        watermark_store: Arc<dyn WatermarkStore>,
+    ) -> Result<Self> {
+        let watermark = SyncWatermark::new();
+
+        // Load saved positions from the store
+        let snapshot = watermark_store.load().await?;
+        if !snapshot.positions.is_empty() {
+            info!(
+                positions = ?snapshot.positions,
+                "Restored watermark from persistent store"
+            );
+            watermark.restore(snapshot.positions);
+        }
+
+        Ok(Self {
+            client,
+            storage,
+            metrics,
+            config,
+            watermark,
+            watermark_store: Some(watermark_store),
+        })
     }
 
     /// Create a new edge consumer with a pre-existing watermark (for restart recovery).
@@ -287,13 +329,23 @@ impl EdgeConsumer {
             metrics,
             config,
             watermark,
+            watermark_store: None,
         }
     }
 
     /// Get a reference to the sync watermark.
-    #[allow(dead_code)] // Planned for watermark persistence (2.0.6.2)
+    #[allow(dead_code)] // Used by tests; will be used by health check endpoint
     pub fn watermark(&self) -> &SyncWatermark {
         &self.watermark
+    }
+
+    /// Save current watermark positions to persistent store.
+    async fn save_watermark(&self) -> Result<()> {
+        if let Some(store) = &self.watermark_store {
+            let snapshot = self.watermark.to_snapshot();
+            store.save(&snapshot).await?;
+        }
+        Ok(())
     }
 
     /// Get a reference to the consumer config.
@@ -577,10 +629,20 @@ impl EdgeConsumer {
 
             if processed > 0 {
                 debug!(processed = processed, "Batch complete");
+
+                // Persist watermark after each batch
+                if let Err(e) = self.save_watermark().await {
+                    warn!(error = %e, "Failed to save watermark after batch");
+                }
             }
 
             // Brief yield to prevent busy-loop when no messages
             tokio::task::yield_now().await;
+        }
+
+        // Final watermark save on shutdown
+        if let Err(e) = self.save_watermark().await {
+            warn!(error = %e, "Failed to save watermark on shutdown");
         }
 
         let positions = self.watermark.positions();
@@ -1048,5 +1110,110 @@ mod tests {
         let metrics = EdgeMetrics::new();
         metrics.record_storage_failure();
         assert_eq!(metrics.storage_failures.load(Ordering::Relaxed), 1);
+    }
+
+    // ===========================================
+    // Section 7: Watermark Snapshot & Persistence Integration Tests
+    // ===========================================
+
+    #[test]
+    fn test_watermark_to_snapshot_empty() {
+        let wm = SyncWatermark::new();
+        let snapshot = wm.to_snapshot();
+        assert!(snapshot.positions.is_empty());
+    }
+
+    #[test]
+    fn test_watermark_to_snapshot_contiguous_only() {
+        let wm = SyncWatermark::new();
+        for seq in 1..=5 {
+            wm.advance("store-1", seq);
+        }
+        for seq in 1..=10 {
+            wm.advance("store-2", seq);
+        }
+
+        let snapshot = wm.to_snapshot();
+        assert_eq!(snapshot.positions.len(), 2);
+        assert_eq!(snapshot.positions["store-1"], 5);
+        assert_eq!(snapshot.positions["store-2"], 10);
+    }
+
+    #[test]
+    fn test_watermark_to_snapshot_with_gaps_uses_contiguous() {
+        let wm = SyncWatermark::new();
+        wm.advance("store-1", 1);
+        wm.advance("store-1", 2);
+        wm.advance("store-1", 5); // gap at 3, 4
+        wm.advance("store-1", 7); // gap at 6
+
+        let snapshot = wm.to_snapshot();
+        // Snapshot should only contain the contiguous position (2), not 5 or 7
+        assert_eq!(snapshot.positions["store-1"], 2);
+    }
+
+    #[test]
+    fn test_watermark_restore_from_snapshot() {
+        let wm = SyncWatermark::new();
+        let mut positions = HashMap::new();
+        positions.insert("store-1".to_string(), 42);
+        positions.insert("store-2".to_string(), 100);
+
+        wm.restore(positions);
+
+        // After restore, sequences 1..=42 are considered applied for store-1
+        assert!(wm.is_applied("store-1", 1));
+        assert!(wm.is_applied("store-1", 42));
+        assert!(!wm.is_applied("store-1", 43));
+
+        assert!(wm.is_applied("store-2", 100));
+        assert!(!wm.is_applied("store-2", 101));
+    }
+
+    #[test]
+    fn test_watermark_roundtrip_snapshot_restore() {
+        // Build watermark with some state
+        let wm1 = SyncWatermark::new();
+        for seq in 1..=20 {
+            wm1.advance("store-a", seq);
+        }
+        for seq in 1..=50 {
+            wm1.advance("store-b", seq);
+        }
+
+        // Snapshot → Restore
+        let snapshot = wm1.to_snapshot();
+        let wm2 = SyncWatermark::new();
+        wm2.restore(snapshot.positions);
+
+        // wm2 should have the same contiguous positions
+        assert_eq!(wm2.contiguous_position("store-a"), Some(20));
+        assert_eq!(wm2.contiguous_position("store-b"), Some(50));
+        assert!(wm2.is_applied("store-a", 20));
+        assert!(!wm2.is_applied("store-a", 21));
+    }
+
+    #[tokio::test]
+    async fn test_watermark_save_and_restore_via_store() {
+        use crate::watermark_store::InMemoryWatermarkStore;
+
+        let store = Arc::new(InMemoryWatermarkStore::new());
+
+        // Build watermark, create snapshot, save
+        let wm = SyncWatermark::new();
+        for seq in 1..=15 {
+            wm.advance("store-1", seq);
+        }
+        let snapshot = wm.to_snapshot();
+        store.save(&snapshot).await.unwrap();
+
+        // Load from store and restore into a new watermark
+        let loaded = store.load().await.unwrap();
+        let wm2 = SyncWatermark::new();
+        wm2.restore(loaded.positions);
+
+        assert_eq!(wm2.contiguous_position("store-1"), Some(15));
+        assert!(wm2.is_applied("store-1", 15));
+        assert!(!wm2.is_applied("store-1", 16));
     }
 }
