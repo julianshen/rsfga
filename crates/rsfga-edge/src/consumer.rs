@@ -33,7 +33,7 @@
 //! - `store_filter = None`: Receive all events (full replica)
 //! - `store_filter = Some({"store-1", "store-2"})`: Only specific stores
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -92,11 +92,57 @@ impl Default for EdgeConsumerConfig {
     }
 }
 
+/// Per-store watermark state tracking both contiguous position and pending sequences.
+#[derive(Debug, Clone)]
+struct StoreWatermarkState {
+    /// Highest sequence where all sequences 1..=contiguous are applied.
+    contiguous: u64,
+    /// Sequences applied above the contiguous point (gaps exist below these).
+    pending: BTreeSet<u64>,
+}
+
+impl StoreWatermarkState {
+    fn new() -> Self {
+        Self {
+            contiguous: 0,
+            pending: BTreeSet::new(),
+        }
+    }
+
+    /// Record that a sequence has been applied and advance contiguous if possible.
+    fn advance(&mut self, sequence: u64) {
+        if sequence <= self.contiguous {
+            return; // Already covered by contiguous watermark
+        }
+
+        if sequence == self.contiguous + 1 {
+            // Extends the contiguous range directly
+            self.contiguous = sequence;
+            // Drain any consecutive pending sequences
+            while self.pending.first().copied() == Some(self.contiguous + 1) {
+                self.pending.pop_first();
+                self.contiguous += 1;
+            }
+        } else {
+            // Gap exists — add to pending set
+            self.pending.insert(sequence);
+        }
+    }
+
+    /// Check if a sequence has been applied (either contiguous or pending).
+    fn is_applied(&self, sequence: u64) -> bool {
+        sequence <= self.contiguous || self.pending.contains(&sequence)
+    }
+}
+
 /// Sync watermark tracking the last applied sequence per store.
 ///
-/// Uses DashMap for lock-free concurrent access. The watermark tracks
-/// the highest CommittedEvent.sequence that has been successfully
-/// applied to local storage for each store_id.
+/// Uses DashMap for lock-free concurrent access. Handles out-of-order
+/// event delivery by maintaining a contiguous watermark plus a pending
+/// set of applied-but-not-yet-contiguous sequences per store.
+///
+/// When gaps are filled, the contiguous watermark automatically advances
+/// through any consecutive pending sequences.
 ///
 /// **Note**: The watermark is currently in-memory only. On daemon restart,
 /// events will be replayed from the NATS durable consumer position. Storage
@@ -104,59 +150,98 @@ impl Default for EdgeConsumerConfig {
 /// Persistent watermark storage is planned for a follow-up (plan.md 2.0.6.2).
 #[derive(Debug, Default, Clone)]
 pub struct SyncWatermark {
-    /// Map of store_id -> last applied sequence number.
-    positions: Arc<DashMap<String, u64>>,
+    /// Map of store_id -> watermark state (contiguous + pending).
+    states: Arc<DashMap<String, StoreWatermarkState>>,
 }
 
 impl SyncWatermark {
     /// Create a new empty sync watermark.
     pub fn new() -> Self {
         Self {
-            positions: Arc::new(DashMap::new()),
+            states: Arc::new(DashMap::new()),
         }
     }
 
-    /// Get the last applied sequence for a store.
+    /// Get the highest applied sequence for a store (max of contiguous + pending).
     #[allow(dead_code)] // Used by tests; planned for watermark persistence (2.0.6.2)
     pub fn get(&self, store_id: &str) -> Option<u64> {
-        self.positions.get(store_id).map(|v| *v)
+        self.states.get(store_id).map(|state| {
+            state
+                .pending
+                .last()
+                .copied()
+                .unwrap_or(state.contiguous)
+                .max(state.contiguous)
+        })
     }
 
-    /// Update the sync position for a store.
+    /// Get the contiguous position for a store.
     ///
-    /// Only advances the watermark (never goes backward).
+    /// This is the highest sequence where all sequences 1..=N have been applied.
+    /// Returns None if no events have been applied for this store.
+    #[allow(dead_code)] // Used by tests; planned for watermark persistence (2.0.6.2)
+    pub fn contiguous_position(&self, store_id: &str) -> Option<u64> {
+        self.states.get(store_id).and_then(|state| {
+            if state.contiguous == 0 {
+                None
+            } else {
+                Some(state.contiguous)
+            }
+        })
+    }
+
+    /// Record that a sequence has been applied for a store.
+    ///
+    /// Handles out-of-order delivery: if the sequence fills a gap,
+    /// the contiguous watermark advances through any consecutive applied sequences.
     pub fn advance(&self, store_id: &str, sequence: u64) {
-        self.positions
+        self.states
             .entry(store_id.to_string())
-            .and_modify(|current| {
-                if sequence > *current {
-                    *current = sequence;
-                }
+            .and_modify(|state| {
+                state.advance(sequence);
             })
-            .or_insert(sequence);
+            .or_insert_with(|| {
+                let mut state = StoreWatermarkState::new();
+                state.advance(sequence);
+                state
+            });
     }
 
     /// Check if a sequence has already been applied for a store.
     pub fn is_applied(&self, store_id: &str, sequence: u64) -> bool {
-        self.positions
+        self.states
             .get(store_id)
-            .map(|v| sequence <= *v)
+            .map(|state| state.is_applied(sequence))
             .unwrap_or(false)
     }
 
-    /// Get all tracked store positions.
+    /// Get all tracked store positions (contiguous watermark per store).
     pub fn positions(&self) -> HashMap<String, u64> {
-        self.positions
+        self.states
             .iter()
-            .map(|entry| (entry.key().clone(), *entry.value()))
+            .filter(|entry| entry.value().contiguous > 0)
+            .map(|entry| (entry.key().clone(), entry.value().contiguous))
             .collect()
     }
 
-    /// Restore watermark from saved positions (e.g., on restart).
+    /// Restore watermark from saved contiguous positions (e.g., on restart).
     #[allow(dead_code)] // Used by tests; planned for watermark persistence (2.0.6.2)
     pub fn restore(&self, positions: HashMap<String, u64>) {
         for (store_id, sequence) in positions {
-            self.advance(&store_id, sequence);
+            // Restore sets the contiguous position directly (all seqs up to it are assumed applied)
+            self.states
+                .entry(store_id)
+                .and_modify(|state| {
+                    if sequence > state.contiguous {
+                        state.contiguous = sequence;
+                        // Remove any pending entries now covered by the contiguous watermark
+                        state.pending.retain(|&s| s > sequence);
+                    }
+                })
+                .or_insert_with(|| StoreWatermarkState {
+                    contiguous: sequence,
+                    pending: BTreeSet::new(),
+                });
         }
     }
 }
@@ -570,25 +655,38 @@ mod tests {
     #[test]
     fn test_sync_watermark_advance_and_get() {
         let wm = SyncWatermark::new();
-        wm.advance("store-1", 10);
-        assert_eq!(wm.get("store-1"), Some(10));
+        wm.advance("store-1", 1);
+        assert_eq!(wm.get("store-1"), Some(1));
+
+        // With gap: get() returns the max of contiguous and pending
+        wm.advance("store-1", 5);
+        assert_eq!(wm.get("store-1"), Some(5));
     }
 
     #[test]
     fn test_sync_watermark_advance_only_moves_forward() {
         let wm = SyncWatermark::new();
-        wm.advance("store-1", 10);
-        wm.advance("store-1", 5); // Should not go backward
+        for seq in 1..=10 {
+            wm.advance("store-1", seq);
+        }
+        wm.advance("store-1", 5); // Duplicate — should be no-op
         assert_eq!(wm.get("store-1"), Some(10));
+        assert_eq!(wm.contiguous_position("store-1"), Some(10));
 
-        wm.advance("store-1", 15); // Should advance
+        // Advance to 15 sequentially
+        for seq in 11..=15 {
+            wm.advance("store-1", seq);
+        }
         assert_eq!(wm.get("store-1"), Some(15));
     }
 
     #[test]
     fn test_sync_watermark_is_applied() {
         let wm = SyncWatermark::new();
-        wm.advance("store-1", 10);
+        // Advance sequentially 1..=10 (contiguous watermark at 10)
+        for seq in 1..=10 {
+            wm.advance("store-1", seq);
+        }
 
         assert!(wm.is_applied("store-1", 5)); // Before watermark
         assert!(wm.is_applied("store-1", 10)); // At watermark
@@ -599,9 +697,16 @@ mod tests {
     #[test]
     fn test_sync_watermark_multiple_stores() {
         let wm = SyncWatermark::new();
-        wm.advance("store-1", 10);
-        wm.advance("store-2", 20);
-        wm.advance("store-3", 5);
+        // Advance each store sequentially
+        for seq in 1..=10 {
+            wm.advance("store-1", seq);
+        }
+        for seq in 1..=20 {
+            wm.advance("store-2", seq);
+        }
+        for seq in 1..=5 {
+            wm.advance("store-3", seq);
+        }
 
         assert_eq!(wm.get("store-1"), Some(10));
         assert_eq!(wm.get("store-2"), Some(20));
@@ -633,6 +738,109 @@ mod tests {
         wm.restore(saved);
 
         assert_eq!(wm.get("store-1"), Some(100)); // Should not regress
+    }
+
+    // ===========================================
+    // Section 6: Out-of-Order Delivery Tests
+    // ===========================================
+
+    #[test]
+    fn test_out_of_order_does_not_skip_unapplied_events() {
+        // If we receive seq 5 before seq 3, seq 3 must NOT be considered "applied"
+        let wm = SyncWatermark::new();
+        wm.advance("store-1", 1);
+        wm.advance("store-1", 2);
+        wm.advance("store-1", 5); // Gap: 3, 4 not yet seen
+
+        // Seq 3 was never applied — must return false
+        assert!(!wm.is_applied("store-1", 3));
+        assert!(!wm.is_applied("store-1", 4));
+
+        // Seq 1, 2, 5 were applied
+        assert!(wm.is_applied("store-1", 1));
+        assert!(wm.is_applied("store-1", 2));
+        assert!(wm.is_applied("store-1", 5));
+    }
+
+    #[test]
+    fn test_contiguous_watermark_advances_when_gaps_fill() {
+        let wm = SyncWatermark::new();
+        wm.advance("store-1", 1);
+        wm.advance("store-1", 3); // Gap at 2
+        wm.advance("store-1", 5); // Gap at 4
+
+        // Contiguous watermark should be at 1
+        assert_eq!(wm.contiguous_position("store-1"), Some(1));
+
+        // Fill gap at 2 — contiguous advances to 3
+        wm.advance("store-1", 2);
+        assert_eq!(wm.contiguous_position("store-1"), Some(3));
+
+        // Fill gap at 4 — contiguous advances to 5
+        wm.advance("store-1", 4);
+        assert_eq!(wm.contiguous_position("store-1"), Some(5));
+    }
+
+    #[test]
+    fn test_sequential_delivery_no_gaps() {
+        let wm = SyncWatermark::new();
+        for seq in 1..=10 {
+            wm.advance("store-1", seq);
+        }
+
+        assert_eq!(wm.contiguous_position("store-1"), Some(10));
+        for seq in 1..=10 {
+            assert!(wm.is_applied("store-1", seq));
+        }
+        assert!(!wm.is_applied("store-1", 11));
+    }
+
+    #[test]
+    fn test_reverse_delivery_order() {
+        let wm = SyncWatermark::new();
+        // Deliver in reverse: 5, 4, 3, 2, 1
+        for seq in (1..=5).rev() {
+            wm.advance("store-1", seq);
+        }
+
+        // All should be applied, contiguous watermark at 5
+        assert_eq!(wm.contiguous_position("store-1"), Some(5));
+        for seq in 1..=5 {
+            assert!(wm.is_applied("store-1", seq));
+        }
+    }
+
+    #[test]
+    fn test_out_of_order_multi_store_independent() {
+        let wm = SyncWatermark::new();
+        wm.advance("store-a", 1);
+        wm.advance("store-a", 3); // gap at 2 for store-a
+        wm.advance("store-b", 1);
+        wm.advance("store-b", 2); // no gap for store-b
+
+        assert_eq!(wm.contiguous_position("store-a"), Some(1));
+        assert_eq!(wm.contiguous_position("store-b"), Some(2));
+
+        // store-a: 2 not applied, 3 applied
+        assert!(!wm.is_applied("store-a", 2));
+        assert!(wm.is_applied("store-a", 3));
+
+        // store-b: both applied
+        assert!(wm.is_applied("store-b", 1));
+        assert!(wm.is_applied("store-b", 2));
+    }
+
+    #[test]
+    fn test_duplicate_advance_is_idempotent() {
+        let wm = SyncWatermark::new();
+        wm.advance("store-1", 1);
+        wm.advance("store-1", 3);
+        wm.advance("store-1", 3); // duplicate
+        wm.advance("store-1", 3); // duplicate
+
+        assert_eq!(wm.contiguous_position("store-1"), Some(1));
+        assert!(wm.is_applied("store-1", 3));
+        assert!(!wm.is_applied("store-1", 2));
     }
 
     // ===========================================
