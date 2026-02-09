@@ -13,6 +13,7 @@
 mod consumer;
 mod error;
 mod metrics;
+pub mod watermark_store;
 
 use std::collections::HashSet;
 use std::sync::Arc;
