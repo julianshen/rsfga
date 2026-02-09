@@ -3564,6 +3564,7 @@ name = "rsfga-edge"
 version = "1.0.1"
 dependencies = [
  "async-nats",
+ "async-trait",
  "clap",
  "dashmap",
  "futures",
@@ -3573,6 +3574,7 @@ dependencies = [
  "rsfga-storage",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
