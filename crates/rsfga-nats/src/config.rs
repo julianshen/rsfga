@@ -227,32 +227,11 @@ impl std::fmt::Debug for AuthConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuthConfig")
             .field("username", &self.username)
-            .field(
-                "password",
-                &if self.password.is_some() {
-                    Some("[REDACTED]")
-                } else {
-                    None
-                },
-            )
-            .field(
-                "token",
-                &if self.token.is_some() {
-                    Some("[REDACTED]")
-                } else {
-                    None
-                },
-            )
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
             .field("credentials_path", &self.credentials_path)
             .field("nkey_seed_path", &self.nkey_seed_path)
-            .field(
-                "jwt",
-                &if self.jwt.is_some() {
-                    Some("[REDACTED]")
-                } else {
-                    None
-                },
-            )
+            .field("jwt", &self.jwt.as_ref().map(|_| "[REDACTED]"))
             .finish()
     }
 }
