@@ -1345,6 +1345,17 @@ async fn check<S: DataStore>(
             })?;
     }
 
+    // Validate contextual tuple count before allocation
+    if let Some(ref ct) = body.contextual_tuples {
+        if ct.tuple_keys.len() > crate::validation::MAX_CONTEXTUAL_TUPLES {
+            return Err(ApiError::validation_error(format!(
+                "too many contextual tuples: {} exceeds maximum of {}",
+                ct.tuple_keys.len(),
+                crate::validation::MAX_CONTEXTUAL_TUPLES
+            )));
+        }
+    }
+
     // Convert contextual tuples from HTTP format to domain format
     let contextual_tuples: Vec<ContextualTuple> = body
         .contextual_tuples
@@ -2770,6 +2781,17 @@ async fn list_objects<S: DataStore>(
         }
     }
 
+    // Validate contextual tuple count before allocation
+    if let Some(ref ct) = body.contextual_tuples {
+        if ct.tuple_keys.len() > crate::validation::MAX_CONTEXTUAL_TUPLES {
+            return Err(ApiError::validation_error(format!(
+                "too many contextual tuples: {} exceeds maximum of {}",
+                ct.tuple_keys.len(),
+                crate::validation::MAX_CONTEXTUAL_TUPLES
+            )));
+        }
+    }
+
     // Convert contextual tuples if provided
     let contextual_tuples = body
         .contextual_tuples
@@ -3000,6 +3022,17 @@ async fn list_users<S: DataStore>(
             }
         })
         .collect();
+
+    // Validate contextual tuple count before allocation
+    if let Some(ref ct) = body.contextual_tuples {
+        if ct.tuple_keys.len() > crate::validation::MAX_CONTEXTUAL_TUPLES {
+            return Err(ApiError::validation_error(format!(
+                "too many contextual tuples: {} exceeds maximum of {}",
+                ct.tuple_keys.len(),
+                crate::validation::MAX_CONTEXTUAL_TUPLES
+            )));
+        }
+    }
 
     // Convert contextual tuples if provided
     let contextual_tuples = body

@@ -158,6 +158,11 @@ pub const MAX_USER_ID_LENGTH: usize = 512;
 /// This prevents DoS attacks and ensures reasonable batch sizes.
 pub const MAX_TUPLES_PER_WRITE: usize = 100;
 
+/// Maximum number of contextual tuples allowed per request.
+/// Matches OpenFGA default behavior. Prevents uncontrolled allocation from
+/// user-supplied contextual tuple arrays in Check, ListObjects, ListUsers.
+pub const MAX_CONTEXTUAL_TUPLES: usize = 100;
+
 /// Validates a user identifier format.
 ///
 /// Valid formats:
