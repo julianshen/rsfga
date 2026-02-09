@@ -94,7 +94,7 @@ impl WatermarkStore for FileWatermarkStore {
             warn!(
                 error = %e,
                 path = %self.path.display(),
-                "Failed to parse watermark file, starting from empty state"
+                "Failed to parse watermark file"
             );
             e
         })?;

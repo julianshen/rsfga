@@ -93,12 +93,18 @@ impl Default for EdgeConsumerConfig {
     }
 }
 
+/// Maximum number of out-of-order sequences tracked per store before
+/// force-advancing the contiguous watermark. Prevents unbounded memory
+/// growth from persistent gaps (e.g., lost messages, sequence jumps).
+const MAX_PENDING_SET_SIZE: usize = 10_000;
+
 /// Per-store watermark state tracking both contiguous position and pending sequences.
 #[derive(Debug, Clone)]
 struct StoreWatermarkState {
     /// Highest sequence where all sequences 1..=contiguous are applied.
     contiguous: u64,
     /// Sequences applied above the contiguous point (gaps exist below these).
+    /// Bounded to MAX_PENDING_SET_SIZE entries.
     pending: BTreeSet<u64>,
 }
 
@@ -111,7 +117,15 @@ impl StoreWatermarkState {
     }
 
     /// Record that a sequence has been applied and advance contiguous if possible.
+    ///
+    /// If the pending set exceeds MAX_PENDING_SET_SIZE, the contiguous watermark
+    /// is force-advanced to the lowest pending entry, accepting that the skipped
+    /// gap will not be detected as a duplicate on replay.
     fn advance(&mut self, sequence: u64) {
+        if sequence == 0 {
+            return; // Sequence 0 is invalid (contiguous 0 means "no events")
+        }
+
         if sequence <= self.contiguous {
             return; // Already covered by contiguous watermark
         }
@@ -127,6 +141,34 @@ impl StoreWatermarkState {
         } else {
             // Gap exists — add to pending set
             self.pending.insert(sequence);
+
+            // Enforce size bound: force-advance if pending set too large
+            if self.pending.len() > MAX_PENDING_SET_SIZE {
+                self.force_advance_to_lowest_pending();
+            }
+        }
+    }
+
+    /// Force-advance the contiguous watermark to the lowest pending entry,
+    /// accepting the gap. This bounds memory usage at the cost of losing
+    /// dedup protection for the skipped sequences.
+    fn force_advance_to_lowest_pending(&mut self) {
+        if let Some(&lowest) = self.pending.first() {
+            warn!(
+                old_contiguous = self.contiguous,
+                new_contiguous = lowest,
+                gap_size = lowest - self.contiguous - 1,
+                pending_size = self.pending.len(),
+                "Force-advancing watermark past gap (pending set exceeded limit)"
+            );
+            self.contiguous = lowest;
+            self.pending.remove(&lowest);
+
+            // Continue draining consecutive entries
+            while self.pending.first().copied() == Some(self.contiguous + 1) {
+                self.pending.pop_first();
+                self.contiguous += 1;
+            }
         }
     }
 
@@ -143,12 +185,14 @@ impl StoreWatermarkState {
 /// set of applied-but-not-yet-contiguous sequences per store.
 ///
 /// When gaps are filled, the contiguous watermark automatically advances
-/// through any consecutive pending sequences.
+/// through any consecutive pending sequences. The pending set is bounded
+/// to `MAX_PENDING_SET_SIZE` entries; if exceeded, the contiguous watermark
+/// is force-advanced past the gap to prevent unbounded memory growth.
 ///
-/// **Note**: The watermark is currently in-memory only. On daemon restart,
-/// events will be replayed from the NATS durable consumer position. Storage
-/// writes are idempotent (ON CONFLICT / upsert), so replayed events are safe.
-/// Persistent watermark storage is planned for a follow-up (plan.md 2.0.6.2).
+/// Persistence is handled by `WatermarkStore` (see `watermark_store.rs`).
+/// On daemon restart, saved contiguous positions are restored via `restore()`.
+/// Storage writes are idempotent (ON CONFLICT / upsert), so replayed events
+/// from NATS redelivery are safe even if the watermark lags slightly.
 #[derive(Debug, Default, Clone)]
 pub struct SyncWatermark {
     /// Map of store_id -> watermark state (contiguous + pending).
@@ -164,7 +208,7 @@ impl SyncWatermark {
     }
 
     /// Get the highest applied sequence for a store (max of contiguous + pending).
-    #[allow(dead_code)] // Used by tests; planned for watermark persistence (2.0.6.2)
+    #[allow(dead_code)] // Used by tests
     pub fn get(&self, store_id: &str) -> Option<u64> {
         self.states.get(store_id).map(|state| {
             state
@@ -180,7 +224,7 @@ impl SyncWatermark {
     ///
     /// This is the highest sequence where all sequences 1..=N have been applied.
     /// Returns None if no events have been applied for this store.
-    #[allow(dead_code)] // Used by tests; planned for watermark persistence (2.0.6.2)
+    #[allow(dead_code)] // Used by tests
     pub fn contiguous_position(&self, store_id: &str) -> Option<u64> {
         self.states.get(store_id).and_then(|state| {
             if state.contiguous == 0 {
@@ -195,7 +239,11 @@ impl SyncWatermark {
     ///
     /// Handles out-of-order delivery: if the sequence fills a gap,
     /// the contiguous watermark advances through any consecutive applied sequences.
+    /// Sequence 0 is rejected (contiguous 0 means "no events applied").
     pub fn advance(&self, store_id: &str, sequence: u64) {
+        if sequence == 0 {
+            return;
+        }
         self.states
             .entry(store_id.to_string())
             .and_modify(|state| {
@@ -903,6 +951,41 @@ mod tests {
         assert_eq!(wm.contiguous_position("store-1"), Some(1));
         assert!(wm.is_applied("store-1", 3));
         assert!(!wm.is_applied("store-1", 2));
+    }
+
+    #[test]
+    fn test_advance_sequence_zero_is_ignored() {
+        let wm = SyncWatermark::new();
+        wm.advance("store-1", 0);
+
+        // Sequence 0 should be rejected — no state created
+        assert!(wm.get("store-1").is_none());
+        assert!(wm.contiguous_position("store-1").is_none());
+        assert!(!wm.is_applied("store-1", 0));
+    }
+
+    #[test]
+    fn test_pending_set_bounded_force_advances() {
+        let wm = SyncWatermark::new();
+        wm.advance("store-1", 1); // contiguous = 1
+
+        // Insert MAX_PENDING_SET_SIZE + 1 entries with a gap at 2
+        // Sequences: 3, 4, 5, ..., MAX_PENDING_SET_SIZE + 3
+        for seq in 3..=(MAX_PENDING_SET_SIZE as u64 + 3) {
+            wm.advance("store-1", seq);
+        }
+
+        // Pending set should have been force-trimmed.
+        // After overflow, contiguous should have advanced past the gap.
+        let contiguous = wm.contiguous_position("store-1").unwrap();
+        assert!(
+            contiguous > 1,
+            "contiguous should have force-advanced past 1"
+        );
+        // The force-advance moves contiguous to the lowest pending (3), then drains
+        // consecutive entries. Since all 3..=N are present, contiguous should be N.
+        let expected = MAX_PENDING_SET_SIZE as u64 + 3;
+        assert_eq!(contiguous, expected);
     }
 
     // ===========================================
