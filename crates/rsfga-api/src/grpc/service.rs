@@ -267,6 +267,17 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .tuple_key
             .ok_or_else(|| Status::invalid_argument("tuple_key required for check request"))?;
 
+        // Validate contextual tuple count before allocation
+        if let Some(ref ct) = req.contextual_tuples {
+            if ct.tuple_keys.len() > crate::validation::MAX_CONTEXTUAL_TUPLES {
+                return Err(Status::invalid_argument(format!(
+                    "too many contextual tuples: {} exceeds maximum of {}",
+                    ct.tuple_keys.len(),
+                    crate::validation::MAX_CONTEXTUAL_TUPLES
+                )));
+            }
+        }
+
         // Convert contextual tuples from gRPC format to domain format
         let contextual_tuples: Vec<ContextualTuple> = req
             .contextual_tuples
@@ -809,6 +820,17 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             validated_context_map = Some(context_map);
         }
 
+        // Validate contextual tuple count before allocation
+        if let Some(ref ct) = req.contextual_tuples {
+            if ct.tuple_keys.len() > crate::validation::MAX_CONTEXTUAL_TUPLES {
+                return Err(Status::invalid_argument(format!(
+                    "too many contextual tuples: {} exceeds maximum of {}",
+                    ct.tuple_keys.len(),
+                    crate::validation::MAX_CONTEXTUAL_TUPLES
+                )));
+            }
+        }
+
         // Convert contextual tuples if provided, logging any that are skipped due to invalid format
         let contextual_tuples = req
             .contextual_tuples
@@ -955,6 +977,17 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 }
             })
             .collect();
+
+        // Validate contextual tuple count before allocation
+        if let Some(ref ct) = req.contextual_tuples {
+            if ct.tuple_keys.len() > crate::validation::MAX_CONTEXTUAL_TUPLES {
+                return Err(Status::invalid_argument(format!(
+                    "too many contextual tuples: {} exceeds maximum of {}",
+                    ct.tuple_keys.len(),
+                    crate::validation::MAX_CONTEXTUAL_TUPLES
+                )));
+            }
+        }
 
         // Convert contextual tuples
         let contextual_tuples: Vec<rsfga_domain::resolver::ContextualTuple> = req

@@ -2407,3 +2407,176 @@ async fn test_read_rpc_pagination_with_continuation_token() {
         "Total results should not exceed written tuples"
     );
 }
+
+// ============================================================================
+// Contextual Tuple Limit Tests (DoS Protection - gRPC parity with HTTP)
+// ============================================================================
+
+/// Helper to generate N contextual tuples for gRPC requests.
+fn make_contextual_tuples(count: usize) -> Option<ContextualTupleKeys> {
+    Some(ContextualTupleKeys {
+        tuple_keys: (0..count)
+            .map(|i| TupleKey {
+                user: format!("user:user{i}"),
+                relation: "viewer".to_string(),
+                object: format!("document:doc{i}"),
+                condition: None,
+            })
+            .collect(),
+    })
+}
+
+/// Test: gRPC Check rejects excessive contextual tuples
+#[tokio::test]
+async fn test_grpc_check_rejects_excessive_contextual_tuples() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+    setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(CheckRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: Some(TupleKey {
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:readme".to_string(),
+            condition: None,
+        }),
+        contextual_tuples: make_contextual_tuples(101),
+        authorization_model_id: String::new(),
+        trace: false,
+        context: None,
+        consistency: 0,
+    });
+
+    let response = service.check(request).await;
+    assert!(response.is_err());
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(
+        status.message().contains("too many contextual tuples"),
+        "Expected 'too many contextual tuples' error, got: {}",
+        status.message()
+    );
+}
+
+/// Test: gRPC Check accepts exactly 100 contextual tuples (boundary)
+#[tokio::test]
+async fn test_grpc_check_accepts_max_contextual_tuples() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+    setup_simple_model(&storage, "test-store").await;
+
+    storage
+        .write_tuple(
+            "test-store",
+            StoredTuple::new("document", "readme", "viewer", "user", "alice", None),
+        )
+        .await
+        .unwrap();
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(CheckRequest {
+        store_id: "test-store".to_string(),
+        tuple_key: Some(TupleKey {
+            user: "user:alice".to_string(),
+            relation: "viewer".to_string(),
+            object: "document:readme".to_string(),
+            condition: None,
+        }),
+        contextual_tuples: make_contextual_tuples(100),
+        authorization_model_id: String::new(),
+        trace: false,
+        context: None,
+        consistency: 0,
+    });
+
+    let response = service.check(request).await;
+    assert!(
+        response.is_ok(),
+        "100 contextual tuples should be accepted, got: {:?}",
+        response.unwrap_err()
+    );
+}
+
+/// Test: gRPC ListObjects rejects excessive contextual tuples
+#[tokio::test]
+async fn test_grpc_list_objects_rejects_excessive_contextual_tuples() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+    setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(ListObjectsRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: String::new(),
+        r#type: "document".to_string(),
+        relation: "viewer".to_string(),
+        user: "user:alice".to_string(),
+        contextual_tuples: make_contextual_tuples(101),
+        context: None,
+        consistency: 0,
+    });
+
+    let response = service.list_objects(request).await;
+    assert!(response.is_err());
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(
+        status.message().contains("too many contextual tuples"),
+        "Expected 'too many contextual tuples' error, got: {}",
+        status.message()
+    );
+}
+
+/// Test: gRPC ListUsers rejects excessive contextual tuples
+#[tokio::test]
+async fn test_grpc_list_users_rejects_excessive_contextual_tuples() {
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+    setup_simple_model(&storage, "test-store").await;
+
+    let service = test_service_with_storage(storage);
+
+    let request = Request::new(ListUsersRequest {
+        store_id: "test-store".to_string(),
+        authorization_model_id: String::new(),
+        object: Some(FgaObject {
+            r#type: "document".to_string(),
+            id: "readme".to_string(),
+        }),
+        relation: "viewer".to_string(),
+        user_filters: vec![UserTypeFilter {
+            r#type: "user".to_string(),
+            relation: String::new(),
+        }],
+        contextual_tuples: make_contextual_tuples(101),
+        context: None,
+        consistency: 0,
+    });
+
+    let response = service.list_users(request).await;
+    assert!(response.is_err());
+    let status = response.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(
+        status.message().contains("too many contextual tuples"),
+        "Expected 'too many contextual tuples' error, got: {}",
+        status.message()
+    );
+}

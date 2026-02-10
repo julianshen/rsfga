@@ -2204,3 +2204,225 @@ async fn test_async_model_write_returns_503_when_nats_not_configured() {
         .unwrap()
         .contains("NATS not configured"));
 }
+
+// ============================================================================
+// Contextual Tuple Limit Tests (DoS Protection)
+// ============================================================================
+
+/// Test: Check endpoint rejects excessive contextual tuples (DoS protection)
+#[tokio::test]
+async fn test_check_rejects_excessive_contextual_tuples() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = test_store_id();
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
+
+    let state = AppState::new(Arc::clone(&storage));
+    let app = create_router(state);
+
+    // Generate 101 contextual tuples (exceeds MAX_CONTEXTUAL_TUPLES=100)
+    let tuples: Vec<serde_json::Value> = (0..101)
+        .map(|i| {
+            serde_json::json!({
+                "user": format!("user:user{i}"),
+                "relation": "viewer",
+                "object": format!("document:doc{i}")
+            })
+        })
+        .collect();
+
+    let body = serde_json::json!({
+        "tuple_key": {
+            "user": "user:alice",
+            "relation": "viewer",
+            "object": "document:readme"
+        },
+        "contextual_tuples": {
+            "tuple_keys": tuples
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/stores/{store_id}/check"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let resp_body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&resp_body).unwrap();
+    assert!(json["message"]
+        .as_str()
+        .unwrap()
+        .contains("too many contextual tuples"));
+}
+
+/// Test: Check endpoint accepts exactly 100 contextual tuples (boundary test)
+#[tokio::test]
+async fn test_check_accepts_max_contextual_tuples() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = test_store_id();
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
+
+    storage
+        .write_tuple(
+            &store_id,
+            rsfga_storage::StoredTuple::new("document", "readme", "viewer", "user", "alice", None),
+        )
+        .await
+        .unwrap();
+
+    let state = AppState::new(Arc::clone(&storage));
+    let app = create_router(state);
+
+    // Generate exactly 100 contextual tuples (at the limit, should be accepted)
+    let tuples: Vec<serde_json::Value> = (0..100)
+        .map(|i| {
+            serde_json::json!({
+                "user": format!("user:user{i}"),
+                "relation": "viewer",
+                "object": format!("document:doc{i}")
+            })
+        })
+        .collect();
+
+    let body = serde_json::json!({
+        "tuple_key": {
+            "user": "user:alice",
+            "relation": "viewer",
+            "object": "document:readme"
+        },
+        "contextual_tuples": {
+            "tuple_keys": tuples
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/stores/{store_id}/check"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should succeed (200 OK), not be rejected
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// Test: ListObjects endpoint rejects excessive contextual tuples
+#[tokio::test]
+async fn test_list_objects_rejects_excessive_contextual_tuples() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = test_store_id();
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
+
+    let state = AppState::new(Arc::clone(&storage));
+    let app = create_router(state);
+
+    let tuples: Vec<serde_json::Value> = (0..101)
+        .map(|i| {
+            serde_json::json!({
+                "user": format!("user:user{i}"),
+                "relation": "viewer",
+                "object": format!("document:doc{i}")
+            })
+        })
+        .collect();
+
+    let body = serde_json::json!({
+        "user": "user:alice",
+        "relation": "viewer",
+        "type": "document",
+        "contextual_tuples": {
+            "tuple_keys": tuples
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/stores/{store_id}/list-objects"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let resp_body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&resp_body).unwrap();
+    assert!(json["message"]
+        .as_str()
+        .unwrap()
+        .contains("too many contextual tuples"));
+}
+
+/// Test: ListUsers endpoint rejects excessive contextual tuples
+#[tokio::test]
+async fn test_list_users_rejects_excessive_contextual_tuples() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = test_store_id();
+    setup_store_with_model(&storage, &store_id, "Test Store").await;
+
+    let state = AppState::new(Arc::clone(&storage));
+    let app = create_router(state);
+
+    let tuples: Vec<serde_json::Value> = (0..101)
+        .map(|i| {
+            serde_json::json!({
+                "user": format!("user:user{i}"),
+                "relation": "viewer",
+                "object": format!("document:doc{i}")
+            })
+        })
+        .collect();
+
+    let body = serde_json::json!({
+        "object": {
+            "type": "document",
+            "id": "readme"
+        },
+        "relation": "viewer",
+        "user_filters": [{"type": "user"}],
+        "contextual_tuples": {
+            "tuple_keys": tuples
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/stores/{store_id}/list-users"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let resp_body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&resp_body).unwrap();
+    assert!(json["message"]
+        .as_str()
+        .unwrap()
+        .contains("too many contextual tuples"));
+}
