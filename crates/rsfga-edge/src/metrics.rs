@@ -30,7 +30,6 @@ pub struct EdgeMetrics {
     pub tuples_deleted: AtomicU64,
 
     /// Total cache invalidations triggered.
-    #[allow(dead_code)] // Planned for cache invalidation (2.0.6.3)
     pub cache_invalidations: AtomicU64,
 
     /// Total storage failures.
@@ -82,7 +81,6 @@ impl EdgeMetrics {
     }
 
     /// Record a cache invalidation.
-    #[allow(dead_code)] // Planned for cache invalidation (2.0.6.3)
     pub fn record_cache_invalidation(&self) {
         self.cache_invalidations.fetch_add(1, Ordering::Relaxed);
         counter!("rsfga_edge_cache_invalidations_total").increment(1);

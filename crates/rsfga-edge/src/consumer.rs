@@ -58,7 +58,6 @@ use crate::watermark_store::{WatermarkSnapshot, WatermarkStore};
 /// without depending on rsfga-domain directly. The `CheckCache` type
 /// implements this trait when used in an integrated edge+API deployment.
 #[async_trait]
-#[allow(dead_code)] // Used in apply_event() cache invalidation (next commit)
 pub trait CacheInvalidator: Send + Sync {
     /// Invalidate cache entries affected by a tuple write or delete.
     ///
@@ -325,7 +324,6 @@ pub struct EdgeConsumer {
     config: EdgeConsumerConfig,
     watermark: SyncWatermark,
     watermark_store: Option<Arc<dyn WatermarkStore>>,
-    #[allow(dead_code)] // Used in apply_event() cache invalidation (next commit)
     cache: Option<Arc<dyn CacheInvalidator>>,
 }
 
@@ -407,7 +405,7 @@ impl EdgeConsumer {
     /// When set, the consumer will invalidate cache entries for each
     /// tuple affected by an applied event. This is used in edge+API
     /// deployments where the check cache is shared in-process.
-    #[allow(dead_code)] // Used by integration code and tests (next commit)
+    #[allow(dead_code)] // Public API for edge+API integration (wired in main.rs)
     pub fn with_cache(mut self, cache: Arc<dyn CacheInvalidator>) -> Self {
         self.cache = Some(cache);
         self
@@ -448,7 +446,8 @@ impl EdgeConsumer {
     /// Apply a committed event to local storage.
     ///
     /// Converts the event's tuple operations into StoredTuple format
-    /// and writes/deletes them via the DataStore trait.
+    /// and writes/deletes them via the DataStore trait. After a successful
+    /// storage write, invalidates cache entries for all affected tuples.
     async fn apply_event(&self, event: &CommittedEvent) -> Result<()> {
         let writes: Vec<StoredTuple> = event
             .writes
@@ -483,6 +482,11 @@ impl EdgeConsumer {
         self.metrics.record_storage_latency(start);
         self.metrics.record_tuples_written(num_writes);
         self.metrics.record_tuples_deleted(num_deletes);
+
+        // Invalidate cache entries for affected tuples
+        if let Some(cache) = &self.cache {
+            invalidate_cache_for_event(cache.as_ref(), &self.metrics, event).await;
+        }
 
         debug!(
             store_id = %event.store_id,
@@ -777,11 +781,77 @@ fn tuple_key_to_stored_tuple_with_condition(
     Some(tuple)
 }
 
+/// Invalidate cache entries for all tuples affected by a committed event.
+///
+/// For each written or deleted tuple, calls `invalidate_for_tuple()` on the
+/// cache with the store ID, object, and relation. Records a metric for each
+/// invalidation via `record_cache_invalidation()`.
+async fn invalidate_cache_for_event(
+    cache: &dyn CacheInvalidator,
+    metrics: &EdgeMetrics,
+    event: &CommittedEvent,
+) {
+    for write in &event.writes {
+        cache
+            .invalidate_for_tuple(&event.store_id, &write.key.object, &write.key.relation)
+            .await;
+        metrics.record_cache_invalidation();
+    }
+    for delete in &event.deletes {
+        cache
+            .invalidate_for_tuple(&event.store_id, &delete.object, &delete.relation)
+            .await;
+        metrics.record_cache_invalidation();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rsfga_nats::{TupleCondition, TupleKey, TupleOperation};
     use std::sync::atomic::Ordering;
+    use tokio::sync::Mutex;
+
+    /// Mock cache invalidator that records all invalidation calls.
+    struct MockCacheInvalidator {
+        calls: Mutex<Vec<(String, String, String)>>,
+    }
+
+    impl MockCacheInvalidator {
+        fn new() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        async fn calls(&self) -> Vec<(String, String, String)> {
+            self.calls.lock().await.clone()
+        }
+    }
+
+    #[async_trait]
+    impl CacheInvalidator for MockCacheInvalidator {
+        async fn invalidate_for_tuple(&self, store_id: &str, object: &str, relation: &str) {
+            self.calls.lock().await.push((
+                store_id.to_string(),
+                object.to_string(),
+                relation.to_string(),
+            ));
+        }
+    }
+
+    /// Helper to create a CommittedEvent with writes and deletes.
+    fn make_event(
+        store_id: &str,
+        sequence: u64,
+        writes: Vec<TupleOperation>,
+        deletes: Vec<TupleKey>,
+    ) -> CommittedEvent {
+        let mut event = CommittedEvent::new(store_id, sequence);
+        event.writes = writes;
+        event.deletes = deletes;
+        event
+    }
 
     // ===========================================
     // Section 1: SyncWatermark Tests
@@ -1330,5 +1400,153 @@ mod tests {
         assert_eq!(wm2.contiguous_position("store-1"), Some(15));
         assert!(wm2.is_applied("store-1", 15));
         assert!(!wm2.is_applied("store-1", 16));
+    }
+
+    // ===========================================
+    // Section 8: Cache Invalidation Tests (2.0.6.3)
+    // ===========================================
+
+    #[tokio::test]
+    async fn test_invalidate_cache_for_writes() {
+        // When an event has tuple writes, cache entries for those tuples
+        // should be invalidated.
+        let cache = Arc::new(MockCacheInvalidator::new());
+        let metrics = Arc::new(EdgeMetrics::new());
+
+        let event = make_event(
+            "store-1",
+            1,
+            vec![
+                TupleOperation::new("user:alice", "viewer", "document:readme"),
+                TupleOperation::new("user:bob", "editor", "document:design"),
+            ],
+            vec![],
+        );
+
+        invalidate_cache_for_event(cache.as_ref(), &metrics, &event).await;
+
+        let calls = cache.calls().await;
+        assert_eq!(calls.len(), 2, "Should invalidate for each written tuple");
+        assert_eq!(
+            calls[0],
+            (
+                "store-1".to_string(),
+                "document:readme".to_string(),
+                "viewer".to_string()
+            )
+        );
+        assert_eq!(
+            calls[1],
+            (
+                "store-1".to_string(),
+                "document:design".to_string(),
+                "editor".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_cache_for_deletes() {
+        // When an event has tuple deletes, cache entries for those tuples
+        // should be invalidated.
+        let cache = Arc::new(MockCacheInvalidator::new());
+        let metrics = Arc::new(EdgeMetrics::new());
+
+        let event = make_event(
+            "store-2",
+            5,
+            vec![],
+            vec![
+                TupleKey::new("user:alice", "viewer", "document:readme"),
+                TupleKey::new("team:eng#member", "editor", "folder:root"),
+            ],
+        );
+
+        invalidate_cache_for_event(cache.as_ref(), &metrics, &event).await;
+
+        let calls = cache.calls().await;
+        assert_eq!(calls.len(), 2, "Should invalidate for each deleted tuple");
+        assert_eq!(
+            calls[0],
+            (
+                "store-2".to_string(),
+                "document:readme".to_string(),
+                "viewer".to_string()
+            )
+        );
+        assert_eq!(
+            calls[1],
+            (
+                "store-2".to_string(),
+                "folder:root".to_string(),
+                "editor".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_cache_for_mixed_writes_and_deletes() {
+        // Events with both writes and deletes should invalidate all affected tuples.
+        let cache = Arc::new(MockCacheInvalidator::new());
+        let metrics = Arc::new(EdgeMetrics::new());
+
+        let event = make_event(
+            "store-1",
+            10,
+            vec![TupleOperation::new("user:alice", "viewer", "document:new")],
+            vec![TupleKey::new("user:bob", "editor", "document:old")],
+        );
+
+        invalidate_cache_for_event(cache.as_ref(), &metrics, &event).await;
+
+        let calls = cache.calls().await;
+        assert_eq!(
+            calls.len(),
+            2,
+            "Should invalidate for both writes and deletes"
+        );
+        // Writes come first, then deletes
+        assert_eq!(calls[0].1, "document:new");
+        assert_eq!(calls[1].1, "document:old");
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_cache_records_metric() {
+        // Each cache invalidation should increment the cache_invalidations metric.
+        let cache = Arc::new(MockCacheInvalidator::new());
+        let metrics = Arc::new(EdgeMetrics::new());
+
+        let event = make_event(
+            "store-1",
+            1,
+            vec![
+                TupleOperation::new("user:alice", "viewer", "document:a"),
+                TupleOperation::new("user:bob", "editor", "document:b"),
+            ],
+            vec![TupleKey::new("user:carol", "admin", "document:c")],
+        );
+
+        invalidate_cache_for_event(cache.as_ref(), &metrics, &event).await;
+
+        assert_eq!(
+            metrics.cache_invalidations.load(Ordering::Relaxed),
+            3,
+            "Should record one metric per invalidation (2 writes + 1 delete)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_cache_empty_event_is_noop() {
+        // An event with no writes or deletes should not trigger any invalidation.
+        let cache = Arc::new(MockCacheInvalidator::new());
+        let metrics = Arc::new(EdgeMetrics::new());
+
+        let event = make_event("store-1", 1, vec![], vec![]);
+
+        invalidate_cache_for_event(cache.as_ref(), &metrics, &event).await;
+
+        let calls = cache.calls().await;
+        assert!(calls.is_empty(), "No invalidation for empty events");
+        assert_eq!(metrics.cache_invalidations.load(Ordering::Relaxed), 0);
     }
 }
