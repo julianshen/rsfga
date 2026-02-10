@@ -14,6 +14,12 @@
 //! # Run a specific test
 //! cargo test -p rsfga-writer --test dlq_integration test_malformed_json_routed_to_dlq -- --ignored
 //! ```
+//!
+//! ## Expected Runtime
+//!
+//! Most tests complete in 5-10s (container startup + consumer run time).
+//! `test_poison_message_after_redelivery` takes ~12-15s due to NATS redelivery
+//! cycles (2s ack_wait × 2 redeliveries). Full suite: ~60-90s (sequential).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +35,7 @@ use rsfga_nats::{
     DlqCategory, DlqMessage, EventPublisher, JetStreamManager, NatsClient, NatsConfig,
     TupleOperation, WriteRequest, STREAM_DLQ, STREAM_WRITES, SUBJECT_DLQ_PREFIX,
 };
-use rsfga_storage::MemoryDataStore;
+use rsfga_storage::{DataStore, MemoryDataStore};
 use rsfga_writer::consumer::{ConsumerConfig, WriteConsumer};
 use rsfga_writer::metrics::WriterMetrics;
 
@@ -209,19 +215,18 @@ async fn test_malformed_json_routed_to_dlq() {
 }
 
 // =============================================================================
-// Test 2: Poison message → DLQ with MaxRetriesExceeded
+// Test 2: First-delivery poison detection with max_delivery_count=1
 // =============================================================================
 
-/// Publish valid WriteRequest with a FailingDataStore that always errors,
-/// let NATS redeliver up to max_delivery_count, verify DlqMessage with
-/// MaxRetriesExceeded appears in DLQ.
+/// Verify that when max_delivery_count=1, the very first delivery is
+/// immediately treated as poison and routed to DLQ with MaxRetriesExceeded.
 ///
-/// Note: This test depends on NATS redelivery timing (ack_wait default: 30s).
-/// With max_delivery_count=3, the message must be delivered 3 times. The
-/// consumer's backoff and NATS ack_wait make this inherently timing-dependent.
+/// This tests the poison detection threshold mechanism, not actual NATS
+/// redelivery. See test_poison_message_after_redelivery for a true
+/// redelivery test.
 #[tokio::test]
 #[ignore = "requires Docker"]
-async fn test_poison_message_exceeds_max_retries() {
+async fn test_first_delivery_poison_with_max_count_one() {
     let container = NatsContainer::new().await;
     let client = create_nats_client(&container).await;
     let manager = JetStreamManager::new(client.clone());
@@ -429,6 +434,10 @@ async fn test_dlq_summary_reflects_message_count() {
                 current_summary.total_messages
             );
         }
+        eprintln!(
+            "Polling DLQ summary: {}/{} messages, retrying in 200ms",
+            current_summary.total_messages, 3
+        );
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
 
@@ -440,5 +449,156 @@ async fn test_dlq_summary_reflects_message_count() {
     assert!(
         summary.last_sequence >= summary.first_sequence,
         "Last sequence should be >= first sequence"
+    );
+}
+
+// =============================================================================
+// Test 6: True redelivery → poison message detection
+// =============================================================================
+
+/// Exercise real NATS redelivery by publishing a valid WriteRequest to a store
+/// that doesn't exist in MemoryDataStore. Each delivery fails storage with
+/// StoreNotFound, NATS redelivers after ack_wait, and on the 3rd delivery
+/// the consumer detects it as poison → DLQ with MaxRetriesExceeded.
+///
+/// Uses a pre-created NATS consumer with short ack_wait (2s) to keep test
+/// runtime reasonable (~8s instead of ~60s with default 30s ack_wait).
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn test_poison_message_after_redelivery() {
+    let container = NatsContainer::new().await;
+    let client = create_nats_client(&container).await;
+    let manager = JetStreamManager::new(client.clone());
+    manager.setup_streams().await.unwrap();
+
+    let consumer_name = "dlq-redelivery-test";
+
+    // Pre-create the NATS pull consumer with a short ack_wait so redelivery
+    // happens quickly. WriteConsumer::create_consumer will find this existing
+    // consumer and reuse it instead of creating one with default ack_wait (30s).
+    let js = client.jetstream();
+    let stream = js.get_stream(STREAM_WRITES).await.unwrap();
+    stream
+        .create_consumer(PullConfig {
+            durable_name: Some(consumer_name.to_string()),
+            ack_policy: AckPolicy::Explicit,
+            max_ack_pending: 10000,
+            ack_wait: Duration::from_secs(2),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    // Publish a valid write request targeting a store that does NOT exist in
+    // MemoryDataStore. This causes write_tuples to fail with StoreNotFound,
+    // which is a real storage error (not a mock).
+    let publisher = EventPublisher::new(client.clone());
+    let request = WriteRequest::new("nonexistent-store").write(TupleOperation::new(
+        "user:alice",
+        "viewer",
+        "document:doc1",
+    ));
+    publisher.publish_write_request(&request).await.unwrap();
+
+    // Run consumer with empty MemoryDataStore (no stores created).
+    // max_delivery_count=3 means:
+    //   delivery 1: parsed OK, not poison (1 < 3), storage fails → not acked
+    //   delivery 2: parsed OK, not poison (2 < 3), storage fails → not acked
+    //   delivery 3: parsed OK, IS poison (3 >= 3) → DLQ as MaxRetriesExceeded
+    let storage: Arc<dyn rsfga_storage::DataStore> = Arc::new(MemoryDataStore::new());
+    let config = ConsumerConfig {
+        consumer_name: consumer_name.to_string(),
+        batch_size: 1,
+        batch_timeout: Duration::from_millis(100),
+        max_delivery_count: 3,
+    };
+
+    // Run long enough for 2 redelivery cycles (2s ack_wait × 2 = 4s) + processing
+    let _metrics = run_consumer_for(client.clone(), storage, config, Duration::from_secs(8)).await;
+
+    // Read DLQ messages
+    let dlq_msgs = read_dlq_messages(&client, Duration::from_secs(2)).await;
+
+    assert!(
+        !dlq_msgs.is_empty(),
+        "Should have at least 1 DLQ message after redelivery"
+    );
+
+    let msg = &dlq_msgs[0];
+    assert_eq!(
+        msg.category,
+        DlqCategory::MaxRetriesExceeded,
+        "DLQ category should be MaxRetriesExceeded"
+    );
+    assert_eq!(
+        msg.num_delivered, 3,
+        "Should have been delivered exactly 3 times (max_delivery_count=3)"
+    );
+}
+
+// =============================================================================
+// Test 7: Event publish failure → DLQ with EventPublishFailed
+// =============================================================================
+
+/// Verify that when storage write succeeds but event publishing fails
+/// (because the EVENTS stream was deleted), the message is routed to DLQ
+/// with EventPublishFailed category.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn test_event_publish_failed_routed_to_dlq() {
+    let container = NatsContainer::new().await;
+    let client = create_nats_client(&container).await;
+    let manager = JetStreamManager::new(client.clone());
+    manager.setup_streams().await.unwrap();
+
+    // Create the store in MemoryDataStore so write_tuples succeeds
+    let storage = Arc::new(MemoryDataStore::new());
+    storage
+        .create_store("test-store", "Test Store")
+        .await
+        .unwrap();
+    let storage: Arc<dyn rsfga_storage::DataStore> = storage;
+
+    // Delete the EVENTS stream so event publishing fails after retries
+    manager
+        .delete_stream(rsfga_nats::STREAM_EVENTS)
+        .await
+        .unwrap();
+
+    // Publish a valid write request
+    let publisher = EventPublisher::new(client.clone());
+    let request = WriteRequest::new("test-store").write(TupleOperation::new(
+        "user:alice",
+        "viewer",
+        "document:doc1",
+    ));
+    publisher.publish_write_request(&request).await.unwrap();
+
+    // Run consumer — storage write succeeds, event publish fails → DLQ
+    let config = default_consumer_config("dlq-event-publish-test");
+    let _metrics = run_consumer_for(client.clone(), storage, config, Duration::from_secs(3)).await;
+
+    // Read DLQ messages
+    let dlq_msgs = read_dlq_messages(&client, Duration::from_secs(2)).await;
+
+    assert!(
+        !dlq_msgs.is_empty(),
+        "Should have at least 1 DLQ message for event publish failure"
+    );
+
+    let msg = &dlq_msgs[0];
+    assert_eq!(
+        msg.category,
+        DlqCategory::EventPublishFailed,
+        "DLQ category should be EventPublishFailed"
+    );
+    assert!(
+        !msg.error.is_empty(),
+        "Error description should not be empty"
+    );
+    assert_eq!(
+        msg.store_id.as_deref(),
+        Some("test-store"),
+        "Store ID should be preserved"
     );
 }
