@@ -12,7 +12,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
-use tracing::error;
+use tracing::{error, trace};
 
 use rsfga_domain::cel::global_cache;
 use rsfga_domain::error::DomainError;
@@ -1274,7 +1274,7 @@ enum ConsistencyLevel {
 /// Recognized values (case-insensitive): `eventual`, `strong`.
 /// Unknown or absent values return `None`.
 fn extract_consistency_header(headers: &HeaderMap) -> Option<ConsistencyLevel> {
-    headers
+    let level = headers
         .get("x-consistency")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| {
@@ -1283,9 +1283,14 @@ fn extract_consistency_header(headers: &HeaderMap) -> Option<ConsistencyLevel> {
             } else if v.eq_ignore_ascii_case("strong") {
                 Some(ConsistencyLevel::Strong)
             } else {
+                trace!(value = %v, "Unknown X-Consistency header value, ignoring");
                 None
             }
-        })
+        });
+    if let Some(ref l) = level {
+        trace!(consistency = ?l, "X-Consistency header extracted");
+    }
+    level
 }
 
 /// Wait for a write ticket to be committed if RYOW consistency is requested.
@@ -1316,6 +1321,7 @@ async fn wait_for_consistency<S: DataStore>(
         if let Some(pref) = consistency {
             // minimize_latency in body suppresses header-level strong consistency
             if pref.minimize_latency {
+                trace!(store_id = %expected_store_id, "Body minimize_latency suppresses header consistency");
                 return Ok(());
             }
 
@@ -1364,6 +1370,7 @@ async fn wait_for_consistency<S: DataStore>(
 
         // Header-level consistency (only if no body-level write_ticket)
         if let Some(ConsistencyLevel::Strong) = header_consistency {
+            trace!(store_id = %expected_store_id, "Header-level strong consistency requested");
             if let Some(tracker) = state.write_tracker() {
                 if let Some(sequence) = tracker.get_committed_sequence(expected_store_id) {
                     if sequence > 0 {

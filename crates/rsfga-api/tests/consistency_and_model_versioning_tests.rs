@@ -1852,3 +1852,156 @@ async fn create_model_with_all_relations(storage: &MemoryDataStore, store_id: &s
     storage.write_authorization_model(model).await.unwrap();
     model_id
 }
+
+// ============================================================================
+// X-Consistency Header Integration Tests (Full HTTP Flow)
+// ============================================================================
+
+/// Verify that X-Consistency: eventual passes through the full HTTP stack
+/// and the check endpoint returns a valid response.
+#[tokio::test]
+async fn test_check_with_x_consistency_eventual_header() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = common::setup_test_store(&storage).await;
+
+    // Write a tuple so the check has a definitive answer
+    storage
+        .write_tuples(
+            &store_id,
+            vec![create_tuple("viewer", "user:alice", "document", "readme")],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    let app = create_test_app(&storage);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/stores/{store_id}/check"))
+                .header("content-type", "application/json")
+                .header("x-consistency", "eventual")
+                .body(Body::from(
+                    serde_json::json!({
+                        "tuple_key": {
+                            "user": "user:alice",
+                            "relation": "viewer",
+                            "object": "document:readme"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["allowed"], true);
+}
+
+/// Verify that X-Consistency: strong passes through the full HTTP stack.
+/// Without a WriteTracker (no NATS), strong consistency is a no-op and
+/// the check returns normally.
+#[tokio::test]
+async fn test_check_with_x_consistency_strong_header() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = common::setup_test_store(&storage).await;
+
+    storage
+        .write_tuples(
+            &store_id,
+            vec![create_tuple("editor", "user:bob", "document", "spec")],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    let app = create_test_app(&storage);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/stores/{store_id}/check"))
+                .header("content-type", "application/json")
+                .header("x-consistency", "strong")
+                .body(Body::from(
+                    serde_json::json!({
+                        "tuple_key": {
+                            "user": "user:bob",
+                            "relation": "editor",
+                            "object": "document:spec"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["allowed"], true);
+}
+
+/// Verify that body-level minimize_latency takes precedence over
+/// header-level X-Consistency: strong through the full HTTP stack.
+#[tokio::test]
+async fn test_check_body_minimize_latency_overrides_strong_header() {
+    let storage = Arc::new(MemoryDataStore::new());
+    let store_id = common::setup_test_store(&storage).await;
+
+    storage
+        .write_tuples(
+            &store_id,
+            vec![create_tuple("owner", "user:carol", "document", "config")],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    let app = create_test_app(&storage);
+
+    // Send both body-level minimize_latency and header-level strong.
+    // Body should take precedence, and the request should succeed normally.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/stores/{store_id}/check"))
+                .header("content-type", "application/json")
+                .header("x-consistency", "strong")
+                .body(Body::from(
+                    serde_json::json!({
+                        "tuple_key": {
+                            "user": "user:carol",
+                            "relation": "owner",
+                            "object": "document:config"
+                        },
+                        "consistency": "MINIMIZE_LATENCY"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["allowed"], true);
+}
