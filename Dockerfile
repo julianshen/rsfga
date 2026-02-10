@@ -2,24 +2,32 @@
 # RSFGA Dockerfile - Multi-stage build for minimal production image
 # =============================================================================
 #
-# Build: docker build -t rsfga:v1.0.0 .
-# Run:   docker run -p 8080:8080 -v ./config.yaml:/app/config.yaml rsfga:v1.0.0
+# Builds one of three binaries depending on the BINARY build arg:
+#   rsfga        - Main API server (default)
+#   rsfga-writer - Storage consumer daemon for NATS async writes
+#   rsfga-edge   - Edge sync daemon for distributed authorization
 #
-# Environment variables:
-#   RSFGA_SERVER__HOST          - Host to bind (default: 0.0.0.0)
-#   RSFGA_SERVER__PORT          - Port to listen (default: 8080)
-#   RSFGA_STORAGE__BACKEND      - Storage backend: "memory", "postgres", "mysql", "cockroachdb", or "rocksdb"
-#   RSFGA_STORAGE__DATABASE_URL - Database connection URL (required for postgres/mysql/cockroachdb)
-#   RSFGA_STORAGE__DATA_PATH    - Data directory path (required for rocksdb backend)
-#   RSFGA_LOGGING__LEVEL        - Log level: trace, debug, info, warn, error
-#   RSFGA_LOGGING__JSON         - Use JSON logging format (true/false)
+# Build:
+#   docker build -t rsfga:latest .
+#   docker build --build-arg BINARY=rsfga-writer -t rsfga-writer:latest .
+#   docker build --build-arg BINARY=rsfga-edge -t rsfga-edge:latest .
+#
+# Run:
+#   docker run -p 8080:8080 rsfga:latest
+#   docker run -e NATS_URL=nats://nats:4222 rsfga-writer:latest
+#   docker run -e NATS_URL=nats://nats:4222 rsfga-edge:latest
 #
 # =============================================================================
+
+# Binary to build (rsfga, rsfga-writer, or rsfga-edge)
+ARG BINARY=rsfga
 
 # -----------------------------------------------------------------------------
 # Stage 1: Build environment
 # -----------------------------------------------------------------------------
 FROM rust:1.88-bookworm AS builder
+
+ARG BINARY
 
 # Install build dependencies (including clang for RocksDB)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -67,7 +75,7 @@ COPY crates/rsfga-api/proto crates/rsfga-api/proto
 COPY crates/rsfga-api/build.rs crates/rsfga-api/build.rs
 
 # Build dependencies only (this layer will be cached)
-RUN cargo build --release --bin rsfga 2>/dev/null || true
+RUN cargo build --release --bin ${BINARY} 2>/dev/null || true
 
 # Copy actual source code
 COPY crates/rsfga-api/src crates/rsfga-api/src
@@ -94,15 +102,17 @@ RUN touch crates/rsfga-api/src/main.rs \
     && touch crates/rsfga-edge/src/main.rs
 
 # Build the release binary
-RUN cargo build --release --bin rsfga
+RUN cargo build --release --bin ${BINARY}
 
 # Verify the binary was built
-RUN ls -la target/release/rsfga
+RUN ls -la target/release/${BINARY}
 
 # -----------------------------------------------------------------------------
 # Stage 2: Runtime environment
 # -----------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
+
+ARG BINARY
 
 # Install runtime dependencies (including curl for health check)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -119,8 +129,8 @@ RUN groupadd --gid 1000 rsfga \
 WORKDIR /app
 RUN mkdir -p /data
 
-# Copy binary from builder
-COPY --from=builder /app/target/release/rsfga /app/rsfga
+# Copy binary from builder (use consistent name for entrypoint)
+COPY --from=builder /app/target/release/${BINARY} /app/entrypoint
 
 # Set ownership
 RUN chown -R rsfga:rsfga /app /data
@@ -128,18 +138,19 @@ RUN chown -R rsfga:rsfga /app /data
 # Switch to non-root user
 USER rsfga
 
-# Expose HTTP and gRPC ports
+# Expose common ports (API: 8080/50051, metrics: 9090/9091)
 EXPOSE 8080
+EXPOSE 9090
+EXPOSE 9091
 EXPOSE 50051
 
 # Volume for persistent storage (RocksDB)
 VOLUME /data
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# Store binary name for reference
+ENV RSFGA_BINARY=${BINARY}
 
-# Default environment variables
+# Default environment variables for rsfga API server
 ENV RSFGA_SERVER__HOST=0.0.0.0
 ENV RSFGA_SERVER__PORT=8080
 ENV RSFGA_GRPC__PORT=50051
@@ -149,5 +160,5 @@ ENV RSFGA_LOGGING__LEVEL=info
 ENV RSFGA_LOGGING__JSON=true
 
 # Run the binary
-ENTRYPOINT ["/app/rsfga"]
+ENTRYPOINT ["/app/entrypoint"]
 CMD []

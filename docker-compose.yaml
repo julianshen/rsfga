@@ -1,9 +1,10 @@
 # Docker Compose for local development and testing
 #
 # Usage:
-#   docker-compose up -d          # Start all services
-#   docker-compose up -d rsfga    # Start RSFGA with PostgreSQL
+#   docker-compose up -d          # Start all services (API + Postgres)
 #   docker-compose up -d rsfga-memory  # Start RSFGA with in-memory storage
+#   docker-compose --profile nats up -d  # Start with NATS async writes
+#   docker-compose --profile edge up -d  # Start with edge sync
 #   docker-compose logs -f rsfga  # View logs
 #   docker-compose down           # Stop all services
 #   docker-compose down -v        # Stop and remove volumes
@@ -77,6 +78,71 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # NATS server with JetStream (required for async writes)
+  nats:
+    image: nats:2.10-alpine
+    command: ["--jetstream", "--store_dir", "/data"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"    # HTTP monitoring
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "nats-server", "--signal", "ldm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - nats
+      - edge
+
+  # RSFGA Writer - consumes writes from NATS and batches to storage
+  rsfga-writer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY: rsfga-writer
+    environment:
+      - NATS_URL=nats://nats:4222
+      - CONSUMER_NAME=rsfga-writer-1
+      - STORAGE_BACKEND=memory
+      - BATCH_SIZE=500
+      - BATCH_TIMEOUT_MS=100
+      - METRICS_PORT=9090
+    ports:
+      - "9090:9090"
+    depends_on:
+      nats:
+        condition: service_healthy
+    profiles:
+      - nats
+      - edge
+    restart: unless-stopped
+
+  # RSFGA Edge - syncs committed events to edge storage
+  rsfga-edge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY: rsfga-edge
+    environment:
+      - NATS_URL=nats://nats:4222
+      - CONSUMER_NAME=rsfga-edge-1
+      - STORAGE_BACKEND=memory
+      - BATCH_SIZE=100
+      - FETCH_TIMEOUT_MS=500
+      - METRICS_PORT=9091
+    ports:
+      - "9091:9091"
+    depends_on:
+      nats:
+        condition: service_healthy
+    profiles:
+      - edge
+    restart: unless-stopped
+
   # Jaeger for distributed tracing (optional)
   jaeger:
     image: jaegertracing/all-in-one:1.53
@@ -105,3 +171,4 @@ services:
 
 volumes:
   postgres_data:
+  nats_data:
