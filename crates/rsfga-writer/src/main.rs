@@ -10,10 +10,6 @@
 //! - Idempotent writes using ON CONFLICT
 //! - Publish CommittedEvent to RSFGA_EVENTS after commit
 
-mod consumer;
-mod error;
-mod metrics;
-
 use std::sync::Arc;
 
 use clap::Parser;
@@ -22,10 +18,9 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use rsfga_nats::{JetStreamManager, NatsClient, NatsConfig};
 use rsfga_storage::DataStore;
-
-use crate::consumer::WriteConsumer;
-use crate::error::Result;
-use crate::metrics::WriterMetrics;
+use rsfga_writer::consumer::{ConsumerConfig, WriteConsumer, DEFAULT_MAX_DELIVERY_COUNT};
+use rsfga_writer::error::{Result, WriterError};
+use rsfga_writer::metrics::{setup_metrics_server, WriterMetrics};
 
 /// Redact credentials from URLs for safe logging.
 ///
@@ -146,7 +141,7 @@ async fn main() -> Result<()> {
 
     // Initialize metrics
     let metrics = Arc::new(WriterMetrics::new());
-    metrics::setup_metrics_server(args.metrics_port).await?;
+    setup_metrics_server(args.metrics_port).await?;
 
     // Connect to NATS
     let nats_config = NatsConfig {
@@ -167,11 +162,11 @@ async fn main() -> Result<()> {
         nats_client,
         storage,
         metrics,
-        consumer::ConsumerConfig {
+        ConsumerConfig {
             consumer_name: args.consumer_name,
             batch_size: args.batch_size,
             batch_timeout: std::time::Duration::from_millis(args.batch_timeout_ms),
-            max_delivery_count: consumer::DEFAULT_MAX_DELIVERY_COUNT,
+            max_delivery_count: DEFAULT_MAX_DELIVERY_COUNT,
         },
     )
     .await?;
@@ -214,21 +209,19 @@ async fn create_storage(args: &Args) -> Result<Arc<dyn DataStore>> {
                     ..Default::default()
                 };
                 let storage = RocksDBDataStore::new(config)
-                    .map_err(|e| crate::error::WriterError::Config(e.to_string()))?;
+                    .map_err(|e| WriterError::Config(e.to_string()))?;
                 Ok(Arc::new(storage))
             }
             #[cfg(not(feature = "rocksdb"))]
             {
-                Err(crate::error::WriterError::Config(
+                Err(WriterError::Config(
                     "RocksDB support not compiled in. Rebuild with --features rocksdb".to_string(),
                 ))
             }
         }
         "postgres" => {
             let url = args.database_url.as_ref().ok_or_else(|| {
-                crate::error::WriterError::Config(
-                    "DATABASE_URL required for postgres backend".to_string(),
-                )
+                WriterError::Config("DATABASE_URL required for postgres backend".to_string())
             })?;
             info!(url = %redact_url(url), "Using PostgreSQL storage backend");
             let config = rsfga_storage::PostgresConfig {
@@ -240,9 +233,7 @@ async fn create_storage(args: &Args) -> Result<Arc<dyn DataStore>> {
         }
         "mysql" => {
             let url = args.database_url.as_ref().ok_or_else(|| {
-                crate::error::WriterError::Config(
-                    "DATABASE_URL required for mysql backend".to_string(),
-                )
+                WriterError::Config("DATABASE_URL required for mysql backend".to_string())
             })?;
             info!(url = %redact_url(url), "Using MySQL storage backend");
             let config = rsfga_storage::MySQLConfig {
@@ -252,7 +243,7 @@ async fn create_storage(args: &Args) -> Result<Arc<dyn DataStore>> {
             let storage = rsfga_storage::MySQLDataStore::from_config(&config).await?;
             Ok(Arc::new(storage))
         }
-        other => Err(crate::error::WriterError::Config(format!(
+        other => Err(WriterError::Config(format!(
             "Unknown storage backend: {}",
             other
         ))),
