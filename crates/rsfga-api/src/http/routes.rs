@@ -1277,10 +1277,14 @@ fn extract_consistency_header(headers: &HeaderMap) -> Option<ConsistencyLevel> {
     headers
         .get("x-consistency")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| match v.to_lowercase().as_str() {
-            "eventual" => Some(ConsistencyLevel::Eventual),
-            "strong" => Some(ConsistencyLevel::Strong),
-            _ => None,
+        .and_then(|v| {
+            if v.eq_ignore_ascii_case("eventual") {
+                Some(ConsistencyLevel::Eventual)
+            } else if v.eq_ignore_ascii_case("strong") {
+                Some(ConsistencyLevel::Strong)
+            } else {
+                None
+            }
         })
 }
 
@@ -1308,8 +1312,13 @@ async fn wait_for_consistency<S: DataStore>(
 ) -> ApiResult<()> {
     #[cfg(feature = "nats")]
     {
-        // Body-level consistency takes precedence
+        // Body-level consistency takes precedence over header-level
         if let Some(pref) = consistency {
+            // minimize_latency in body suppresses header-level strong consistency
+            if pref.minimize_latency {
+                return Ok(());
+            }
+
             if let Some(ticket) = &pref.write_ticket {
                 // Validate that the write ticket's store_id matches the request's store_id
                 // to prevent cross-store ticket attacks
@@ -4373,6 +4382,31 @@ mod tests {
         )
         .await;
         assert!(result.is_err(), "Expected error for store_id mismatch");
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_consistency_minimize_latency_suppresses_strong_header() {
+        // When body sets minimize_latency=true (no write_ticket),
+        // header-level strong consistency should be suppressed.
+        let storage = std::sync::Arc::new(rsfga_storage::MemoryDataStore::new());
+        let state = AppState::new(storage);
+
+        let pref = ConsistencyPreference {
+            minimize_latency: true,
+            write_ticket: None,
+        };
+
+        let result = wait_for_consistency(
+            &state,
+            Some(&pref),
+            Some(ConsistencyLevel::Strong),
+            "store-1",
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "minimize_latency should suppress header-level strong consistency"
+        );
     }
 
     #[cfg(feature = "nats")]
