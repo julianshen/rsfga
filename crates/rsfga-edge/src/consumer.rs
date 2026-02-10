@@ -40,6 +40,7 @@ use std::time::Duration;
 use async_nats::jetstream::consumer::pull::Config as PullConfig;
 use async_nats::jetstream::consumer::AckPolicy;
 use async_nats::jetstream::Message as JsMessage;
+use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
 use tracing::{debug, error, info, warn};
@@ -50,6 +51,21 @@ use rsfga_storage::{DataStore, StoredTuple};
 use crate::error::{EdgeError, Result};
 use crate::metrics::EdgeMetrics;
 use crate::watermark_store::{WatermarkSnapshot, WatermarkStore};
+
+/// Trait for invalidating check cache entries when tuple operations are applied.
+///
+/// This abstraction allows the edge consumer to invalidate cache entries
+/// without depending on rsfga-domain directly. The `CheckCache` type
+/// implements this trait when used in an integrated edge+API deployment.
+#[async_trait]
+#[allow(dead_code)] // Used in apply_event() cache invalidation (next commit)
+pub trait CacheInvalidator: Send + Sync {
+    /// Invalidate cache entries affected by a tuple write or delete.
+    ///
+    /// Called with the store ID, object (e.g., "document:readme"), and
+    /// relation (e.g., "viewer") of the affected tuple.
+    async fn invalidate_for_tuple(&self, store_id: &str, object: &str, relation: &str);
+}
 
 /// Default fetch batch size for edge consumer.
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -309,6 +325,8 @@ pub struct EdgeConsumer {
     config: EdgeConsumerConfig,
     watermark: SyncWatermark,
     watermark_store: Option<Arc<dyn WatermarkStore>>,
+    #[allow(dead_code)] // Used in apply_event() cache invalidation (next commit)
+    cache: Option<Arc<dyn CacheInvalidator>>,
 }
 
 impl EdgeConsumer {
@@ -326,6 +344,7 @@ impl EdgeConsumer {
             config,
             watermark: SyncWatermark::new(),
             watermark_store: None,
+            cache: None,
         }
     }
 
@@ -359,6 +378,7 @@ impl EdgeConsumer {
             config,
             watermark,
             watermark_store: Some(watermark_store),
+            cache: None,
         })
     }
 
@@ -378,7 +398,19 @@ impl EdgeConsumer {
             config,
             watermark,
             watermark_store: None,
+            cache: None,
         }
+    }
+
+    /// Set the cache invalidator for this consumer.
+    ///
+    /// When set, the consumer will invalidate cache entries for each
+    /// tuple affected by an applied event. This is used in edge+API
+    /// deployments where the check cache is shared in-process.
+    #[allow(dead_code)] // Used by integration code and tests (next commit)
+    pub fn with_cache(mut self, cache: Arc<dyn CacheInvalidator>) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     /// Get a reference to the sync watermark.
