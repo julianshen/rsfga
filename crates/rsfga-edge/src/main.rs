@@ -10,6 +10,8 @@
 //! - Idempotent application via sync watermark per store
 //! - Graceful shutdown with position persistence
 
+#[allow(dead_code)] // Public API for CLI wiring (follow-up)
+mod bootstrap;
 mod consumer;
 mod error;
 mod metrics;
