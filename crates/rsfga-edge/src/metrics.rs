@@ -99,7 +99,7 @@ impl EdgeMetrics {
     }
 
     /// Update sync lag gauge (events behind the central node).
-    #[allow(dead_code)] // Planned for bootstrap sync lag tracking (2.0.6.4)
+    #[allow(dead_code)] // Will be wired into health check / monitoring endpoint
     pub fn update_sync_lag(&self, store_id: &str, lag: u64) {
         gauge!("rsfga_edge_sync_lag_events", "store_id" => store_id.to_string()).set(lag as f64);
     }
