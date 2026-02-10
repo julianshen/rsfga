@@ -48,7 +48,6 @@ metrics-exporter-prometheus = { workspace = true }
 
 # Utilities
 uuid = { workspace = true }
-ulid = { workspace = true }
 chrono = { workspace = true }
 
 # CLI

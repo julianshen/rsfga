@@ -109,14 +109,13 @@ async fn read_dlq_messages(client: &NatsClient, timeout: Duration) -> Vec<DlqMes
         .unwrap();
 
     let mut dlq_msgs = Vec::new();
-    while let Ok(Some(msg)) = tokio::time::timeout(timeout, messages.next()).await {
-        if let Ok(msg) = msg {
+    while let Some(msg_result) = messages.next().await {
+        if let Ok(msg) = msg_result {
             if let Ok(dlq_msg) = DlqMessage::from_bytes(&msg.payload) {
                 dlq_msgs.push(dlq_msg);
             }
         }
     }
-
     dlq_msgs
 }
 
@@ -141,7 +140,11 @@ async fn run_consumer_for(
 
     tokio::time::sleep(duration).await;
     shutdown_tx.send(true).unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+    match tokio::time::timeout(Duration::from_secs(5), handle).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => panic!("Consumer task panicked: {e}"),
+        Err(_) => panic!("Consumer did not shut down within 5s"),
+    }
 
     metrics
 }
@@ -266,9 +269,9 @@ async fn test_poison_message_exceeds_max_retries() {
         DlqCategory::MaxRetriesExceeded,
         "DLQ category should be MaxRetriesExceeded"
     );
-    assert!(
-        msg.num_delivered >= 1,
-        "Should have been delivered at least once"
+    assert_eq!(
+        msg.num_delivered, 1,
+        "Should have been delivered exactly once (max_delivery_count=1)"
     );
 
     // The consumer should have consumed the message
@@ -413,11 +416,22 @@ async fn test_dlq_summary_reflects_message_count() {
     // Flush to ensure DLQ publishes are sent
     client.flush().await.unwrap();
 
-    // Small delay for stream to update
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Poll for DLQ summary to avoid flaky tests due to propagation delay
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let summary = loop {
+        let current_summary = manager.dlq_summary().await.unwrap();
+        if current_summary.total_messages == 3 {
+            break current_summary;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "Timed out waiting for DLQ summary. Expected 3, got {}",
+                current_summary.total_messages
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
 
-    // Verify DLQ summary
-    let summary = manager.dlq_summary().await.unwrap();
     assert_eq!(
         summary.total_messages, 3,
         "DLQ should have exactly 3 messages"
