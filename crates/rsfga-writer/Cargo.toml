@@ -7,6 +7,10 @@ authors.workspace = true
 license.workspace = true
 description = "Storage consumer daemon for RSFGA async writes"
 
+[lib]
+name = "rsfga_writer"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rsfga-writer"
 path = "src/main.rs"
@@ -60,3 +64,4 @@ config = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 testcontainers = { workspace = true }
 testcontainers-modules = { version = "0.14", features = ["nats"] }
+ulid = { workspace = true }
