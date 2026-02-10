@@ -1679,9 +1679,11 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 | Async API Integration Tests | ~15 | ✅ |
 | Sync fallback tests | 11 | ✅ |
 | DLQ unit tests | 17 | ✅ |
-| DLQ integration tests (testcontainers) | 0 | deferred to future PR |
+| DLQ integration tests (testcontainers) | 5 | ✅ |
 | Edge sync tests (rsfga-edge) | 69 | ✅ |
-| **Total Implemented** | **~197** | - |
+| **Total Implemented** | **~202** | - |
+
+**Release**: v2.0.0 released with NATS async writes, DLQ, RYOW consistency, X-Consistency headers, rsfga-writer, rsfga-edge, multi-binary Docker images.
 
 ---
 

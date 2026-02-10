@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-02-10
+
+### Added
+
+#### NATS Async Writes (Phase 2)
+- **Async Write Path** - High-throughput write pipeline using NATS JetStream with durable delivery
+- **rsfga-writer daemon** - Storage consumer that batches writes from NATS for improved throughput
+- **rsfga-edge daemon** - Edge sync consumer for distributed authorization with eventual consistency
+- **RYOW Consistency** - Read-Your-Own-Writes via write tickets for strong consistency after async writes
+- **X-Consistency Header** - HTTP header for per-request consistency control (`strong` / `eventual`)
+- **Dead Letter Queue** - Automatic routing of failed messages with categorized error tracking
+- **Write Tracker** - Per-store sequence tracking for RYOW and strong consistency guarantees
+- **Edge Cache Invalidation** - Automatic check cache invalidation on edge event receipt
+- **Bootstrap Sync** - Initial data sync for new edge nodes joining the cluster
+
+#### Infrastructure
+- **Multi-binary Docker images** - Parameterized Dockerfile for rsfga, rsfga-writer, and rsfga-edge
+- **Docker Compose profiles** - NATS and edge profiles for local development
+- **Edge deployment guide** - Operational documentation for edge sync deployment
+
+#### New Crates
+- **rsfga-nats** - NATS JetStream client, stream management, event types, write tracker
+- **rsfga-writer** - Storage consumer daemon with message batching and DLQ routing
+- **rsfga-edge** - Edge sync daemon with store filtering and watermark-based idempotency
+
+### Changed
+- API handlers (check, expand, list_objects, list_users) accept `X-Consistency` header
+- Release workflow builds and pushes 3 Docker images in parallel via matrix strategy
+
 ## [1.0.1] - 2025-01-31
 
 ### Fixed
@@ -102,5 +131,4 @@ This release represents significant development effort with contributions from:
 
 ## [Unreleased]
 
-### Added
-- No unreleased changes yet
+No unreleased changes yet.

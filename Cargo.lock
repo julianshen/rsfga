@@ -770,7 +770,7 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "compatibility-tests"
-version = "1.0.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "bollard",
@@ -3493,7 +3493,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-api"
-version = "1.0.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3537,7 +3537,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-domain"
-version = "1.0.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3561,7 +3561,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-edge"
-version = "1.0.1"
+version = "2.0.0"
 dependencies = [
  "async-nats",
  "async-trait",
@@ -3584,7 +3584,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-nats"
-version = "1.0.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -3618,7 +3618,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-server"
-version = "1.0.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3642,7 +3642,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-storage"
-version = "1.0.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3670,7 +3670,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-writer"
-version = "1.0.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-nats",
