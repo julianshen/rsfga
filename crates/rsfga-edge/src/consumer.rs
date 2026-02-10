@@ -381,7 +381,7 @@ impl EdgeConsumer {
     }
 
     /// Create a new edge consumer with a pre-existing watermark (for restart recovery).
-    #[allow(dead_code)] // Planned for bootstrap sync (2.0.6.4)
+    #[allow(dead_code)] // Will be used by CLI wiring for restart recovery
     pub fn with_watermark(
         client: NatsClient,
         storage: Arc<dyn DataStore>,
