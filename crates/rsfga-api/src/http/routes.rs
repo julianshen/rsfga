@@ -5,14 +5,14 @@ use std::sync::Arc;
 use axum::{
     async_trait,
     extract::{FromRequest, Path, Request, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
-use tracing::error;
+use tracing::{error, trace};
 
 use rsfga_domain::cel::global_cache;
 use rsfga_domain::error::DomainError;
@@ -1258,14 +1258,53 @@ pub struct CheckResponseBody {
     pub resolution: Option<String>,
 }
 
+/// Consistency level extracted from the `X-Consistency` HTTP header.
+///
+/// Provides an alternative to the body-level `consistency` field:
+/// - `eventual`: Skip RYOW wait (minimize latency)
+/// - `strong`: Wait for the latest committed sequence at call time
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConsistencyLevel {
+    Eventual,
+    Strong,
+}
+
+/// Extract consistency preference from the `X-Consistency` HTTP header.
+///
+/// Recognized values (case-insensitive): `eventual`, `strong`.
+/// Unknown or absent values return `None`.
+fn extract_consistency_header(headers: &HeaderMap) -> Option<ConsistencyLevel> {
+    let level = headers
+        .get("x-consistency")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            if v.eq_ignore_ascii_case("eventual") {
+                Some(ConsistencyLevel::Eventual)
+            } else if v.eq_ignore_ascii_case("strong") {
+                Some(ConsistencyLevel::Strong)
+            } else {
+                trace!(value = %v, "Unknown X-Consistency header value, ignoring");
+                None
+            }
+        });
+    if let Some(ref l) = level {
+        trace!(consistency = ?l, "X-Consistency header extracted");
+    }
+    level
+}
+
 /// Wait for a write ticket to be committed if RYOW consistency is requested.
 ///
-/// This is a no-op if the NATS feature is disabled, if no WriteTracker is
-/// configured, or if no write_ticket is present in the consistency preferences.
+/// Supports two consistency mechanisms:
+/// 1. **Body-level** (`consistency.write_ticket`): Waits for a specific sequence (RYOW)
+/// 2. **Header-level** (`X-Consistency: strong`): Waits for the latest committed sequence
 ///
-/// The `expected_store_id` must match the write ticket's `store_id` to prevent
-/// cross-store ticket attacks (where a client uses a ticket from one store to
-/// probe or delay reads on another store).
+/// Body-level consistency takes precedence over header-level when both are present.
+///
+/// If `X-Consistency: eventual` is set and no body-level consistency is provided,
+/// consistency checks are skipped entirely for lower latency.
+///
+/// This is a no-op if the NATS feature is disabled or no WriteTracker is configured.
 ///
 /// Returns 504 Gateway Timeout if the write is not committed within the timeout.
 /// Returns 400 Bad Request if the write ticket's store_id doesn't match the request.
@@ -1273,49 +1312,104 @@ pub struct CheckResponseBody {
 async fn wait_for_consistency<S: DataStore>(
     state: &AppState<S>,
     consistency: Option<&ConsistencyPreference>,
+    header_consistency: Option<ConsistencyLevel>,
     expected_store_id: &str,
 ) -> ApiResult<()> {
     #[cfg(feature = "nats")]
-    if let Some(pref) = consistency {
-        if let Some(ticket) = &pref.write_ticket {
-            // Validate that the write ticket's store_id matches the request's store_id
-            // to prevent cross-store ticket attacks
-            if ticket.store_id != expected_store_id {
-                return Err(ApiError::validation_error(format!(
-                    "write_ticket.store_id '{}' does not match request store_id '{}'",
-                    ticket.store_id, expected_store_id
-                )));
+    {
+        // Body-level consistency takes precedence over header-level
+        if let Some(pref) = consistency {
+            // minimize_latency in body suppresses header-level strong consistency
+            if pref.minimize_latency {
+                trace!(store_id = %expected_store_id, "Body minimize_latency suppresses header consistency");
+                return Ok(());
             }
 
-            if let Some(tracker) = state.write_tracker() {
-                let timeout_secs = state.ryow_timeout_secs();
-                let start = std::time::Instant::now();
+            if let Some(ticket) = &pref.write_ticket {
+                // Validate that the write ticket's store_id matches the request's store_id
+                // to prevent cross-store ticket attacks
+                if ticket.store_id != expected_store_id {
+                    return Err(ApiError::validation_error(format!(
+                        "write_ticket.store_id '{}' does not match request store_id '{}'",
+                        ticket.store_id, expected_store_id
+                    )));
+                }
 
-                metrics::counter!("rsfga_api_ryow_wait_total").increment(1);
+                if let Some(tracker) = state.write_tracker() {
+                    let timeout_secs = state.ryow_timeout_secs();
+                    let start = std::time::Instant::now();
 
-                match tracker
-                    .wait_for_commit(
-                        &ticket.store_id,
-                        ticket.sequence,
-                        std::time::Duration::from_secs(timeout_secs),
-                    )
-                    .await
-                {
-                    Ok(()) => {
-                        let elapsed_ms = start.elapsed().as_millis() as f64;
-                        metrics::histogram!("rsfga_api_ryow_wait_duration_ms").record(elapsed_ms);
-                        metrics::counter!("rsfga_api_ryow_wait_success_total").increment(1);
+                    metrics::counter!("rsfga_api_ryow_wait_total").increment(1);
+
+                    match tracker
+                        .wait_for_commit(
+                            &ticket.store_id,
+                            ticket.sequence,
+                            std::time::Duration::from_secs(timeout_secs),
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            let elapsed_ms = start.elapsed().as_millis() as f64;
+                            metrics::histogram!("rsfga_api_ryow_wait_duration_ms")
+                                .record(elapsed_ms);
+                            metrics::counter!("rsfga_api_ryow_wait_success_total").increment(1);
+                        }
+                        Err(e) => {
+                            metrics::counter!("rsfga_api_ryow_wait_timeout_total").increment(1);
+                            return Err(ApiError::gateway_timeout(format!(
+                                "RYOW timeout: write not yet committed (store_id: {}, sequence: {})",
+                                e.store_id, e.sequence
+                            )));
+                        }
                     }
-                    Err(e) => {
-                        metrics::counter!("rsfga_api_ryow_wait_timeout_total").increment(1);
-                        return Err(ApiError::gateway_timeout(format!(
-                            "RYOW timeout: write not yet committed (store_id: {}, sequence: {})",
-                            e.store_id, e.sequence
-                        )));
+                }
+                return Ok(());
+            }
+        }
+
+        // Header-level consistency (only if no body-level write_ticket)
+        if let Some(ConsistencyLevel::Strong) = header_consistency {
+            trace!(store_id = %expected_store_id, "Header-level strong consistency requested");
+            if let Some(tracker) = state.write_tracker() {
+                if let Some(sequence) = tracker.get_committed_sequence(expected_store_id) {
+                    if sequence > 0 {
+                        let timeout_secs = state.ryow_timeout_secs();
+                        let start = std::time::Instant::now();
+
+                        metrics::counter!("rsfga_api_strong_consistency_wait_total").increment(1);
+
+                        match tracker
+                            .wait_for_commit(
+                                expected_store_id,
+                                sequence,
+                                std::time::Duration::from_secs(timeout_secs),
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                let elapsed_ms = start.elapsed().as_millis() as f64;
+                                metrics::histogram!(
+                                    "rsfga_api_strong_consistency_wait_duration_ms"
+                                )
+                                .record(elapsed_ms);
+                            }
+                            Err(e) => {
+                                metrics::counter!(
+                                    "rsfga_api_strong_consistency_wait_timeout_total"
+                                )
+                                .increment(1);
+                                return Err(ApiError::gateway_timeout(format!(
+                                    "Strong consistency timeout (store_id: {}, sequence: {})",
+                                    e.store_id, e.sequence
+                                )));
+                            }
+                        }
                     }
                 }
             }
         }
+        // ConsistencyLevel::Eventual or None: no-op
     }
     Ok(())
 }
@@ -1323,12 +1417,20 @@ async fn wait_for_consistency<S: DataStore>(
 async fn check<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
+    headers: HeaderMap,
     JsonBadRequest(body): JsonBadRequest<CheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     // RYOW: Wait for write ticket if consistency preferences are specified.
     // Validates that the write ticket's store_id matches the request path's store_id
     // to prevent cross-store ticket attacks.
-    wait_for_consistency(&state, body.consistency.as_ref(), &store_id).await?;
+    let header_consistency = extract_consistency_header(&headers);
+    wait_for_consistency(
+        &state,
+        body.consistency.as_ref(),
+        header_consistency,
+        &store_id,
+    )
+    .await?;
 
     // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // If a specific authorization_model_id is provided, validate it exists
@@ -1765,10 +1867,18 @@ fn expand_node_to_body(node: rsfga_domain::resolver::ExpandNode) -> ExpandNodeBo
 async fn expand<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
+    headers: HeaderMap,
     JsonBadRequest(body): JsonBadRequest<ExpandRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     // RYOW: Wait for write ticket if consistency preferences are specified.
-    wait_for_consistency(&state, body.consistency.as_ref(), &store_id).await?;
+    let header_consistency = extract_consistency_header(&headers);
+    wait_for_consistency(
+        &state,
+        body.consistency.as_ref(),
+        header_consistency,
+        &store_id,
+    )
+    .await?;
 
     // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     use rsfga_domain::resolver::ExpandRequest;
@@ -2731,12 +2841,20 @@ pub struct ListObjectsResponseBody {
 async fn list_objects<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
+    headers: HeaderMap,
     JsonBadRequest(body): JsonBadRequest<ListObjectsRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     // RYOW: Wait for write ticket if consistency preferences are specified.
     // Validates that the write ticket's store_id matches the request path's store_id
     // to prevent cross-store ticket attacks.
-    wait_for_consistency(&state, body.consistency.as_ref(), &store_id).await?;
+    let header_consistency = extract_consistency_header(&headers);
+    wait_for_consistency(
+        &state,
+        body.consistency.as_ref(),
+        header_consistency,
+        &store_id,
+    )
+    .await?;
 
     use crate::validation::{
         estimate_context_size, json_exceeds_max_depth, validate_relation_format,
@@ -2937,10 +3055,18 @@ pub struct UserWildcardBody {
 async fn list_users<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
+    headers: HeaderMap,
     JsonBadRequest(body): JsonBadRequest<ListUsersRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
     // RYOW: Wait for write ticket if consistency preferences are specified.
-    wait_for_consistency(&state, body.consistency.as_ref(), &store_id).await?;
+    let header_consistency = extract_consistency_header(&headers);
+    wait_for_consistency(
+        &state,
+        body.consistency.as_ref(),
+        header_consistency,
+        &store_id,
+    )
+    .await?;
 
     use crate::validation::{
         estimate_context_size, json_exceeds_max_depth, validate_relation_format,
@@ -4129,5 +4255,176 @@ mod tests {
             assert!(json.get("write_ticket").is_none());
             assert_eq!(json["fallback"], true);
         }
+    }
+
+    // ── X-Consistency Header Tests ──────────────────────────────────────
+
+    #[test]
+    fn test_extract_consistency_header_eventual() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-consistency", "eventual".parse().unwrap());
+        assert_eq!(
+            extract_consistency_header(&headers),
+            Some(ConsistencyLevel::Eventual)
+        );
+    }
+
+    #[test]
+    fn test_extract_consistency_header_strong() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-consistency", "strong".parse().unwrap());
+        assert_eq!(
+            extract_consistency_header(&headers),
+            Some(ConsistencyLevel::Strong)
+        );
+    }
+
+    #[test]
+    fn test_extract_consistency_header_case_insensitive() {
+        for value in [
+            "EVENTUAL", "Eventual", "STRONG", "Strong", "EvEnTuAl", "sTrOnG",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-consistency", value.parse().unwrap());
+            let result = extract_consistency_header(&headers);
+            assert!(
+                result.is_some(),
+                "Expected Some for value '{}', got None",
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_consistency_header_unknown_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-consistency", "weak".parse().unwrap());
+        assert_eq!(extract_consistency_header(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_consistency_header_absent() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_consistency_header(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_consistency_header_empty_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-consistency", "".parse().unwrap());
+        assert_eq!(extract_consistency_header(&headers), None);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_consistency_no_tracker_is_noop() {
+        // Without NATS feature or without a tracker, all header values are no-ops
+        let storage = std::sync::Arc::new(rsfga_storage::MemoryDataStore::new());
+        let state = AppState::new(storage);
+
+        // Strong header should not error when no tracker is configured
+        let result =
+            wait_for_consistency(&state, None, Some(ConsistencyLevel::Strong), "store-1").await;
+        assert!(result.is_ok());
+
+        // Eventual header is always a no-op
+        let result =
+            wait_for_consistency(&state, None, Some(ConsistencyLevel::Eventual), "store-1").await;
+        assert!(result.is_ok());
+
+        // No header is also fine
+        let result = wait_for_consistency(&state, None, None, "store-1").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_consistency_body_takes_precedence_over_header() {
+        // When body-level consistency has a write_ticket, header is ignored.
+        // We test this by providing an Eventual header (which would skip waits)
+        // alongside a body-level write_ticket with a mismatched store_id (which should error).
+        let storage = std::sync::Arc::new(rsfga_storage::MemoryDataStore::new());
+        let state = AppState::new(storage);
+
+        let pref = ConsistencyPreference {
+            minimize_latency: false,
+            write_ticket: Some(WriteTicketParam {
+                store_id: "store-wrong".to_string(),
+                sequence: 1,
+            }),
+        };
+
+        // Even with Eventual header, body takes precedence → store_id mismatch error
+        // Note: Without nats feature, this is a no-op so the error won't fire.
+        // With nats feature, the body-level validation runs first.
+        let _result = wait_for_consistency(
+            &state,
+            Some(&pref),
+            Some(ConsistencyLevel::Eventual),
+            "store-1",
+        )
+        .await;
+        // Just verify it doesn't panic. The exact behavior depends on the nats feature.
+    }
+
+    #[cfg(feature = "nats")]
+    #[tokio::test]
+    async fn test_wait_for_consistency_body_precedence_over_header_with_nats() {
+        // With nats feature, body write_ticket with mismatched store_id should error
+        // even when header says Eventual
+        let storage = std::sync::Arc::new(rsfga_storage::MemoryDataStore::new());
+        let state = AppState::new(storage);
+
+        let pref = ConsistencyPreference {
+            minimize_latency: false,
+            write_ticket: Some(WriteTicketParam {
+                store_id: "store-wrong".to_string(),
+                sequence: 1,
+            }),
+        };
+
+        let result = wait_for_consistency(
+            &state,
+            Some(&pref),
+            Some(ConsistencyLevel::Eventual),
+            "store-1",
+        )
+        .await;
+        assert!(result.is_err(), "Expected error for store_id mismatch");
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_consistency_minimize_latency_suppresses_strong_header() {
+        // When body sets minimize_latency=true (no write_ticket),
+        // header-level strong consistency should be suppressed.
+        let storage = std::sync::Arc::new(rsfga_storage::MemoryDataStore::new());
+        let state = AppState::new(storage);
+
+        let pref = ConsistencyPreference {
+            minimize_latency: true,
+            write_ticket: None,
+        };
+
+        let result = wait_for_consistency(
+            &state,
+            Some(&pref),
+            Some(ConsistencyLevel::Strong),
+            "store-1",
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "minimize_latency should suppress header-level strong consistency"
+        );
+    }
+
+    #[cfg(feature = "nats")]
+    #[tokio::test]
+    async fn test_wait_for_consistency_strong_header_no_tracker_is_noop() {
+        // Strong header without a configured tracker should be a no-op
+        let storage = std::sync::Arc::new(rsfga_storage::MemoryDataStore::new());
+        let state = AppState::new(storage);
+
+        let result =
+            wait_for_consistency(&state, None, Some(ConsistencyLevel::Strong), "store-1").await;
+        assert!(result.is_ok());
     }
 }

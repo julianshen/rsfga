@@ -883,9 +883,24 @@ GET /stores?page_size=10&continuation_token=eyJsYXN0X2lkIjoiMDFIUSJ9
 
 ## Consistency Modes
 
-### Strong Consistency
+RSFGA supports two consistency control mechanisms that can be used independently or together.
 
-Bypass cache, always query database:
+### `X-Consistency` HTTP Header
+
+Set the `X-Consistency` header on read requests to control consistency behavior.
+
+| Value | Behavior |
+|-------|----------|
+| `eventual` | Skip consistency waits for lower latency (default behavior) |
+| `strong` | Wait for the latest committed write sequence before reading |
+
+Values are case-insensitive. Unknown values are ignored (treated as unset).
+
+**Supported endpoints**: `/check`, `/expand`, `/list-objects`, `/list-users`
+
+#### Strong Consistency
+
+Wait for the latest committed sequence, then read:
 
 ```http
 POST /stores/{store_id}/check
@@ -903,12 +918,15 @@ X-Consistency: strong
 
 **Performance Impact**: 2-5x slower than cached checks
 
-### Eventual Consistency (Default)
+**Requires**: NATS async writes with WriteTracker enabled. Without a WriteTracker, strong consistency is a no-op.
+
+#### Eventual Consistency (Default)
 
 Use cache, may return stale results:
 
 ```http
 POST /stores/{store_id}/check
+X-Consistency: eventual
 
 {
   "tuple_key": {...}
@@ -916,6 +934,42 @@ POST /stores/{store_id}/check
 ```
 
 **Staleness Window**: 1-10 seconds (configurable)
+
+### Body-Level Consistency (Write Tickets / RYOW)
+
+For read-your-own-writes (RYOW) consistency, include a `write_ticket` in the request body. The server waits until the specified sequence is committed before executing the read.
+
+```http
+POST /stores/{store_id}/check
+Content-Type: application/json
+
+{
+  "tuple_key": {...},
+  "consistency": {
+    "write_ticket": {
+      "store_id": "store-123",
+      "sequence": 42
+    }
+  }
+}
+```
+
+Alternatively, set `"consistency": "MINIMIZE_LATENCY"` to skip all consistency waits.
+
+### Precedence Rules
+
+When both header-level and body-level consistency are present:
+
+1. Body `minimize_latency` takes highest precedence (skips all waits)
+2. Body `write_ticket` takes precedence over header (waits for specific sequence)
+3. Header `X-Consistency` applies only when no body-level consistency is set
+
+| Body | Header | Behavior |
+|------|--------|----------|
+| `write_ticket` | any | Wait for ticket sequence (RYOW) |
+| `MINIMIZE_LATENCY` | any | Skip all waits |
+| _(none)_ | `strong` | Wait for latest committed sequence |
+| _(none)_ | `eventual` or absent | No wait (default) |
 
 ---
 
