@@ -96,7 +96,7 @@ services:
       - nats
       - edge
 
-  # RSFGA Writer - consumes writes from NATS and batches to storage
+  # RSFGA Writer - consumes writes from NATS and batches to PostgreSQL
   rsfga-writer:
     build:
       context: .
@@ -106,21 +106,33 @@ services:
     environment:
       - NATS_URL=nats://nats:4222
       - CONSUMER_NAME=rsfga-writer-1
-      - STORAGE_BACKEND=memory
+      - STORAGE_BACKEND=postgres
+      - DATABASE_URL=postgres://rsfga:rsfga@postgres:5432/rsfga
       - BATCH_SIZE=500
       - BATCH_TIMEOUT_MS=100
       - METRICS_PORT=9090
     ports:
-      - "9090:9090"
+      - "9092:9090"
     depends_on:
       nats:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     profiles:
       - nats
       - edge
     restart: unless-stopped
 
   # RSFGA Edge - syncs committed events to edge storage
+  # Uses memory storage by default: edge nodes re-bootstrap from the NATS event
+  # stream on restart, so persistence is optional. For persistent local cache,
+  # switch to rocksdb with a volume mount.
   rsfga-edge:
     build:
       context: .
@@ -139,6 +151,12 @@ services:
     depends_on:
       nats:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     profiles:
       - edge
     restart: unless-stopped
