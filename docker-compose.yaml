@@ -8,6 +8,14 @@
 #   docker-compose logs -f rsfga  # View logs
 #   docker-compose down           # Stop all services
 #   docker-compose down -v        # Stop and remove volumes
+#
+# Ports:
+#   8080  - RSFGA API (postgres backend)
+#   8081  - RSFGA API (memory backend, requires --profile memory)
+#   9092  - rsfga-writer metrics (host 9092 → container 9090)
+#   9091  - rsfga-edge metrics
+#   9090  - Prometheus (requires --profile observability)
+#   16686 - Jaeger UI (requires --profile observability)
 
 services:
   # RSFGA with PostgreSQL backend (production-like)
@@ -112,7 +120,7 @@ services:
       - BATCH_TIMEOUT_MS=100
       - METRICS_PORT=9090
     ports:
-      - "9092:9090"
+      - "9092:9090"  # Host 9092 to avoid conflict with Prometheus on 9090
     depends_on:
       nats:
         condition: service_healthy
