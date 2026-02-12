@@ -10,7 +10,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   # Run tests before building container image (for releases)
@@ -54,9 +53,8 @@ jobs:
         run: cargo fmt --all --check
 
   build-and-push:
-    name: Build and Push Container Image
+    name: Build ${{ matrix.binary }}
     runs-on: ubuntu-latest
-    # Wait for tests to pass before pushing to registry
     needs: [test]
     # Always run for PRs (test job is skipped), wait for test job otherwise
     if: always() && (github.event_name == 'pull_request' || needs.test.result == 'success')
@@ -65,6 +63,19 @@ jobs:
       packages: write
       attestations: write
       id-token: write
+
+    strategy:
+      matrix:
+        include:
+          - binary: rsfga
+            image_suffix: ""
+            smoke_port: "8080:8080"
+          - binary: rsfga-writer
+            image_suffix: "-writer"
+            smoke_port: "9090:9090"
+          - binary: rsfga-edge
+            image_suffix: "-edge"
+            smoke_port: "9091:9091"
 
     steps:
       - name: Checkout repository
@@ -88,7 +99,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ github.repository }}${{ matrix.image_suffix }}
           flavor: |
             latest=auto
           tags: |
@@ -110,16 +121,31 @@ jobs:
           context: .
           platforms: linux/amd64
           load: true
-          tags: ${{ env.IMAGE_NAME }}:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ matrix.binary }}:test
+          build-args: |
+            BINARY=${{ matrix.binary }}
+          cache-from: type=gha,scope=${{ matrix.binary }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.binary }}
 
-      # Smoke test: verify container starts and health endpoint responds
-      - name: Smoke test - Health check
+      # Smoke test: verify container starts and responds
+      # rsfga uses /health endpoint; writer/edge use Prometheus metrics port
+      - name: Smoke test
         if: github.event_name == 'pull_request'
+        env:
+          BINARY_NAME: ${{ matrix.binary }}
+          SMOKE_PORT: ${{ matrix.smoke_port }}
         run: |
+          # Determine health check endpoint based on binary
+          if [ "$BINARY_NAME" = "rsfga" ]; then
+            HEALTH_URL="http://localhost:8080/health"
+          elif [ "$BINARY_NAME" = "rsfga-writer" ]; then
+            HEALTH_URL="http://localhost:9090/metrics"
+          else
+            HEALTH_URL="http://localhost:9091/metrics"
+          fi
+
           # Start container in background
-          docker run -d --name smoke-test -p 8080:8080 ${{ env.IMAGE_NAME }}:test
+          docker run -d --name smoke-test -p "$SMOKE_PORT" "${BINARY_NAME}:test"
 
           # Cleanup function to ensure container is always removed
           cleanup() {
@@ -131,16 +157,16 @@ jobs:
           trap cleanup EXIT
 
           # Wait for container to be ready (max 30 seconds)
-          for i in {1..30}; do
-            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
-              echo "Health check passed!"
+          for i in $(seq 1 30); do
+            if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
+              echo "Health check passed for ${BINARY_NAME}!"
               exit 0
             fi
-            echo "Waiting for container to be ready... ($i/30)"
+            echo "Waiting for ${BINARY_NAME} to be ready... ($i/30)"
             sleep 1
           done
 
-          echo "Health check failed after 30 seconds"
+          echo "Health check failed for ${BINARY_NAME} after 30 seconds"
           exit 1
 
       # For main/tags: Build multi-platform and push to registry
@@ -154,13 +180,15 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          build-args: |
+            BINARY=${{ matrix.binary }}
+          cache-from: type=gha,scope=${{ matrix.binary }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.binary }}
 
       - name: Generate artifact attestation
         if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}${{ matrix.image_suffix }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
