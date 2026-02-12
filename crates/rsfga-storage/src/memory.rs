@@ -200,10 +200,18 @@ impl DataStore for MemoryDataStore {
         let mut changelog = self.changelog.entry(store_id.to_string()).or_default();
         let now = chrono::Utc::now();
 
-        // Process deletes - O(1) per tuple with HashSet
-        // Record delete in changelog before removing from tuples
+        // Process deletes - match on core key (user, relation, object) only.
+        // OpenFGA ignores condition fields when matching tuples for deletion,
+        // so a delete without condition_name can remove a tuple that has one.
         for tuple in deletes {
-            tuples.remove(&tuple);
+            tuples.retain(|existing| {
+                !(existing.object_type == tuple.object_type
+                    && existing.object_id == tuple.object_id
+                    && existing.relation == tuple.relation
+                    && existing.user_type == tuple.user_type
+                    && existing.user_id == tuple.user_id
+                    && existing.user_relation == tuple.user_relation)
+            });
             changelog.push(TupleChange::delete(tuple, now));
         }
 

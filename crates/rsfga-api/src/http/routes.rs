@@ -307,6 +307,8 @@ pub mod error_codes {
     pub const RESOURCE_EXHAUSTED: &str = "resource_exhausted";
     /// Request body exceeds maximum allowed size.
     pub const PAYLOAD_TOO_LARGE: &str = "payload_too_large";
+    /// Entity count exceeds the allowed limit (e.g., too many tuples in a write).
+    pub const EXCEEDED_ENTITY_LIMIT: &str = "exceeded_entity_limit";
 }
 
 /// API error response format matching OpenFGA.
@@ -427,6 +429,12 @@ impl ApiError {
         Self::new(error_codes::RESOURCE_EXHAUSTED, message)
     }
 
+    /// Creates an exceeded entity limit error (400).
+    /// Used when the number of entities exceeds the allowed limit.
+    pub fn exceeded_entity_limit(message: impl Into<String>) -> Self {
+        Self::new(error_codes::EXCEEDED_ENTITY_LIMIT, message)
+    }
+
     // Legacy methods for backward compatibility - deprecated in favor of specific methods
     // TODO: Remove in v2.0.0 - tracked in issue #270
 }
@@ -451,7 +459,8 @@ impl IntoResponse for ApiError {
             | INVALID_CONTINUATION_TOKEN
             | AUTHORIZATION_MODEL_RESOLUTION_TOO_COMPLEX
             | TYPE_NOT_FOUND
-            | RELATION_NOT_FOUND => StatusCode::BAD_REQUEST,
+            | RELATION_NOT_FOUND
+            | EXCEEDED_ENTITY_LIMIT => StatusCode::BAD_REQUEST,
 
             // 409 Conflict
             WRITE_FAILED_DUE_TO_INVALID_INPUT => StatusCode::CONFLICT,
@@ -737,6 +746,12 @@ async fn create_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     JsonBadRequest(body): JsonBadRequest<CreateStoreRequest>,
 ) -> ApiResult<impl IntoResponse> {
+    // OpenFGA requires store name to be at least 3 characters
+    if body.name.len() < 3 {
+        return Err(ApiError::validation_error(
+            "store name must be at least 3 characters",
+        ));
+    }
     let id = ulid::Ulid::new().to_string();
     let store = state.storage.create_store(&id, &body.name).await?;
 
@@ -747,8 +762,10 @@ async fn get_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
-    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
-    // No format validation - just let storage return "not found" for invalid IDs.
+    // OpenFGA validates ULID format first → 400 for invalid, 404 for missing.
+    if let Some(err) = crate::validation::validate_store_id_format(&store_id) {
+        return Err(ApiError::validation_error(err));
+    }
     let store = state.storage.get_store(&store_id).await?;
     Ok(Json(StoreResponse::from(store)))
 }
@@ -789,7 +806,9 @@ async fn update_store<S: DataStore>(
     Path(store_id): Path<String>,
     JsonBadRequest(body): JsonBadRequest<UpdateStoreRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
+    if let Some(err) = crate::validation::validate_store_id_format(&store_id) {
+        return Err(ApiError::validation_error(err));
+    }
     let store = state.storage.update_store(&store_id, &body.name).await?;
     Ok(Json(StoreResponse::from(store)))
 }
@@ -818,7 +837,9 @@ async fn delete_store<S: DataStore>(
     State(state): State<Arc<AppState<S>>>,
     Path(store_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
-    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
+    if let Some(err) = crate::validation::validate_store_id_format(&store_id) {
+        return Err(ApiError::validation_error(err));
+    }
     // Clean up assertions FIRST, before storage deletion.
     // This ensures we don't leak assertions if storage deletion fails.
     // Using retain for atomic cleanup - no race condition window.
@@ -1216,8 +1237,11 @@ pub struct RelationshipConditionBody {
 
 #[derive(Debug, Deserialize)]
 pub struct TupleKeyBody {
+    #[serde(default)]
     pub user: String,
+    #[serde(default)]
     pub relation: String,
+    #[serde(default)]
     pub object: String,
     /// Optional condition for conditional relationships.
     #[serde(default)]
@@ -1420,6 +1444,26 @@ async fn check<S: DataStore>(
     headers: HeaderMap,
     JsonBadRequest(body): JsonBadRequest<CheckRequestBody>,
 ) -> ApiResult<impl IntoResponse> {
+    // Validate required tuple_key fields — report ALL missing fields at once
+    {
+        let mut missing = Vec::new();
+        if body.tuple_key.user.is_empty() {
+            missing.push("user");
+        }
+        if body.tuple_key.relation.is_empty() {
+            missing.push("relation");
+        }
+        if body.tuple_key.object.is_empty() {
+            missing.push("object");
+        }
+        if !missing.is_empty() {
+            return Err(ApiError::validation_error(format!(
+                "tuple_key missing required fields: {}",
+                missing.join(", ")
+            )));
+        }
+    }
+
     // RYOW: Wait for write ticket if consistency preferences are specified.
     // Validates that the write ticket's store_id matches the request path's store_id
     // to prevent cross-store ticket attacks.
@@ -1432,7 +1476,6 @@ async fn check<S: DataStore>(
     )
     .await?;
 
-    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // If a specific authorization_model_id is provided, validate it exists
     if let Some(ref model_id) = body.authorization_model_id {
         state
@@ -1949,13 +1992,12 @@ async fn write_tuples<S: DataStore>(
 ) -> ApiResult<impl IntoResponse> {
     use rsfga_storage::StoredTuple;
 
-    // OpenFGA returns 404 for any non-existent store, regardless of ID format.
     // Validate tuple count before processing (OpenFGA limit: 100 tuples per write)
     let write_count = body.writes.as_ref().map_or(0, |w| w.tuple_keys.len());
     let delete_count = body.deletes.as_ref().map_or(0, |d| d.tuple_keys.len());
     let total_count = write_count + delete_count;
     if let Some(err) = validate_tuple_count(total_count) {
-        return Err(ApiError::validation_error(err));
+        return Err(ApiError::exceeded_entity_limit(err));
     }
 
     // Validate user/object ID lengths before processing (OpenFGA limits)
@@ -3368,7 +3410,7 @@ async fn async_write_tuples<S: DataStore>(
     let delete_count = body.deletes.as_ref().map_or(0, |d| d.tuple_keys.len());
     let total_count = write_count + delete_count;
     if let Some(err) = validate_tuple_count(total_count) {
-        return Err(ApiError::validation_error(err));
+        return Err(ApiError::exceeded_entity_limit(err));
     }
 
     // Validate user/object ID lengths (same as sync path)

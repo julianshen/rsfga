@@ -868,7 +868,9 @@ where
         object_id: String,
         ctx: TraversalContext,
     ) -> DomainResult<CheckResult> {
-        let new_ctx = ctx.increment_depth();
+        // Union is a structural dispatcher, not a resolution node.
+        // Don't increment depth here — actual resolution steps
+        // (computedUserset, tupleToUserset) handle their own depth.
 
         // Create FuturesUnordered for parallel execution with short-circuiting
         let mut futures: FuturesUnordered<_> = children
@@ -880,7 +882,7 @@ where
                     type_constraints.clone(),
                     object_type.clone(),
                     object_id.clone(),
-                    new_ctx.clone(),
+                    ctx.clone(),
                 )
             })
             .collect();
@@ -949,7 +951,8 @@ where
         object_id: String,
         ctx: TraversalContext,
     ) -> DomainResult<CheckResult> {
-        let new_ctx = ctx.increment_depth();
+        // Intersection is a structural dispatcher, not a resolution node.
+        // Don't increment depth here — actual resolution steps handle their own depth.
 
         // Create FuturesUnordered for parallel execution with short-circuiting
         let mut futures: FuturesUnordered<_> = children
@@ -961,7 +964,7 @@ where
                     type_constraints.clone(),
                     object_type.clone(),
                     object_id.clone(),
-                    new_ctx.clone(),
+                    ctx.clone(),
                 )
             })
             .collect();
@@ -1004,7 +1007,8 @@ where
         object_id: String,
         ctx: TraversalContext,
     ) -> DomainResult<CheckResult> {
-        let new_ctx = ctx.increment_depth();
+        // Exclusion is a structural dispatcher, not a resolution node.
+        // Don't increment depth here — actual resolution steps handle their own depth.
 
         // Execute both in parallel
         let (base_result, subtract_result) = futures::future::join(
@@ -1014,7 +1018,7 @@ where
                 type_constraints.clone(),
                 object_type.clone(),
                 object_id.clone(),
-                new_ctx.clone(),
+                ctx.clone(),
             ),
             self.resolve_userset(
                 request,
@@ -1022,7 +1026,7 @@ where
                 type_constraints,
                 object_type,
                 object_id,
-                new_ctx,
+                ctx,
             ),
         )
         .await;

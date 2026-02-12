@@ -492,7 +492,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         let delete_count = req.deletes.as_ref().map_or(0, |d| d.tuple_keys.len());
         let total_count = write_count + delete_count;
         if let Some(err) = validate_tuple_count(total_count) {
-            return Err(Status::invalid_argument(err));
+            return Err(Status::out_of_range(err));
         }
 
         // Validate user/object ID lengths before processing (OpenFGA limits)
@@ -1125,6 +1125,13 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         request: Request<CreateStoreRequest>,
     ) -> Result<Response<CreateStoreResponse>, Status> {
         let req = request.into_inner();
+
+        if req.name.len() < 3 {
+            return Err(Status::invalid_argument(
+                "store name must be at least 3 characters",
+            ));
+        }
+
         let id = ulid::Ulid::new().to_string();
 
         let store = self
@@ -1147,6 +1154,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
     ) -> Result<Response<UpdateStoreResponse>, Status> {
         let req = request.into_inner();
 
+        if let Some(err) = crate::validation::validate_store_id_format(&req.store_id) {
+            return Err(Status::invalid_argument(err));
+        }
+
         let store = self
             .storage
             .update_store(&req.store_id, &req.name)
@@ -1167,6 +1178,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
     ) -> Result<Response<DeleteStoreResponse>, Status> {
         let req = request.into_inner();
 
+        if let Some(err) = crate::validation::validate_store_id_format(&req.store_id) {
+            return Err(Status::invalid_argument(err));
+        }
+
         self.storage
             .delete_store(&req.store_id)
             .await
@@ -1186,6 +1201,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         request: Request<GetStoreRequest>,
     ) -> Result<Response<GetStoreResponse>, Status> {
         let req = request.into_inner();
+
+        if let Some(err) = crate::validation::validate_store_id_format(&req.store_id) {
+            return Err(Status::invalid_argument(err));
+        }
 
         let store = self
             .storage
