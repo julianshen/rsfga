@@ -132,7 +132,11 @@ impl TestContext {
                 }),
             )
             .await;
-        assert_eq!(status, StatusCode::OK, "Failed to write assertion");
+        assert_eq!(
+            status,
+            StatusCode::NO_CONTENT,
+            "Failed to write assertion"
+        );
     }
 
     /// Get the number of assertion entries.
