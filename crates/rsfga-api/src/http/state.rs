@@ -203,6 +203,19 @@ impl<S: DataStore> AppState<S> {
         }
     }
 
+    /// Sets a shared assertions DashMap for cross-protocol consistency.
+    ///
+    /// When both HTTP and gRPC servers need to share the same assertions storage,
+    /// create the DashMap externally and pass it to both services.
+    #[must_use]
+    pub fn with_assertions(
+        mut self,
+        assertions: Arc<DashMap<AssertionKey, Vec<StoredAssertion>>>,
+    ) -> Self {
+        self.assertions = assertions;
+        self
+    }
+
     /// Sets the NATS event publisher for async write operations.
     ///
     /// When a publisher is configured, the async write endpoints become available

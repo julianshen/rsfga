@@ -2813,7 +2813,8 @@ async fn write_assertions<S: DataStore>(
     let key = (store_id, authorization_model_id);
     state.assertions.insert(key, stored_assertions);
 
-    Ok(Json(serde_json::json!({})))
+    // OpenFGA returns 204 No Content for successful assertion writes
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
 /// Read assertions for an authorization model (GET).

@@ -20,7 +20,9 @@ use tokio::signal;
 use tokio::sync::broadcast;
 use tracing::{error, info, warn, Level};
 
+use dashmap::DashMap;
 use rsfga_api::grpc::{run_grpc_server_with_shutdown, GrpcServerConfig};
+use rsfga_api::http::state::{AssertionKey, StoredAssertion};
 use rsfga_api::http::{create_router_with_observability, AppState};
 use rsfga_api::observability::{init_metrics, init_observability, LoggingConfig, TracingConfig};
 use rsfga_server::ServerConfig;
@@ -203,11 +205,16 @@ where
         None
     };
 
+    // Create shared assertions storage for cross-protocol consistency
+    let shared_assertions: Arc<DashMap<AssertionKey, Vec<StoredAssertion>>> =
+        Arc::new(DashMap::new());
+
     // Prepare HTTP server future
     let http_storage = Arc::clone(&storage);
     let http_shutdown_rx = shutdown_tx.subscribe();
+    let http_assertions = Arc::clone(&shared_assertions);
     let http_future = async move {
-        let state = AppState::new(http_storage);
+        let state = AppState::new(http_storage).with_assertions(http_assertions);
 
         // Wire up NATS publisher and write tracker if available
         #[cfg(feature = "nats")]
@@ -238,6 +245,7 @@ where
             health_check_enabled: config.grpc.health_check,
         };
         let grpc_shutdown_rx = shutdown_tx.subscribe();
+        let grpc_assertions = Some(Arc::clone(&shared_assertions));
 
         info!(%grpc_addr, "gRPC server enabled");
 
@@ -246,9 +254,15 @@ where
                 let mut rx = grpc_shutdown_rx;
                 let _ = rx.recv().await;
             };
-            run_grpc_server_with_shutdown(grpc_storage, grpc_addr, grpc_config, shutdown_future)
-                .await
-                .map_err(|e| anyhow::anyhow!("gRPC server error: {}", e))
+            run_grpc_server_with_shutdown(
+                grpc_storage,
+                grpc_addr,
+                grpc_config,
+                shutdown_future,
+                grpc_assertions,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("gRPC server error: {}", e))
         })
     } else {
         info!("gRPC server disabled");

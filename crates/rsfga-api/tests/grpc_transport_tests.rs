@@ -91,7 +91,7 @@ where
         let shutdown_signal = async move {
             let _ = shutdown_rx.await;
         };
-        run_grpc_server_with_shutdown(storage, addr, config, shutdown_signal).await
+        run_grpc_server_with_shutdown(storage, addr, config, shutdown_signal, None).await
     });
 
     // Actively check for server readiness with retries
@@ -914,7 +914,7 @@ async fn test_grpc_server_fails_when_port_in_use() {
         let shutdown_signal = async move {
             let _ = shutdown_rx2.await;
         };
-        run_grpc_server_with_shutdown(storage2, addr, config, shutdown_signal).await
+        run_grpc_server_with_shutdown(storage2, addr, config, shutdown_signal, None).await
     });
 
     // Wait for the second server to fail (it should fail quickly)
