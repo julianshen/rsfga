@@ -215,16 +215,17 @@ pub fn validate_user_format(user: &str) -> Option<&'static str> {
 /// `None` if valid.
 pub fn validate_object_id_length(object: &str) -> Option<String> {
     // Extract the ID part after "type:"
-    let Some(colon_pos) = object.find(':') else {
+    let Some(_colon_pos) = object.find(':') else {
         return Some("object must be in 'type:id' format".to_string());
     };
 
-    let id = &object[colon_pos + 1..];
-    if id.len() > MAX_OBJECT_ID_LENGTH {
+    // OpenFGA's regex is ^[^\s]{2,256}$ which validates the TOTAL object string length,
+    // not just the ID portion after the colon.
+    if object.len() > MAX_OBJECT_ID_LENGTH {
         return Some(format!(
             "object identifier exceeds maximum length of {} (got {})",
             MAX_OBJECT_ID_LENGTH,
-            id.len()
+            object.len()
         ));
     }
     None
@@ -482,9 +483,11 @@ mod tests {
 
     #[test]
     fn test_validate_object_id_length_valid() {
-        // Valid: exactly at limit (256 chars)
-        let id = "x".repeat(256);
-        let object = format!("document:{}", id);
+        // Valid: total string exactly at limit (256 chars)
+        // "d:" is 2 chars, so 254 more chars of ID = 256 total
+        let id = "x".repeat(254);
+        let object = format!("d:{}", id);
+        assert_eq!(object.len(), 256);
         assert!(validate_object_id_length(&object).is_none());
 
         // Valid: short ID
@@ -493,9 +496,10 @@ mod tests {
 
     #[test]
     fn test_validate_object_id_length_exceeds_limit() {
-        // Invalid: exceeds 256 char limit
-        let id = "x".repeat(257);
-        let object = format!("document:{}", id);
+        // Invalid: total object string exceeds 256 char limit
+        let id = "x".repeat(255);
+        let object = format!("d:{}", id);
+        assert_eq!(object.len(), 257);
         let result = validate_object_id_length(&object);
         assert!(result.is_some());
         assert!(result.unwrap().contains("exceeds maximum length"));
@@ -623,10 +627,11 @@ mod tests {
 
     #[test]
     fn test_validate_tuple_id_lengths_object_too_long() {
-        let long_id = "x".repeat(257);
+        // Total object string must exceed 256 chars
+        let long_id = "x".repeat(248);
         let writes = vec![TestTupleKey {
             user: "user:alice".to_string(),
-            object: format!("document:{}", long_id),
+            object: format!("document:{}", long_id), // "document:" = 9 + 248 = 257
         }];
 
         let result = validate_tuple_id_lengths::<TestTupleKey, TestTupleKey>(Some(&writes), None);

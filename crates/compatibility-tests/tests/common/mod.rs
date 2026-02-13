@@ -637,6 +637,46 @@ pub fn is_grpcurl_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Convert a camelCase string to snake_case.
+///
+/// Proto3 JSON uses camelCase for field names (e.g., `authorizationModelId`),
+/// but our compatibility tests expect snake_case to match the HTTP API.
+fn camel_to_snake(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 4);
+    for (i, c) in s.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(c.to_ascii_lowercase());
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Recursively normalize all JSON object keys from camelCase to snake_case.
+///
+/// grpcurl outputs proto3 JSON with camelCase keys. This normalizes them
+/// to snake_case so compatibility tests can use consistent field names
+/// across both HTTP and gRPC assertions.
+fn normalize_grpc_json(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let normalized: serde_json::Map<String, serde_json::Value> = map
+                .into_iter()
+                .map(|(k, v)| (camel_to_snake(&k), normalize_grpc_json(v)))
+                .collect();
+            serde_json::Value::Object(normalized)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(normalize_grpc_json).collect())
+        }
+        other => other,
+    }
+}
+
 /// Execute gRPC call with grpcurl and return parsed JSON response
 pub fn grpc_call(method: &str, data: &serde_json::Value) -> Result<serde_json::Value> {
     let url = get_grpc_url();
@@ -660,7 +700,7 @@ pub fn grpc_call(method: &str, data: &serde_json::Value) -> Result<serde_json::V
     }
 
     let json: serde_json::Value = serde_json::from_str(&stdout)?;
-    Ok(json)
+    Ok(normalize_grpc_json(json))
 }
 
 /// Parse grpcurl streaming response output.
@@ -747,7 +787,8 @@ pub fn grpc_streaming_call(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_grpc_streaming_response(&stdout)
+    let results = parse_grpc_streaming_response(&stdout)?;
+    Ok(results.into_iter().map(normalize_grpc_json).collect())
 }
 
 /// Helper to create a test store via gRPC
