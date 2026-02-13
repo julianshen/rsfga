@@ -203,6 +203,9 @@ impl DataStore for MemoryDataStore {
         // Process deletes - match on core key (user, relation, object) only.
         // OpenFGA ignores condition fields when matching tuples for deletion,
         // so a delete without condition_name can remove a tuple that has one.
+        // Note: retain() is O(n) per delete vs the previous O(1) HashSet::remove().
+        // Acceptable for the in-memory backend (test/dev use); production backends
+        // use indexed SQL DELETE which is unaffected.
         for tuple in deletes {
             tuples.retain(|existing| {
                 !(existing.object_type == tuple.object_type

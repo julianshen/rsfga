@@ -1206,12 +1206,31 @@ pub struct WriteTicketParam {
     pub sequence: u64,
 }
 
+/// Tuple key for check requests with lenient deserialization.
+///
+/// Unlike `TupleKeyBody` (used by write/contextual tuples), this struct
+/// uses `#[serde(default)]` so that missing fields deserialize as empty
+/// strings instead of causing a JSON parse error. This allows the check
+/// handler to report ALL missing fields at once (e.g. "relation, object")
+/// rather than only the first one serde encounters.
+#[derive(Debug, Deserialize)]
+pub struct CheckTupleKeyBody {
+    #[serde(default)]
+    pub user: String,
+    #[serde(default)]
+    pub relation: String,
+    #[serde(default)]
+    pub object: String,
+    #[serde(default)]
+    pub condition: Option<RelationshipConditionBody>,
+}
+
 /// Request body for check operation.
 // Fields will be used when full resolver is integrated.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct CheckRequestBody {
-    pub tuple_key: TupleKeyBody,
+    pub tuple_key: CheckTupleKeyBody,
     #[serde(default)]
     pub authorization_model_id: Option<String>,
     #[serde(default)]
@@ -1237,11 +1256,8 @@ pub struct RelationshipConditionBody {
 
 #[derive(Debug, Deserialize)]
 pub struct TupleKeyBody {
-    #[serde(default)]
     pub user: String,
-    #[serde(default)]
     pub relation: String,
-    #[serde(default)]
     pub object: String,
     /// Optional condition for conditional relationships.
     #[serde(default)]
