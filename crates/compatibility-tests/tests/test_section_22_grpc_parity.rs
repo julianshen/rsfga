@@ -1987,7 +1987,8 @@ fn has_continuation_token(response: &serde_json::Value) -> bool {
 #[tokio::test]
 async fn test_error_nonexistent_store_parity() -> Result<()> {
     let client = reqwest::Client::new();
-    let fake_store_id = "nonexistent-store-12345";
+    // Use a valid ULID-format store ID that doesn't exist (26 chars, passes format validation, gets 404)
+    let fake_store_id = "01000000000000000000000001";
 
     // Try to get store via REST
     let (rest_status, _rest_body) =
@@ -2882,7 +2883,8 @@ async fn test_expand_computed_userset_parity() -> Result<()> {
     }
 
     // Check for tupleToUserset node type at root level
-    let grpc_has_tuple_to_userset = grpc_root.get("tupleToUserset").is_some();
+    // gRPC uses snake_case after normalization, REST uses camelCase
+    let grpc_has_tuple_to_userset = grpc_root.get("tuple_to_userset").is_some();
     let rest_has_tuple_to_userset = rest_root.get("tupleToUserset").is_some();
     assert_eq!(
         grpc_has_tuple_to_userset, rest_has_tuple_to_userset,
@@ -2911,9 +2913,10 @@ async fn test_expand_computed_userset_parity() -> Result<()> {
         "Both should have same nested computed node presence"
     );
 
+    // gRPC uses snake_case after normalization, REST uses camelCase
     let grpc_nested_ttu = grpc_root
         .get("leaf")
-        .and_then(|l| l.get("tupleToUserset"))
+        .and_then(|l| l.get("tuple_to_userset"))
         .is_some();
     let rest_nested_ttu = rest_root
         .get("leaf")
@@ -3100,7 +3103,8 @@ async fn test_error_read_changes_nonexistent_store_parity() -> Result<()> {
 #[tokio::test]
 async fn test_error_list_authorization_models_nonexistent_store_parity() -> Result<()> {
     let client = reqwest::Client::new();
-    let fake_store_id = "nonexistent-store-for-models";
+    // Use a valid ULID-format store ID that doesn't exist (26 chars, passes format validation, gets 404)
+    let fake_store_id = "01000000000000000000000002";
 
     // Try to list authorization models via REST
     let (rest_status, _rest_body) = rest_call_with_status(

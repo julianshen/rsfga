@@ -408,8 +408,9 @@ message TupleChange {
 }
 
 enum TupleOperation {
-  TUPLE_OPERATION_WRITE = 0;
-  TUPLE_OPERATION_DELETE = 1;
+  TUPLE_OPERATION_UNSPECIFIED = 0;
+  TUPLE_OPERATION_WRITE = 1;
+  TUPLE_OPERATION_DELETE = 2;
 }
 
 // ============================================================

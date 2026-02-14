@@ -1808,8 +1808,8 @@ async fn test_grpc_read_changes_returns_tuples() {
             change.timestamp.is_some(),
             "Each change should have timestamp"
         );
-        // All changes are WRITE operations (0)
-        assert_eq!(change.operation, 0, "Operation should be WRITE (0)");
+        // All changes are WRITE operations (1 = TUPLE_OPERATION_WRITE)
+        assert_eq!(change.operation, 1, "Operation should be WRITE (1)");
     }
 }
 
