@@ -18,7 +18,9 @@ use std::sync::Arc;
 use clap::Parser;
 use tokio::signal;
 use tokio::sync::broadcast;
-use tracing::{error, info, warn, Level};
+#[cfg(feature = "nats")]
+use tracing::warn;
+use tracing::{error, info, Level};
 
 use dashmap::DashMap;
 use rsfga_api::grpc::{run_grpc_server_with_shutdown, GrpcServerConfig};
