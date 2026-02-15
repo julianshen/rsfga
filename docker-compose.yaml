@@ -89,17 +89,18 @@ services:
   # NATS server with JetStream (required for async writes)
   nats:
     image: nats:2.10-alpine
-    command: ["--jetstream", "--store_dir", "/data"]
+    command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
     ports:
       - "4222:4222"
       - "8222:8222"    # HTTP monitoring
     volumes:
       - nats_data:/data
     healthcheck:
-      test: ["CMD", "nats-server", "--signal", "ldm"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 5s
     profiles:
       - nats
       - edge
