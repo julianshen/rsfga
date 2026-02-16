@@ -370,6 +370,12 @@ pub struct CommittedEvent {
     /// Timestamp when the commit occurred
     pub committed_at: DateTime<Utc>,
 
+    /// Whether this event includes authorization model changes.
+    /// When true, the precompute daemon should invalidate all cached
+    /// results for this store and rebuild relation dependency maps.
+    #[serde(default)]
+    pub model_changed: bool,
+
     /// Storage backend metadata (e.g., transaction ID)
     #[serde(default)]
     pub storage_metadata: HashMap<String, String>,
@@ -386,6 +392,7 @@ impl CommittedEvent {
             writes: Vec::new(),
             deletes: Vec::new(),
             committed_at: Utc::now(),
+            model_changed: false,
             storage_metadata: HashMap::new(),
         }
     }
@@ -405,6 +412,12 @@ impl CommittedEvent {
     /// Add deleted tuples.
     pub fn with_deletes(mut self, deletes: Vec<TupleKey>) -> Self {
         self.deletes = deletes;
+        self
+    }
+
+    /// Mark this event as containing authorization model changes.
+    pub fn with_model_changed(mut self) -> Self {
+        self.model_changed = true;
         self
     }
 

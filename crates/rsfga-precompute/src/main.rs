@@ -11,7 +11,7 @@
 //! - Submits RecomputeJobs to the worker pool for async resolution
 //! - Workers resolve checks via GraphResolver and write results to Valkey
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,11 +36,10 @@ use rsfga_precompute::worker::WorkerPool;
 use rsfga_domain::resolver::GraphResolver;
 use rsfga_valkey::cache::CheckCache;
 
-/// Type alias for relation dependency map.
-/// Maps (object_type, relation) to set of dependent (object_type, relation) pairs.
-type RelationDeps = Arc<
-    tokio::sync::RwLock<HashMap<(String, String), std::collections::HashSet<(String, String)>>>,
->;
+/// Type alias for per-store relation dependency map.
+/// Outer key: store_id → inner: (object_type, relation) → set of dependent (object_type, relation) pairs.
+type RelationDeps =
+    Arc<tokio::sync::RwLock<HashMap<String, HashMap<(String, String), HashSet<(String, String)>>>>>;
 
 /// RSFGA Precompute - Precomputation daemon for sub-millisecond check lookups
 #[derive(Parser, Debug)]
@@ -212,10 +211,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    // TODO: Populate relation_deps from authorization model on startup and
-    // refresh when model changes are detected. Without this, only direct
-    // hot-path matches trigger recomputation (computed relation dependencies
-    // are not tracked).
+    // Per-store relation dependency map, lazily populated on first event
+    // for each store and rebuilt when model changes are detected.
     let relation_deps: RelationDeps = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
 
     // Run consumer loop
@@ -224,6 +221,7 @@ async fn main() -> Result<()> {
         &worker_pool,
         &check_cache,
         relation_deps,
+        Arc::clone(&storage),
         shutdown_rx,
         Duration::from_millis(args.fetch_timeout_ms),
         args.max_messages,
@@ -235,11 +233,13 @@ async fn main() -> Result<()> {
 }
 
 /// Main consumer loop: fetch events, classify, find affected checks, submit jobs.
+#[allow(clippy::too_many_arguments)]
 async fn run_consumer_loop(
     consumer: async_nats::jetstream::consumer::Consumer<PullConfig>,
     worker_pool: &WorkerPool,
     check_cache: &Arc<CheckCache>,
     relation_deps: RelationDeps,
+    storage: Arc<dyn DataStore>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     fetch_timeout: Duration,
     max_messages: usize,
@@ -301,9 +301,44 @@ async fn run_consumer_loop(
                     let changes = classifier::classify(&event);
 
                     if !changes.is_empty() {
-                        // Find affected hot-path checks
-                        let deps = relation_deps.read().await;
-                        match impact::find_affected_checks(&changes, check_cache, &deps).await {
+                        let store_id = &event.store_id;
+
+                        // Build or rebuild per-store relation deps as needed:
+                        // - First event for a store: lazy initialization
+                        // - Model change: rebuild since relations may have changed
+                        let has_model_change = changes
+                            .iter()
+                            .any(|c| matches!(c, classifier::ChangeType::ModelChange { .. }));
+
+                        {
+                            let needs_build = has_model_change || {
+                                let deps_read = relation_deps.read().await;
+                                !deps_read.contains_key(store_id)
+                            };
+
+                            if needs_build {
+                                if let Some(type_refs) =
+                                    rsfga_precompute::adapters::load_store_relation_refs(
+                                        &*storage, store_id,
+                                    )
+                                    .await
+                                {
+                                    let store_deps =
+                                        impact::build_relation_dependencies(&type_refs);
+                                    let mut deps_write = relation_deps.write().await;
+                                    deps_write.insert(store_id.clone(), store_deps);
+                                    debug!(store_id, "Built relation dependencies for store");
+                                }
+                            }
+                        }
+
+                        // Look up this store's deps for impact analysis
+                        let deps_read = relation_deps.read().await;
+                        let empty_deps = HashMap::new();
+                        let store_deps = deps_read.get(store_id).unwrap_or(&empty_deps);
+
+                        match impact::find_affected_checks(&changes, check_cache, store_deps).await
+                        {
                             Ok(jobs) => {
                                 debug!(
                                     store_id = %event.store_id,

@@ -14,14 +14,21 @@ pub enum ChangeType {
 
 /// Classify a committed event into change types for impact analysis.
 ///
-/// TODO: Detect model changes (ModelWriteRequest committed events) and emit
-/// `ChangeType::ModelChange` so the impact analyzer can invalidate all cached
-/// results for that store. Currently only tuple changes are classified.
+/// Detects both tuple changes and model changes. Model changes trigger
+/// full store invalidation since any cached results may be stale.
 pub fn classify(event: &CommittedEvent) -> Vec<ChangeType> {
-    let mut seen = std::collections::HashSet::new();
     let mut changes = Vec::new();
 
-    // Extract unique (object_type, relation) pairs from writes
+    // Model change: invalidate all cached results for this store
+    if event.model_changed {
+        changes.push(ChangeType::ModelChange {
+            store_id: event.store_id.clone(),
+        });
+    }
+
+    // Extract unique (object_type, relation) pairs from writes and deletes
+    let mut seen = std::collections::HashSet::new();
+
     for write in &event.writes {
         if let Some((obj_type, _)) = write.key.object.split_once(':') {
             let pair = (obj_type.to_string(), write.key.relation.clone());
@@ -35,7 +42,6 @@ pub fn classify(event: &CommittedEvent) -> Vec<ChangeType> {
         }
     }
 
-    // Extract unique (object_type, relation) pairs from deletes
     for delete in &event.deletes {
         if let Some((obj_type, _)) = delete.object.split_once(':') {
             let pair = (obj_type.to_string(), delete.relation.clone());
@@ -153,5 +159,33 @@ mod tests {
         )]);
         let changes = classify(&event);
         assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn test_classify_model_change() {
+        let event = CommittedEvent::new("store1", 1).with_model_changed();
+        let changes = classify(&event);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            changes[0],
+            ChangeType::ModelChange {
+                store_id: "store1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_classify_model_change_with_tuples() {
+        let event = CommittedEvent::new("store1", 1)
+            .with_model_changed()
+            .with_writes(vec![tuple_op("user:alice", "viewer", "document:readme")]);
+        let changes = classify(&event);
+        assert_eq!(changes.len(), 2);
+        assert!(changes
+            .iter()
+            .any(|c| matches!(c, ChangeType::ModelChange { .. })));
+        assert!(changes
+            .iter()
+            .any(|c| matches!(c, ChangeType::TupleChange { .. })));
     }
 }

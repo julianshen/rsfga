@@ -580,6 +580,74 @@ fn parse_conditions(model_json: &serde_json::Value) -> DomainResult<Vec<Conditio
     Ok(conditions)
 }
 
+/// Extract relation dependencies from a parsed authorization model.
+///
+/// Returns a map of `type_name -> relation_name -> [referenced_relations]`
+/// suitable for `build_relation_dependencies()`.
+///
+/// For each relation, traverses the userset rewrite tree to find all
+/// `ComputedUserset` and `TupleToUserset` references that create dependencies.
+pub fn extract_relation_refs(
+    model: &AuthorizationModel,
+) -> std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>> {
+    let mut result = std::collections::HashMap::new();
+
+    for type_def in &model.type_definitions {
+        let mut type_rels = std::collections::HashMap::new();
+        for rel_def in &type_def.relations {
+            let mut refs = Vec::new();
+            collect_userset_refs(&rel_def.rewrite, &mut refs);
+            type_rels.insert(rel_def.name.clone(), refs);
+        }
+        result.insert(type_def.type_name.clone(), type_rels);
+    }
+
+    result
+}
+
+/// Recursively collect relation references from a userset rewrite tree.
+fn collect_userset_refs(userset: &Userset, refs: &mut Vec<String>) {
+    match userset {
+        Userset::This => {}
+        Userset::ComputedUserset { relation } => {
+            refs.push(relation.clone());
+        }
+        Userset::TupleToUserset {
+            tupleset,
+            computed_userset: _,
+        } => {
+            // The tupleset relation is read to find the parent object;
+            // changes to tuples with this relation can affect the result.
+            refs.push(tupleset.clone());
+        }
+        Userset::Union { children } | Userset::Intersection { children } => {
+            for child in children {
+                collect_userset_refs(child, refs);
+            }
+        }
+        Userset::Exclusion { base, subtract } => {
+            collect_userset_refs(base, refs);
+            collect_userset_refs(subtract, refs);
+        }
+    }
+}
+
+/// Load the latest authorization model for a store and extract relation deps.
+///
+/// Returns `None` if no model exists for the store.
+pub async fn load_store_relation_refs(
+    storage: &dyn DataStore,
+    store_id: &str,
+) -> Option<std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>> {
+    let stored_model = storage
+        .get_latest_authorization_model(store_id)
+        .await
+        .ok()?;
+
+    let model = parse_stored_model(&stored_model).ok()?;
+    Some(extract_relation_refs(&model))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,5 +721,189 @@ mod tests {
         assert_eq!(model.type_definitions.len(), 1);
         assert_eq!(model.type_definitions[0].type_name, "document");
         assert_eq!(model.type_definitions[0].relations.len(), 2);
+    }
+
+    // ─── extract_relation_refs tests ──────────────────────────────────────────
+
+    /// Helper: build an AuthorizationModel from JSON, then extract relation refs.
+    fn refs_from_json(
+        json: serde_json::Value,
+    ) -> std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>> {
+        let stored = StoredAuthorizationModel::new("id1", "store1", "1.1", json.to_string());
+        let model = parse_stored_model(&stored).unwrap();
+        extract_relation_refs(&model)
+    }
+
+    #[test]
+    fn test_extract_relation_refs_direct_only() {
+        let refs = refs_from_json(serde_json::json!({
+            "type_definitions": [{
+                "type": "document",
+                "relations": {
+                    "viewer": {},
+                    "editor": {}
+                }
+            }]
+        }));
+        // Direct relations (This) have no refs
+        assert!(refs["document"]["viewer"].is_empty());
+        assert!(refs["document"]["editor"].is_empty());
+    }
+
+    #[test]
+    fn test_extract_relation_refs_computed_userset() {
+        let refs = refs_from_json(serde_json::json!({
+            "type_definitions": [{
+                "type": "document",
+                "relations": {
+                    "owner": {},
+                    "editor": {
+                        "computedUserset": { "relation": "owner" }
+                    }
+                }
+            }]
+        }));
+        assert!(refs["document"]["owner"].is_empty());
+        assert_eq!(refs["document"]["editor"], vec!["owner".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_relation_refs_tuple_to_userset() {
+        let refs = refs_from_json(serde_json::json!({
+            "type_definitions": [{
+                "type": "document",
+                "relations": {
+                    "parent": {},
+                    "viewer": {
+                        "tupleToUserset": {
+                            "tupleset": { "relation": "parent" },
+                            "computedUserset": { "relation": "viewer" }
+                        }
+                    }
+                }
+            }]
+        }));
+        // TupleToUserset references the tupleset relation
+        assert_eq!(refs["document"]["viewer"], vec!["parent".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_relation_refs_union() {
+        let refs = refs_from_json(serde_json::json!({
+            "type_definitions": [{
+                "type": "document",
+                "relations": {
+                    "owner": {},
+                    "editor": {},
+                    "viewer": {
+                        "union": {
+                            "child": [
+                                { "this": {} },
+                                { "computedUserset": { "relation": "editor" } },
+                                { "computedUserset": { "relation": "owner" } }
+                            ]
+                        }
+                    }
+                }
+            }]
+        }));
+        let viewer_refs = &refs["document"]["viewer"];
+        assert_eq!(viewer_refs.len(), 2);
+        assert!(viewer_refs.contains(&"editor".to_string()));
+        assert!(viewer_refs.contains(&"owner".to_string()));
+    }
+
+    #[test]
+    fn test_extract_relation_refs_exclusion() {
+        let refs = refs_from_json(serde_json::json!({
+            "type_definitions": [{
+                "type": "document",
+                "relations": {
+                    "viewer": {},
+                    "blocked": {},
+                    "can_view": {
+                        "exclusion": {
+                            "base": { "computedUserset": { "relation": "viewer" } },
+                            "subtract": { "computedUserset": { "relation": "blocked" } }
+                        }
+                    }
+                }
+            }]
+        }));
+        let can_view_refs = &refs["document"]["can_view"];
+        assert_eq!(can_view_refs.len(), 2);
+        assert!(can_view_refs.contains(&"viewer".to_string()));
+        assert!(can_view_refs.contains(&"blocked".to_string()));
+    }
+
+    #[test]
+    fn test_extract_relation_refs_multiple_types() {
+        let refs = refs_from_json(serde_json::json!({
+            "type_definitions": [
+                {
+                    "type": "document",
+                    "relations": {
+                        "owner": {},
+                        "viewer": { "computedUserset": { "relation": "owner" } }
+                    }
+                },
+                {
+                    "type": "folder",
+                    "relations": {
+                        "editor": {},
+                        "viewer": { "computedUserset": { "relation": "editor" } }
+                    }
+                }
+            ]
+        }));
+        assert_eq!(refs["document"]["viewer"], vec!["owner".to_string()]);
+        assert_eq!(refs["folder"]["viewer"], vec!["editor".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_relation_refs_empty_model() {
+        let refs = refs_from_json(serde_json::json!({
+            "type_definitions": []
+        }));
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_collect_userset_refs_this() {
+        let mut refs = Vec::new();
+        collect_userset_refs(&Userset::This, &mut refs);
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_collect_userset_refs_computed() {
+        let mut refs = Vec::new();
+        collect_userset_refs(
+            &Userset::ComputedUserset {
+                relation: "editor".to_string(),
+            },
+            &mut refs,
+        );
+        assert_eq!(refs, vec!["editor".to_string()]);
+    }
+
+    #[test]
+    fn test_collect_userset_refs_nested_union() {
+        let userset = Userset::Union {
+            children: vec![
+                Userset::This,
+                Userset::ComputedUserset {
+                    relation: "editor".to_string(),
+                },
+                Userset::Union {
+                    children: vec![Userset::ComputedUserset {
+                        relation: "owner".to_string(),
+                    }],
+                },
+            ],
+        };
+        let mut refs = Vec::new();
+        collect_userset_refs(&userset, &mut refs);
+        assert_eq!(refs, vec!["editor".to_string(), "owner".to_string()]);
     }
 }

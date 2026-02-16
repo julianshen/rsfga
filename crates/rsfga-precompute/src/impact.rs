@@ -19,22 +19,24 @@ pub struct RecomputeJob {
     pub user: String,
 }
 
-/// Build a map of relation dependencies from type definitions.
+/// Build a map of relation dependencies from type definitions, with transitive closure.
 ///
 /// Input format: type_name -> relation_name -> [referenced_relations]
 /// For each (type, relation) pair, returns the set of other (type, relation) pairs
 /// whose check results could be affected when tuples for this (type, relation) change.
 ///
-/// Example: If `viewer` references `editor` (i.e., `define viewer: [user] or editor`),
-/// then changes to `editor` tuples affect `viewer` checks.
-/// So `deps[("document", "editor")]` includes `("document", "viewer")`.
+/// Example: If `viewer` references `editor` and `editor` references `owner`
+/// (i.e., `define viewer: [user] or editor; define editor: [user] or owner`),
+/// then changes to `owner` tuples affect both `editor` AND `viewer` checks.
+/// So `deps[("document", "owner")]` includes both `("document", "editor")` and
+/// `("document", "viewer")`.
 ///
-/// TODO: Compute the transitive closure of the dependency graph. Currently only
-/// single-hop dependencies are captured: in a chain `viewer → editor → owner`,
-/// changing an `owner` tuple creates jobs for `editor` but not `viewer`.
+/// The transitive closure ensures chains like `viewer → editor → owner` are
+/// fully expanded: a change to `owner` propagates through `editor` to `viewer`.
 pub fn build_relation_dependencies(
     type_definitions: &HashMap<String, HashMap<String, Vec<String>>>,
 ) -> HashMap<(String, String), HashSet<(String, String)>> {
+    // Step 1: Build single-hop (direct) dependencies
     let mut deps: HashMap<(String, String), HashSet<(String, String)>> = HashMap::new();
 
     for (type_name, relations) in type_definitions {
@@ -44,6 +46,37 @@ pub fn build_relation_dependencies(
                     .or_default()
                     .insert((type_name.clone(), relation_name.clone()));
             }
+        }
+    }
+
+    // Step 2: Compute transitive closure via fixed-point iteration.
+    // If A affects B and B affects C, then A also affects C.
+    loop {
+        let mut changed = false;
+        let keys: Vec<_> = deps.keys().cloned().collect();
+
+        for key in &keys {
+            // For each dependent of `key`, check if that dependent has its own dependents
+            let dependents: Vec<_> = deps
+                .get(key)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            for dependent in &dependents {
+                if let Some(transitive) = deps.get(dependent).cloned() {
+                    let entry = deps.entry(key.clone()).or_default();
+                    for t in transitive {
+                        if entry.insert(t) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            break;
         }
     }
 
@@ -178,7 +211,8 @@ mod tests {
     }
 
     #[test]
-    fn test_build_relation_dependencies_chain() {
+    fn test_build_relation_dependencies_chain_transitive() {
+        // viewer → editor → owner (3-level chain)
         let mut type_defs: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
         let mut doc_relations = HashMap::new();
         doc_relations.insert("viewer".to_string(), vec!["editor".to_string()]);
@@ -188,10 +222,61 @@ mod tests {
 
         let deps = build_relation_dependencies(&type_defs);
 
+        // Direct: owner change → recompute editor
         assert!(deps[&("document".to_string(), "owner".to_string())]
             .contains(&("document".to_string(), "editor".to_string())));
+        // Direct: editor change → recompute viewer
         assert!(deps[&("document".to_string(), "editor".to_string())]
             .contains(&("document".to_string(), "viewer".to_string())));
+        // Transitive: owner change → recompute viewer (through editor)
+        assert!(
+            deps[&("document".to_string(), "owner".to_string())]
+                .contains(&("document".to_string(), "viewer".to_string())),
+            "Transitive closure missing: owner → viewer"
+        );
+    }
+
+    #[test]
+    fn test_build_relation_dependencies_deep_chain() {
+        // a → b → c → d (4-level chain)
+        let mut type_defs: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
+        let mut rels = HashMap::new();
+        rels.insert("a".to_string(), vec!["b".to_string()]);
+        rels.insert("b".to_string(), vec!["c".to_string()]);
+        rels.insert("c".to_string(), vec!["d".to_string()]);
+        rels.insert("d".to_string(), vec![]);
+        type_defs.insert("t".to_string(), rels);
+
+        let deps = build_relation_dependencies(&type_defs);
+
+        // d change should affect a, b, c (transitive)
+        let d_deps = &deps[&("t".to_string(), "d".to_string())];
+        assert!(d_deps.contains(&("t".to_string(), "c".to_string())));
+        assert!(d_deps.contains(&("t".to_string(), "b".to_string())));
+        assert!(d_deps.contains(&("t".to_string(), "a".to_string())));
+    }
+
+    #[test]
+    fn test_build_relation_dependencies_diamond() {
+        // viewer → editor, viewer → commenter, editor → owner, commenter → owner
+        let mut type_defs: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
+        let mut rels = HashMap::new();
+        rels.insert(
+            "viewer".to_string(),
+            vec!["editor".to_string(), "commenter".to_string()],
+        );
+        rels.insert("editor".to_string(), vec!["owner".to_string()]);
+        rels.insert("commenter".to_string(), vec!["owner".to_string()]);
+        rels.insert("owner".to_string(), vec![]);
+        type_defs.insert("doc".to_string(), rels);
+
+        let deps = build_relation_dependencies(&type_defs);
+
+        // owner change → affects editor, commenter, AND viewer (transitive)
+        let owner_deps = &deps[&("doc".to_string(), "owner".to_string())];
+        assert!(owner_deps.contains(&("doc".to_string(), "editor".to_string())));
+        assert!(owner_deps.contains(&("doc".to_string(), "commenter".to_string())));
+        assert!(owner_deps.contains(&("doc".to_string(), "viewer".to_string())));
     }
 
     #[test]
