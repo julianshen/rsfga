@@ -24,7 +24,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use rsfga_nats::{JetStreamManager, NatsClient, NatsConfig, STREAM_EVENTS, SUBJECT_EVENTS_PREFIX};
 use rsfga_storage::DataStore;
-use rsfga_valkey::{ValkeyClient, ValkeyConfig};
+use rsfga_valkey::{redact_url, ValkeyClient, ValkeyConfig};
 
 use rsfga_precompute::adapters::{StoreModelIdProvider, StoreModelReader, StoreTupleReader};
 use rsfga_precompute::classifier;
@@ -310,6 +310,18 @@ async fn run_consumer_loop(
                             .iter()
                             .any(|c| matches!(c, classifier::ChangeType::ModelChange { .. }));
 
+                        // On model change, invalidate all cached check results for
+                        // this store so stale precomputed results aren't served.
+                        if has_model_change {
+                            if let Err(e) = check_cache.invalidate_store(store_id).await {
+                                warn!(
+                                    error = %e,
+                                    store_id,
+                                    "Failed to invalidate store cache on model change"
+                                );
+                            }
+                        }
+
                         {
                             let needs_build = has_model_change || {
                                 let deps_read = relation_deps.read().await;
@@ -452,53 +464,4 @@ fn setup_metrics_server(port: u16) -> Result<()> {
 
     info!(port = port, "Prometheus metrics server started");
     Ok(())
-}
-
-/// Redact credentials from URLs for safe logging.
-fn redact_url(url_str: &str) -> String {
-    match url::Url::parse(url_str) {
-        Ok(mut url) => {
-            if !url.password().unwrap_or_default().is_empty() {
-                let _ = url.set_password(Some("REDACTED"));
-            }
-            url.to_string()
-        }
-        Err(_) => "[invalid URL]".to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_redact_url_with_password() {
-        let url = "redis://user:secret@localhost:6379";
-        let redacted = redact_url(url);
-        assert!(redacted.contains("REDACTED"));
-        assert!(!redacted.contains("secret"));
-    }
-
-    #[test]
-    fn test_redact_url_without_password() {
-        let url = "redis://localhost:6379";
-        let redacted = redact_url(url);
-        assert!(redacted.starts_with("redis://localhost:6379"));
-        assert!(!redacted.contains("REDACTED"));
-    }
-
-    #[test]
-    fn test_redact_url_nats() {
-        let url = "nats://admin:password@localhost:4222";
-        let redacted = redact_url(url);
-        assert!(redacted.contains("REDACTED"));
-        assert!(!redacted.contains("password"));
-    }
-
-    #[test]
-    fn test_redact_url_invalid() {
-        let url = "not a url";
-        let redacted = redact_url(url);
-        assert_eq!(redacted, "[invalid URL]");
-    }
 }

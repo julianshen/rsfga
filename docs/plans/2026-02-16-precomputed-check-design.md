@@ -21,7 +21,7 @@ Sub-millisecond check operations by precomputing hot-path authorization results 
 
 ## System Architecture
 
-```
+```text
                           +-------------------+
                           |   Valkey/Redis    |
                           |   (Shared Cache)  |
@@ -52,7 +52,7 @@ Sub-millisecond check operations by precomputing hot-path authorization results 
 
 ### New Crate Structure
 
-```
+```text
 crates/
   rsfga-precompute/        # Precomputation library + binary
     src/
@@ -60,9 +60,10 @@ crates/
       config.rs            # Configuration
       classifier.rs        # Change classification
       impact.rs            # Impact analysis (reverse expansion)
-      registry.rs          # Hot-path registry client
+      adapters.rs          # DataStore-to-domain trait adapters
       worker.rs            # Precomputation worker pool
-      valkey.rs            # Valkey client wrapper
+      metrics.rs           # Prometheus metrics helpers
+      error.rs             # Error types
       main.rs              # Binary entry point
     Cargo.toml
   rsfga-valkey/            # Shared Valkey client (used by API + precompute)
@@ -93,15 +94,15 @@ For tuple changes, extracts the "impact key" -- the `(store_id, object_type, rel
 Tracks which check queries are actually being made. Avoids precomputing the entire permission graph.
 
 **Valkey storage**: Sorted set per store, scored by last-access timestamp.
-```
+```text
 Key:    hotpath:{store_id}
 Member: {object_type}:{object_id}#{relation}@{user_type}:{user_id}
 Score:  Unix timestamp of last check request
 ```
 
-**API server side**: On every check request, `ZADD` with `GT` flag updates the hot-path entry (~0.1ms overhead).
+**API-server side**: On every check request, `ZADD` with `GT` flag updates the hot-path entry (~0.1ms overhead).
 
-**Precompute worker side**: On event processing, `ZSCAN` with pattern matching to find affected hot-path entries.
+**Precompute-worker side**: On event processing, `ZSCAN` with pattern matching to find affected hot-path entries.
 
 **Eviction**: Periodically trim entries older than configurable window (default: 1 hour).
 
@@ -125,7 +126,7 @@ Async worker pool (configurable, default 4 workers):
 3. Writes result to Valkey with TTL
 
 **Valkey result format:**
-```
+```text
 Key:    check:{store_id}:{model_id}:{object_type}:{object_id}#{relation}@{user_type}:{user_id}
 Value:  {"allowed": true/false, "computed_at": "...", "model_id": "..."}
 TTL:    Configurable (default: 5 minutes)
@@ -139,7 +140,7 @@ Model ID in the key ensures stale results from old models are never returned.
 
 Modify existing check handler to try Valkey first:
 
-```
+```text
 Check Request -> Parse & Validate
     |
 Construct Valkey key from (store_id, model_id, tuple_key)
@@ -165,7 +166,7 @@ Valkey lookup is optional. If Valkey unavailable, falls back gracefully. Control
 
 ## Metrics (Prometheus)
 
-```
+```text
 # Precompute worker
 precompute_events_received_total{event_type}
 precompute_jobs_queued_total

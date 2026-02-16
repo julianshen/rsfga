@@ -639,13 +639,29 @@ pub async fn load_store_relation_refs(
     storage: &dyn DataStore,
     store_id: &str,
 ) -> Option<std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>> {
-    let stored_model = storage
-        .get_latest_authorization_model(store_id)
-        .await
-        .ok()?;
+    let stored_model = match storage.get_latest_authorization_model(store_id).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(
+                store_id,
+                error = %e,
+                "Failed to load authorization model for relation refs"
+            );
+            return None;
+        }
+    };
 
-    let model = parse_stored_model(&stored_model).ok()?;
-    Some(extract_relation_refs(&model))
+    match parse_stored_model(&stored_model) {
+        Ok(model) => Some(extract_relation_refs(&model)),
+        Err(e) => {
+            tracing::warn!(
+                store_id,
+                error = %e,
+                "Failed to parse authorization model for relation refs"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]

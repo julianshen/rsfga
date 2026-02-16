@@ -83,6 +83,7 @@ impl WorkerPool {
     }
 
     /// Submit a job for precomputation. Returns false if queue is full.
+    #[must_use]
     pub fn submit(&self, job: RecomputeJob) -> bool {
         match self.sender.try_send(job) {
             Ok(_) => {

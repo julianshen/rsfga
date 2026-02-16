@@ -32,7 +32,6 @@ tracing-subscriber = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 clap = { workspace = true }
-url = { workspace = true }
 chrono = { workspace = true }
 ulid = { workspace = true }
 dashmap = { workspace = true }

@@ -1575,8 +1575,8 @@ async fn check<S: DataStore>(
                 };
 
                 if let Some(model_id) = model_id_for_cache {
-                    // Parse object into type:id
-                    if let Some((obj_type, obj_id)) = check_request.object.split_once(':') {
+                    // Parse object into type:id (validates non-empty parts)
+                    if let Some((obj_type, obj_id)) = parse_object(&check_request.object) {
                         let cache_key = rsfga_valkey::CheckKey::new(
                             &check_request.store_id,
                             &model_id,

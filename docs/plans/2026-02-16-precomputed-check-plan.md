@@ -19,7 +19,7 @@
 
 **Step 1: Add `redis` to workspace dependencies and register new crates**
 
-Add to `[workspace.dependencies]` section in `/Users/julianshen/prj/rsfga/Cargo.toml`:
+Add to `[workspace.dependencies]` section in `Cargo.toml` (workspace root):
 
 ```toml
 # Valkey/Redis client for precomputed check cache
@@ -69,7 +69,7 @@ git commit -m "[STRUCTURAL] Register rsfga-valkey and rsfga-precompute crates, a
 
 **Step 1: Create Cargo.toml**
 
-Create `/Users/julianshen/prj/rsfga/crates/rsfga-valkey/Cargo.toml`:
+Create `crates/rsfga-valkey/Cargo.toml`:
 
 ```toml
 [package]
@@ -641,7 +641,7 @@ git commit -m "[TEST] Add unit tests for Valkey key formatting and parsing"
 
 **Step 1: Create Cargo.toml**
 
-Create `/Users/julianshen/prj/rsfga/crates/rsfga-precompute/Cargo.toml`:
+Create `crates/rsfga-precompute/Cargo.toml`:
 
 ```toml
 [package]

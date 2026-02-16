@@ -49,7 +49,8 @@ impl ValkeyClient {
     }
 }
 
-fn redact_url(url_str: &str) -> String {
+/// Redact credentials from URLs for safe logging.
+pub fn redact_url(url_str: &str) -> String {
     match url::Url::parse(url_str) {
         Ok(mut url) => {
             if !url.password().unwrap_or_default().is_empty() {
@@ -58,5 +59,29 @@ fn redact_url(url_str: &str) -> String {
             url.to_string()
         }
         Err(_) => "[invalid URL]".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_redact_url_with_password() {
+        let redacted = redact_url("redis://user:secret@localhost:6379");
+        assert!(redacted.contains("REDACTED"));
+        assert!(!redacted.contains("secret"));
+    }
+
+    #[test]
+    fn test_redact_url_without_password() {
+        let redacted = redact_url("redis://localhost:6379");
+        assert!(redacted.starts_with("redis://localhost:6379"));
+        assert!(!redacted.contains("REDACTED"));
+    }
+
+    #[test]
+    fn test_redact_url_invalid() {
+        assert_eq!(redact_url("not a url"), "[invalid URL]");
     }
 }

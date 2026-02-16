@@ -33,6 +33,7 @@ pub struct RecomputeJob {
 ///
 /// The transitive closure ensures chains like `viewer → editor → owner` are
 /// fully expanded: a change to `owner` propagates through `editor` to `viewer`.
+#[must_use]
 pub fn build_relation_dependencies(
     type_definitions: &HashMap<String, HashMap<String, Vec<String>>>,
 ) -> HashMap<(String, String), HashSet<(String, String)>> {
@@ -99,6 +100,7 @@ pub fn build_relation_dependencies(
 }
 
 /// Determine which hot-path checks need recomputation based on classified changes.
+#[must_use = "jobs should be submitted to the worker pool"]
 pub async fn find_affected_checks(
     changes: &[ChangeType],
     cache: &CheckCache,
