@@ -51,7 +51,14 @@ pub fn build_relation_dependencies(
 
     // Step 2: Compute transitive closure via fixed-point iteration.
     // If A affects B and B affects C, then A also affects C.
-    loop {
+    //
+    // The iteration limit is N (number of unique relation keys). In the worst case
+    // (a linear chain of N relations), each iteration propagates dependencies one
+    // hop further, so N iterations suffice for full transitive closure. If we
+    // exceed this, the graph has a cycle or a bug — log a warning and return
+    // the partial result rather than looping indefinitely.
+    let max_iterations = deps.len().max(1);
+    for iteration in 0..max_iterations {
         let mut changed = false;
         let keys: Vec<_> = deps.keys().cloned().collect();
 
@@ -77,6 +84,14 @@ pub fn build_relation_dependencies(
 
         if !changed {
             break;
+        }
+
+        if iteration == max_iterations - 1 {
+            tracing::warn!(
+                iterations = max_iterations,
+                "Transitive closure did not converge within iteration limit; \
+                 possible cycle in relation definitions"
+            );
         }
     }
 
@@ -284,5 +299,26 @@ mod tests {
         let type_defs: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
         let deps = build_relation_dependencies(&type_defs);
         assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_build_relation_dependencies_cycle_terminates() {
+        // a → b → a (cycle) — must not loop forever
+        let mut type_defs: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
+        let mut rels = HashMap::new();
+        rels.insert("a".to_string(), vec!["b".to_string()]);
+        rels.insert("b".to_string(), vec!["a".to_string()]);
+        type_defs.insert("t".to_string(), rels);
+
+        // Should complete without hanging
+        let deps = build_relation_dependencies(&type_defs);
+
+        // Both directions should exist due to the cycle
+        assert!(
+            deps[&("t".to_string(), "a".to_string())].contains(&("t".to_string(), "b".to_string()))
+        );
+        assert!(
+            deps[&("t".to_string(), "b".to_string())].contains(&("t".to_string(), "a".to_string()))
+        );
     }
 }

@@ -227,6 +227,36 @@ precompute:
 | 3.0.8 | Docker & integration (Dockerfile, docker-compose, e2e tests) | ~15 |
 | **Total** | | **~140** |
 
+## Valkey Security Considerations
+
+Valkey stores precomputed authorization results (allowed/denied) keyed by check parameters. While it does not store credentials or PII, it holds security-sensitive data that could be exploited to infer permission structures.
+
+### Network Isolation
+- Deploy Valkey in a private network segment, not exposed to the public internet.
+- Use firewall rules to restrict access to only `rsfga` and `rsfga-precompute` instances.
+
+### Authentication
+- Enable Valkey AUTH (`requirepass` or ACL users) in production. Pass credentials via `VALKEY_URL` (e.g., `redis://user:password@host:6379`).
+- The `redact_url()` helper in both `rsfga-precompute` and `rsfga-valkey` ensures passwords are never logged.
+
+### Encryption in Transit
+- Use TLS (`rediss://` URL scheme) for all Valkey connections in production.
+- Valkey 7.2+ supports TLS natively; earlier versions require stunnel or a TLS proxy.
+
+### Key Design
+- Cache keys use percent-encoding for delimiter characters (`#`, `@`, `%`) to prevent key injection via crafted object IDs.
+- Key format: `check:{store_id}:{model_id}:{type}:{encoded_id}#{relation}@{encoded_user}`
+- Hot-path members use the same encoding: `{type}:{encoded_id}#{relation}@{encoded_user}`
+
+### Data Sensitivity
+- Cached values are booleans (allowed/denied). They do not contain tuple data or user attributes.
+- TTL-based expiration (default 300s for results, 3600s for hot-path sets) limits the window of stale data.
+- Model changes trigger full store invalidation, preventing stale results from persisting after permission model updates.
+
+### Operational
+- Monitor Valkey memory usage; use `maxmemory` with `allkeys-lru` eviction policy to bound memory.
+- `get_all_hotpath` uses paginated ZSCAN (cursor-based, COUNT 100) to avoid blocking Valkey with unbounded ZRANGE operations.
+
 ## Testing Strategy
 
 - **Unit tests**: Classifier, impact analyzer, registry operations, Valkey client
