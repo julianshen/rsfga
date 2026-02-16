@@ -8,6 +8,8 @@ members = [
     "crates/rsfga-nats",
     "crates/rsfga-writer",
     "crates/rsfga-edge",
+    "crates/rsfga-precompute",
+    "crates/rsfga-valkey",
     "crates/compatibility-tests",
 ]
 
@@ -70,6 +72,9 @@ cel-interpreter = { version = "0.10", features = ["json"] }
 
 # Caching
 moka = { version = "0.12", features = ["future", "sync"] }
+
+# Redis/Valkey
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 # Observability
 tracing = "0.1"

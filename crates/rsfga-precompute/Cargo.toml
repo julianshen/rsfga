@@ -1,0 +1,8 @@
+[package]
+name = "rsfga-precompute"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Precomputed check engine for RSFGA (stub)"
