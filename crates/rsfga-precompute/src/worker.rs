@@ -63,8 +63,7 @@ impl WorkerPool {
 
                     match job {
                         Some(job) => {
-                            process_job(worker_id, &job, &resolver, &cache, &*model_provider)
-                                .await;
+                            process_job(worker_id, &job, &resolver, &cache, &*model_provider).await;
                         }
                         None => {
                             debug!(worker_id, "Worker channel closed, shutting down");

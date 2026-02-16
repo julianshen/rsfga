@@ -173,9 +173,7 @@ mod tests {
             .unwrap()
             .contains(&("document".to_string(), "viewer".to_string())));
 
-        assert!(deps
-            .get(&("document".to_string(), "viewer".to_string()))
-            .is_none());
+        assert!(!deps.contains_key(&("document".to_string(), "viewer".to_string())));
     }
 
     #[test]
