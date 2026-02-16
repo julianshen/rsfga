@@ -133,7 +133,8 @@ async fn process_job<T, M, P>(
         }
     };
 
-    // Build check request
+    // Build check request with the specific model_id to ensure the resolved
+    // result matches the cache key's model version.
     let check_request = CheckRequest {
         store_id: job.store_id.clone(),
         user: job.user.clone(),
@@ -141,7 +142,7 @@ async fn process_job<T, M, P>(
         object: format!("{}:{}", job.object_type, job.object_id),
         contextual_tuples: Arc::new(Vec::new()),
         context: Arc::new(HashMap::new()),
-        authorization_model_id: None,
+        authorization_model_id: Some(model_id.clone()),
     };
 
     // Resolve the check

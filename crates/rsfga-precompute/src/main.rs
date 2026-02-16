@@ -88,6 +88,14 @@ struct Args {
     #[arg(long, env = "VALKEY_HOTPATH_TTL", default_value = "3600")]
     valkey_hotpath_ttl: u64,
 
+    /// NATS fetch timeout in milliseconds
+    #[arg(long, env = "FETCH_TIMEOUT_MS", default_value = "500")]
+    fetch_timeout_ms: u64,
+
+    /// Maximum messages per fetch batch
+    #[arg(long, env = "MAX_MESSAGES", default_value = "100")]
+    max_messages: usize,
+
     /// Prometheus metrics port
     #[arg(long, env = "METRICS_PORT", default_value = "9092")]
     metrics_port: u16,
@@ -204,8 +212,10 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Build empty relation dependencies (populated from model on first event).
-    // In a production system, this would be refreshed when model changes are detected.
+    // TODO: Populate relation_deps from authorization model on startup and
+    // refresh when model changes are detected. Without this, only direct
+    // hot-path matches trigger recomputation (computed relation dependencies
+    // are not tracked).
     let relation_deps: RelationDeps = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
 
     // Run consumer loop
@@ -215,6 +225,8 @@ async fn main() -> Result<()> {
         &check_cache,
         relation_deps,
         shutdown_rx,
+        Duration::from_millis(args.fetch_timeout_ms),
+        args.max_messages,
     )
     .await?;
 
@@ -229,10 +241,9 @@ async fn run_consumer_loop(
     check_cache: &Arc<CheckCache>,
     relation_deps: RelationDeps,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    fetch_timeout: Duration,
+    max_messages: usize,
 ) -> Result<()> {
-    let fetch_timeout = Duration::from_millis(500);
-    let max_messages = 100;
-
     loop {
         // Check for shutdown signal
         if *shutdown_rx.borrow() {
@@ -412,12 +423,12 @@ fn setup_metrics_server(port: u16) -> Result<()> {
 fn redact_url(url_str: &str) -> String {
     match url::Url::parse(url_str) {
         Ok(mut url) => {
-            if url.password().is_some() {
-                let _ = url.set_password(Some("***"));
+            if !url.password().unwrap_or_default().is_empty() {
+                let _ = url.set_password(Some("REDACTED"));
             }
             url.to_string()
         }
-        Err(_) => url_str.to_string(),
+        Err(_) => "[invalid URL]".to_string(),
     }
 }
 
@@ -429,7 +440,7 @@ mod tests {
     fn test_redact_url_with_password() {
         let url = "redis://user:secret@localhost:6379";
         let redacted = redact_url(url);
-        assert!(redacted.contains("***"));
+        assert!(redacted.contains("REDACTED"));
         assert!(!redacted.contains("secret"));
     }
 
@@ -437,16 +448,22 @@ mod tests {
     fn test_redact_url_without_password() {
         let url = "redis://localhost:6379";
         let redacted = redact_url(url);
-        // url::Url::parse normalizes by adding trailing slash
         assert!(redacted.starts_with("redis://localhost:6379"));
-        assert!(!redacted.contains("***"));
+        assert!(!redacted.contains("REDACTED"));
     }
 
     #[test]
     fn test_redact_url_nats() {
         let url = "nats://admin:password@localhost:4222";
         let redacted = redact_url(url);
-        assert!(redacted.contains("***"));
+        assert!(redacted.contains("REDACTED"));
         assert!(!redacted.contains("password"));
+    }
+
+    #[test]
+    fn test_redact_url_invalid() {
+        let url = "not a url";
+        let redacted = redact_url(url);
+        assert_eq!(redacted, "[invalid URL]");
     }
 }

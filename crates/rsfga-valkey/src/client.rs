@@ -53,7 +53,7 @@ fn redact_url(url_str: &str) -> String {
     match url::Url::parse(url_str) {
         Ok(mut url) => {
             if !url.password().unwrap_or_default().is_empty() {
-                let _ = url.set_password(Some("[REDACTED]"));
+                let _ = url.set_password(Some("REDACTED"));
             }
             url.to_string()
         }

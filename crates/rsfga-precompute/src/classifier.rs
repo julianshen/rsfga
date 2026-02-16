@@ -13,6 +13,10 @@ pub enum ChangeType {
 }
 
 /// Classify a committed event into change types for impact analysis.
+///
+/// TODO: Detect model changes (ModelWriteRequest committed events) and emit
+/// `ChangeType::ModelChange` so the impact analyzer can invalidate all cached
+/// results for that store. Currently only tuple changes are classified.
 pub fn classify(event: &CommittedEvent) -> Vec<ChangeType> {
     let mut seen = std::collections::HashSet::new();
     let mut changes = Vec::new();

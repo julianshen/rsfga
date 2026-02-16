@@ -107,8 +107,27 @@ impl CheckCache {
     pub async fn get_all_hotpath(&self, store_id: &str) -> Result<Vec<String>> {
         let key = keys::hotpath_key(store_id);
         let mut conn = self.client.connection();
-        let members: Vec<String> = conn.zrange(&key, 0, -1).await?;
-        Ok(members)
+        let mut results = Vec::new();
+        let mut cursor: u64 = 0;
+        loop {
+            let (new_cursor, members): (u64, Vec<String>) = redis::cmd("ZSCAN")
+                .arg(&key)
+                .arg(cursor)
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut conn)
+                .await?;
+            for (i, item) in members.iter().enumerate() {
+                if i % 2 == 0 {
+                    results.push(item.clone());
+                }
+            }
+            cursor = new_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+        Ok(results)
     }
 
     pub async fn evict_stale_hotpath(&self, store_id: &str) -> Result<u64> {

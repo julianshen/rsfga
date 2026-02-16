@@ -196,6 +196,8 @@ services:
       dockerfile: Dockerfile
       args:
         BINARY: rsfga-precompute
+    ports:
+      - "9093:9092"  # Host 9093 to avoid conflict with writer on 9092
     environment:
       - NATS_URL=nats://nats:4222
       - CONSUMER_NAME=rsfga-precompute-1

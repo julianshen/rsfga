@@ -28,6 +28,10 @@ pub struct RecomputeJob {
 /// Example: If `viewer` references `editor` (i.e., `define viewer: [user] or editor`),
 /// then changes to `editor` tuples affect `viewer` checks.
 /// So `deps[("document", "editor")]` includes `("document", "viewer")`.
+///
+/// TODO: Compute the transitive closure of the dependency graph. Currently only
+/// single-hop dependencies are captured: in a chain `viewer → editor → owner`,
+/// changing an `owner` tuple creates jobs for `editor` but not `viewer`.
 pub fn build_relation_dependencies(
     type_definitions: &HashMap<String, HashMap<String, Vec<String>>>,
 ) -> HashMap<(String, String), HashSet<(String, String)>> {
@@ -65,7 +69,7 @@ pub async fn find_affected_checks(
                 let pattern = keys::hotpath_pattern(object_type, relation);
                 let members = cache.scan_hotpath(store_id, &pattern).await?;
                 for member in &members {
-                    if let Some(job) = parse_hotpath_member(store_id, member) {
+                    if let Some(job) = make_recompute_job(store_id, member) {
                         jobs.insert(job);
                     }
                 }
@@ -77,7 +81,7 @@ pub async fn find_affected_checks(
                         let dep_pattern = keys::hotpath_pattern(dep_type, dep_rel);
                         let dep_members = cache.scan_hotpath(store_id, &dep_pattern).await?;
                         for member in &dep_members {
-                            if let Some(job) = parse_hotpath_member(store_id, member) {
+                            if let Some(job) = make_recompute_job(store_id, member) {
                                 jobs.insert(job);
                             }
                         }
@@ -95,7 +99,7 @@ pub async fn find_affected_checks(
             ChangeType::ModelChange { store_id } => {
                 let all_members = cache.get_all_hotpath(store_id).await?;
                 for member in &all_members {
-                    if let Some(job) = parse_hotpath_member(store_id, member) {
+                    if let Some(job) = make_recompute_job(store_id, member) {
                         jobs.insert(job);
                     }
                 }
@@ -113,26 +117,15 @@ pub async fn find_affected_checks(
 }
 
 /// Parse a hot-path member string into a RecomputeJob.
-/// Format: `{object_type}:{object_id}#{relation}@{user}`
-fn parse_hotpath_member(store_id: &str, member: &str) -> Option<RecomputeJob> {
-    let colon_pos = member.find(':')?;
-    let object_type = &member[..colon_pos];
-    let after_colon = &member[colon_pos + 1..];
-
-    let hash_pos = after_colon.find('#')?;
-    let object_id = &after_colon[..hash_pos];
-    let after_hash = &after_colon[hash_pos + 1..];
-
-    let at_pos = after_hash.find('@')?;
-    let relation = &after_hash[..at_pos];
-    let user = &after_hash[at_pos + 1..];
-
+/// Delegates to `keys::parse_hotpath_member` which handles percent-encoded delimiters.
+fn make_recompute_job(store_id: &str, member: &str) -> Option<RecomputeJob> {
+    let (object_type, object_id, relation, user) = keys::parse_hotpath_member(member)?;
     Some(RecomputeJob {
         store_id: store_id.to_string(),
-        object_type: object_type.to_string(),
-        object_id: object_id.to_string(),
-        relation: relation.to_string(),
-        user: user.to_string(),
+        object_type,
+        object_id,
+        relation,
+        user,
     })
 }
 
@@ -141,8 +134,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_hotpath_member_valid() {
-        let job = parse_hotpath_member("store1", "document:readme#viewer@user:alice").unwrap();
+    fn test_make_recompute_job_valid() {
+        let job = make_recompute_job("store1", "document:readme#viewer@user:alice").unwrap();
         assert_eq!(job.store_id, "store1");
         assert_eq!(job.object_type, "document");
         assert_eq!(job.object_id, "readme");
@@ -151,10 +144,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_hotpath_member_invalid() {
-        assert!(parse_hotpath_member("s", "invalid").is_none());
-        assert!(parse_hotpath_member("s", "no_hash@user").is_none());
-        assert!(parse_hotpath_member("s", "type:id#no_at").is_none());
+    fn test_make_recompute_job_with_encoded_chars() {
+        let member = keys::hotpath_member("document", "my#doc", "viewer", "group:eng#member");
+        let job = make_recompute_job("store1", &member).unwrap();
+        assert_eq!(job.object_id, "my#doc");
+        assert_eq!(job.user, "group:eng#member");
+    }
+
+    #[test]
+    fn test_make_recompute_job_invalid() {
+        assert!(make_recompute_job("s", "invalid").is_none());
+        assert!(make_recompute_job("s", "no_hash@user").is_none());
+        assert!(make_recompute_job("s", "type:id#no_at").is_none());
     }
 
     #[test]
