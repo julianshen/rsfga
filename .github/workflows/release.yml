@@ -76,6 +76,9 @@ jobs:
           - binary: rsfga-edge
             image_suffix: "-edge"
             smoke_port: "9091:9091"
+          - binary: rsfga-precompute
+            image_suffix: "-precompute"
+            smoke_port: "9092:9092"
 
     steps:
       - name: Checkout repository
@@ -140,6 +143,8 @@ jobs:
             HEALTH_URL="http://localhost:8080/health"
           elif [ "$BINARY_NAME" = "rsfga-writer" ]; then
             HEALTH_URL="http://localhost:9090/metrics"
+          elif [ "$BINARY_NAME" = "rsfga-precompute" ]; then
+            HEALTH_URL="http://localhost:9092/metrics"
           else
             HEALTH_URL="http://localhost:9091/metrics"
           fi

@@ -3575,6 +3575,7 @@ dependencies = [
  "rsfga-nats",
  "rsfga-server",
  "rsfga-storage",
+ "rsfga-valkey",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
