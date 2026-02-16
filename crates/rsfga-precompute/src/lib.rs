@@ -1,1 +1,6 @@
-// Placeholder for rsfga-precompute crate - will be scaffolded in Task 4
+pub mod classifier;
+pub mod config;
+pub mod error;
+pub mod impact;
+pub mod metrics;
+pub mod worker;

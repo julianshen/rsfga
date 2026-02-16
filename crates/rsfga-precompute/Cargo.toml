@@ -5,4 +5,38 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Precomputed check engine for RSFGA (stub)"
+description = "Precomputation worker daemon for RSFGA sub-millisecond check operations"
+
+[lib]
+name = "rsfga_precompute"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rsfga-precompute"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+async-nats = { workspace = true }
+rsfga-nats = { path = "../rsfga-nats" }
+rsfga-storage = { path = "../rsfga-storage" }
+rsfga-domain = { path = "../rsfga-domain" }
+rsfga-valkey = { path = "../rsfga-valkey" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+clap = { workspace = true }
+url = { workspace = true }
+chrono = { workspace = true }
+ulid = { workspace = true }
+dashmap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tempfile = { workspace = true }
