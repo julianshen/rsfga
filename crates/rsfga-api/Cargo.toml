@@ -24,6 +24,7 @@ rsfga-server = { path = "../rsfga-server" }
 rsfga-domain = { path = "../rsfga-domain" }
 rsfga-storage = { path = "../rsfga-storage", features = ["rocksdb"] }
 rsfga-nats = { path = "../rsfga-nats", optional = true }
+rsfga-valkey = { path = "../rsfga-valkey", optional = true }
 
 # HTTP server
 axum = { workspace = true }
@@ -88,3 +89,4 @@ harness = false
 [features]
 default = []
 nats = ["dep:rsfga-nats"]
+precompute = ["dep:rsfga-valkey"]
