@@ -2287,6 +2287,47 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
    - Fallback to graph resolution on miss
    - Progressive cache warming
 
+### Milestone 3.1: Precomputation Benchmarking
+
+**Goal**: Validate precomputed check performance claims and establish regression baselines.
+
+#### Tasks
+
+**3.1.1 Micro-Benchmarks (criterion)**
+- [ ] Valkey cache hit latency (target: <1ms p99)
+- [ ] Graph resolver fallback latency (baseline comparison)
+- [ ] Classifier throughput (events/sec)
+- [ ] Impact analyzer throughput (jobs generated/sec)
+- [ ] Worker pool throughput (recomputations/sec)
+
+**3.1.2 End-to-End Benchmarks (k6)**
+- [ ] Check with warm Valkey cache (target: <1ms p99)
+- [ ] Check with cold cache (graph resolver fallback)
+- [ ] Mixed workload: concurrent writes + checks
+- [ ] Hot-path recording overhead on check handler
+- [ ] Precompute daemon event processing rate
+
+**3.1.3 Scalability Tests**
+- [ ] 10K hot-path entries per store
+- [ ] 100K hot-path entries across stores
+- [ ] Impact of model complexity on recomputation time
+- [ ] Worker pool scaling (2, 4, 8, 16 workers)
+
+**3.1.4 Comparison Report**
+- [ ] RSFGA check (no precompute) vs RSFGA check (precompute hit)
+- [ ] RSFGA check (precompute) vs OpenFGA check
+- [ ] Document results in `docs/benchmarks/precompute-v3.md`
+
+**Validation Criteria**:
+- [ ] Precomputed cache hit <1ms p99
+- [ ] Precomputation does not degrade write throughput >5%
+- [ ] No regressions in existing check latency (cache miss path)
+
+**Deliverables**:
+- Criterion benchmark suite for precompute components
+- k6 load test scripts for end-to-end precompute validation
+- Benchmark comparison report
+
 ---
 
 ## Phase 3: Distributed Edge (Milestone 3)

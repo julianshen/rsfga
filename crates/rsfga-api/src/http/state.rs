@@ -105,6 +105,9 @@ pub struct AppState<S: DataStore> {
     /// RYOW wait timeout in seconds for read handlers.
     #[cfg(feature = "nats")]
     pub ryow_timeout_secs: u64,
+    /// Optional Valkey-backed precomputed check cache for sub-millisecond lookups.
+    #[cfg(feature = "precompute")]
+    pub precompute_cache: Option<Arc<rsfga_valkey::cache::CheckCache>>,
 }
 
 impl<S: DataStore> AppState<S> {
@@ -200,6 +203,8 @@ impl<S: DataStore> AppState<S> {
             write_mode: WriteMode::Direct,
             #[cfg(feature = "nats")]
             ryow_timeout_secs: 30,
+            #[cfg(feature = "precompute")]
+            precompute_cache: None,
         }
     }
 
@@ -286,5 +291,17 @@ impl<S: DataStore> AppState<S> {
     #[cfg(feature = "nats")]
     pub fn ryow_timeout_secs(&self) -> u64 {
         self.ryow_timeout_secs
+    }
+
+    /// Sets the Valkey-backed precomputed check cache for sub-millisecond lookups.
+    ///
+    /// When configured, the check handler will try Valkey first before falling
+    /// back to the graph resolver, and will record cache misses in the hot-path
+    /// registry for future precomputation.
+    #[cfg(feature = "precompute")]
+    #[must_use]
+    pub fn with_precompute_cache(mut self, cache: Arc<rsfga_valkey::cache::CheckCache>) -> Self {
+        self.precompute_cache = Some(cache);
+        self
     }
 }

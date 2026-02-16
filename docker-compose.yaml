@@ -5,6 +5,7 @@
 #   docker-compose up -d rsfga-memory  # Start RSFGA with in-memory storage
 #   docker-compose --profile nats up -d  # Start with NATS async writes
 #   docker-compose --profile edge up -d  # Start with edge sync
+#   docker-compose --profile precompute up -d  # Start with precomputed checks
 #   docker-compose logs -f rsfga  # View logs
 #   docker-compose down           # Stop all services
 #   docker-compose down -v        # Stop and remove volumes
@@ -104,6 +105,7 @@ services:
     profiles:
       - nats
       - edge
+      - precompute
 
   # RSFGA Writer - consumes writes from NATS and batches to PostgreSQL
   rsfga-writer:
@@ -170,6 +172,60 @@ services:
       - edge
     restart: unless-stopped
 
+  # Valkey (Redis-compatible) for precomputed check cache
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    profiles:
+      - precompute
+    restart: unless-stopped
+
+  # RSFGA Precompute Worker - precomputes hot-path check results to Valkey
+  rsfga-precompute:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY: rsfga-precompute
+    ports:
+      - "9093:9092"  # Host 9093 to avoid conflict with writer on 9092
+    environment:
+      - NATS_URL=nats://nats:4222
+      - CONSUMER_NAME=rsfga-precompute-1
+      - STORAGE_BACKEND=postgres
+      - DATABASE_URL=postgres://rsfga:rsfga@postgres:5432/rsfga
+      - VALKEY_URL=redis://valkey:6379
+      - VALKEY_RESULT_TTL=300
+      - VALKEY_HOTPATH_TTL=3600
+      - WORKERS=4
+      - MAX_QUEUE_DEPTH=10000
+      - METRICS_PORT=9092
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9092/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    profiles:
+      - precompute
+    restart: unless-stopped
+
   # Jaeger for distributed tracing (optional)
   jaeger:
     image: jaegertracing/all-in-one:1.53
@@ -199,3 +255,4 @@ services:
 volumes:
   postgres_data:
   nats_data:
+  valkey_data:

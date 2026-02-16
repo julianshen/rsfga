@@ -1551,6 +1551,65 @@ async fn check<S: DataStore>(
         body.authorization_model_id,
     );
 
+    // Precomputed check: try Valkey first for sub-millisecond response.
+    // Skip when contextual_tuples or context are present since the cache key
+    // doesn't include them and the result could be different.
+    #[cfg(feature = "precompute")]
+    {
+        let has_contextual_tuples = !check_request.contextual_tuples.is_empty();
+        let has_context = !check_request.context.is_empty();
+
+        if !has_contextual_tuples && !has_context {
+            if let Some(ref precompute_cache) = state.precompute_cache {
+                // Get the model ID for cache key construction
+                let model_id_for_cache = if let Some(ref mid) = check_request.authorization_model_id
+                {
+                    Some(mid.clone())
+                } else {
+                    state
+                        .storage
+                        .get_latest_authorization_model(&check_request.store_id)
+                        .await
+                        .ok()
+                        .map(|m| m.id)
+                };
+
+                if let Some(model_id) = model_id_for_cache {
+                    // Parse object into type:id (validates non-empty parts)
+                    if let Some((obj_type, obj_id)) = parse_object(&check_request.object) {
+                        let cache_key = rsfga_valkey::CheckKey::new(
+                            &check_request.store_id,
+                            &model_id,
+                            obj_type,
+                            obj_id,
+                            &check_request.relation,
+                            &check_request.user,
+                        );
+
+                        if let Some(cached) = precompute_cache.get(&cache_key).await {
+                            // Cache hit - return precomputed result
+                            return Ok(Json(CheckResponseBody {
+                                allowed: cached.allowed,
+                                resolution: None,
+                            }));
+                        }
+
+                        // Cache miss - record in hot-path registry for future precomputation
+                        let _ = precompute_cache
+                            .record_hotpath(
+                                &check_request.store_id,
+                                obj_type,
+                                obj_id,
+                                &check_request.relation,
+                                &check_request.user,
+                            )
+                            .await;
+                    }
+                }
+            }
+        }
+    }
+
     // Delegate to GraphResolver for full graph traversal
     let result = state.resolver.check(&check_request).await?;
 
