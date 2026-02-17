@@ -35,10 +35,11 @@ services:
       - RSFGA_LOGGING__LEVEL=info
       - RSFGA_LOGGING__JSON=false
       - RSFGA_METRICS__ENABLED=true
-      # To enable precompute cache, use --profile precompute and add:
+      # Precompute cache (requires --features precompute at build time).
+      # When using `docker-compose --profile precompute up`, uncomment these
+      # to connect to the valkey service defined below:
       #   RSFGA_PRECOMPUTE__ENABLED=true
       #   RSFGA_PRECOMPUTE__VALKEY_URL=redis://valkey:6379
-      # Requires image built with --features precompute
     depends_on:
       postgres:
         condition: service_healthy

@@ -617,10 +617,19 @@ impl ServerConfig {
 
         // Validate precompute settings when enabled
         if self.precompute.enabled {
-            if self.precompute.valkey_url.trim().is_empty() {
+            let url = self.precompute.valkey_url.trim();
+            if url.is_empty() {
                 return Err(ConfigLoadError::Invalid {
                     message: "precompute.valkey_url must not be empty when precompute is enabled"
                         .to_string(),
+                });
+            }
+            if !url.starts_with("redis://") && !url.starts_with("rediss://") {
+                return Err(ConfigLoadError::Invalid {
+                    message: format!(
+                        "precompute.valkey_url must start with redis:// or rediss://, got: '{}'",
+                        self.precompute.valkey_url
+                    ),
                 });
             }
             if self.precompute.result_ttl_secs == 0 {
@@ -968,6 +977,43 @@ precompute:
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("valkey_url"));
+    }
+
+    #[test]
+    fn test_precompute_validation_rejects_whitespace_valkey_url() {
+        let mut config = ServerConfig::default();
+        config.precompute.enabled = true;
+        config.precompute.valkey_url = "   ".to_string();
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("valkey_url"));
+    }
+
+    #[test]
+    fn test_precompute_validation_rejects_invalid_url_scheme() {
+        let mut config = ServerConfig::default();
+        config.precompute.enabled = true;
+        config.precompute.valkey_url = "http://localhost:6379".to_string();
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("redis://"));
+    }
+
+    #[test]
+    fn test_precompute_validation_accepts_rediss_scheme() {
+        let mut config = ServerConfig::default();
+        config.precompute.enabled = true;
+        config.precompute.valkey_url = "rediss://valkey:6379".to_string();
+        // Should not error on valkey_url
+        let result = config.validate();
+        if let Err(e) = &result {
+            assert!(
+                !e.to_string().contains("valkey_url"),
+                "rediss:// should be valid, got error: {e}"
+            );
+        }
     }
 
     #[test]
