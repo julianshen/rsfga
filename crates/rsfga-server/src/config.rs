@@ -410,6 +410,16 @@ fn default_write_mode() -> String {
 /// results before running the full graph resolver. The `rsfga-precompute`
 /// worker must be running to populate the cache.
 ///
+/// Supports any URL format accepted by the `redis` crate, including:
+/// - `redis://host:port` — standard connection
+/// - `rediss://host:port` — TLS connection
+/// - `redis+sentinel://host:port` — Sentinel topology
+/// - `redis+unix:///path/to/socket` — Unix socket
+///
+/// Cluster mode uses the same `redis://` URLs; the client library handles
+/// discovery. Sentinel and cluster topologies have not been explicitly tested
+/// with the precompute cache but should work via the underlying `redis` crate.
+///
 /// Environment variables:
 /// - `RSFGA_PRECOMPUTE__ENABLED=true` - Enable precompute cache lookups
 /// - `RSFGA_PRECOMPUTE__VALKEY_URL=redis://localhost:6379` - Valkey URL
@@ -423,7 +433,10 @@ pub struct PrecomputeSettings {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Valkey/Redis URL (e.g., "redis://localhost:6379").
+    /// Valkey/Redis connection URL.
+    ///
+    /// Accepts any format supported by the `redis` crate:
+    /// `redis://`, `rediss://`, `redis+sentinel://`, `redis+unix://`, etc.
     #[serde(default = "default_valkey_url")]
     pub valkey_url: String,
 
@@ -624,19 +637,10 @@ impl ServerConfig {
 
         // Validate precompute settings when enabled
         if self.precompute.enabled {
-            let url = self.precompute.valkey_url.trim();
-            if url.is_empty() {
+            if self.precompute.valkey_url.trim().is_empty() {
                 return Err(ConfigLoadError::Invalid {
                     message: "precompute.valkey_url must not be empty when precompute is enabled"
                         .to_string(),
-                });
-            }
-            if !url.starts_with("redis://") && !url.starts_with("rediss://") {
-                return Err(ConfigLoadError::Invalid {
-                    message: format!(
-                        "precompute.valkey_url must start with redis:// or rediss://, got: '{}'",
-                        self.precompute.valkey_url
-                    ),
                 });
             }
             if self.precompute.result_ttl_secs == 0 {
@@ -998,27 +1002,23 @@ precompute:
     }
 
     #[test]
-    fn test_precompute_validation_rejects_invalid_url_scheme() {
-        let mut config = ServerConfig::default();
-        config.precompute.enabled = true;
-        config.precompute.valkey_url = "http://localhost:6379".to_string();
-        let result = config.validate();
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("redis://"));
-    }
-
-    #[test]
-    fn test_precompute_validation_accepts_rediss_scheme() {
-        let mut config = ServerConfig::default();
-        config.precompute.enabled = true;
-        config.precompute.valkey_url = "rediss://valkey:6379".to_string();
-        let result = config.validate();
-        assert!(
-            result.is_ok(),
-            "rediss:// should be accepted, got: {:?}",
-            result.unwrap_err()
-        );
+    fn test_precompute_validation_accepts_various_url_formats() {
+        let urls = [
+            "redis://localhost:6379",
+            "rediss://valkey:6379",
+            "redis+sentinel://sentinel:26379",
+            "redis+unix:///var/run/valkey.sock",
+        ];
+        for url in &urls {
+            let mut config = ServerConfig::default();
+            config.precompute.enabled = true;
+            config.precompute.valkey_url = url.to_string();
+            let result = config.validate();
+            assert!(
+                result.is_ok(),
+                "URL '{url}' should be accepted, got: {result:?}"
+            );
+        }
     }
 
     #[test]
