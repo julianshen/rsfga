@@ -57,7 +57,12 @@ pub struct ServerConfig {
     #[serde(default)]
     pub nats: NatsSettings,
 
-    /// Precomputed check cache settings (Valkey/Redis)
+    /// Precomputed check cache settings (Valkey/Redis).
+    ///
+    /// **Note:** This config section is always parsed regardless of build features.
+    /// Setting `enabled = true` only takes effect when the binary is built with
+    /// `--features precompute`. Without the feature flag, the settings are loaded
+    /// but the Valkey wiring code is compiled out.
     #[serde(default)]
     pub precompute: PrecomputeSettings,
 }
@@ -610,6 +615,22 @@ impl ServerConfig {
             }
         }
 
+        // Validate precompute TTLs when enabled
+        if self.precompute.enabled {
+            if self.precompute.result_ttl_secs == 0 {
+                return Err(ConfigLoadError::Invalid {
+                    message: "precompute.result_ttl_secs must be > 0 when precompute is enabled"
+                        .to_string(),
+                });
+            }
+            if self.precompute.hotpath_ttl_secs == 0 {
+                return Err(ConfigLoadError::Invalid {
+                    message: "precompute.hotpath_ttl_secs must be > 0 when precompute is enabled"
+                        .to_string(),
+                });
+            }
+        }
+
         Ok(())
     }
 }
@@ -930,6 +951,38 @@ precompute:
         assert_eq!(config.precompute.valkey_url, "redis://valkey:6379");
         assert_eq!(config.precompute.result_ttl_secs, 600);
         assert_eq!(config.precompute.hotpath_ttl_secs, 7200);
+    }
+
+    #[test]
+    fn test_precompute_validation_rejects_zero_result_ttl() {
+        let mut config = ServerConfig::default();
+        config.precompute.enabled = true;
+        config.precompute.result_ttl_secs = 0;
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("result_ttl_secs"));
+    }
+
+    #[test]
+    fn test_precompute_validation_rejects_zero_hotpath_ttl() {
+        let mut config = ServerConfig::default();
+        config.precompute.enabled = true;
+        config.precompute.hotpath_ttl_secs = 0;
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("hotpath_ttl_secs"));
+    }
+
+    #[test]
+    fn test_precompute_validation_skipped_when_disabled() {
+        let mut config = ServerConfig::default();
+        config.precompute.enabled = false;
+        config.precompute.result_ttl_secs = 0;
+        config.precompute.hotpath_ttl_secs = 0;
+        // Should not error since precompute is disabled
+        assert!(config.validate().is_ok());
     }
 
     /// Test: from_env loads defaults with env overrides
