@@ -437,6 +437,10 @@ pub struct PrecomputeSettings {
     ///
     /// Accepts any format supported by the `redis` crate:
     /// `redis://`, `rediss://`, `redis+sentinel://`, `redis+unix://`, etc.
+    ///
+    /// The URL format is **not** syntax-validated at config load time; an invalid
+    /// URL will surface as a connection error at startup (logged as a warning,
+    /// server continues without cache).
     #[serde(default = "default_valkey_url")]
     pub valkey_url: String,
 
