@@ -35,6 +35,8 @@ services:
       - RSFGA_LOGGING__LEVEL=info
       - RSFGA_LOGGING__JSON=false
       - RSFGA_METRICS__ENABLED=true
+      - RSFGA_PRECOMPUTE__ENABLED=true
+      - RSFGA_PRECOMPUTE__VALKEY_URL=redis://valkey:6379
     depends_on:
       postgres:
         condition: service_healthy

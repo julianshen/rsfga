@@ -18,7 +18,7 @@ use std::sync::Arc;
 use clap::Parser;
 use tokio::signal;
 use tokio::sync::broadcast;
-#[cfg(feature = "nats")]
+#[cfg(any(feature = "nats", feature = "precompute"))]
 use tracing::warn;
 use tracing::{error, info, Level};
 
@@ -230,6 +230,34 @@ where
                 .with_write_tracker(nats.write_tracker)
                 .with_write_mode(nats.write_mode)
                 .with_ryow_timeout_secs(nats.ryow_timeout_secs)
+        } else {
+            state
+        };
+
+        // Wire up precomputed check cache if enabled
+        #[cfg(feature = "precompute")]
+        let state = if config.precompute.enabled {
+            match rsfga_valkey::ValkeyClient::connect(rsfga_valkey::ValkeyConfig {
+                url: config.precompute.valkey_url.clone(),
+                result_ttl_secs: config.precompute.result_ttl_secs,
+                hotpath_ttl_secs: config.precompute.hotpath_ttl_secs,
+            })
+            .await
+            {
+                Ok(client) => {
+                    info!(
+                        url = %rsfga_valkey::redact_url(&config.precompute.valkey_url),
+                        "Precompute cache enabled (Valkey)"
+                    );
+                    state.with_precompute_cache(Arc::new(rsfga_valkey::cache::CheckCache::new(
+                        client,
+                    )))
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to connect to Valkey, precompute cache disabled");
+                    state
+                }
+            }
         } else {
             state
         };

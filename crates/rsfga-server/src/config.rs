@@ -56,6 +56,10 @@ pub struct ServerConfig {
     /// NATS settings for async writes and RYOW consistency
     #[serde(default)]
     pub nats: NatsSettings,
+
+    /// Precomputed check cache settings (Valkey/Redis)
+    #[serde(default)]
+    pub precompute: PrecomputeSettings,
 }
 
 /// Server network settings.
@@ -393,6 +397,61 @@ fn default_write_ticket_ttl_secs() -> u64 {
 
 fn default_write_mode() -> String {
     "direct".to_string()
+}
+
+/// Precomputed check cache settings (Valkey/Redis).
+///
+/// When enabled, the server connects to Valkey to look up precomputed check
+/// results before running the full graph resolver. The `rsfga-precompute`
+/// worker must be running to populate the cache.
+///
+/// Environment variables:
+/// - `RSFGA_PRECOMPUTE__ENABLED=true` - Enable precompute cache lookups
+/// - `RSFGA_PRECOMPUTE__VALKEY_URL=redis://localhost:6379` - Valkey URL
+/// - `RSFGA_PRECOMPUTE__RESULT_TTL_SECS=300` - TTL for cached results
+/// - `RSFGA_PRECOMPUTE__HOTPATH_TTL_SECS=3600` - TTL for hot-path entries
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PrecomputeSettings {
+    /// Enable precomputed check cache lookups.
+    ///
+    /// When false (default), all checks go through the full graph resolver.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Valkey/Redis URL (e.g., "redis://localhost:6379").
+    #[serde(default = "default_valkey_url")]
+    pub valkey_url: String,
+
+    /// TTL in seconds for cached check results.
+    #[serde(default = "default_result_ttl_secs")]
+    pub result_ttl_secs: u64,
+
+    /// TTL in seconds for hot-path sorted set entries.
+    #[serde(default = "default_hotpath_ttl_secs")]
+    pub hotpath_ttl_secs: u64,
+}
+
+impl Default for PrecomputeSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            valkey_url: default_valkey_url(),
+            result_ttl_secs: default_result_ttl_secs(),
+            hotpath_ttl_secs: default_hotpath_ttl_secs(),
+        }
+    }
+}
+
+fn default_valkey_url() -> String {
+    "redis://localhost:6379".to_string()
+}
+
+fn default_result_ttl_secs() -> u64 {
+    300
+}
+
+fn default_hotpath_ttl_secs() -> u64 {
+    3600
 }
 
 /// Error type for configuration loading.
@@ -830,6 +889,47 @@ nats:
         assert_eq!(config.nats.name, "my-rsfga");
         assert_eq!(config.nats.ryow_timeout_secs, 15);
         assert_eq!(config.nats.write_ticket_ttl_secs, 120);
+    }
+
+    /// Test: Precompute settings have correct defaults
+    #[test]
+    fn test_precompute_settings_defaults() {
+        let config = ServerConfig::default();
+        assert!(!config.precompute.enabled);
+        assert_eq!(config.precompute.valkey_url, "redis://localhost:6379");
+        assert_eq!(config.precompute.result_ttl_secs, 300);
+        assert_eq!(config.precompute.hotpath_ttl_secs, 3600);
+    }
+
+    /// Test: Precompute settings can be loaded from YAML
+    #[test]
+    #[serial]
+    fn test_precompute_settings_from_yaml() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+storage:
+  backend: memory
+
+precompute:
+  enabled: true
+  valkey_url: "redis://valkey:6379"
+  result_ttl_secs: 600
+  hotpath_ttl_secs: 7200
+"#
+        )
+        .unwrap();
+
+        let config = ServerConfig::load(file.path()).unwrap();
+        assert!(config.precompute.enabled);
+        assert_eq!(config.precompute.valkey_url, "redis://valkey:6379");
+        assert_eq!(config.precompute.result_ttl_secs, 600);
+        assert_eq!(config.precompute.hotpath_ttl_secs, 7200);
     }
 
     /// Test: from_env loads defaults with env overrides
