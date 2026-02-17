@@ -427,11 +427,18 @@ pub struct PrecomputeSettings {
     #[serde(default = "default_valkey_url")]
     pub valkey_url: String,
 
-    /// TTL in seconds for cached check results.
+    /// TTL in seconds for cached check results (default: 300 = 5 min).
+    ///
+    /// Shorter than hotpath TTL because stale authorization results are
+    /// a correctness concern — tuples may have been written or deleted.
     #[serde(default = "default_result_ttl_secs")]
     pub result_ttl_secs: u64,
 
-    /// TTL in seconds for hot-path sorted set entries.
+    /// TTL in seconds for hot-path sorted set entries (default: 3600 = 1 hour).
+    ///
+    /// Longer than result TTL because hot-path entries track which tuples
+    /// are frequently checked (access pattern metadata), not authorization
+    /// outcomes. Keeping them longer improves precomputation coverage.
     #[serde(default = "default_hotpath_ttl_secs")]
     pub hotpath_ttl_secs: u64,
 }
@@ -1006,14 +1013,12 @@ precompute:
         let mut config = ServerConfig::default();
         config.precompute.enabled = true;
         config.precompute.valkey_url = "rediss://valkey:6379".to_string();
-        // Should not error on valkey_url
         let result = config.validate();
-        if let Err(e) = &result {
-            assert!(
-                !e.to_string().contains("valkey_url"),
-                "rediss:// should be valid, got error: {e}"
-            );
-        }
+        assert!(
+            result.is_ok(),
+            "rediss:// should be accepted, got: {:?}",
+            result.unwrap_err()
+        );
     }
 
     #[test]
