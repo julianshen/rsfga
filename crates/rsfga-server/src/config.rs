@@ -615,8 +615,14 @@ impl ServerConfig {
             }
         }
 
-        // Validate precompute TTLs when enabled
+        // Validate precompute settings when enabled
         if self.precompute.enabled {
+            if self.precompute.valkey_url.trim().is_empty() {
+                return Err(ConfigLoadError::Invalid {
+                    message: "precompute.valkey_url must not be empty when precompute is enabled"
+                        .to_string(),
+                });
+            }
             if self.precompute.result_ttl_secs == 0 {
                 return Err(ConfigLoadError::Invalid {
                     message: "precompute.result_ttl_secs must be > 0 when precompute is enabled"
@@ -951,6 +957,17 @@ precompute:
         assert_eq!(config.precompute.valkey_url, "redis://valkey:6379");
         assert_eq!(config.precompute.result_ttl_secs, 600);
         assert_eq!(config.precompute.hotpath_ttl_secs, 7200);
+    }
+
+    #[test]
+    fn test_precompute_validation_rejects_empty_valkey_url() {
+        let mut config = ServerConfig::default();
+        config.precompute.enabled = true;
+        config.precompute.valkey_url = "".to_string();
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("valkey_url"));
     }
 
     #[test]
