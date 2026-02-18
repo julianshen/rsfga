@@ -81,10 +81,16 @@ tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"
 tokio-stream = { workspace = true }
 futures = { workspace = true }
 criterion = { workspace = true }
+chrono = { workspace = true }
 
 [[bench]]
 name = "parse_bench"
 harness = false
+
+[[bench]]
+name = "precompute_bench"
+harness = false
+required-features = ["precompute"]
 
 [features]
 default = []

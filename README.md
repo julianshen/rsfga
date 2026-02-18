@@ -315,8 +315,9 @@ RSFGA_LOGGING__LEVEL=debug
 | Batch check | 23 checks/s | 500+ checks/s | Parallel execution, deduplication |
 | Write throughput | 59 req/s | 150+ req/s | Batch processing, async invalidation |
 | Check p95 latency | 22ms | <20ms | Optimized graph resolution |
+| Precompute cache hit | N/A | <1ms p95 | Valkey-backed precomputed results |
 
-*Note: These are target performance numbers. Validation is pending Milestone 1.7 benchmarking. See [ADR Validation Status](docs/design/ARCHITECTURE_DECISIONS.md#validation-status-summary) for details.*
+*Note: These are target performance numbers. Validation is pending Milestone 1.7 benchmarking. See [ADR Validation Status](docs/design/ARCHITECTURE_DECISIONS.md#validation-status-summary) for details. See [Precompute Cache Benchmarks](docs/benchmarks/precompute-cache.md) for cache hit latency methodology.*
 
 ## Project Structure
 
