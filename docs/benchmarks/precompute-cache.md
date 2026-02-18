@@ -58,13 +58,18 @@ Measured on Apple Silicon (M-series). Results will vary by hardware.
 
 ### k6 (End-to-End)
 
-| Metric | Without Precompute | With Precompute |
-|--------|--------------------|--------------------|
-| p50 latency | TBD ms | TBD ms |
-| p95 latency | TBD ms | TBD ms |
-| p99 latency | TBD ms | TBD ms |
-| Throughput | TBD req/s | TBD req/s |
-| Cache hit rate | N/A | TBD % |
+Measured on Apple Silicon (M-series), PostgreSQL 14 (localhost), 50 users, 20 objects, 200 req/s constant-arrival-rate for 3 minutes.
+
+| Metric | Without Precompute | With Precompute | Notes |
+|--------|--------------------|--------------------|----|
+| p50 latency | 3.10 ms | 3.22 ms | |
+| p95 latency | 5.64 ms | 4.53 ms | |
+| p99 latency | 13.7 ms | 10.66 ms | |
+| max latency | 174 ms | 63 ms | Tail variance reduced |
+| Throughput | 118 req/s | 118 req/s | Capped by constant-arrival-rate executor |
+| Cache hit rate | N/A | ~0% | See note below |
+
+> **Note on cache hit rate**: The current k6 scenario writes tuples during setup (generating NATS committed events) *before* the warmup phase creates hot-path entries via check requests. The precompute worker only scans the hot-path on committed events, so it finds no entries to precompute. A future improvement would add a post-warmup write trigger to force the worker to re-scan the populated hot-path. The latency improvements at p95/p99 are likely attributable to application-level caching (Moka) warming up during the warmup phase, not the Valkey precompute cache.
 
 ## How to Reproduce
 
