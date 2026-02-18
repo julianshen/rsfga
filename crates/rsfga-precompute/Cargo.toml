@@ -43,3 +43,8 @@ rocksdb = ["rsfga-storage/rocksdb"]
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 tempfile = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "precompute_components_bench"
+harness = false

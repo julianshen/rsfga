@@ -2294,34 +2294,34 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 #### Tasks
 
 **3.1.1 Micro-Benchmarks (criterion)**
-- [ ] Valkey cache hit latency (target: <1ms p99)
-- [ ] Graph resolver fallback latency (baseline comparison)
-- [ ] Classifier throughput (events/sec)
-- [ ] Impact analyzer throughput (jobs generated/sec)
-- [ ] Worker pool throughput (recomputations/sec)
+- [x] Valkey cache hit latency (target: <1ms p99)
+- [x] Graph resolver fallback latency (baseline comparison)
+- [x] Classifier throughput (events/sec)
+- [x] Impact analyzer throughput (jobs generated/sec)
+- [x] Worker pool throughput (recomputations/sec)
 
 **3.1.2 End-to-End Benchmarks (k6)**
-- [ ] Check with warm Valkey cache (target: <1ms p99)
-- [ ] Check with cold cache (graph resolver fallback)
-- [ ] Mixed workload: concurrent writes + checks
-- [ ] Hot-path recording overhead on check handler
-- [ ] Precompute daemon event processing rate
+- [x] Check with warm Valkey cache (target: <1ms p99)
+- [x] Check with cold cache (graph resolver fallback)
+- [x] Mixed workload: concurrent writes + checks
+- [x] Hot-path recording overhead on check handler
+- [x] Precompute daemon event processing rate
 
 **3.1.3 Scalability Tests**
-- [ ] 10K hot-path entries per store
-- [ ] 100K hot-path entries across stores
-- [ ] Impact of model complexity on recomputation time
-- [ ] Worker pool scaling (2, 4, 8, 16 workers)
+- [x] 10K hot-path entries per store
+- [x] 100K hot-path entries across stores
+- [x] Impact of model complexity on recomputation time
+- [x] Worker pool scaling (2, 4, 8, 16 workers)
 
 **3.1.4 Comparison Report**
-- [ ] RSFGA check (no precompute) vs RSFGA check (precompute hit)
-- [ ] RSFGA check (precompute) vs OpenFGA check
-- [ ] Document results in `docs/benchmarks/precompute-v3.md`
+- [x] RSFGA check (no precompute) vs RSFGA check (precompute hit)
+- [x] RSFGA check (precompute) vs OpenFGA check
+- [x] Document results in `docs/benchmarks/precompute-v3.md`
 
 **Validation Criteria**:
-- [ ] Precomputed cache hit <1ms p99
-- [ ] Precomputation does not degrade write throughput >5%
-- [ ] No regressions in existing check latency (cache miss path)
+- [x] Precomputed cache hit <1ms p99
+- [x] Precomputation does not degrade write throughput >5%
+- [x] No regressions in existing check latency (cache miss path)
 
 **Deliverables**:
 - Criterion benchmark suite for precompute components

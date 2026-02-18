@@ -12,6 +12,8 @@
 #   check-computed - Run computed check scenario
 #   check-deep   - Run deep hierarchy check scenario
 #   check-precompute - Run precompute cache comparison scenario
+#   mixed-precompute - Run mixed workload with precompute scenario
+#   precompute-scale - Run precompute scalability scenario
 #   batch-check  - Run batch check scenario
 #   list-objects - Run list objects scenario
 #   list-users   - Run list users scenario
@@ -73,6 +75,8 @@ usage() {
     echo "  check-computed   Run computed check scenario"
     echo "  check-deep       Run deep hierarchy check scenario"
     echo "  check-precompute Run precompute cache comparison scenario"
+    echo "  mixed-precompute Run mixed workload with precompute scenario"
+    echo "  precompute-scale Run precompute scalability scenario"
     echo "  batch-check      Run batch check scenario"
     echo "  list-objects     Run list objects scenario"
     echo "  list-users       Run list users scenario"
@@ -259,6 +263,12 @@ case $SCENARIO in
         ;;
     check-precompute)
         run_scenario "check-precompute" "check-precompute.js"
+        ;;
+    mixed-precompute)
+        run_scenario "mixed-precompute" "mixed-precompute.js"
+        ;;
+    precompute-scale)
+        run_scenario "precompute-scale" "precompute-scale.js"
         ;;
     batch-check)
         run_scenario "batch-check" "batch-check.js"
