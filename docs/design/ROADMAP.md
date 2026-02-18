@@ -2298,20 +2298,20 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 - [x] Graph resolver fallback latency (baseline comparison)
 - [x] Classifier throughput (events/sec)
 - [x] Impact analyzer throughput (jobs generated/sec)
-- [x] Worker pool throughput (recomputations/sec)
+- [ ] Worker pool throughput (recomputations/sec) — requires live Valkey
 
 **3.1.2 End-to-End Benchmarks (k6)**
 - [x] Check with warm Valkey cache (target: <1ms p99)
 - [x] Check with cold cache (graph resolver fallback)
 - [x] Mixed workload: concurrent writes + checks
-- [x] Hot-path recording overhead on check handler
-- [x] Precompute daemon event processing rate
+- [ ] Hot-path recording overhead on check handler
+- [ ] Precompute daemon event processing rate
 
 **3.1.3 Scalability Tests**
 - [x] 10K hot-path entries per store
 - [x] 100K hot-path entries across stores
 - [x] Impact of model complexity on recomputation time
-- [x] Worker pool scaling (2, 4, 8, 16 workers)
+- [ ] Worker pool scaling (2, 4, 8, 16 workers)
 
 **3.1.4 Comparison Report**
 - [x] RSFGA check (no precompute) vs RSFGA check (precompute hit)
