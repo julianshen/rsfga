@@ -59,18 +59,19 @@ Measured on Apple Silicon (M-series). Results will vary by hardware.
 
 ### k6 (End-to-End)
 
-Measured on Apple Silicon (M-series), PostgreSQL 14 (localhost), 50 users, 20 objects, 200 req/s constant-arrival-rate for 3 minutes.
+Measured on Apple Silicon (M-series), PostgreSQL 16 (localhost), 50 users, 20 objects, 200 req/s constant-arrival-rate for 3 minutes. Three-stage pipeline: warmup (100 iterations) → trigger (dummy write) → measure (3 min).
 
 | Metric | Without Precompute | With Precompute | Notes |
 |--------|--------------------|--------------------|----|
-| p50 latency | 3.10 ms | 3.22 ms | |
-| p95 latency | 5.64 ms | 4.53 ms | |
-| p99 latency | 13.7 ms | 10.66 ms | |
-| max latency | 174 ms | 63 ms | Tail variance reduced |
-| Throughput | 118 req/s | 118 req/s | Capped by constant-arrival-rate executor |
-| Cache hit rate | N/A | ~0% | See note below |
+| p50 latency | 3.10 ms | 3.12 ms | |
+| p95 latency | 5.64 ms | 4.38 ms | |
+| p99 latency | 13.7 ms | 9.15 ms | |
+| max latency | 174 ms | 56.1 ms | Tail variance reduced 3x |
+| Throughput | 118 req/s | 108 req/s | |
+| Cache hit rate | N/A | ~2.15% | See note below |
+| Precomputed entries | N/A | 46 | Out of 2000 possible combos |
 
-> **Note on cache hit rate**: The results above were collected before the trigger stage was added. The original two-stage scenario wrote tuples during setup (generating NATS committed events) *before* the warmup phase created hot-path entries, so the precompute worker found no entries to precompute. The three-stage pipeline (warmup → trigger → measure) addresses this by writing a dummy tuple after warmup to force the worker to re-scan the populated hot-path. Re-run the benchmarks to see updated cache hit rates.
+> **Note on cache hit rate**: With 50 users x 20 objects x 2 relations = 2000 possible check combinations, the 100-iteration warmup only creates ~46 unique hot-path entries for the precompute worker to cache. The low hit rate (~2%) is a function of warmup coverage, not a cache bug — the trigger mechanism works correctly (0% → 2.15%). In production workloads with skewed access patterns (a smaller set of frequently-checked permissions), the hit rate would be substantially higher. To increase hit rate in benchmarks, increase `USER_COUNT * 2` warmup iterations or reduce the combinatorial space.
 
 ## How to Reproduce
 
