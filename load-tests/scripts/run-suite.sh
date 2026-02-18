@@ -229,6 +229,9 @@ echo ""
 # Run scenarios
 case $SCENARIO in
     all)
+        # Note: check-precompute is excluded from 'all' because it requires
+        # Valkey infrastructure (docker-compose --profile precompute).
+        # Run it separately with: ./run-suite.sh check-precompute
         run_scenario "check-direct" "check-direct.js"
         run_scenario "check-computed" "check-computed.js"
         run_scenario "check-deep-hierarchy" "check-deep-hierarchy.js"

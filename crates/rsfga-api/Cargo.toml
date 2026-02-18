@@ -90,7 +90,6 @@ harness = false
 [[bench]]
 name = "precompute_bench"
 harness = false
-required-features = ["precompute"]
 
 [features]
 default = []

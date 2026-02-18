@@ -11,7 +11,7 @@
 //! a real Valkey connection, so we simulate the cache lookup with an in-memory
 //! HashMap to isolate the speedup factor from network latency.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -39,14 +39,14 @@ const MODEL_ID: &str = "model-1";
 // =============================================================================
 
 struct BenchTupleReader {
-    stores: std::collections::HashSet<String>,
+    stores: HashSet<String>,
     tuples: HashMap<String, Vec<StoredTupleRef>>,
 }
 
 impl BenchTupleReader {
     fn new() -> Self {
         Self {
-            stores: std::collections::HashSet::new(),
+            stores: HashSet::new(),
             tuples: HashMap::new(),
         }
     }
@@ -477,7 +477,7 @@ fn bench_precompute_batch(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             let resolver = Arc::clone(&resolver);
             async move {
-                let futures = (0..batch_size).map(|i| {
+                let check_futures = (0..batch_size).map(|i| {
                     let resolver = Arc::clone(&resolver);
                     async move {
                         let request = CheckRequest::new(
@@ -490,7 +490,7 @@ fn bench_precompute_batch(c: &mut Criterion) {
                         resolver.check(&request).await
                     }
                 });
-                let results = futures::future::join_all(futures).await;
+                let results = futures::future::join_all(check_futures).await;
                 black_box(results)
             }
         })
