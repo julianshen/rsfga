@@ -2,10 +2,12 @@
  * Check API - Precompute Cache Load Test
  *
  * Compares check latency and throughput with and without precompute cache.
- * Two-stage test:
- *   1. Warm-up: populate the hot-path registry so the precompute worker
- *      can fill the Valkey cache.
- *   2. Measure: constant-arrival-rate check workload against the warm cache.
+ * Three-stage test:
+ *   1. Warm-up: populate the hot-path registry via check requests.
+ *   2. Trigger: write a dummy tuple to generate a NATS committed event,
+ *      causing the precompute worker to re-scan the now-populated hot-path
+ *      and fill the Valkey cache.
+ *   3. Measure: constant-arrival-rate check workload against the warm cache.
  *
  * Expected results with precompute enabled + warm cache:
  *   - >50% cache hit rate (responses <1ms; conservative for random workloads)
@@ -32,15 +34,14 @@ const USER_COUNT = parseInt(__ENV.USER_COUNT) || 500;
 const OBJECT_COUNT = parseInt(__ENV.OBJECT_COUNT) || 50;
 const WARMUP_WAIT = parseInt(__ENV.WARMUP_WAIT) || 10;
 
-// Extra delay (seconds) after warmup for the precompute worker to populate cache.
-// The warmup maxDuration is 2m; this buffer ensures measurement doesn't start
-// until warmup has finished. Increase WARMUP_WAIT for large USER_COUNT values.
+// Timing constants for the three-stage pipeline.
+// The warmup maxDuration is 2m; the trigger fires after warmup completes to
+// generate a NATS committed event that causes the precompute worker to scan
+// the hot-path and populate the cache before measurement begins.
 const WARMUP_MAX_DURATION_S = 120;
 const PRECOMPUTE_WORKER_DELAY_S = 30;
-const MEASURE_START_TIME_S = Math.max(
-  WARMUP_WAIT + PRECOMPUTE_WORKER_DELAY_S,
-  WARMUP_MAX_DURATION_S + WARMUP_WAIT,
-);
+const TRIGGER_START_TIME_S = WARMUP_MAX_DURATION_S + 5;
+const MEASURE_START_TIME_S = TRIGGER_START_TIME_S + PRECOMPUTE_WORKER_DELAY_S;
 
 // Precompute-specific metrics
 const precomputeHitRate = new Rate('precompute_hit_rate');
@@ -57,8 +58,17 @@ export const options = {
       maxDuration: `${WARMUP_MAX_DURATION_S}s`,
       exec: 'warmup',
     },
-    // Stage 2: Measurement — sustained load against warm cache.
-    // startTime is derived from warmup maxDuration + worker delay to prevent overlap.
+    // Stage 2: Trigger — write a dummy tuple to generate a NATS committed
+    // event, causing the precompute worker to re-scan the hot-path.
+    trigger: {
+      executor: 'shared-iterations',
+      vus: 1,
+      iterations: 1,
+      maxDuration: '30s',
+      startTime: `${TRIGGER_START_TIME_S}s`,
+      exec: 'triggerPrecompute',
+    },
+    // Stage 3: Measurement — sustained load against warm cache.
     measure: {
       executor: 'constant-arrival-rate',
       rate: 200,
@@ -166,6 +176,33 @@ export function warmup(data) {
   if (res.success) {
     recordCheck(res, res.body && res.body.allowed === true);
   }
+}
+
+/**
+ * Trigger phase — write a dummy tuple to generate a NATS committed event.
+ * This causes the precompute worker to re-scan the now-populated hot-path
+ * registry and fill the Valkey cache before the measurement phase begins.
+ */
+export function triggerPrecompute(data) {
+  const client = createClient(BASE_URL);
+  const { storeId, modelId } = data;
+
+  // Write a dummy tuple to generate a NATS committed event.
+  const writes = [{
+    user: 'user:_trigger',
+    relation: 'viewer',
+    object: 'document:doc_trigger',
+  }];
+  const res = client.write(storeId, writes, [], modelId);
+
+  if (res.success) {
+    console.log(`Trigger write succeeded — precompute worker should re-scan hot-path`);
+  } else {
+    console.log(`Trigger write failed: ${JSON.stringify(res.body)}`);
+  }
+
+  // Wait for precompute worker to process the event and fill the cache
+  sleep(PRECOMPUTE_WORKER_DELAY_S);
 }
 
 /**

@@ -22,10 +22,11 @@ Isolate the speedup factor by comparing domain-level graph resolution against a 
 
 ### k6 End-to-End Load Tests
 
-Full-stack comparison using Docker services. A two-stage scenario:
+Full-stack comparison using Docker services. A three-stage scenario:
 
-1. **Warm-up** -- Sends checks to populate the hot-path registry, then waits for the precompute worker to fill the Valkey cache.
-2. **Measurement** -- Constant-arrival-rate (200 req/s) for 3 minutes.
+1. **Warm-up** -- Sends checks to populate the hot-path registry.
+2. **Trigger** -- Writes a dummy tuple to generate a NATS committed event, causing the precompute worker to re-scan the now-populated hot-path and fill the Valkey cache.
+3. **Measurement** -- Constant-arrival-rate (200 req/s) for 3 minutes.
 
 **Key metrics:**
 
@@ -69,7 +70,7 @@ Measured on Apple Silicon (M-series), PostgreSQL 14 (localhost), 50 users, 20 ob
 | Throughput | 118 req/s | 118 req/s | Capped by constant-arrival-rate executor |
 | Cache hit rate | N/A | ~0% | See note below |
 
-> **Note on cache hit rate**: The current k6 scenario writes tuples during setup (generating NATS committed events) *before* the warmup phase creates hot-path entries via check requests. The precompute worker only scans the hot-path on committed events, so it finds no entries to precompute. A future improvement would add a post-warmup write trigger to force the worker to re-scan the populated hot-path. The latency improvements at p95/p99 are likely attributable to application-level caching (Moka) warming up during the warmup phase, not the Valkey precompute cache.
+> **Note on cache hit rate**: The results above were collected before the trigger stage was added. The original two-stage scenario wrote tuples during setup (generating NATS committed events) *before* the warmup phase created hot-path entries, so the precompute worker found no entries to precompute. The three-stage pipeline (warmup → trigger → measure) addresses this by writing a dummy tuple after warmup to force the worker to re-scan the populated hot-path. Re-run the benchmarks to see updated cache hit rates.
 
 ## How to Reproduce
 
