@@ -25,6 +25,16 @@ use rsfga_domain::resolver::{
 };
 
 // =============================================================================
+// Constants
+// =============================================================================
+
+const STORE_ID: &str = "bench-store";
+const USER: &str = "user:alice";
+const RELATION: &str = "viewer";
+const OBJECT: &str = "document:doc0";
+const MODEL_ID: &str = "model-1";
+
+// =============================================================================
 // Benchmark-specific mock implementations (mirrors check_bench.rs pattern)
 // =============================================================================
 
@@ -187,7 +197,7 @@ fn create_direct_relation_setup() -> (Arc<BenchTupleReader>, Arc<BenchModelReade
     let mut tuple_reader = BenchTupleReader::new();
     let mut model_reader = BenchModelReader::new();
 
-    tuple_reader.add_store("bench-store");
+    tuple_reader.add_store(STORE_ID);
 
     let doc_type = TypeDefinition {
         type_name: "document".to_string(),
@@ -197,17 +207,17 @@ fn create_direct_relation_setup() -> (Arc<BenchTupleReader>, Arc<BenchModelReade
             rewrite: Userset::This,
         }],
     };
-    model_reader.add_type("bench-store", doc_type);
+    model_reader.add_type(STORE_ID, doc_type);
 
     let user_type = TypeDefinition {
         type_name: "user".to_string(),
         relations: vec![],
     };
-    model_reader.add_type("bench-store", user_type);
+    model_reader.add_type(STORE_ID, user_type);
 
     for i in 0..100 {
         tuple_reader.add_tuple(
-            "bench-store",
+            STORE_ID,
             "document",
             &format!("doc{i}"),
             "viewer",
@@ -223,7 +233,7 @@ fn create_union_relation_setup() -> (Arc<BenchTupleReader>, Arc<BenchModelReader
     let mut tuple_reader = BenchTupleReader::new();
     let mut model_reader = BenchModelReader::new();
 
-    tuple_reader.add_store("bench-store");
+    tuple_reader.add_store(STORE_ID);
 
     let doc_type = TypeDefinition {
         type_name: "document".to_string(),
@@ -254,17 +264,17 @@ fn create_union_relation_setup() -> (Arc<BenchTupleReader>, Arc<BenchModelReader
             },
         ],
     };
-    model_reader.add_type("bench-store", doc_type);
+    model_reader.add_type(STORE_ID, doc_type);
 
     let user_type = TypeDefinition {
         type_name: "user".to_string(),
         relations: vec![],
     };
-    model_reader.add_type("bench-store", user_type);
+    model_reader.add_type(STORE_ID, user_type);
 
     for i in 0..100 {
         tuple_reader.add_tuple(
-            "bench-store",
+            STORE_ID,
             "document",
             &format!("doc{i}"),
             "viewer",
@@ -304,10 +314,10 @@ fn bench_check_no_precompute(c: &mut Criterion) {
     group.bench_function("no_precompute_direct", |b| {
         b.to_async(&rt).iter(|| async {
             let request = CheckRequest::new(
-                "bench-store".to_string(),
-                "user:alice".to_string(),
-                "viewer".to_string(),
-                "document:doc0".to_string(),
+                STORE_ID.to_string(),
+                USER.to_string(),
+                RELATION.to_string(),
+                OBJECT.to_string(),
                 vec![],
             );
             let result = resolver.check(black_box(&request)).await;
@@ -321,14 +331,7 @@ fn bench_check_no_precompute(c: &mut Criterion) {
 /// Precompute cache hit: simulated Valkey lookup (HashMap + JSON deser).
 /// This measures the sub-millisecond fast path when a precomputed result exists.
 fn bench_check_precompute_hit(c: &mut Criterion) {
-    let cache_key = build_cache_key(
-        "bench-store",
-        "model-1",
-        "document",
-        "doc0",
-        "viewer",
-        "user:alice",
-    );
+    let cache_key = build_cache_key(STORE_ID, MODEL_ID, "document", "doc0", RELATION, USER);
 
     let mut mock_cache = MockCheckCache::new();
     mock_cache.insert(
@@ -360,14 +363,7 @@ fn bench_check_precompute_miss(c: &mut Criterion) {
     let (tuple_reader, model_reader) = create_direct_relation_setup();
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
-    let cache_key = build_cache_key(
-        "bench-store",
-        "model-1",
-        "document",
-        "doc0",
-        "viewer",
-        "user:alice",
-    );
+    let cache_key = build_cache_key(STORE_ID, MODEL_ID, "document", "doc0", RELATION, USER);
 
     // Empty cache — all lookups are misses
     let mock_cache = MockCheckCache::new();
@@ -382,10 +378,10 @@ fn bench_check_precompute_miss(c: &mut Criterion) {
 
             // 2. Full graph resolution (same as no-precompute path)
             let request = CheckRequest::new(
-                "bench-store".to_string(),
-                "user:alice".to_string(),
-                "viewer".to_string(),
-                "document:doc0".to_string(),
+                STORE_ID.to_string(),
+                USER.to_string(),
+                RELATION.to_string(),
+                OBJECT.to_string(),
                 vec![],
             );
             let result = resolver.check(black_box(&request)).await;
@@ -404,14 +400,7 @@ fn bench_precompute_union_comparison(c: &mut Criterion) {
     let (tuple_reader, model_reader) = create_union_relation_setup();
     let resolver = GraphResolver::new(tuple_reader, model_reader);
 
-    let cache_key = build_cache_key(
-        "bench-store",
-        "model-1",
-        "document",
-        "doc0",
-        "can_view",
-        "user:alice",
-    );
+    let cache_key = build_cache_key(STORE_ID, MODEL_ID, "document", "doc0", "can_view", USER);
 
     let mut mock_cache = MockCheckCache::new();
     mock_cache.insert(
@@ -429,10 +418,10 @@ fn bench_precompute_union_comparison(c: &mut Criterion) {
     group.bench_function("union_no_precompute", |b| {
         b.to_async(&rt).iter(|| async {
             let request = CheckRequest::new(
-                "bench-store".to_string(),
-                "user:alice".to_string(),
+                STORE_ID.to_string(),
+                USER.to_string(),
                 "can_view".to_string(),
-                "document:doc0".to_string(),
+                OBJECT.to_string(),
                 vec![],
             );
             let result = resolver.check(black_box(&request)).await;
@@ -464,12 +453,12 @@ fn bench_precompute_batch(c: &mut Criterion) {
     let mut mock_cache = MockCheckCache::new();
     for i in 0..batch_size {
         let key = build_cache_key(
-            "bench-store",
-            "model-1",
+            STORE_ID,
+            MODEL_ID,
             "document",
             &format!("doc{}", i % 100),
-            "viewer",
-            "user:alice",
+            RELATION,
+            USER,
         );
         mock_cache.insert(
             &key,
@@ -492,9 +481,9 @@ fn bench_precompute_batch(c: &mut Criterion) {
                     let resolver = Arc::clone(&resolver);
                     async move {
                         let request = CheckRequest::new(
-                            "bench-store".to_string(),
-                            "user:alice".to_string(),
-                            "viewer".to_string(),
+                            STORE_ID.to_string(),
+                            USER.to_string(),
+                            RELATION.to_string(),
                             format!("document:doc{}", i % 100),
                             vec![],
                         );
@@ -513,12 +502,12 @@ fn bench_precompute_batch(c: &mut Criterion) {
             let results: Vec<_> = (0..batch_size)
                 .map(|i| {
                     let key = build_cache_key(
-                        "bench-store",
-                        "model-1",
+                        STORE_ID,
+                        MODEL_ID,
                         "document",
                         &format!("doc{}", i % 100),
-                        "viewer",
-                        "user:alice",
+                        RELATION,
+                        USER,
                     );
                     mock_cache.get(black_box(&key))
                 })

@@ -8,7 +8,7 @@
  *   2. Measure: constant-arrival-rate check workload against the warm cache.
  *
  * Expected results with precompute enabled + warm cache:
- *   - >80% cache hit rate (responses <1ms)
+ *   - >50% cache hit rate (responses <1ms; conservative for random workloads)
  *   - p95 latency <5ms
  *   - Throughput improvement vs cold baseline
  *
@@ -32,6 +32,16 @@ const USER_COUNT = parseInt(__ENV.USER_COUNT) || 500;
 const OBJECT_COUNT = parseInt(__ENV.OBJECT_COUNT) || 50;
 const WARMUP_WAIT = parseInt(__ENV.WARMUP_WAIT) || 10;
 
+// Extra delay (seconds) after warmup for the precompute worker to populate cache.
+// The warmup maxDuration is 2m; this buffer ensures measurement doesn't start
+// until warmup has finished. Increase WARMUP_WAIT for large USER_COUNT values.
+const WARMUP_MAX_DURATION_S = 120;
+const PRECOMPUTE_WORKER_DELAY_S = 30;
+const MEASURE_START_TIME_S = Math.max(
+  WARMUP_WAIT + PRECOMPUTE_WORKER_DELAY_S,
+  WARMUP_MAX_DURATION_S + WARMUP_WAIT,
+);
+
 // Precompute-specific metrics
 const precomputeHitRate = new Rate('precompute_hit_rate');
 const precomputeLatency = new Trend('precompute_latency', true);
@@ -44,10 +54,11 @@ export const options = {
       executor: 'shared-iterations',
       vus: 10,
       iterations: USER_COUNT * 2,
-      maxDuration: '2m',
+      maxDuration: `${WARMUP_MAX_DURATION_S}s`,
       exec: 'warmup',
     },
-    // Stage 2: Measurement — sustained load against warm cache
+    // Stage 2: Measurement — sustained load against warm cache.
+    // startTime is derived from warmup maxDuration + worker delay to prevent overlap.
     measure: {
       executor: 'constant-arrival-rate',
       rate: 200,
@@ -55,7 +66,7 @@ export const options = {
       duration: '3m',
       preAllocatedVUs: 50,
       maxVUs: 200,
-      startTime: `${WARMUP_WAIT + 30}s`,
+      startTime: `${MEASURE_START_TIME_S}s`,
       exec: 'measure',
     },
   },

@@ -75,18 +75,19 @@ Results are written to `target/criterion/` with HTML reports.
 ### k6 (requires Docker)
 
 ```bash
+# All commands run from the project root
+
 # 1. Start base services (PostgreSQL + RSFGA without precompute)
 docker-compose up -d rsfga postgres
 
 # 2. Run baseline scenario (no precompute)
-cd load-tests
-./scripts/run-suite.sh check-precompute --url http://localhost:8080
+(cd load-tests && ./scripts/run-suite.sh check-precompute --url http://localhost:8080)
 
 # 3. Start precompute services (Valkey + precompute worker)
 docker-compose --profile precompute up -d
 
 # 4. Run with precompute (worker fills cache during warm-up phase)
-./scripts/run-suite.sh check-precompute --url http://localhost:8080
+(cd load-tests && ./scripts/run-suite.sh check-precompute --url http://localhost:8080)
 ```
 
 Compare the two k6 summary reports to see latency and throughput differences.
