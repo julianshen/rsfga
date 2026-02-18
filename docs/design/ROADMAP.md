@@ -2318,10 +2318,10 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 - [x] RSFGA check (precompute) vs OpenFGA check
 - [x] Document results in `docs/benchmarks/precompute-v3.md`
 
-**Validation Criteria**:
-- [x] Precomputed cache hit <1ms p99
-- [x] Precomputation does not degrade write throughput >5%
-- [x] No regressions in existing check latency (cache miss path)
+**Validation Criteria** (unvalidated — require measured results from k6 runs):
+- [ ] Precomputed cache hit <1ms p99
+- [ ] Precomputation does not degrade write throughput >5%
+- [ ] No regressions in existing check latency (cache miss path)
 
 **Deliverables**:
 - Criterion benchmark suite for precompute components

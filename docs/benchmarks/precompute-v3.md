@@ -114,7 +114,7 @@ From `precompute-scale.js` — parameterized scale testing.
 | Small | 100 | 10 | ~200 |
 | Medium (default) | 500 | 200 | ~1,000 |
 | 10K | 1,000 | 10 | ~2,000 warmup → 10K combos |
-| 100K | 5,000 | 20 | ~5,000 warmup → 200K combos |
+| 100K | 5,000 | 20 | ~5,000 warmup → 100K combos |
 
 ### 4.2 Key Metrics
 
@@ -199,4 +199,4 @@ k6 run -e RSFGA_URL=http://localhost:8080 -e USER_COUNT=5000 -e OBJECT_COUNT=20 
 | `RSFGA_URL` | `http://localhost:8080` | All k6 scenarios |
 | `USER_COUNT` | varies | `check-precompute`, `mixed-precompute`, `precompute-scale` |
 | `OBJECT_COUNT` | varies | `check-precompute`, `mixed-precompute`, `precompute-scale` |
-| `WARMUP_WAIT` | 10 | `check-precompute` |
+| `WARMUP_WAIT` | 10 (seconds) | `check-precompute` |

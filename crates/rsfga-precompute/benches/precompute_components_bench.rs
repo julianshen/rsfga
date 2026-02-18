@@ -199,17 +199,16 @@ fn bench_classifier_result_verification(c: &mut Criterion) {
                 .collect(),
         );
 
+    // Sanity check: verify the event produces expected output before benchmarking
+    let sanity = classify(&mixed);
+    assert!(!sanity.is_empty());
+    assert!(sanity
+        .iter()
+        .any(|c| matches!(c, ChangeType::ModelChange { .. })));
+
     group.throughput(Throughput::Elements(1));
     group.bench_function("classify_mixed_model_and_50_writes", |b| {
-        b.iter(|| {
-            let changes = classify(black_box(&mixed));
-            // Ensure we get at least the model change + some tuple changes
-            assert!(!changes.is_empty());
-            assert!(changes
-                .iter()
-                .any(|c| matches!(c, ChangeType::ModelChange { .. })));
-            changes
-        })
+        b.iter(|| classify(black_box(&mixed)))
     });
 
     group.finish();

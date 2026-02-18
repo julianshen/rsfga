@@ -34,6 +34,11 @@ const BASE_URL = __ENV.RSFGA_URL || 'http://localhost:8080';
 const USER_COUNT = parseInt(__ENV.USER_COUNT) || 500;
 const OBJECT_COUNT = parseInt(__ENV.OBJECT_COUNT) || 200;
 
+// Hit-rate proxy threshold (ms). Responses faster than this are likely
+// served from Valkey rather than the graph resolver. Set conservatively
+// to account for HTTP round-trip overhead on localhost.
+const HIT_THRESHOLD_MS = 5;
+
 // Warmup iterations: cover as much of the combinatorial space as possible.
 // Cap at 5000 to keep warmup time reasonable.
 const WARMUP_ITERATIONS = Math.min(USER_COUNT * 2, 5000);
@@ -47,7 +52,7 @@ const MEASURE_START_TIME_S = TRIGGER_START_TIME_S + PRECOMPUTE_WORKER_DELAY_S;
 // Scale-specific metrics
 const scaleHitRate = new Rate('scale_hit_rate');
 const scaleLatency = new Trend('scale_latency', true);
-const scaleHotpathEntries = new Counter('scale_hotpath_entries_warmup');
+const scaleWarmupRequests = new Counter('scale_warmup_requests');
 
 export const options = {
   scenarios: {
@@ -62,7 +67,7 @@ export const options = {
       executor: 'shared-iterations',
       vus: 1,
       iterations: 1,
-      maxDuration: '30s',
+      maxDuration: '60s',
       startTime: `${TRIGGER_START_TIME_S}s`,
       exec: 'triggerPrecompute',
     },
@@ -162,8 +167,10 @@ export function warmup(data) {
 
   const res = warmupClient.check(storeId, user, relation, object, null, modelId);
   if (res.success) {
-    scaleHotpathEntries.add(1);
+    scaleWarmupRequests.add(1);
     recordCheck(res, res.body && res.body.allowed === true);
+  } else {
+    errorRate.add(true);
   }
 }
 
@@ -187,6 +194,9 @@ export function triggerPrecompute(data) {
     console.log(`Trigger write failed: ${JSON.stringify(res.body)}`);
   }
 
+  // Wait for precompute worker to process. The measure scenario's startTime
+  // already accounts for this delay, so this sleep just keeps the trigger
+  // VU alive until the worker has had time to act.
   sleep(PRECOMPUTE_WORKER_DELAY_S);
 }
 
@@ -209,7 +219,9 @@ export function measure(data) {
     const allowed = res.body && res.body.allowed === true;
     recordCheck(res, allowed);
     scaleLatency.add(res.duration);
-    scaleHitRate.add(res.duration < 1);
+    scaleHitRate.add(res.duration < HIT_THRESHOLD_MS);
+  } else {
+    errorRate.add(true);
   }
 
   sleep(Math.random() * 0.05);

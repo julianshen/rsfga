@@ -13,10 +13,12 @@
  *      concurrent writes).
  *
  * Usage:
- *   # Baseline (no precompute — run without Valkey / precompute worker)
+ *   # Baseline (no precompute — start only RSFGA + PostgreSQL, no Valkey)
+ *   docker-compose up -d rsfga postgres
  *   k6 run -e RSFGA_URL=http://localhost:8080 mixed-precompute.js
  *
- *   # With precompute (start Valkey + precompute worker first)
+ *   # With precompute (start Valkey + precompute worker via profile)
+ *   docker-compose --profile precompute up -d
  *   k6 run -e RSFGA_URL=http://localhost:8080 mixed-precompute.js
  *
  *   Compare write throughput between the two runs — regression must be <5%.
@@ -31,6 +33,11 @@ import { Rate, Trend } from 'k6/metrics';
 const BASE_URL = __ENV.RSFGA_URL || 'http://localhost:8080';
 const USER_COUNT = parseInt(__ENV.USER_COUNT) || 500;
 const OBJECT_COUNT = parseInt(__ENV.OBJECT_COUNT) || 50;
+
+// Hit-rate proxy threshold (ms). Responses faster than this are likely
+// served from Valkey rather than the graph resolver. Set conservatively
+// to account for HTTP round-trip overhead on localhost.
+const HIT_THRESHOLD_MS = 5;
 
 // Timing: warmup fills hot-path, then trigger fires, then writes+checks run
 const WARMUP_MAX_DURATION_S = 120;
@@ -58,7 +65,7 @@ export const options = {
       executor: 'shared-iterations',
       vus: 1,
       iterations: 1,
-      maxDuration: '30s',
+      maxDuration: '60s',
       startTime: `${TRIGGER_START_TIME_S}s`,
       exec: 'triggerPrecompute',
     },
@@ -248,7 +255,9 @@ export function doCheck(data) {
     const allowed = res.body && res.body.allowed === true;
     recordCheck(res, allowed);
     precomputeLatency.add(res.duration);
-    precomputeHitRate.add(res.duration < 1);
+    precomputeHitRate.add(res.duration < HIT_THRESHOLD_MS);
+  } else {
+    errorRate.add(true);
   }
 
   sleep(Math.random() * 0.05);
