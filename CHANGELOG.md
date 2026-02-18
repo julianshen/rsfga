@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-02-18
+
+### Added
+
+#### Precompute Cache (Phase 3)
+- **Valkey-backed precomputed check results** - Sub-millisecond authorization lookups for hot-path check requests via Valkey cache
+- **Precompute worker** (`rsfga-precompute`) - Background daemon that reads the hot-path registry and populates the Valkey cache with precomputed results
+- **Hot-path recording** - Automatic tracking of frequently-checked tuples on cache misses for future precomputation
+- **Cache-aware check handler** - Check API transparently returns precomputed results on cache hit, falls back to full graph resolution on miss
+
+#### Benchmarks & Documentation
+- **Criterion micro-benchmark** (`precompute_bench`) - Measures speedup factor of cache hit vs full graph resolution
+- **k6 load test scenario** (`check-precompute`) - End-to-end comparison with warm-up and measurement phases
+- **Benchmark documentation** (`docs/benchmarks/precompute-cache.md`) - Methodology, reproduction instructions, and results template
+
+### Changed
+- Performance targets table in README now includes precompute cache hit latency target (<1ms p95)
+
 ## [2.0.0] - 2026-02-10
 
 ### Added

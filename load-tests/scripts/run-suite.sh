@@ -11,6 +11,7 @@
 #   check-direct - Run direct check scenario
 #   check-computed - Run computed check scenario
 #   check-deep   - Run deep hierarchy check scenario
+#   check-precompute - Run precompute cache comparison scenario
 #   batch-check  - Run batch check scenario
 #   list-objects - Run list objects scenario
 #   list-users   - Run list users scenario
@@ -71,6 +72,7 @@ usage() {
     echo "  check-direct     Run direct check scenario"
     echo "  check-computed   Run computed check scenario"
     echo "  check-deep       Run deep hierarchy check scenario"
+    echo "  check-precompute Run precompute cache comparison scenario"
     echo "  batch-check      Run batch check scenario"
     echo "  list-objects     Run list objects scenario"
     echo "  list-users       Run list users scenario"
@@ -227,6 +229,9 @@ echo ""
 # Run scenarios
 case $SCENARIO in
     all)
+        # Note: check-precompute is excluded from 'all' because it requires
+        # Valkey infrastructure (docker-compose --profile precompute).
+        # Run it separately with: ./run-suite.sh check-precompute
         run_scenario "check-direct" "check-direct.js"
         run_scenario "check-computed" "check-computed.js"
         run_scenario "check-deep-hierarchy" "check-deep-hierarchy.js"
@@ -241,6 +246,7 @@ case $SCENARIO in
         run_scenario "check-direct" "check-direct.js"
         run_scenario "check-computed" "check-computed.js"
         run_scenario "check-deep-hierarchy" "check-deep-hierarchy.js"
+        run_scenario "check-precompute" "check-precompute.js"
         ;;
     check-direct)
         run_scenario "check-direct" "check-direct.js"
@@ -250,6 +256,9 @@ case $SCENARIO in
         ;;
     check-deep)
         run_scenario "check-deep-hierarchy" "check-deep-hierarchy.js"
+        ;;
+    check-precompute)
+        run_scenario "check-precompute" "check-precompute.js"
         ;;
     batch-check)
         run_scenario "batch-check" "batch-check.js"
