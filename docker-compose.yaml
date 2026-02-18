@@ -35,6 +35,11 @@ services:
       - RSFGA_LOGGING__LEVEL=info
       - RSFGA_LOGGING__JSON=false
       - RSFGA_METRICS__ENABLED=true
+      # Precompute cache: requires rebuilding with --features precompute
+      # AND starting Valkey via `docker-compose --profile precompute up`.
+      # Uncomment these to connect to the valkey service defined below:
+      #   RSFGA_PRECOMPUTE__ENABLED=true
+      #   RSFGA_PRECOMPUTE__VALKEY_URL=redis://valkey:6379
     depends_on:
       postgres:
         condition: service_healthy

@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "compatibility-tests"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "bollard",
@@ -3551,7 +3551,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-api"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3596,7 +3596,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-domain"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3620,7 +3620,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-edge"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "async-nats",
  "async-trait",
@@ -3643,7 +3643,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-nats"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -3677,7 +3677,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-precompute"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -3704,7 +3704,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-server"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3728,7 +3728,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-storage"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3756,7 +3756,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-valkey"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "redis",
@@ -3770,7 +3770,7 @@ dependencies = [
 
 [[package]]
 name = "rsfga-writer"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
