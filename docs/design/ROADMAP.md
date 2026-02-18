@@ -2294,16 +2294,16 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 #### Tasks
 
 **3.1.1 Micro-Benchmarks (criterion)**
-- [x] Valkey cache hit latency (target: <1ms p99)
-- [x] Graph resolver fallback latency (baseline comparison)
-- [x] Classifier throughput (events/sec)
-- [x] Impact analyzer throughput (jobs generated/sec)
+- [x] Valkey cache hit latency (target: <1ms p99) — simulated via HashMap+JSON deser in `precompute_bench.rs` (PR #325)
+- [x] Graph resolver fallback latency (baseline comparison) — `no_precompute_direct` in `precompute_bench.rs` (PR #325)
+- [x] Classifier throughput (events/sec) — `precompute_components_bench.rs`
+- [x] Impact analyzer throughput (jobs generated/sec) — `precompute_components_bench.rs`
 - [ ] Worker pool throughput (recomputations/sec) — requires live Valkey
 
-**3.1.2 End-to-End Benchmarks (k6)**
-- [x] Check with warm Valkey cache (target: <1ms p99)
-- [x] Check with cold cache (graph resolver fallback)
-- [x] Mixed workload: concurrent writes + checks
+**3.1.2 End-to-End Benchmarks (k6)** (scripts authored; require manual execution against Docker stack)
+- [x] Check with warm Valkey cache (target: <1ms p99) — `check-precompute.js` (PR #325)
+- [x] Check with cold cache (graph resolver fallback) — `check-precompute.js` baseline (PR #325)
+- [x] Mixed workload: concurrent writes + checks — `mixed-precompute.js`
 - [ ] Hot-path recording overhead on check handler
 - [ ] Precompute daemon event processing rate
 
