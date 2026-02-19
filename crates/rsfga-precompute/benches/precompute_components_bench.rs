@@ -180,9 +180,8 @@ fn bench_impact_deps_scaling(c: &mut Criterion) {
     group.finish();
 }
 
-// Verify that classify produces expected output shapes (sanity check in bench)
-fn bench_classifier_result_verification(c: &mut Criterion) {
-    let mut group = c.benchmark_group("classifier_verify");
+fn bench_classifier_mixed_workload(c: &mut Criterion) {
+    let mut group = c.benchmark_group("classifier_mixed");
 
     // Mixed event: model change + 50 tuple writes
     let mixed = CommittedEvent::new("bench-store", 1)
@@ -220,6 +219,6 @@ criterion_group!(
     bench_classifier_scaling,
     bench_impact_deps,
     bench_impact_deps_scaling,
-    bench_classifier_result_verification,
+    bench_classifier_mixed_workload,
 );
 criterion_main!(benches);

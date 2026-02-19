@@ -34,9 +34,10 @@ const BASE_URL = __ENV.RSFGA_URL || 'http://localhost:8080';
 const USER_COUNT = parseInt(__ENV.USER_COUNT) || 500;
 const OBJECT_COUNT = parseInt(__ENV.OBJECT_COUNT) || 200;
 
-// Hit-rate proxy threshold (ms). Responses faster than this are likely
-// served from Valkey rather than the graph resolver. Set conservatively
-// to account for HTTP round-trip overhead on localhost.
+// Hit-rate proxy threshold (ms). This is a latency-based *approximation*,
+// not an actual cache hit counter. Responses faster than this are likely
+// served from Valkey rather than the graph resolver, but this can
+// misclassify slow cache hits and fast misses under load.
 const HIT_THRESHOLD_MS = 5;
 
 // Warmup iterations: cover as much of the combinatorial space as possible.

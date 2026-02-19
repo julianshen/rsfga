@@ -34,9 +34,10 @@ const BASE_URL = __ENV.RSFGA_URL || 'http://localhost:8080';
 const USER_COUNT = parseInt(__ENV.USER_COUNT) || 500;
 const OBJECT_COUNT = parseInt(__ENV.OBJECT_COUNT) || 50;
 
-// Hit-rate proxy threshold (ms). Responses faster than this are likely
-// served from Valkey rather than the graph resolver. Set conservatively
-// to account for HTTP round-trip overhead on localhost.
+// Hit-rate proxy threshold (ms). This is a latency-based *approximation*,
+// not an actual cache hit counter. Responses faster than this are likely
+// served from Valkey rather than the graph resolver, but this can
+// misclassify slow cache hits and fast misses under load.
 const HIT_THRESHOLD_MS = 5;
 
 // Timing: warmup fills hot-path, then trigger fires, then writes+checks run
@@ -132,7 +133,6 @@ const simpleModel = {
 let warmupClient = null;
 let writeClient = null;
 let checkClient = null;
-let writeCounter = 0;
 
 export function setup() {
   const setupClient = new TestSetup(BASE_URL);
@@ -220,8 +220,7 @@ export function doWrite(data) {
   }
 
   const { storeId, modelId, userCount } = data;
-  const baseCounter = __VU * 1000000 + writeCounter;
-  writeCounter++;
+  const baseCounter = __VU * 1000000 + __ITER;
 
   const writes = [{
     user: randomUser(userCount),

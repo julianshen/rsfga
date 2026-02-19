@@ -2308,9 +2308,9 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 - [ ] Precompute daemon event processing rate
 
 **3.1.3 Scalability Tests**
-- [x] 10K hot-path entries per store
-- [x] 100K hot-path entries across stores
-- [x] Impact of model complexity on recomputation time
+- [ ] 10K hot-path entries per store — k6 script ready (`precompute-scale.js`), awaiting execution
+- [ ] 100K hot-path entries across stores — k6 script ready (`precompute-scale.js`), awaiting execution
+- [ ] Impact of model complexity on recomputation time — Criterion bench ready (`impact_deps_scaling`), awaiting execution
 - [ ] Worker pool scaling (2, 4, 8, 16 workers)
 
 **3.1.4 Comparison Report**
