@@ -74,6 +74,8 @@ RUN mkdir -p crates/rsfga-api/src \
     && echo "fn main() {}" > crates/rsfga-edge/src/main.rs \
     && echo "fn main() {}" > crates/rsfga-precompute/src/main.rs \
     && echo "pub fn dummy() {}" > crates/rsfga-precompute/src/lib.rs \
+    && mkdir -p crates/rsfga-precompute/benches \
+    && echo "fn main() {}" > crates/rsfga-precompute/benches/precompute_components_bench.rs \
     && echo "pub fn dummy() {}" > crates/rsfga-valkey/src/lib.rs \
     && echo "pub fn dummy() {}" > crates/compatibility-tests/src/lib.rs
 
@@ -97,6 +99,7 @@ COPY crates/rsfga-nats/src crates/rsfga-nats/src
 COPY crates/rsfga-writer/src crates/rsfga-writer/src
 COPY crates/rsfga-edge/src crates/rsfga-edge/src
 COPY crates/rsfga-precompute/src crates/rsfga-precompute/src
+COPY crates/rsfga-precompute/benches crates/rsfga-precompute/benches
 COPY crates/rsfga-valkey/src crates/rsfga-valkey/src
 COPY crates/compatibility-tests/src crates/compatibility-tests/src
 
