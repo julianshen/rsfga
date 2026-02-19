@@ -119,11 +119,13 @@ export function setup() {
   const setupClient = new TestSetup(BASE_URL);
   const storeName = uniqueStoreName('precompute-scale');
   const storeId = setupClient.createStore(storeName);
+  if (!storeId) throw new Error('setup failed: createStore returned falsy');
   console.log(`Created store: ${storeId}`);
   console.log(`Scale parameters: USER_COUNT=${USER_COUNT}, OBJECT_COUNT=${OBJECT_COUNT}`);
   console.log(`Estimated combinatorial space: ${USER_COUNT * OBJECT_COUNT * 2} check combos`);
 
   const modelId = setupClient.writeModel(simpleModel);
+  if (!modelId) throw new Error('setup failed: writeModel returned falsy');
   console.log(`Created model: ${modelId}`);
 
   // Generate tuples: each user is viewer/editor of a subset of objects

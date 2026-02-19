@@ -138,9 +138,11 @@ export function setup() {
   const setupClient = new TestSetup(BASE_URL);
   const storeName = uniqueStoreName('mixed-precompute');
   const storeId = setupClient.createStore(storeName);
+  if (!storeId) throw new Error('setup failed: createStore returned falsy');
   console.log(`Created store: ${storeId}`);
 
   const modelId = setupClient.writeModel(simpleModel);
+  if (!modelId) throw new Error('setup failed: writeModel returned falsy');
   console.log(`Created model: ${modelId}`);
 
   // Generate tuples: each user is viewer of ~10% of objects
@@ -185,6 +187,8 @@ export function warmup(data) {
   const res = warmupClient.check(storeId, user, relation, object, null, modelId);
   if (res.success) {
     recordCheck(res, res.body && res.body.allowed === true);
+  } else {
+    errorRate.add(true);
   }
 }
 

@@ -122,7 +122,7 @@ From `precompute-scale.js` — parameterized scale testing.
 |--------|-------------|
 | `scale_latency` p50/p95/p99 | Check latency at scale |
 | `scale_hit_rate` | Cache hit rate at scale |
-| `scale_hotpath_entries_warmup` | Warmup iterations completed |
+| `scale_warmup_requests` | Warmup iterations completed |
 
 ### 4.3 Expected Observations
 
