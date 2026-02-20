@@ -150,7 +150,7 @@ against Docker stack. Apple Silicon, PostgreSQL 14, Valkey 8, Docker Desktop.
 
 The Docker end-to-end latencies are higher with precompute enabled due to:
 1. **Valkey round-trip**: Each cache lookup adds network overhead in Docker
-2. **Container networking**: Docker Desktop adds ~1-2ms per hop
+2. **Container networking**: Docker Desktop adds ~1–2 ms per hop
 3. **Shared PostgreSQL**: Both baseline and precompute share the same DB
 
 The Criterion micro-benchmarks (Section 2) provide the true speedup measure
