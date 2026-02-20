@@ -88,6 +88,11 @@ RUN mkdir -p crates/rsfga-api/src \
 COPY crates/rsfga-api/proto crates/rsfga-api/proto
 COPY crates/rsfga-api/build.rs crates/rsfga-api/build.rs
 
+# Validate FEATURES against command injection (allow alphanumeric, comma, slash, hyphen, underscore)
+RUN if [ -n "${FEATURES}" ]; then \
+      echo "${FEATURES}" | grep -qE '^[a-zA-Z0-9_,/-]+$' || { echo "Invalid FEATURES: ${FEATURES}"; exit 1; }; \
+    fi
+
 # Build dependencies only (this layer will be cached)
 RUN if [ -n "${FEATURES}" ]; then \
       cargo build --release --bin ${BINARY} --features "${FEATURES}" 2>/dev/null || true; \
