@@ -143,6 +143,7 @@ services:
     profiles:
       - nats
       - edge
+      - precompute
     restart: unless-stopped
 
   # RSFGA Edge - syncs committed events to edge storage
@@ -223,6 +224,48 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9092/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    profiles:
+      - precompute
+    restart: unless-stopped
+
+  # RSFGA API with precompute cache enabled (for benchmarking)
+  # Builds the rsfga binary with nats + precompute features so the API server
+  # can read from the Valkey precompute cache on the check hot path.
+  rsfga-precompute-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY: rsfga
+        FEATURES: "rsfga-api/nats,rsfga-api/precompute"
+    ports:
+      - "8083:8080"
+    environment:
+      - RSFGA_SERVER__HOST=0.0.0.0
+      - RSFGA_SERVER__PORT=8080
+      - RSFGA_STORAGE__BACKEND=postgres
+      - RSFGA_STORAGE__DATABASE_URL=postgres://rsfga:rsfga@postgres:5432/rsfga
+      - RSFGA_STORAGE__POOL_SIZE=10
+      - RSFGA_LOGGING__LEVEL=info
+      - RSFGA_LOGGING__JSON=false
+      - RSFGA_METRICS__ENABLED=true
+      - RSFGA_NATS__ENABLED=true
+      - RSFGA_NATS__URL=nats://nats:4222
+      - RSFGA_PRECOMPUTE__ENABLED=true
+      - RSFGA_PRECOMPUTE__VALKEY_URL=redis://valkey:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 5

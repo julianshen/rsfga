@@ -21,6 +21,8 @@
 
 # Binary to build (rsfga, rsfga-writer, rsfga-edge, or rsfga-precompute)
 ARG BINARY=rsfga
+# Optional cargo features (workspace-qualified, e.g. "rsfga-api/nats,rsfga-api/precompute")
+ARG FEATURES=""
 
 # -----------------------------------------------------------------------------
 # Stage 1: Build environment
@@ -28,6 +30,7 @@ ARG BINARY=rsfga
 FROM rust:1.88-bookworm AS builder
 
 ARG BINARY
+ARG FEATURES
 
 # Install build dependencies (including clang for RocksDB)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -77,6 +80,8 @@ RUN mkdir -p crates/rsfga-api/src \
     && mkdir -p crates/rsfga-precompute/benches \
     && echo "fn main() {}" > crates/rsfga-precompute/benches/precompute_components_bench.rs \
     && echo "pub fn dummy() {}" > crates/rsfga-valkey/src/lib.rs \
+    && mkdir -p crates/rsfga-valkey/benches \
+    && echo "fn main() {}" > crates/rsfga-valkey/benches/key_construction_bench.rs \
     && echo "pub fn dummy() {}" > crates/compatibility-tests/src/lib.rs
 
 # Copy proto files (needed for build)
@@ -84,7 +89,11 @@ COPY crates/rsfga-api/proto crates/rsfga-api/proto
 COPY crates/rsfga-api/build.rs crates/rsfga-api/build.rs
 
 # Build dependencies only (this layer will be cached)
-RUN cargo build --release --bin ${BINARY} 2>/dev/null || true
+RUN if [ -n "${FEATURES}" ]; then \
+      cargo build --release --bin ${BINARY} --features "${FEATURES}" 2>/dev/null || true; \
+    else \
+      cargo build --release --bin ${BINARY} 2>/dev/null || true; \
+    fi
 
 # Copy actual source code
 COPY crates/rsfga-api/src crates/rsfga-api/src
@@ -101,6 +110,7 @@ COPY crates/rsfga-edge/src crates/rsfga-edge/src
 COPY crates/rsfga-precompute/src crates/rsfga-precompute/src
 COPY crates/rsfga-precompute/benches crates/rsfga-precompute/benches
 COPY crates/rsfga-valkey/src crates/rsfga-valkey/src
+COPY crates/rsfga-valkey/benches crates/rsfga-valkey/benches
 COPY crates/compatibility-tests/src crates/compatibility-tests/src
 
 # Touch files to invalidate the cache for actual source
@@ -117,7 +127,11 @@ RUN touch crates/rsfga-api/src/main.rs \
     && touch crates/rsfga-valkey/src/lib.rs
 
 # Build the release binary
-RUN cargo build --release --bin ${BINARY}
+RUN if [ -n "${FEATURES}" ]; then \
+      cargo build --release --bin ${BINARY} --features "${FEATURES}"; \
+    else \
+      cargo build --release --bin ${BINARY}; \
+    fi
 
 # Verify the binary was built
 RUN ls -la target/release/${BINARY}
