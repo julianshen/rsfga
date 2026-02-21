@@ -108,6 +108,9 @@ pub struct OpenFgaGrpcService<S: DataStore> {
     /// - WriteAssertions replaces all assertions for a key (not append)
     /// - Typical usage: ~100-1000 assertions per model for testing scenarios
     assertions: Arc<DashMap<AssertionKey, Vec<StoredAssertion>>>,
+    /// Precomputed check cache backed by Valkey for sub-millisecond cache hits.
+    #[cfg(feature = "precompute")]
+    precompute_cache: Option<Arc<rsfga_valkey::cache::CheckCache>>,
 }
 
 impl<S: DataStore> OpenFgaGrpcService<S> {
@@ -162,6 +165,8 @@ impl<S: DataStore> OpenFgaGrpcService<S> {
             batch_handler,
             cache,
             assertions: Arc::new(DashMap::new()),
+            #[cfg(feature = "precompute")]
+            precompute_cache: None,
         }
     }
 
@@ -175,6 +180,17 @@ impl<S: DataStore> OpenFgaGrpcService<S> {
         assertions: Arc<DashMap<AssertionKey, Vec<StoredAssertion>>>,
     ) -> Self {
         self.assertions = assertions;
+        self
+    }
+
+    /// Sets a precomputed check cache (Valkey-backed) for sub-millisecond cache hits.
+    ///
+    /// When set, the gRPC check handler will attempt a cache lookup before
+    /// falling through to the graph resolver.
+    #[cfg(feature = "precompute")]
+    #[must_use]
+    pub fn with_precompute_cache(mut self, cache: Arc<rsfga_valkey::cache::CheckCache>) -> Self {
+        self.precompute_cache = Some(cache);
         self
     }
 
@@ -375,6 +391,62 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             context,
             authorization_model_id,
         );
+
+        // Precomputed check: try Valkey first for sub-millisecond response.
+        // Skip when contextual_tuples or context are present since the cache key
+        // doesn't include them and the result could be different.
+        #[cfg(feature = "precompute")]
+        {
+            let has_contextual_tuples = !check_request.contextual_tuples.is_empty();
+            let has_context = !check_request.context.is_empty();
+
+            if !has_contextual_tuples && !has_context {
+                if let Some(ref precompute_cache) = self.precompute_cache {
+                    // Get the model ID for cache key construction
+                    let model_id_for_cache =
+                        if let Some(ref mid) = check_request.authorization_model_id {
+                            Some(mid.clone())
+                        } else {
+                            self.storage
+                                .get_latest_authorization_model(&check_request.store_id)
+                                .await
+                                .ok()
+                                .map(|m| m.id)
+                        };
+
+                    if let Some(model_id) = model_id_for_cache {
+                        if let Some((obj_type, obj_id)) = parse_object(&check_request.object) {
+                            let cache_key = rsfga_valkey::CheckKey::new(
+                                &check_request.store_id,
+                                &model_id,
+                                obj_type,
+                                obj_id,
+                                &check_request.relation,
+                                &check_request.user,
+                            );
+
+                            if let Some(cached) = precompute_cache.get(&cache_key).await {
+                                return Ok(Response::new(CheckResponse {
+                                    allowed: cached.allowed,
+                                    resolution: String::new(),
+                                }));
+                            }
+
+                            // Cache miss - record in hot-path registry for future precomputation
+                            let _ = precompute_cache
+                                .record_hotpath(
+                                    &check_request.store_id,
+                                    obj_type,
+                                    obj_id,
+                                    &check_request.relation,
+                                    &check_request.user,
+                                )
+                                .await;
+                        }
+                    }
+                }
+            }
+        }
 
         // Delegate to GraphResolver for full graph traversal
         let result = self

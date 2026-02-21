@@ -211,10 +211,39 @@ where
     let shared_assertions: Arc<DashMap<AssertionKey, Vec<StoredAssertion>>> =
         Arc::new(DashMap::new());
 
+    // Optionally set up precomputed check cache (Valkey-backed), shared across HTTP and gRPC
+    #[cfg(feature = "precompute")]
+    let shared_precompute_cache: Option<Arc<rsfga_valkey::cache::CheckCache>> =
+        if config.precompute.enabled {
+            match rsfga_valkey::ValkeyClient::connect(rsfga_valkey::ValkeyConfig {
+                url: config.precompute.valkey_url.clone(),
+                result_ttl_secs: config.precompute.result_ttl_secs,
+                hotpath_ttl_secs: config.precompute.hotpath_ttl_secs,
+            })
+            .await
+            {
+                Ok(client) => {
+                    info!(
+                        url = %rsfga_valkey::redact_url(&config.precompute.valkey_url),
+                        "Precompute cache enabled (Valkey)"
+                    );
+                    Some(Arc::new(rsfga_valkey::cache::CheckCache::new(client)))
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to connect to Valkey, precompute cache disabled");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
     // Prepare HTTP server future
     let http_storage = Arc::clone(&storage);
     let http_shutdown_rx = shutdown_tx.subscribe();
     let http_assertions = Arc::clone(&shared_assertions);
+    #[cfg(feature = "precompute")]
+    let http_precompute_cache = shared_precompute_cache.clone();
     let http_future = async move {
         let state = AppState::new(http_storage).with_assertions(http_assertions);
 
@@ -236,28 +265,8 @@ where
 
         // Wire up precomputed check cache if enabled
         #[cfg(feature = "precompute")]
-        let state = if config.precompute.enabled {
-            match rsfga_valkey::ValkeyClient::connect(rsfga_valkey::ValkeyConfig {
-                url: config.precompute.valkey_url.clone(),
-                result_ttl_secs: config.precompute.result_ttl_secs,
-                hotpath_ttl_secs: config.precompute.hotpath_ttl_secs,
-            })
-            .await
-            {
-                Ok(client) => {
-                    info!(
-                        url = %rsfga_valkey::redact_url(&config.precompute.valkey_url),
-                        "Precompute cache enabled (Valkey)"
-                    );
-                    state.with_precompute_cache(Arc::new(rsfga_valkey::cache::CheckCache::new(
-                        client,
-                    )))
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to connect to Valkey, precompute cache disabled");
-                    state
-                }
-            }
+        let state = if let Some(cache) = http_precompute_cache {
+            state.with_precompute_cache(cache)
         } else {
             state
         };
@@ -276,6 +285,8 @@ where
         };
         let grpc_shutdown_rx = shutdown_tx.subscribe();
         let grpc_assertions = Some(Arc::clone(&shared_assertions));
+        #[cfg(feature = "precompute")]
+        let grpc_precompute_cache = shared_precompute_cache.clone();
 
         info!(%grpc_addr, "gRPC server enabled");
 
@@ -290,6 +301,8 @@ where
                 grpc_config,
                 shutdown_future,
                 grpc_assertions,
+                #[cfg(feature = "precompute")]
+                grpc_precompute_cache,
             )
             .await
             .map_err(|e| anyhow::anyhow!("gRPC server error: {}", e))

@@ -1027,7 +1027,8 @@ Follow this process precisely, always prioritizing:
   - Milestone 3.0 (Precompute Worker): ✅ Complete (#323)
   - Milestone 3.0 (API Wiring): ✅ Complete (#324)
   - Milestone 3.1 (Benchmarking): ✅ Complete (#325, #326, #327)
+  - gRPC Precompute Cache Wiring: ✅ Complete (#329)
 
-**Next Step**: Milestone 1.16 (ListObjects Full Resolver) or Phase 4 (Distributed Edge) or gRPC precompute cache wiring
+**Next Step**: Milestone 1.16 (ListObjects Full Resolver) or Phase 4 (Distributed Edge)
 
 **To continue**: Specify what you'd like to work on next!
