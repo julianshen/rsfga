@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Methodology**: Kent Beck's Test-Driven Development (TDD) + Tidy First principles
 **Language**: Rust 1.80+ (Edition 2021) - MSRV enforced in Cargo.toml
 **Test Coverage Target**: >90%
-**Current Phase**: Phase 1 (MVP) ✅ Complete | Phase 1.15 (ListUsers API) 🏗️ In Progress
+**Current Phase**: Phase 1–3 Complete | v2.1.0
 
 ---
 
@@ -1023,6 +1023,11 @@ Follow this process precisely, always prioritizing:
   - Milestone 2.0.5 (Failure Handling): ✅ Complete
   - Milestone 2.0.6 (Edge Sync Consumer): ✅ Complete
 
-**Next Step**: Phase 3 (Precomputed Check) or Phase 4 (Distributed Edge) or Milestone 1.16 (ListObjects Full Resolver)
+- Phase 3 (Precomputed Check): ✅ Complete (v2.1.0)
+  - Milestone 3.0 (Precompute Worker): ✅ Complete (#323)
+  - Milestone 3.0 (API Wiring): ✅ Complete (#324)
+  - Milestone 3.1 (Benchmarking): ✅ Complete (#325, #326, #327)
 
-**To continue**: Say "go" to proceed with Phase 3 or specify what you'd like to work on next!
+**Next Step**: Milestone 1.16 (ListObjects Full Resolver) or Phase 4 (Distributed Edge) or gRPC precompute cache wiring
+
+**To continue**: Specify what you'd like to work on next!
