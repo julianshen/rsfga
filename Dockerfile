@@ -88,16 +88,17 @@ RUN mkdir -p crates/rsfga-api/src \
 COPY crates/rsfga-api/proto crates/rsfga-api/proto
 COPY crates/rsfga-api/build.rs crates/rsfga-api/build.rs
 
-# Validate FEATURES against command injection (allow alphanumeric, comma, slash, hyphen, underscore)
+# Validate build args against command injection
+RUN echo "${BINARY}" | grep -qE '^[a-zA-Z0-9_-]+$' || { echo "Invalid BINARY: ${BINARY}"; exit 1; }
 RUN if [ -n "${FEATURES}" ]; then \
       echo "${FEATURES}" | grep -qE '^[a-zA-Z0-9_,/-]+$' || { echo "Invalid FEATURES: ${FEATURES}"; exit 1; }; \
     fi
 
 # Build dependencies only (this layer will be cached)
 RUN if [ -n "${FEATURES}" ]; then \
-      cargo build --release --bin ${BINARY} --features "${FEATURES}" 2>/dev/null || true; \
+      cargo build --release --bin "${BINARY}" --features "${FEATURES}" 2>/dev/null || true; \
     else \
-      cargo build --release --bin ${BINARY} 2>/dev/null || true; \
+      cargo build --release --bin "${BINARY}" 2>/dev/null || true; \
     fi
 
 # Copy actual source code
@@ -133,13 +134,13 @@ RUN touch crates/rsfga-api/src/main.rs \
 
 # Build the release binary
 RUN if [ -n "${FEATURES}" ]; then \
-      cargo build --release --bin ${BINARY} --features "${FEATURES}"; \
+      cargo build --release --bin "${BINARY}" --features "${FEATURES}"; \
     else \
-      cargo build --release --bin ${BINARY}; \
+      cargo build --release --bin "${BINARY}"; \
     fi
 
 # Verify the binary was built
-RUN ls -la target/release/${BINARY}
+RUN ls -la "target/release/${BINARY}"
 
 # -----------------------------------------------------------------------------
 # Stage 2: Runtime environment
