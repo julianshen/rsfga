@@ -2541,6 +2541,46 @@ async fn test_grpc_list_objects_rejects_excessive_contextual_tuples() {
     );
 }
 
+/// Test: gRPC service accepts precompute cache via builder.
+///
+/// Verifies that `with_precompute_cache()` compiles and can be chained
+/// on the service builder. Since `CheckCache` requires a live Valkey
+/// connection, this test only runs when the `precompute` feature is
+/// enabled and a Valkey instance is available.
+#[cfg(feature = "precompute")]
+#[tokio::test]
+async fn test_grpc_service_accepts_precompute_cache() {
+    // This test verifies the builder API compiles and the field is wired.
+    // We can't construct a real CheckCache without Valkey, so we test
+    // that the type signatures match by checking the builder exists.
+    //
+    // The `with_precompute_cache` method returns Self, so if this compiles
+    // the wiring is correct.
+    let storage = Arc::new(MemoryDataStore::new());
+    let service = OpenFgaGrpcService::new(storage);
+
+    // Verify the builder method exists and returns the correct type.
+    // We test with a real Valkey connection if available (ignored if not).
+    let valkey_url =
+        std::env::var("RSFGA_PRECOMPUTE__VALKEY_URL").unwrap_or_else(|_| String::new());
+    if !valkey_url.is_empty() {
+        let client = rsfga_valkey::ValkeyClient::connect(rsfga_valkey::ValkeyConfig {
+            url: valkey_url,
+            result_ttl_secs: 60,
+            hotpath_ttl_secs: 60,
+        })
+        .await;
+
+        if let Ok(client) = client {
+            let cache = Arc::new(rsfga_valkey::cache::CheckCache::new(client));
+            let _service = service.with_precompute_cache(cache);
+            // If we get here, the builder compiled and ran successfully
+        }
+    }
+    // If no Valkey available, the test still passes - it verified the
+    // builder method signature is correct at compile time.
+}
+
 /// Test: gRPC ListUsers rejects excessive contextual tuples
 #[tokio::test]
 async fn test_grpc_list_users_rejects_excessive_contextual_tuples() {

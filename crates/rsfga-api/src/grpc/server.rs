@@ -76,6 +76,7 @@ async fn build_grpc_router<S>(
     storage: Arc<S>,
     config: &GrpcServerConfig,
     assertions: Option<Arc<DashMap<AssertionKey, Vec<StoredAssertion>>>>,
+    #[cfg(feature = "precompute")] precompute_cache: Option<Arc<rsfga_valkey::cache::CheckCache>>,
 ) -> Result<GrpcRouterResult, Box<dyn std::error::Error + Send + Sync>>
 where
     S: DataStore + Send + Sync + 'static,
@@ -84,6 +85,12 @@ where
     let openfga_service = OpenFgaGrpcService::new(storage);
     let openfga_service = if let Some(assertions) = assertions {
         openfga_service.with_assertions(assertions)
+    } else {
+        openfga_service
+    };
+    #[cfg(feature = "precompute")]
+    let openfga_service = if let Some(cache) = precompute_cache {
+        openfga_service.with_precompute_cache(cache)
     } else {
         openfga_service
     };
@@ -154,7 +161,14 @@ where
     let GrpcRouterResult {
         router,
         health_reporter,
-    } = build_grpc_router(storage, &config, None).await?;
+    } = build_grpc_router(
+        storage,
+        &config,
+        None,
+        #[cfg(feature = "precompute")]
+        None,
+    )
+    .await?;
     // Keep health_reporter alive for the lifetime of the server
     let _health_reporter = health_reporter;
     router.serve(addr).await?;
@@ -176,6 +190,7 @@ pub async fn run_grpc_server_with_shutdown<S>(
     config: GrpcServerConfig,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     assertions: Option<Arc<DashMap<AssertionKey, Vec<StoredAssertion>>>>,
+    #[cfg(feature = "precompute")] precompute_cache: Option<Arc<rsfga_valkey::cache::CheckCache>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     S: DataStore + Send + Sync + 'static,
@@ -185,7 +200,14 @@ where
     let GrpcRouterResult {
         router,
         health_reporter,
-    } = build_grpc_router(storage, &config, assertions).await?;
+    } = build_grpc_router(
+        storage,
+        &config,
+        assertions,
+        #[cfg(feature = "precompute")]
+        precompute_cache,
+    )
+    .await?;
 
     // Wrap the shutdown signal to update health status before stopping
     let graceful_shutdown = async move {
