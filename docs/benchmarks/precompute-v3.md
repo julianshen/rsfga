@@ -42,7 +42,7 @@ pairs from a `CommittedEvent`. It runs synchronously and involves no I/O.
 | 100 | 5.17 µs | ~52 ns |
 | 1000 | 58.66 µs | ~59 ns |
 
-Classifier scales linearly at ~55-60 ns/write with HashSet dedup overhead.
+Classifier scales linearly at ~55–60 ns/write with HashSet dedup overhead.
 
 ### 1.2 Impact Analyzer — Dependency Graph Build
 
@@ -89,7 +89,7 @@ from bypassing graph resolution on a cache hit.
 | `batch_25_all_precompute_hits` | **6.28 µs** | **1.8x faster** |
 
 Cache miss overhead is minimal (~30 ns for HashMap lookup). Cache hits
-bypass graph resolution entirely, yielding 3.2-3.4x speedup per check.
+bypass graph resolution entirely, yielding 3.2–3.4x speedup per check.
 
 ## 3. Key Construction Benchmarks (Criterion)
 
@@ -201,7 +201,7 @@ the check-precompute and mixed-precompute scenarios above.
 
 **Expected scaling behavior** (from component benchmarks):
 - Key construction: O(1) per lookup, ~510 ns overhead
-- Classifier: O(n) in writes per event, ~55-60 ns/write
+- Classifier: O(n) in writes per event, ~55–60 ns/write
 - Impact analyzer: O(n) for flat models, O(n²) for deep chains
 - Valkey: O(1) GET/SET, O(n) SCAN for hot-path maintenance
 
