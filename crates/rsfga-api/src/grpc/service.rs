@@ -478,8 +478,30 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             .await
             .map_err(storage_error_to_status)?;
 
-        // Convert gRPC request to server-layer request, validating each check
-        // We process correlation_ids and server_checks in lockstep to ensure correct mapping
+        // Precompute cache: resolve model_id once for the batch so we can
+        // attempt per-item cache lookups below.
+        #[cfg(feature = "precompute")]
+        let precompute_model_id: Option<String> = if self.precompute_cache.is_some() {
+            if !req.authorization_model_id.is_empty() {
+                Some(req.authorization_model_id.clone())
+            } else {
+                self.storage
+                    .get_latest_authorization_model(&req.store_id)
+                    .await
+                    .ok()
+                    .map(|m| m.id)
+            }
+        } else {
+            None
+        };
+
+        #[cfg(feature = "precompute")]
+        let mut cached_results: std::collections::HashMap<String, BatchCheckSingleResult> =
+            std::collections::HashMap::new();
+
+        // Convert gRPC request to server-layer request, validating each check.
+        // With precompute enabled, correlation_ids and server_checks only contain
+        // cache misses; cache hits go into cached_results above.
         let mut correlation_ids: Vec<String> = Vec::with_capacity(req.checks.len());
         let mut server_checks: Vec<ServerBatchCheckItem> = Vec::with_capacity(req.checks.len());
 
@@ -506,6 +528,56 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 std::collections::HashMap::new()
             };
 
+            // Precompute cache lookup for eligible items.
+            // Skip when contextual_tuples or context are present since the cache
+            // key doesn't include them and the result could differ (Invariant I1).
+            #[cfg(feature = "precompute")]
+            {
+                let has_contextual_tuples = item
+                    .contextual_tuples
+                    .as_ref()
+                    .is_some_and(|ct| !ct.tuple_keys.is_empty());
+
+                if !has_contextual_tuples && context.is_empty() {
+                    if let Some(ref precompute_cache) = self.precompute_cache {
+                        if let Some(ref model_id) = precompute_model_id {
+                            if let Some((obj_type, obj_id)) = parse_object(&tuple_key.object) {
+                                let cache_key = rsfga_valkey::CheckKey::new(
+                                    &req.store_id,
+                                    model_id,
+                                    obj_type,
+                                    obj_id,
+                                    &tuple_key.relation,
+                                    &tuple_key.user,
+                                );
+
+                                if let Some(cached) = precompute_cache.get(&cache_key).await {
+                                    cached_results.insert(
+                                        item.correlation_id,
+                                        BatchCheckSingleResult {
+                                            allowed: cached.allowed,
+                                            error: None,
+                                        },
+                                    );
+                                    continue;
+                                }
+
+                                // Cache miss — record in hot-path registry for future precomputation
+                                let _ = precompute_cache
+                                    .record_hotpath(
+                                        &req.store_id,
+                                        obj_type,
+                                        obj_id,
+                                        &tuple_key.relation,
+                                        &tuple_key.user,
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            }
+
             correlation_ids.push(item.correlation_id);
             server_checks.push(ServerBatchCheckItem {
                 user: tuple_key.user,
@@ -513,6 +585,15 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 object: tuple_key.object,
                 context,
             });
+        }
+
+        // If all items hit the precompute cache, return immediately without
+        // calling the batch handler (which would reject an empty batch).
+        #[cfg(feature = "precompute")]
+        if server_checks.is_empty() && !cached_results.is_empty() {
+            return Ok(Response::new(BatchCheckResponse {
+                result: cached_results,
+            }));
         }
 
         let server_request = ServerBatchCheckRequest::new(req.store_id, server_checks);
@@ -555,6 +636,10 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 },
             );
         }
+
+        // Merge precompute cache hits with batch handler results
+        #[cfg(feature = "precompute")]
+        result_map.extend(cached_results);
 
         Ok(Response::new(BatchCheckResponse { result: result_map }))
     }
