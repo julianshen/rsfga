@@ -488,6 +488,14 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                 self.storage
                     .get_latest_authorization_model(&req.store_id)
                     .await
+                    .map_err(|e| {
+                        tracing::warn!(
+                            store_id = %req.store_id,
+                            error = %e,
+                            "Failed to resolve model_id for precompute cache; \
+                             skipping cache for this batch"
+                        );
+                    })
                     .ok()
                     .map(|m| m.id)
             }
@@ -497,7 +505,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
 
         #[cfg(feature = "precompute")]
         let mut cached_results: std::collections::HashMap<String, BatchCheckSingleResult> =
-            std::collections::HashMap::new();
+            std::collections::HashMap::with_capacity(req.checks.len());
 
         // Convert gRPC request to server-layer request, validating each check.
         // With precompute enabled, correlation_ids and server_checks only contain
@@ -537,8 +545,9 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
                     .contextual_tuples
                     .as_ref()
                     .is_some_and(|ct| !ct.tuple_keys.is_empty());
+                let is_cache_eligible = !has_contextual_tuples && context.is_empty();
 
-                if !has_contextual_tuples && context.is_empty() {
+                if is_cache_eligible {
                     if let Some(ref precompute_cache) = self.precompute_cache {
                         if let Some(ref model_id) = precompute_model_id {
                             if let Some((obj_type, obj_id)) = parse_object(&tuple_key.object) {
