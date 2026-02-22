@@ -646,9 +646,13 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             );
         }
 
-        // Merge precompute cache hits with batch handler results
+        // Merge precompute cache hits with batch handler results.
+        // Use entry API to avoid overwriting resolver results if a duplicate
+        // correlation_id somehow appears in both cached and resolved sets.
         #[cfg(feature = "precompute")]
-        result_map.extend(cached_results);
+        for (corr_id, cached_result) in cached_results {
+            result_map.entry(corr_id).or_insert(cached_result);
+        }
 
         Ok(Response::new(BatchCheckResponse { result: result_map }))
     }

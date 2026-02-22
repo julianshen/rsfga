@@ -2635,10 +2635,16 @@ mod precompute_batch_tests {
 
     /// Helper: connect to Valkey or return None if unavailable.
     async fn try_connect_valkey() -> Option<Arc<rsfga_valkey::cache::CheckCache>> {
-        let url = std::env::var("RSFGA_PRECOMPUTE__VALKEY_URL").ok()?;
-        if url.is_empty() {
-            return None;
-        }
+        let url = match std::env::var("RSFGA_PRECOMPUTE__VALKEY_URL") {
+            Ok(u) if !u.is_empty() => u,
+            _ => {
+                eprintln!(
+                    "[SKIP] RSFGA_PRECOMPUTE__VALKEY_URL not set; \
+                     precompute batch tests skipped"
+                );
+                return None;
+            }
+        };
         let client = rsfga_valkey::ValkeyClient::connect(rsfga_valkey::ValkeyConfig {
             url,
             result_ttl_secs: 60,
