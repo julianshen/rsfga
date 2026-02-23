@@ -2620,3 +2620,294 @@ async fn test_grpc_list_users_rejects_excessive_contextual_tuples() {
         status.message()
     );
 }
+
+// ============================================================================
+// Precompute Cache BatchCheck Tests
+// ============================================================================
+//
+// These tests verify precompute cache behavior in the gRPC batch_check handler.
+// They require a live Valkey instance (set RSFGA_PRECOMPUTE__VALKEY_URL).
+// Without Valkey they are silently skipped.
+
+#[cfg(feature = "precompute")]
+mod precompute_batch_tests {
+    use super::*;
+
+    /// Helper: connect to Valkey or return None if unavailable.
+    async fn try_connect_valkey() -> Option<Arc<rsfga_valkey::cache::CheckCache>> {
+        let url = match std::env::var("RSFGA_PRECOMPUTE__VALKEY_URL") {
+            Ok(u) if !u.is_empty() => u,
+            _ => {
+                eprintln!(
+                    "[SKIP] RSFGA_PRECOMPUTE__VALKEY_URL not set; \
+                     precompute batch tests skipped"
+                );
+                return None;
+            }
+        };
+        let client = rsfga_valkey::ValkeyClient::connect(rsfga_valkey::ValkeyConfig {
+            url,
+            result_ttl_secs: 60,
+            hotpath_ttl_secs: 60,
+        })
+        .await
+        .ok()?;
+        Some(Arc::new(rsfga_valkey::cache::CheckCache::new(client)))
+    }
+
+    /// Helper: set up a store, model, and tuple for batch_check testing.
+    /// Returns (storage, model_id).
+    async fn setup_batch_test_env() -> (Arc<MemoryDataStore>, String) {
+        let storage = Arc::new(MemoryDataStore::new());
+        storage
+            .create_store("test-store", "Test Store")
+            .await
+            .unwrap();
+        let model_id = setup_simple_model(&storage, "test-store").await;
+
+        // Write tuple: user:alice is viewer of document:doc1
+        storage
+            .write_tuple(
+                "test-store",
+                StoredTuple::new("document", "doc1", "viewer", "user", "alice", None),
+            )
+            .await
+            .unwrap();
+
+        (storage, model_id)
+    }
+
+    /// Test: batch_check with all items hitting the precompute cache.
+    ///
+    /// Pre-populates Valkey with cached results, then verifies that the
+    /// batch_check handler returns cached values and skips the resolver.
+    #[tokio::test]
+    async fn test_grpc_batch_check_all_cache_hits() {
+        let Some(cache) = try_connect_valkey().await else {
+            return; // Valkey not available — skip
+        };
+
+        let (storage, model_id) = setup_batch_test_env().await;
+
+        // Pre-populate cache for both items
+        let now = chrono::Utc::now();
+        for (obj_id, user, allowed) in [("doc1", "user:alice", true), ("doc1", "user:bob", false)] {
+            let key = rsfga_valkey::CheckKey::new(
+                "test-store",
+                &model_id,
+                "document",
+                obj_id,
+                "viewer",
+                user,
+            );
+            cache
+                .set(
+                    &key,
+                    &rsfga_valkey::cache::PrecomputedResult {
+                        allowed,
+                        computed_at: now,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        let service = OpenFgaGrpcService::new(storage).with_precompute_cache(Arc::clone(&cache));
+
+        let response = service
+            .batch_check(Request::new(BatchCheckRequest {
+                store_id: "test-store".to_string(),
+                checks: vec![
+                    BatchCheckItem {
+                        tuple_key: Some(TupleKey {
+                            user: "user:alice".to_string(),
+                            relation: "viewer".to_string(),
+                            object: "document:doc1".to_string(),
+                            condition: None,
+                        }),
+                        contextual_tuples: None,
+                        context: None,
+                        correlation_id: "c1".to_string(),
+                    },
+                    BatchCheckItem {
+                        tuple_key: Some(TupleKey {
+                            user: "user:bob".to_string(),
+                            relation: "viewer".to_string(),
+                            object: "document:doc1".to_string(),
+                            condition: None,
+                        }),
+                        contextual_tuples: None,
+                        context: None,
+                        correlation_id: "c2".to_string(),
+                    },
+                ],
+                authorization_model_id: model_id,
+                consistency: 0,
+            }))
+            .await
+            .unwrap();
+
+        let result = response.into_inner().result;
+        assert_eq!(result.len(), 2);
+        assert!(result["c1"].allowed, "alice should be allowed (cached)");
+        assert!(!result["c2"].allowed, "bob should be denied (cached)");
+    }
+
+    /// Test: batch_check with partial cache hits.
+    ///
+    /// Only one item is pre-populated in cache. The other must be resolved
+    /// by the graph resolver. The final result merges both sources.
+    #[tokio::test]
+    async fn test_grpc_batch_check_partial_cache_hits() {
+        let Some(cache) = try_connect_valkey().await else {
+            return;
+        };
+
+        let (storage, model_id) = setup_batch_test_env().await;
+
+        // Pre-populate cache for alice only
+        let key = rsfga_valkey::CheckKey::new(
+            "test-store",
+            &model_id,
+            "document",
+            "doc1",
+            "viewer",
+            "user:alice",
+        );
+        cache
+            .set(
+                &key,
+                &rsfga_valkey::cache::PrecomputedResult {
+                    allowed: true,
+                    computed_at: chrono::Utc::now(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let service = OpenFgaGrpcService::new(storage).with_precompute_cache(Arc::clone(&cache));
+
+        let response = service
+            .batch_check(Request::new(BatchCheckRequest {
+                store_id: "test-store".to_string(),
+                checks: vec![
+                    BatchCheckItem {
+                        tuple_key: Some(TupleKey {
+                            user: "user:alice".to_string(),
+                            relation: "viewer".to_string(),
+                            object: "document:doc1".to_string(),
+                            condition: None,
+                        }),
+                        contextual_tuples: None,
+                        context: None,
+                        correlation_id: "c1".to_string(),
+                    },
+                    BatchCheckItem {
+                        tuple_key: Some(TupleKey {
+                            user: "user:bob".to_string(),
+                            relation: "viewer".to_string(),
+                            object: "document:doc1".to_string(),
+                            condition: None,
+                        }),
+                        contextual_tuples: None,
+                        context: None,
+                        correlation_id: "c2".to_string(),
+                    },
+                ],
+                authorization_model_id: model_id,
+                consistency: 0,
+            }))
+            .await
+            .unwrap();
+
+        let result = response.into_inner().result;
+        assert_eq!(result.len(), 2);
+        // alice: from cache
+        assert!(result["c1"].allowed, "alice should be allowed (cached)");
+        // bob: from resolver (no tuple exists, so denied)
+        assert!(!result["c2"].allowed, "bob should be denied (resolved)");
+    }
+
+    /// Test: items with contextual_tuples skip the precompute cache.
+    ///
+    /// Even when a cached result exists, items that carry contextual tuples
+    /// must be resolved by the graph resolver (Invariant I1).
+    #[tokio::test]
+    async fn test_grpc_batch_check_contextual_tuples_skip_cache() {
+        let Some(cache) = try_connect_valkey().await else {
+            return;
+        };
+
+        let (storage, model_id) = setup_batch_test_env().await;
+
+        // Pre-populate cache with allowed=true for alice
+        let key = rsfga_valkey::CheckKey::new(
+            "test-store",
+            &model_id,
+            "document",
+            "doc1",
+            "viewer",
+            "user:alice",
+        );
+        cache
+            .set(
+                &key,
+                &rsfga_valkey::cache::PrecomputedResult {
+                    allowed: true,
+                    computed_at: chrono::Utc::now(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let service = OpenFgaGrpcService::new(storage).with_precompute_cache(Arc::clone(&cache));
+
+        let response = service
+            .batch_check(Request::new(BatchCheckRequest {
+                store_id: "test-store".to_string(),
+                checks: vec![
+                    // Item with contextual_tuples — bypasses cache
+                    BatchCheckItem {
+                        tuple_key: Some(TupleKey {
+                            user: "user:alice".to_string(),
+                            relation: "viewer".to_string(),
+                            object: "document:doc1".to_string(),
+                            condition: None,
+                        }),
+                        contextual_tuples: Some(ContextualTupleKeys {
+                            tuple_keys: vec![TupleKey {
+                                user: "user:extra".to_string(),
+                                relation: "viewer".to_string(),
+                                object: "document:doc1".to_string(),
+                                condition: None,
+                            }],
+                        }),
+                        context: None,
+                        correlation_id: "c1".to_string(),
+                    },
+                    // Item without contextual_tuples — uses cache
+                    BatchCheckItem {
+                        tuple_key: Some(TupleKey {
+                            user: "user:alice".to_string(),
+                            relation: "viewer".to_string(),
+                            object: "document:doc1".to_string(),
+                            condition: None,
+                        }),
+                        contextual_tuples: None,
+                        context: None,
+                        correlation_id: "c2".to_string(),
+                    },
+                ],
+                authorization_model_id: model_id,
+                consistency: 0,
+            }))
+            .await
+            .unwrap();
+
+        let result = response.into_inner().result;
+        assert_eq!(result.len(), 2);
+        // Both allowed — c1 from resolver (tuple exists), c2 from cache
+        assert!(result["c1"].allowed);
+        assert!(result["c2"].allowed);
+    }
+}
