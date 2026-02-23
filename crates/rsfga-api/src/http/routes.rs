@@ -3074,7 +3074,7 @@ async fn list_objects<S: DataStore>(
         .unwrap_or_default();
 
     // Create domain request
-    let list_request = ListObjectsRequest::with_context(
+    let mut list_request = ListObjectsRequest::with_context(
         store_id,
         body.user,
         body.relation,
@@ -3082,6 +3082,7 @@ async fn list_objects<S: DataStore>(
         contextual_tuples,
         body.context.unwrap_or_default(),
     );
+    list_request.authorization_model_id = body.authorization_model_id;
 
     // Call the resolver with DoS protection limit
     let result = state

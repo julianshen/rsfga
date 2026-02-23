@@ -1411,9 +1411,15 @@ where
 
         // Get the relation definition to understand how access is computed
         // If the type or relation doesn't exist, return an error (OpenFGA compatibility - I2)
+        // When authorization_model_id is specified, pin the model version for consistency.
         let relation_def = self
             .model_reader
-            .get_relation_definition(&request.store_id, &request.object_type, &request.relation)
+            .get_relation_definition_with_model_id(
+                &request.store_id,
+                &request.object_type,
+                &request.relation,
+                request.authorization_model_id.as_deref(),
+            )
             .await?;
 
         // Build immutable context and mutable state for the ReverseExpand traversal
@@ -1425,6 +1431,7 @@ where
             request_context: &request.context,
             limit,
             max_depth: self.config.max_depth,
+            authorization_model_id: request.authorization_model_id.as_deref(),
         };
         let mut state = super::types::ReverseExpandState::new();
 
@@ -1578,7 +1585,12 @@ where
                     // Recursively expand the referenced relation on the same object type
                     let rel_def = self
                         .model_reader
-                        .get_relation_definition(ctx.store_id, ctx.object_type, computed_rel)
+                        .get_relation_definition_with_model_id(
+                            ctx.store_id,
+                            ctx.object_type,
+                            computed_rel,
+                            ctx.authorization_model_id,
+                        )
                         .await?;
 
                     state.depth += 1;
@@ -1604,7 +1616,12 @@ where
                     // We need to get the type from the tupleset relation's type constraints
                     let tupleset_def = self
                         .model_reader
-                        .get_relation_definition(ctx.store_id, ctx.object_type, tupleset)
+                        .get_relation_definition_with_model_id(
+                            ctx.store_id,
+                            ctx.object_type,
+                            tupleset,
+                            ctx.authorization_model_id,
+                        )
                         .await?;
 
                     // Extract parent types from type constraints
@@ -1622,7 +1639,12 @@ where
                         // Find parents where user has the computed_userset relation
                         let parent_rel_def = self
                             .model_reader
-                            .get_relation_definition(ctx.store_id, parent_type, computed_userset)
+                            .get_relation_definition_with_model_id(
+                                ctx.store_id,
+                                parent_type,
+                                computed_userset,
+                                ctx.authorization_model_id,
+                            )
                             .await;
 
                         // If the parent type doesn't have this relation, skip it
@@ -1652,6 +1674,7 @@ where
                             request_context: ctx.request_context,
                             limit: ctx.limit,
                             max_depth: ctx.max_depth,
+                            authorization_model_id: ctx.authorization_model_id,
                         };
                         let mut parent_state = super::types::ReverseExpandState {
                             seen: HashSet::new(),

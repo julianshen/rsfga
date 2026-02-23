@@ -1051,7 +1051,7 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         // Create domain request using validated context if available
         let context = validated_context_map.unwrap_or_default();
 
-        let list_request = DomainListObjectsRequest::with_context(
+        let mut list_request = DomainListObjectsRequest::with_context(
             req.store_id,
             req.user,
             req.relation,
@@ -1059,6 +1059,11 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             contextual_tuples,
             context,
         );
+        list_request.authorization_model_id = if req.authorization_model_id.is_empty() {
+            None
+        } else {
+            Some(req.authorization_model_id)
+        };
 
         // Call the resolver with DoS protection limit
         let result = self

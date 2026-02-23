@@ -8095,6 +8095,7 @@ async fn test_listobjects_contextual_overrides_stored() {
             },
         ]),
         context: std::sync::Arc::new(HashMap::new()),
+        authorization_model_id: None,
     };
     let result = resolver.list_objects(&request, 100).await.unwrap();
 
@@ -8788,4 +8789,94 @@ async fn test_listobjects_concurrent_requests_isolated() {
         assert!(!alice_objects.contains("document:doc3"));
         assert!(!bob_objects.contains("document:doc1"));
     }
+}
+
+/// Tests that authorization_model_id is threaded through ListObjects request
+/// to the resolver without errors. When a specific model ID is provided,
+/// all relation definition lookups use that model version.
+#[tokio::test]
+async fn test_list_objects_with_authorization_model_id() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Set up a simple direct relation model
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Add a direct tuple
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Create request with authorization_model_id set
+    let mut request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+    request.authorization_model_id = Some("model-id-1".to_string());
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Should still find the document since MockModelReader returns the same model
+    // regardless of model ID. The key assertion is that the request completes
+    // without errors, proving the field is threaded through correctly.
+    assert_eq!(result.objects.len(), 1);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(!result.truncated);
+}
+
+/// Tests that authorization_model_id=None (default) still works correctly,
+/// preserving backward compatibility with existing code.
+#[tokio::test]
+async fn test_list_objects_without_authorization_model_id() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Create request without authorization_model_id (None - uses latest model)
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+    assert!(request.authorization_model_id.is_none());
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    assert_eq!(result.objects.len(), 1);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(!result.truncated);
 }

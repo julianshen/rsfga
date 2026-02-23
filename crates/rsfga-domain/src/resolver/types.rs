@@ -277,6 +277,9 @@ pub struct ListObjectsRequest {
     pub contextual_tuples: Arc<Vec<ContextualTuple>>,
     /// CEL evaluation context variables.
     pub context: Arc<HashMap<String, serde_json::Value>>,
+    /// Optional authorization model ID to pin the model version.
+    /// If None, uses the latest model (current behavior).
+    pub authorization_model_id: Option<String>,
 }
 
 impl ListObjectsRequest {
@@ -294,6 +297,7 @@ impl ListObjectsRequest {
             object_type: object_type.into(),
             contextual_tuples: Arc::new(Vec::new()),
             context: Arc::new(HashMap::new()),
+            authorization_model_id: None,
         }
     }
 
@@ -313,6 +317,7 @@ impl ListObjectsRequest {
             object_type: object_type.into(),
             contextual_tuples: Arc::new(contextual_tuples),
             context: Arc::new(context),
+            authorization_model_id: None,
         }
     }
 }
@@ -425,6 +430,7 @@ pub(crate) struct ReverseExpandContext<'a> {
     pub request_context: &'a HashMap<String, serde_json::Value>,
     pub limit: usize,
     pub max_depth: u32,
+    pub authorization_model_id: Option<&'a str>,
 }
 
 /// Mutable state that tracks progress during a ReverseExpand traversal.
