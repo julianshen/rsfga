@@ -1813,32 +1813,48 @@ where
                 }
 
                 Userset::Union { children } => {
-                    // Union: collect results from all children
-                    // DepthLimitExceeded or CycleDetected in one branch should not prevent
-                    // collecting from others - just mark as truncated
-                    for child in children {
-                        if state.results.len() >= ctx.limit {
-                            state.truncated = true;
-                            break;
-                        }
-                        // Clone visited for each branch so cycles in one branch don't affect others
-                        let saved_visited = state.visited.clone();
-                        state.depth += 1;
-                        let result = self
-                            .reverse_expand_objects(ctx, state, relation, child)
-                            .await;
-                        state.depth -= 1;
-                        state.visited = saved_visited;
+                    // Union: evaluate all children concurrently
+                    let branch_futures: Vec<_> = children
+                        .iter()
+                        .map(|child| {
+                            let mut branch_state = state.fork();
+                            branch_state.depth = state.depth + 1;
+                            async move {
+                                let result = self
+                                    .reverse_expand_objects(ctx, &mut branch_state, relation, child)
+                                    .await;
+                                (branch_state, result)
+                            }
+                        })
+                        .collect();
 
+                    let branch_results = futures::future::join_all(branch_futures).await;
+
+                    // Merge results from all branches
+                    for (branch_state, result) in branch_results {
                         match result {
-                            Ok(()) => {}
+                            Ok(()) => {
+                                if branch_state.truncated {
+                                    state.truncated = true;
+                                }
+                            }
                             Err(DomainError::DepthLimitExceeded { .. })
                             | Err(DomainError::CycleDetected { .. }) => {
-                                // Track that results may be incomplete but continue
                                 state.truncated = true;
                             }
                             Err(e) => {
                                 return Err(e);
+                            }
+                        }
+                        // Merge branch results: add new objects not already seen
+                        for obj in branch_state.results {
+                            if state.results.len() >= ctx.limit {
+                                state.truncated = true;
+                                break;
+                            }
+                            if !state.seen.contains(&obj) {
+                                state.seen.insert(obj.clone());
+                                state.results.push(obj);
                             }
                         }
                     }
@@ -1850,56 +1866,37 @@ where
                         return Ok(());
                     }
 
-                    // Get results from first child
-                    let mut first_state = state.fork();
-                    first_state.depth = state.depth + 1;
-
-                    match self
-                        .reverse_expand_objects(ctx, &mut first_state, relation, &children[0])
-                        .await
-                    {
-                        Ok(()) => {
-                            if first_state.truncated {
-                                state.truncated = true;
+                    // Evaluate all children concurrently
+                    let branch_futures: Vec<_> = children
+                        .iter()
+                        .map(|child| {
+                            let mut branch_state = state.fork();
+                            branch_state.depth = state.depth + 1;
+                            async move {
+                                let result = self
+                                    .reverse_expand_objects(ctx, &mut branch_state, relation, child)
+                                    .await;
+                                (branch_state, result)
                             }
-                        }
-                        Err(DomainError::DepthLimitExceeded { .. })
-                        | Err(DomainError::CycleDetected { .. }) => {
-                            // If first branch fails, intersection is incomplete - mark truncated
-                            state.truncated = true;
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            return Err(e);
-                        }
-                    }
+                        })
+                        .collect();
 
-                    let mut current_set: HashSet<String> =
-                        first_state.results.into_iter().collect();
+                    let branch_results = futures::future::join_all(branch_futures).await;
 
-                    // Intersect with results from remaining children
-                    for child in children.iter().skip(1) {
-                        if current_set.is_empty() {
-                            break;
-                        }
+                    // Process results: intersect all branches
+                    let mut current_set: Option<HashSet<String>> = None;
 
-                        let mut child_state = state.fork();
-                        child_state.depth = state.depth + 1;
-
-                        match self
-                            .reverse_expand_objects(ctx, &mut child_state, relation, child)
-                            .await
-                        {
+                    for (branch_state, result) in branch_results {
+                        match result {
                             Ok(()) => {
-                                if child_state.truncated {
+                                if branch_state.truncated {
                                     state.truncated = true;
                                 }
                             }
                             Err(DomainError::DepthLimitExceeded { .. })
                             | Err(DomainError::CycleDetected { .. }) => {
-                                // If any branch fails, intersection is incomplete
                                 state.truncated = true;
-                                current_set.clear();
+                                current_set = Some(HashSet::new()); // Empty intersection
                                 break;
                             }
                             Err(e) => {
@@ -1907,21 +1904,28 @@ where
                             }
                         }
 
-                        let child_set: HashSet<String> = child_state.results.into_iter().collect();
-                        // Use retain for in-place intersection, avoiding extra allocations
-                        current_set.retain(|obj| child_set.contains(obj));
+                        let branch_set: HashSet<String> =
+                            branch_state.results.into_iter().collect();
+                        current_set = Some(match current_set {
+                            None => branch_set,
+                            Some(mut existing) => {
+                                existing.retain(|obj| branch_set.contains(obj));
+                                existing
+                            }
+                        });
                     }
 
                     // Add intersection results to main results
-                    for obj in current_set {
-                        if !state.seen.contains(&obj) {
-                            if state.results.len() < ctx.limit {
-                                state.seen.insert(obj.clone());
-                                state.results.push(obj);
-                            } else {
-                                // Hit limit - there are more objects we couldn't include
-                                state.truncated = true;
-                                break;
+                    if let Some(intersection) = current_set {
+                        for obj in intersection {
+                            if !state.seen.contains(&obj) {
+                                if state.results.len() < ctx.limit {
+                                    state.seen.insert(obj.clone());
+                                    state.results.push(obj);
+                                } else {
+                                    state.truncated = true;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1931,11 +1935,17 @@ where
                     // Exclusion: get base results minus subtract results
                     let mut base_state = state.fork();
                     base_state.depth = state.depth + 1;
+                    let mut subtract_state = state.fork();
+                    subtract_state.depth = state.depth + 1;
 
-                    match self
-                        .reverse_expand_objects(ctx, &mut base_state, relation, base)
-                        .await
-                    {
+                    // Evaluate base and subtract concurrently
+                    let (base_result, subtract_result) = tokio::join!(
+                        self.reverse_expand_objects(ctx, &mut base_state, relation, base),
+                        self.reverse_expand_objects(ctx, &mut subtract_state, relation, subtract)
+                    );
+
+                    // Process base result
+                    match base_result {
                         Ok(()) => {
                             if base_state.truncated {
                                 state.truncated = true;
@@ -1952,13 +1962,8 @@ where
                         }
                     }
 
-                    let mut subtract_state = state.fork();
-                    subtract_state.depth = state.depth + 1;
-
-                    match self
-                        .reverse_expand_objects(ctx, &mut subtract_state, relation, subtract)
-                        .await
-                    {
+                    // Process subtract result
+                    match subtract_result {
                         Ok(()) => {
                             if subtract_state.truncated {
                                 // If subtract was truncated, we might include objects that
@@ -1987,7 +1992,6 @@ where
                                 state.seen.insert(obj.clone());
                                 state.results.push(obj);
                             } else {
-                                // Hit limit - there are more objects we couldn't include
                                 state.truncated = true;
                                 break;
                             }
