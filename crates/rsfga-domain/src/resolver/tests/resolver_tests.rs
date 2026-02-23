@@ -8880,3 +8880,151 @@ async fn test_list_objects_without_authorization_model_id() {
     assert!(result.objects.contains(&"document:doc1".to_string()));
     assert!(!result.truncated);
 }
+
+// ============================================================
+// Contextual Tuples Through Graph Traversal Tests
+// ============================================================
+
+/// Tests that contextual tuples are discovered through ComputedUserset.
+///
+/// Model: can_access = viewer | editor (Union of ComputedUsersets)
+/// Contextual tuple: user:alice editor document:report
+/// ListObjects(user:alice, can_access, document) should include document:report
+/// because ComputedUserset(editor) recurses into editor -> Userset::This -> finds
+/// the contextual tuple matching relation="editor".
+#[tokio::test]
+async fn test_list_objects_contextual_tuples_through_computed_userset() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Document type with viewer, editor, and can_access relations
+    // can_access = viewer | editor (Union of ComputedUsersets)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "can_access".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "viewer".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "editor".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // No stored tuples - only a contextual tuple
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let contextual_tuples = vec![ContextualTuple::new(
+        "user:alice",
+        "editor",
+        "document:report",
+    )];
+
+    let request = ListObjectsRequest::with_context(
+        "store1",
+        "user:alice",
+        "can_access",
+        "document",
+        contextual_tuples,
+        HashMap::new(),
+    );
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // document:report should be found via can_access -> ComputedUserset(editor) -> This -> contextual tuple
+    assert_eq!(
+        result.objects.len(),
+        1,
+        "Expected 1 document via contextual tuple through ComputedUserset, got {:?}",
+        result.objects
+    );
+    assert!(
+        result.objects.contains(&"document:report".to_string()),
+        "Expected document:report to be accessible via editor contextual tuple through can_access ComputedUserset"
+    );
+}
+
+/// Tests that wildcard contextual tuples (user:*) are matched in ListObjects.
+///
+/// Contextual tuple: user:* viewer document:public-doc
+/// ListObjects(user:bob, viewer, document) should include document:public-doc
+/// because the wildcard "user:*" matches any user of type "user".
+#[tokio::test]
+async fn test_list_objects_contextual_tuples_with_wildcard() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Document type with viewer relation that allows wildcards
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // No stored tuples - only a wildcard contextual tuple
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let contextual_tuples = vec![ContextualTuple::new(
+        "user:*",
+        "viewer",
+        "document:public-doc",
+    )];
+
+    let request = ListObjectsRequest::with_context(
+        "store1",
+        "user:bob",
+        "viewer",
+        "document",
+        contextual_tuples,
+        HashMap::new(),
+    );
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // document:public-doc should be found because user:* matches user:bob
+    assert_eq!(
+        result.objects.len(),
+        1,
+        "Expected 1 document via wildcard contextual tuple, got {:?}",
+        result.objects
+    );
+    assert!(
+        result.objects.contains(&"document:public-doc".to_string()),
+        "Expected document:public-doc to be accessible via wildcard user:* contextual tuple"
+    );
+}

@@ -1438,35 +1438,6 @@ where
         self.reverse_expand_objects(&ctx, &mut state, &request.relation, &relation_def.rewrite)
             .await?;
 
-        // Add objects from contextual tuples that grant access
-        for ct in request.contextual_tuples.iter() {
-            if state.results.len() >= limit {
-                break;
-            }
-            if ct.user == request.user && ct.relation == request.relation {
-                if let Some((obj_type, _obj_id)) = ct.object.split_once(':') {
-                    if obj_type == request.object_type && !state.seen.contains(&ct.object) {
-                        // Evaluate condition if present (I1 correctness requirement)
-                        if ct.condition_name.is_some() {
-                            let condition_ok = self
-                                .evaluate_condition(
-                                    &request.store_id,
-                                    ct.condition_name.as_deref(),
-                                    ct.condition_context.as_ref(),
-                                    &request.context,
-                                )
-                                .await?;
-                            if !condition_ok {
-                                continue;
-                            }
-                        }
-                        state.seen.insert(ct.object.clone());
-                        state.results.push(ct.object.clone());
-                    }
-                }
-            }
-        }
-
         // Determine truncation - either from ReverseExpand hitting limits or result size
         let truncated = state.truncated || state.results.len() > max_candidates;
         if state.results.len() > max_candidates {
@@ -1566,6 +1537,55 @@ where
                                 // Hit limit - there are more objects we couldn't include
                                 state.truncated = true;
                                 break;
+                            }
+                        }
+                    }
+
+                    // Contextual tuple scan: find matching tuples from the request context.
+                    // This runs inside Userset::This so that ComputedUserset recursion
+                    // naturally discovers contextual tuples for the resolved relation.
+                    for ct in ctx.contextual_tuples {
+                        if state.results.len() >= ctx.limit {
+                            state.truncated = true;
+                            break;
+                        }
+                        if ct.relation == relation {
+                            let matches_user = ct.user == ctx.user
+                                || (ct.user.ends_with(":*") && {
+                                    // Wildcard: "type:*" matches any user of that type
+                                    if let Some((ct_user_type, _)) = ct.user.split_once(':') {
+                                        if let Some((user_type, _)) = ctx.user.split_once(':') {
+                                            ct_user_type == user_type
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                });
+                            if matches_user {
+                                if let Some((obj_type, _)) = ct.object.split_once(':') {
+                                    if obj_type == ctx.object_type
+                                        && !state.seen.contains(&ct.object)
+                                    {
+                                        // Evaluate condition if present
+                                        if ct.condition_name.is_some() {
+                                            let condition_ok = self
+                                                .evaluate_condition(
+                                                    ctx.store_id,
+                                                    ct.condition_name.as_deref(),
+                                                    ct.condition_context.as_ref(),
+                                                    ctx.request_context,
+                                                )
+                                                .await?;
+                                            if !condition_ok {
+                                                continue;
+                                            }
+                                        }
+                                        state.seen.insert(ct.object.clone());
+                                        state.results.push(ct.object.clone());
+                                    }
+                                }
                             }
                         }
                     }
