@@ -1646,23 +1646,35 @@ where
 
                     // Extract parent types from type constraints
                     for type_constraint in &tupleset_def.type_constraints {
-                        // Parse the type constraint (e.g., "folder" or "folder#member")
-                        // split('#').next().unwrap() handles both cases correctly and is safe
-                        // because type_name is a non-empty string from the model definition
-                        let parent_type = type_constraint.type_name.split('#').next().unwrap();
+                        // Parse userset type constraints: "team#member" -> (team, Some(member))
+                        // Plain type constraints: "folder" -> (folder, None)
+                        let (parent_type, parent_relation) =
+                            if let Some((base, rel)) = type_constraint.type_name.split_once('#') {
+                                (base, Some(rel))
+                            } else {
+                                (type_constraint.type_name.as_str(), None)
+                            };
 
                         // Skip if parent_type is empty, wildcard, or malformed
                         if parent_type.is_empty() || parent_type == "*" {
                             continue;
                         }
 
-                        // Find parents where user has the computed_userset relation
+                        // When the type constraint specifies a relation (e.g., team#member),
+                        // use that relation for parent resolution instead of computed_userset.
+                        // This is because userset references like team:X#member mean "the set
+                        // of entities with relation member on team:X", so we must resolve
+                        // parents using the member relation, not the computed_userset.
+                        let effective_relation =
+                            parent_relation.unwrap_or(computed_userset.as_str());
+
+                        // Find parents where user has the effective relation
                         let parent_rel_def = self
                             .model_reader
                             .get_relation_definition_with_model_id(
                                 ctx.store_id,
                                 parent_type,
-                                computed_userset,
+                                effective_relation,
                                 ctx.authorization_model_id,
                             )
                             .await;
@@ -1677,7 +1689,7 @@ where
                         };
 
                         // Cycle detection: check before traversing to parent type's relation
-                        let parent_cycle_key = format!("{}:{}", parent_type, computed_userset);
+                        let parent_cycle_key = format!("{}:{}", parent_type, effective_relation);
                         if state.visited.contains(&parent_cycle_key) {
                             // Skip this type constraint - cycle detected
                             state.truncated = true;
@@ -1710,7 +1722,7 @@ where
                             .reverse_expand_objects(
                                 &parent_ctx,
                                 &mut parent_state,
-                                computed_userset,
+                                effective_relation,
                                 &parent_rel_def.rewrite,
                             )
                             .await;

@@ -9028,3 +9028,127 @@ async fn test_list_objects_contextual_tuples_with_wildcard() {
         "Expected document:public-doc to be accessible via wildcard user:* contextual tuple"
     );
 }
+
+// ========== Section: Userset Type Constraint in TupleToUserset ==========
+
+/// Tests that TupleToUserset correctly handles userset type constraints (e.g., team#member).
+///
+/// Model:
+///   type team
+///     relations
+///       define member: [user]
+///       define viewer: [user]
+///
+///   type project
+///     relations
+///       define team: [team#member]           -- userset type constraint
+///       define viewer: viewer from team       -- TTU: computed_userset is "viewer"
+///
+/// The type constraint `team#member` means tuples on the `team` relation reference
+/// `team:X#member` usersets. When resolving `viewer = viewer from team`, the algorithm
+/// must use the relation from the type constraint (`member`) for parent resolution,
+/// NOT the computed_userset (`viewer`).
+///
+/// Without the fix, the resolver incorrectly uses computed_userset ("viewer") to find
+/// parent team objects, which fails because alice has "member" not "viewer" on the team.
+#[tokio::test]
+async fn test_list_objects_tupleset_with_userset_type_constraint() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // team type: has both member and viewer relations
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "team".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "member".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // project type: team relation with userset type constraint, viewer via TTU
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "project".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "team".to_string(),
+                        type_constraints: vec!["team#member".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "team".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // user:alice is a member of team:engineering
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "team",
+            "engineering",
+            "member",
+            "user",
+            "alice",
+            None,
+        )
+        .await;
+
+    // team:engineering#member is assigned team relation on project:alpha
+    // This represents the userset reference stored in the team relation
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "project",
+            "alpha",
+            "team",
+            "team",
+            "engineering",
+            Some("member"),
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "project");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice is a member of team:engineering, and project:alpha has team:engineering#member
+    // in its team relation, so alice should be a viewer of project:alpha via TTU.
+    assert!(
+        result.objects.contains(&"project:alpha".to_string()),
+        "Expected project:alpha in results via userset type constraint team#member, got: {:?}",
+        result.objects
+    );
+    assert_eq!(
+        result.objects.len(),
+        1,
+        "Expected exactly 1 result, got {:?}",
+        result.objects
+    );
+}
