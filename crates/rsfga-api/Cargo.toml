@@ -71,6 +71,9 @@ moka = { workspace = true }
 # Concurrent collections
 dashmap = { workspace = true }
 
+# Streaming
+tokio-stream = { workspace = true }
+
 # CLI
 clap = { workspace = true }
 

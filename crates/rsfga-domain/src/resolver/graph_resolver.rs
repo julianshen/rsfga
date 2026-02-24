@@ -1366,6 +1366,26 @@ where
         }
     }
 
+    /// Lists objects accessible to a user with streaming results.
+    ///
+    /// Results are sent via the provided channel as they're discovered,
+    /// rather than being collected into a Vec. For the initial implementation,
+    /// this calls `list_objects` and streams the results. A future optimization
+    /// could modify `reverse_expand_objects` to send results through the channel
+    /// as they're discovered during graph traversal.
+    pub async fn list_objects_streamed(
+        &self,
+        request: &super::types::ListObjectsRequest,
+        tx: tokio::sync::mpsc::Sender<String>,
+    ) -> DomainResult<()> {
+        let result = self.list_objects(request, 1000).await?;
+        for obj in result.objects {
+            // Ignore send errors (receiver may have been dropped)
+            let _ = tx.send(obj).await;
+        }
+        Ok(())
+    }
+
     /// Inner implementation of list_objects without timeout wrapper.
     async fn list_objects_inner(
         &self,

@@ -32,6 +32,9 @@ service OpenFGAService {
   // List objects a user has access to
   rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse);
 
+  // Stream objects a user has access to (server-streaming)
+  rpc StreamedListObjects(StreamedListObjectsRequest) returns (stream StreamedListObjectsResponse);
+
   // List users that have access to an object
   rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
 
@@ -278,6 +281,25 @@ message ListObjectsRequest {
 message ListObjectsResponse {
   repeated string objects = 1;
   bool truncated = 2;
+}
+
+// ============================================================
+// Streamed List Objects Request/Response
+// ============================================================
+
+message StreamedListObjectsRequest {
+  string store_id = 1;
+  string authorization_model_id = 2;
+  string type = 3;
+  string relation = 4;
+  string user = 5;
+  ContextualTupleKeys contextual_tuples = 6;
+  google.protobuf.Struct context = 7;
+  ConsistencyPreference consistency = 8;
+}
+
+message StreamedListObjectsResponse {
+  string object = 1;
 }
 
 // ============================================================
