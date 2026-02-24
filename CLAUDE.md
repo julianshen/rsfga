@@ -1029,6 +1029,14 @@ Follow this process precisely, always prioritizing:
   - Milestone 3.1 (Benchmarking): ✅ Complete (#325, #326, #327)
   - gRPC Precompute Cache Wiring: ✅ Complete (#329)
 
-**Next Step**: Milestone 1.16 (ListObjects Full Resolver) or Phase 4 (Distributed Edge)
+- Milestone 1.16 (ListObjects Full Resolver): 🏗️ In Progress
+  - ✅ Structural refactoring (ReverseExpandContext/ReverseExpandState)
+  - ✅ authorization_model_id threading
+  - ✅ Contextual tuples through graph traversal
+  - ✅ Userset type constraint handling in TupleToUserset
+  - ✅ Parallel union/intersection/exclusion branches
+  - ✅ StreamedListObjects gRPC endpoint
+
+**Next Step**: Milestone 1.16 PR review and merge, then Phase 4 (Distributed Edge)
 
 **To continue**: Specify what you'd like to work on next!
