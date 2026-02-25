@@ -449,6 +449,7 @@ pub(crate) struct ReverseExpandState {
 
 impl ReverseExpandState {
     /// Create a new empty state at depth 0.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             seen: HashSet::new(),
@@ -463,6 +464,7 @@ impl ReverseExpandState {
     ///
     /// The forked state shares the `visited` set (cloned) but starts
     /// with fresh `seen` and `results`. Depth is preserved.
+    #[must_use]
     pub fn fork(&self) -> Self {
         Self {
             seen: HashSet::new(),

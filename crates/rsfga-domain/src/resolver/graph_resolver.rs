@@ -1376,9 +1376,10 @@ where
     pub async fn list_objects_streamed(
         &self,
         request: &super::types::ListObjectsRequest,
+        max_candidates: usize,
         tx: tokio::sync::mpsc::Sender<String>,
     ) -> DomainResult<()> {
-        let result = self.list_objects(request, 1000).await?;
+        let result = self.list_objects(request, max_candidates).await?;
         for obj in result.objects {
             // Ignore send errors (receiver may have been dropped)
             let _ = tx.send(obj).await;

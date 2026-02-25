@@ -1029,7 +1029,7 @@ Follow this process precisely, always prioritizing:
   - Milestone 3.1 (Benchmarking): ✅ Complete (#325, #326, #327)
   - gRPC Precompute Cache Wiring: ✅ Complete (#329)
 
-- Milestone 1.16 (ListObjects Full Resolver): 🏗️ In Progress
+- Milestone 1.16 (ListObjects Full Resolver): 📝 In Review (#331)
   - ✅ Structural refactoring (ReverseExpandContext/ReverseExpandState)
   - ✅ authorization_model_id threading
   - ✅ Contextual tuples through graph traversal
@@ -1037,6 +1037,6 @@ Follow this process precisely, always prioritizing:
   - ✅ Parallel union/intersection/exclusion branches
   - ✅ StreamedListObjects gRPC endpoint
 
-**Next Step**: Milestone 1.16 PR review and merge, then Phase 4 (Distributed Edge)
+**Next Step**: Merge Milestone 1.16 PR #331, then Phase 4 (Distributed Edge)
 
 **To continue**: Specify what you'd like to work on next!

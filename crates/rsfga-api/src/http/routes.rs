@@ -3082,7 +3082,7 @@ async fn list_objects<S: DataStore>(
         contextual_tuples,
         body.context.unwrap_or_default(),
     );
-    list_request.authorization_model_id = body.authorization_model_id;
+    list_request.authorization_model_id = body.authorization_model_id.filter(|id| !id.is_empty());
 
     // Call the resolver with DoS protection limit
     let result = state

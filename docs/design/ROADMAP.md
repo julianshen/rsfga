@@ -2526,7 +2526,7 @@ After reviewing this roadmap:
 | 3.0 API Wiring | ✅ Complete | HTTP + gRPC Check/BatchCheck cache (#324, #329, #330) |
 | 3.1 Benchmarking | ✅ Complete | Key construction + integration benchmarks (#325-#327) |
 
-### Milestone 1.16: ListObjects Full Resolver 🏗️ IN PROGRESS
+### Milestone 1.16: ListObjects Full Resolver 📝 IN REVIEW (#331)
 - Structural refactoring (ReverseExpandContext/State)
 - authorization_model_id threading
 - Contextual tuples through graph traversal
