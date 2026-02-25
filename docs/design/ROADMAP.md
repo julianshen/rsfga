@@ -2515,8 +2515,26 @@ After reviewing this roadmap:
 | 2.0.5 Failure Handling | ✅ Complete | Circuit breaker, DLQ, sync fallback |
 | 2.0.6 Edge Sync Consumer | ✅ Complete | `rsfga-edge` daemon (69 tests) |
 
+### Phase 3: Precomputed Check ✅ COMPLETE
+- Valkey-backed precompute cache for sub-millisecond check latency
+- Worker daemon (`rsfga-precompute`) with model-change watcher
+- HTTP and gRPC cache wiring (Check + BatchCheck)
+
+| Milestone | Status | Description |
+|-----------|--------|-------------|
+| 3.0 Precompute Worker | ✅ Complete | Valkey cache, worker daemon (#323) |
+| 3.0 API Wiring | ✅ Complete | HTTP + gRPC Check/BatchCheck cache (#324, #329, #330) |
+| 3.1 Benchmarking | ✅ Complete | Key construction + integration benchmarks (#325-#327) |
+
+### Milestone 1.16: ListObjects Full Resolver 📝 IN REVIEW (#331)
+- Structural refactoring (ReverseExpandContext/State)
+- authorization_model_id threading
+- Contextual tuples through graph traversal
+- Userset type constraint handling
+- Parallel union/intersection/exclusion
+- StreamedListObjects gRPC endpoint
+
 ### Next Phase
-- **Phase 3**: Precomputed Check (sub-millisecond latency)
 - **Phase 4**: Distributed Edge (global deployment)
 
 ---

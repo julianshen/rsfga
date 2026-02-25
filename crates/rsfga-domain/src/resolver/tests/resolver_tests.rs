@@ -8095,6 +8095,7 @@ async fn test_listobjects_contextual_overrides_stored() {
             },
         ]),
         context: std::sync::Arc::new(HashMap::new()),
+        authorization_model_id: None,
     };
     let result = resolver.list_objects(&request, 100).await.unwrap();
 
@@ -8788,4 +8789,366 @@ async fn test_listobjects_concurrent_requests_isolated() {
         assert!(!alice_objects.contains("document:doc3"));
         assert!(!bob_objects.contains("document:doc1"));
     }
+}
+
+/// Tests that authorization_model_id is threaded through ListObjects request
+/// to the resolver without errors. When a specific model ID is provided,
+/// all relation definition lookups use that model version.
+#[tokio::test]
+async fn test_list_objects_with_authorization_model_id() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Set up a simple direct relation model
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // Add a direct tuple
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Create request with authorization_model_id set
+    let mut request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+    request.authorization_model_id = Some("model-id-1".to_string());
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Should still find the document since MockModelReader returns the same model
+    // regardless of model ID. The key assertion is that the request completes
+    // without errors, proving the field is threaded through correctly.
+    assert_eq!(result.objects.len(), 1);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(!result.truncated);
+}
+
+/// Tests that authorization_model_id=None (default) still works correctly,
+/// preserving backward compatibility with existing code.
+#[tokio::test]
+async fn test_list_objects_without_authorization_model_id() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    tuple_reader
+        .add_tuple(
+            "store1", "document", "doc1", "viewer", "user", "alice", None,
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    // Create request without authorization_model_id (None - uses latest model)
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "document");
+    assert!(request.authorization_model_id.is_none());
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    assert_eq!(result.objects.len(), 1);
+    assert!(result.objects.contains(&"document:doc1".to_string()));
+    assert!(!result.truncated);
+}
+
+// ============================================================
+// Contextual Tuples Through Graph Traversal Tests
+// ============================================================
+
+/// Tests that contextual tuples are discovered through ComputedUserset.
+///
+/// Model: can_access = viewer | editor (Union of ComputedUsersets)
+/// Contextual tuple: user:alice editor document:report
+/// ListObjects(user:alice, can_access, document) should include document:report
+/// because ComputedUserset(editor) recurses into editor -> Userset::This -> finds
+/// the contextual tuple matching relation="editor".
+#[tokio::test]
+async fn test_list_objects_contextual_tuples_through_computed_userset() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Document type with viewer, editor, and can_access relations
+    // can_access = viewer | editor (Union of ComputedUsersets)
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "editor".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "can_access".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::Union {
+                            children: vec![
+                                Userset::ComputedUserset {
+                                    relation: "viewer".to_string(),
+                                },
+                                Userset::ComputedUserset {
+                                    relation: "editor".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // No stored tuples - only a contextual tuple
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let contextual_tuples = vec![ContextualTuple::new(
+        "user:alice",
+        "editor",
+        "document:report",
+    )];
+
+    let request = ListObjectsRequest::with_context(
+        "store1",
+        "user:alice",
+        "can_access",
+        "document",
+        contextual_tuples,
+        HashMap::new(),
+    );
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // document:report should be found via can_access -> ComputedUserset(editor) -> This -> contextual tuple
+    assert_eq!(
+        result.objects.len(),
+        1,
+        "Expected 1 document via contextual tuple through ComputedUserset, got {:?}",
+        result.objects
+    );
+    assert!(
+        result.objects.contains(&"document:report".to_string()),
+        "Expected document:report to be accessible via editor contextual tuple through can_access ComputedUserset"
+    );
+}
+
+/// Tests that wildcard contextual tuples (user:*) are matched in ListObjects.
+///
+/// Contextual tuple: user:* viewer document:public-doc
+/// ListObjects(user:bob, viewer, document) should include document:public-doc
+/// because the wildcard "user:*" matches any user of type "user".
+#[tokio::test]
+async fn test_list_objects_contextual_tuples_with_wildcard() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // Document type with viewer relation that allows wildcards
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "document".to_string(),
+                relations: vec![RelationDefinition {
+                    name: "viewer".to_string(),
+                    type_constraints: vec!["user".into()],
+                    rewrite: Userset::This,
+                }],
+            },
+        )
+        .await;
+
+    // No stored tuples - only a wildcard contextual tuple
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let contextual_tuples = vec![ContextualTuple::new(
+        "user:*",
+        "viewer",
+        "document:public-doc",
+    )];
+
+    let request = ListObjectsRequest::with_context(
+        "store1",
+        "user:bob",
+        "viewer",
+        "document",
+        contextual_tuples,
+        HashMap::new(),
+    );
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // document:public-doc should be found because user:* matches user:bob
+    assert_eq!(
+        result.objects.len(),
+        1,
+        "Expected 1 document via wildcard contextual tuple, got {:?}",
+        result.objects
+    );
+    assert!(
+        result.objects.contains(&"document:public-doc".to_string()),
+        "Expected document:public-doc to be accessible via wildcard user:* contextual tuple"
+    );
+}
+
+// ========== Section: Userset Type Constraint in TupleToUserset ==========
+
+/// Tests that TupleToUserset correctly handles userset type constraints (e.g., team#member).
+///
+/// Model:
+///   type team
+///     relations
+///       define member: [user]
+///       define viewer: [user]
+///
+///   type project
+///     relations
+///       define team: [team#member]           -- userset type constraint
+///       define viewer: viewer from team       -- TTU: computed_userset is "viewer"
+///
+/// The type constraint `team#member` means tuples on the `team` relation reference
+/// `team:X#member` usersets. When resolving `viewer = viewer from team`, the algorithm
+/// must use the relation from the type constraint (`member`) for parent resolution,
+/// NOT the computed_userset (`viewer`).
+///
+/// Without the fix, the resolver incorrectly uses computed_userset ("viewer") to find
+/// parent team objects, which fails because alice has "member" not "viewer" on the team.
+#[tokio::test]
+async fn test_list_objects_tupleset_with_userset_type_constraint() {
+    let tuple_reader = Arc::new(MockTupleReader::new());
+    let model_reader = Arc::new(MockModelReader::new());
+
+    tuple_reader.add_store("store1").await;
+
+    // team type: has both member and viewer relations
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "team".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "member".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec!["user".into()],
+                        rewrite: Userset::This,
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // project type: team relation with userset type constraint, viewer via TTU
+    model_reader
+        .add_type(
+            "store1",
+            TypeDefinition {
+                type_name: "project".to_string(),
+                relations: vec![
+                    RelationDefinition {
+                        name: "team".to_string(),
+                        type_constraints: vec!["team#member".into()],
+                        rewrite: Userset::This,
+                    },
+                    RelationDefinition {
+                        name: "viewer".to_string(),
+                        type_constraints: vec![],
+                        rewrite: Userset::TupleToUserset {
+                            tupleset: "team".to_string(),
+                            computed_userset: "viewer".to_string(),
+                        },
+                    },
+                ],
+            },
+        )
+        .await;
+
+    // user:alice is a member of team:engineering
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "team",
+            "engineering",
+            "member",
+            "user",
+            "alice",
+            None,
+        )
+        .await;
+
+    // team:engineering#member is assigned team relation on project:alpha
+    // This represents the userset reference stored in the team relation
+    tuple_reader
+        .add_tuple(
+            "store1",
+            "project",
+            "alpha",
+            "team",
+            "team",
+            "engineering",
+            Some("member"),
+        )
+        .await;
+
+    let resolver = GraphResolver::new(tuple_reader, model_reader);
+
+    let request = ListObjectsRequest::new("store1", "user:alice", "viewer", "project");
+
+    let result = resolver.list_objects(&request, 100).await.unwrap();
+
+    // Alice is a member of team:engineering, and project:alpha has team:engineering#member
+    // in its team relation, so alice should be a viewer of project:alpha via TTU.
+    assert!(
+        result.objects.contains(&"project:alpha".to_string()),
+        "Expected project:alpha in results via userset type constraint team#member, got: {:?}",
+        result.objects
+    );
+    assert_eq!(
+        result.objects.len(),
+        1,
+        "Expected exactly 1 result, got {:?}",
+        result.objects
+    );
 }

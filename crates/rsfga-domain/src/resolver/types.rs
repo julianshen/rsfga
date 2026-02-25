@@ -1,6 +1,6 @@
 //! Types for the graph resolver.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Request for a permission check.
@@ -277,6 +277,9 @@ pub struct ListObjectsRequest {
     pub contextual_tuples: Arc<Vec<ContextualTuple>>,
     /// CEL evaluation context variables.
     pub context: Arc<HashMap<String, serde_json::Value>>,
+    /// Optional authorization model ID to pin the model version.
+    /// If None, uses the latest model (current behavior).
+    pub authorization_model_id: Option<String>,
 }
 
 impl ListObjectsRequest {
@@ -294,6 +297,7 @@ impl ListObjectsRequest {
             object_type: object_type.into(),
             contextual_tuples: Arc::new(Vec::new()),
             context: Arc::new(HashMap::new()),
+            authorization_model_id: None,
         }
     }
 
@@ -313,6 +317,7 @@ impl ListObjectsRequest {
             object_type: object_type.into(),
             contextual_tuples: Arc::new(contextual_tuples),
             context: Arc::new(context),
+            authorization_model_id: None,
         }
     }
 }
@@ -404,6 +409,71 @@ pub struct ListObjectsResult {
     pub objects: Vec<String>,
     /// Whether the results were truncated due to limits.
     pub truncated: bool,
+}
+
+// ============================================================
+// ReverseExpand Internal Types
+// ============================================================
+
+/// Immutable context shared across all branches of a ReverseExpand traversal.
+///
+/// This struct captures the request-scoped parameters that remain constant
+/// throughout the recursive graph traversal. Extracted from the 14-parameter
+/// `reverse_expand_objects` function to improve readability and enable future
+/// parallel branch evaluation (where context is shared via reference).
+#[derive(Debug)]
+pub(crate) struct ReverseExpandContext<'a> {
+    pub store_id: &'a str,
+    pub user: &'a str,
+    pub object_type: &'a str,
+    pub contextual_tuples: &'a [ContextualTuple],
+    pub request_context: &'a HashMap<String, serde_json::Value>,
+    pub limit: usize,
+    pub max_depth: u32,
+    pub authorization_model_id: Option<&'a str>,
+}
+
+/// Mutable state that tracks progress during a ReverseExpand traversal.
+///
+/// This struct captures the per-branch mutable state. It can be forked
+/// for parallel branch evaluation (union/intersection/exclusion) and
+/// merged back after branches complete.
+#[derive(Debug)]
+pub(crate) struct ReverseExpandState {
+    pub seen: HashSet<String>,
+    pub visited: HashSet<String>,
+    pub results: Vec<String>,
+    pub truncated: bool,
+    pub depth: u32,
+}
+
+impl ReverseExpandState {
+    /// Create a new empty state at depth 0.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            seen: HashSet::new(),
+            visited: HashSet::new(),
+            results: Vec::new(),
+            truncated: false,
+            depth: 0,
+        }
+    }
+
+    /// Fork the state for a parallel branch evaluation.
+    ///
+    /// The forked state shares the `visited` set (cloned) but starts
+    /// with fresh `seen` and `results`. Depth is preserved.
+    #[must_use]
+    pub fn fork(&self) -> Self {
+        Self {
+            seen: HashSet::new(),
+            visited: self.visited.clone(),
+            results: Vec::new(),
+            truncated: false,
+            depth: self.depth,
+        }
+    }
 }
 
 // ============================================================

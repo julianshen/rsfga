@@ -37,10 +37,11 @@ use crate::proto::openfga::v1::{
     ListStoresResponse, ListUsersRequest, ListUsersResponse, ReadAssertionsRequest,
     ReadAssertionsResponse, ReadAuthorizationModelRequest, ReadAuthorizationModelResponse,
     ReadAuthorizationModelsRequest, ReadAuthorizationModelsResponse, ReadChangesRequest,
-    ReadChangesResponse, ReadRequest, ReadResponse, RelationshipCondition, Store, Tuple,
-    TupleChange, TupleKey, TupleOperation, TypedWildcard, UpdateStoreRequest, UpdateStoreResponse,
-    User, UsersetTree, UsersetUser, WriteAssertionsRequest, WriteAssertionsResponse,
-    WriteAuthorizationModelRequest, WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
+    ReadChangesResponse, ReadRequest, ReadResponse, RelationshipCondition, Store,
+    StreamedListObjectsRequest, StreamedListObjectsResponse, Tuple, TupleChange, TupleKey,
+    TupleOperation, TypedWildcard, UpdateStoreRequest, UpdateStoreResponse, User, UsersetTree,
+    UsersetUser, WriteAssertionsRequest, WriteAssertionsResponse, WriteAuthorizationModelRequest,
+    WriteAuthorizationModelResponse, WriteRequest, WriteResponse,
 };
 
 /// Maximum allowed length for correlation IDs to prevent DoS attacks.
@@ -284,8 +285,132 @@ const MAX_AUTHORIZATION_MODEL_SIZE: usize = 1024 * 1024;
 /// Matches OpenFGA's default behavior to limit memory usage and response size.
 const DEFAULT_PAGE_SIZE: i32 = 50;
 
+/// Validates and builds a domain `ListObjectsRequest` from gRPC request fields.
+///
+/// Shared between `list_objects` and `streamed_list_objects` to avoid duplication.
+/// Handles validation, contextual tuple conversion (preserving conditions), and
+/// context parsing.
+#[allow(clippy::result_large_err)]
+fn build_list_objects_request(
+    store_id: String,
+    authorization_model_id: String,
+    r#type: String,
+    relation: String,
+    user: String,
+    contextual_tuples: Option<Vec<TupleKey>>,
+    context: Option<prost_types::Struct>,
+) -> Result<rsfga_domain::resolver::ListObjectsRequest, Status> {
+    use crate::validation::{
+        estimate_context_size, json_exceeds_max_depth, validate_relation_format,
+        validate_user_format, MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
+    };
+    use rsfga_storage::traits::validate_object_type;
+
+    // Validate object type format
+    if let Err(e) = validate_object_type(&r#type) {
+        return Err(Status::invalid_argument(e.to_string()));
+    }
+
+    // Validate user format
+    if let Some(err) = validate_user_format(&user) {
+        return Err(Status::invalid_argument(err));
+    }
+
+    // Validate relation format
+    if let Some(err) = validate_relation_format(&relation) {
+        return Err(Status::invalid_argument(err));
+    }
+
+    // Validate and parse context if provided
+    let validated_context_map = if let Some(context_struct) = context {
+        let context_map = prost_struct_to_hashmap(context_struct)
+            .map_err(|e| Status::invalid_argument(format!("invalid context: {}", e)))?;
+
+        if estimate_context_size(&context_map) > MAX_CONDITION_CONTEXT_SIZE {
+            return Err(Status::invalid_argument(format!(
+                "context size exceeds maximum of {MAX_CONDITION_CONTEXT_SIZE} bytes"
+            )));
+        }
+
+        for value in context_map.values() {
+            if json_exceeds_max_depth(value, 2) {
+                return Err(Status::invalid_argument(format!(
+                    "context nested too deeply (max depth {MAX_JSON_DEPTH})"
+                )));
+            }
+        }
+
+        context_map
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    // Validate contextual tuple count before allocation
+    if let Some(ref tks) = contextual_tuples {
+        if tks.len() > crate::validation::MAX_CONTEXTUAL_TUPLES {
+            return Err(Status::invalid_argument(format!(
+                "too many contextual tuples: {} exceeds maximum of {}",
+                tks.len(),
+                crate::validation::MAX_CONTEXTUAL_TUPLES
+            )));
+        }
+    }
+
+    // Convert contextual tuples, preserving conditions
+    let contextual_tuples: Vec<ContextualTuple> = contextual_tuples
+        .map(|tks| {
+            tks.into_iter()
+                .map(|tk| {
+                    if let Some(condition) = tk.condition {
+                        let context = condition
+                            .context
+                            .map(prost_struct_to_hashmap)
+                            .transpose()
+                            .map_err(|e| {
+                                Status::invalid_argument(format!(
+                                    "condition context invalid: tuple={}#{}@{}, error={}",
+                                    tk.user, tk.relation, tk.object, e
+                                ))
+                            })?;
+
+                        Ok(ContextualTuple::with_condition(
+                            &tk.user,
+                            &tk.relation,
+                            &tk.object,
+                            &condition.name,
+                            context,
+                        ))
+                    } else {
+                        Ok(ContextualTuple::new(&tk.user, &tk.relation, &tk.object))
+                    }
+                })
+                .collect::<Result<Vec<_>, Status>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    let mut list_request = rsfga_domain::resolver::ListObjectsRequest::with_context(
+        store_id,
+        user,
+        relation,
+        r#type,
+        contextual_tuples,
+        validated_context_map,
+    );
+    list_request.authorization_model_id = if authorization_model_id.is_empty() {
+        None
+    } else {
+        Some(authorization_model_id)
+    };
+
+    Ok(list_request)
+}
+
 #[tonic::async_trait]
 impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
+    type StreamedListObjectsStream =
+        tokio_stream::wrappers::ReceiverStream<Result<StreamedListObjectsResponse, Status>>;
+
     async fn check(
         &self,
         request: Request<CheckRequest>,
@@ -952,115 +1077,19 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
         &self,
         request: Request<ListObjectsRequest>,
     ) -> Result<Response<ListObjectsResponse>, Status> {
-        use crate::validation::{
-            estimate_context_size, json_exceeds_max_depth, validate_relation_format,
-            validate_user_format, MAX_CONDITION_CONTEXT_SIZE, MAX_JSON_DEPTH,
-            MAX_LIST_OBJECTS_CANDIDATES,
-        };
-        use rsfga_domain::resolver::ListObjectsRequest as DomainListObjectsRequest;
-        use rsfga_storage::traits::validate_object_type;
+        use crate::validation::MAX_LIST_OBJECTS_CANDIDATES;
 
         let req = request.into_inner();
-
-        // Validate object type format
-        if let Err(e) = validate_object_type(&req.r#type) {
-            return Err(Status::invalid_argument(e.to_string()));
-        }
-
-        // Validate user format
-        if let Some(err) = validate_user_format(&req.user) {
-            return Err(Status::invalid_argument(err));
-        }
-
-        // Validate relation format
-        if let Some(err) = validate_relation_format(&req.relation) {
-            return Err(Status::invalid_argument(err));
-        }
-        let mut validated_context_map = None;
-        if let Some(context_struct) = &req.context {
-            // Check size (approximate from Struct)
-            // Note: This is an estimation. For strict limits, we might want to check the byte size of the request.
-            // But checking the converted JSON size is consistent with HTTP.
-            // We convert to JSON map early to check.
-            let context_map = prost_struct_to_hashmap(context_struct.clone())
-                .map_err(|e| Status::invalid_argument(format!("invalid context: {}", e)))?;
-
-            if estimate_context_size(&context_map) > MAX_CONDITION_CONTEXT_SIZE {
-                return Err(Status::invalid_argument(format!(
-                    "context size exceeds maximum of {MAX_CONDITION_CONTEXT_SIZE} bytes"
-                )));
-            }
-
-            // Check nesting depth
-            for value in context_map.values() {
-                if json_exceeds_max_depth(value, 2) {
-                    return Err(Status::invalid_argument(format!(
-                        "context nested too deeply (max depth {MAX_JSON_DEPTH})"
-                    )));
-                }
-            }
-
-            validated_context_map = Some(context_map);
-        }
-
-        // Validate contextual tuple count before allocation
-        if let Some(ref ct) = req.contextual_tuples {
-            if ct.tuple_keys.len() > crate::validation::MAX_CONTEXTUAL_TUPLES {
-                return Err(Status::invalid_argument(format!(
-                    "too many contextual tuples: {} exceeds maximum of {}",
-                    ct.tuple_keys.len(),
-                    crate::validation::MAX_CONTEXTUAL_TUPLES
-                )));
-            }
-        }
-
-        // Convert contextual tuples if provided, logging any that are skipped due to invalid format
-        let contextual_tuples = req
-            .contextual_tuples
-            .map(|ct| {
-                ct.tuple_keys
-                    .into_iter()
-                    .filter_map(|tk| {
-                        let user = parse_user(&tk.user);
-                        if user.is_none() {
-                            tracing::warn!("Invalid user format in contextual tuple: {}", tk.user);
-                            return None;
-                        }
-                        let (user_type, user_id, user_relation) = user.unwrap();
-
-                        let object = parse_object(&tk.object);
-                        if object.is_none() {
-                            tracing::warn!(
-                                "Invalid object format in contextual tuple: {}",
-                                tk.object
-                            );
-                            return None;
-                        }
-                        let (object_type, object_id) = object.unwrap();
-
-                        Some(rsfga_domain::resolver::ContextualTuple::new(
-                            format_user(user_type, user_id, user_relation),
-                            tk.relation,
-                            format!("{object_type}:{object_id}"),
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Create domain request using validated context if available
-        let context = validated_context_map.unwrap_or_default();
-
-        let list_request = DomainListObjectsRequest::with_context(
+        let list_request = build_list_objects_request(
             req.store_id,
-            req.user,
-            req.relation,
+            req.authorization_model_id,
             req.r#type,
-            contextual_tuples,
-            context,
-        );
+            req.relation,
+            req.user,
+            req.contextual_tuples.map(|ct| ct.tuple_keys),
+            req.context,
+        )?;
 
-        // Call the resolver with DoS protection limit
         let result = self
             .resolver
             .list_objects(&list_request, MAX_LIST_OBJECTS_CANDIDATES)
@@ -1071,6 +1100,46 @@ impl<S: DataStore> OpenFgaService for OpenFgaGrpcService<S> {
             objects: result.objects,
             truncated: result.truncated,
         }))
+    }
+
+    async fn streamed_list_objects(
+        &self,
+        request: Request<StreamedListObjectsRequest>,
+    ) -> Result<Response<Self::StreamedListObjectsStream>, Status> {
+        use crate::validation::MAX_LIST_OBJECTS_CANDIDATES;
+
+        let req = request.into_inner();
+        let list_request = build_list_objects_request(
+            req.store_id,
+            req.authorization_model_id,
+            req.r#type,
+            req.relation,
+            req.user,
+            req.contextual_tuples.map(|ct| ct.tuple_keys),
+            req.context,
+        )?;
+
+        // Call the resolver to get all results (collect then stream)
+        let result = self
+            .resolver
+            .list_objects(&list_request, MAX_LIST_OBJECTS_CANDIDATES)
+            .await
+            .map_err(domain_error_to_status)?;
+
+        // Stream the results via a channel
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+
+        tokio::spawn(async move {
+            for obj in result.objects {
+                let resp = StreamedListObjectsResponse { object: obj };
+                if tx.send(Ok(resp)).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        Ok(Response::new(stream))
     }
 
     async fn list_users(
