@@ -1187,7 +1187,7 @@ RSFGA Target (60% confidence):
 
 ---
 
-### Milestone 1.10: CEL Condition Evaluation (Week 14) ✅ COMPLETE
+### Milestone 1.10: CEL Condition Evaluation (Week 14)
 
 **Branch**: `feature/milestone-1.10-cel-conditions`
 
@@ -1275,13 +1275,13 @@ condition time_bound_access(current_time: timestamp, expires_at: timestamp) {
 - [x] Test: Contextual tuples with conditions work
 - [x] Test: Batch check evaluates conditions correctly
 
-#### Section 6: API Integration
+#### Section 6: API Integration ✅ IMPLEMENTED
 
-- [ ] Test: Check API accepts context parameter
-- [ ] Test: Write API accepts condition on tuples
-- [ ] Test: Read API returns condition on tuples
-- [ ] Test: Error response when condition evaluation fails
-- [ ] Test: OpenFGA compatibility for condition format
+- [x] Test: Check API accepts context parameter
+- [x] Test: Write API accepts condition on tuples
+- [x] Test: Read API returns condition on tuples
+- [x] Test: Error response when condition evaluation fails
+- [x] Test: OpenFGA compatibility for condition format
 
 **Validation Criteria**:
 - [ ] All OpenFGA CEL-related tests pass
@@ -1687,11 +1687,11 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-## Phase 3: Precomputed Check (Future)
+## Phase 3: Precomputed Check ✅ COMPLETE (v2.1.0)
 
 **Goal**: Sub-millisecond check latency through on-write precomputation
 
-**Status**: 📋 Proposed
+**Status**: ✅ Complete (PRs #323, #324, #325, #326, #327)
 
 **Key Features**:
 - Valkey/Redis for precomputed results
@@ -1711,7 +1711,7 @@ See [ARCHITECTURE_DECISIONS.md - ADR-013](docs/design/ARCHITECTURE_DECISIONS.md#
 
 **Goal**: Global <10ms check latency through edge deployment
 
-**Status**: 📋 Proposed (requires Phase 2 NATS integration)
+**Status**: 📋 Proposed (leverages completed Phase 2 + Phase 3 foundations)
 
 **Key Features**:
 - NATS JetStream for sync (leverages Phase 2 infrastructure)
@@ -1936,7 +1936,7 @@ Phase 1 completion status:
 - Milestone 1.13: Expand API ✅ COMPLETE
 - Milestone 1.14: ListObjects API ✅ COMPLETE (partial - API validation complete, resolver integration pending)
 - Milestone 1.15: ListUsers API ✅ COMPLETE (22 tests)
-- Milestone 1.16: ListObjects Full Resolver ⏸️ PENDING (~35 tests planned)
+- Milestone 1.16: ListObjects Full Resolver 🟡 IN PROGRESS (implementation landed in #331; verification checklist ongoing)
 
 **Phase 2**: ✅ NATS Async Writes - COMPLETE (~197 tests)
 - Milestone 2.0.1: Core NATS Integration ✅ COMPLETE (35 unit + 22 integration tests)
@@ -2095,7 +2095,7 @@ Implemented full OpenFGA relation definition parsing in `adapters.rs`:
 - Concurrency tests ✅ COMPLETE
 - Performance tests ✅ COMPLETE
 
-**Next**: Milestone 1.16 (ListObjects Full Resolver) or Phase 3 (Precomputed Check) or Phase 4 (Distributed Edge)
+**Next**: Milestone 1.16 (ListObjects Full Resolver verification) or Phase 4 (Distributed Edge)
 
 ---
 
@@ -2138,7 +2138,7 @@ Implemented full OpenFGA relation definition parsing in `adapters.rs`:
 | Write API | ✅ Complete | With conditions support |
 | Read API | ✅ Complete | Pagination support |
 | Expand API | ✅ Complete | Full tree expansion |
-| ListObjects API | 🟡 Partial | API validation complete, full resolver pending (see Milestone 1.16) |
+| ListObjects API | 🟡 In Progress | Full resolver landed (#331); verification checklist and parity follow-up tracked in Milestone 1.16 |
 | ListUsers API | ✅ Complete | 22 tests passing |
 | CEL Conditions | ✅ Complete | Full ABAC support |
 | gRPC API | ✅ Complete | Parity with REST |
@@ -2156,7 +2156,7 @@ Implemented full OpenFGA relation definition parsing in `adapters.rs`:
 
 ### Known Limitations
 
-1. **ListObjects API**: API endpoint validates inputs correctly, but computed relation resolution (union, intersection, exclusion, tuple-to-userset) is not yet implemented. See **Milestone 1.16** for the implementation plan (~35 tests).
+1. **ListObjects API**: Full resolver work has landed, but Milestone 1.16 verification checklist is still being reconciled (named test parity and cross-protocol coverage).
 
 2. **Compatibility Tests**: Require Docker + OpenFGA running - these are designed to validate against the reference implementation.
 
@@ -2198,7 +2198,7 @@ Total verified tests: **567+ tests** (387 unit + 180+ integration)
 
 ## Milestone 1.16: ListObjects Full Resolver Implementation
 
-**Status**: ⏸️ Pending
+**Status**: 🟡 In Progress (core resolver implementation landed in #331; checklist verification ongoing)
 **Priority**: High (completes Phase 1 feature parity)
 **Estimated Tests**: ~35 new tests
 
@@ -2208,13 +2208,13 @@ The ListObjects API endpoint is functional but currently uses a simplified resol
 - ✅ API validation (user format, relation, object type)
 - ✅ Storage integration (`list_objects_by_type`)
 - ✅ Parallel permission checks on candidates
-- ⚠️ **Missing**: Full computed relation support (union, intersection, exclusion, tuple-to-userset)
+- 🟡 **Follow-up**: Verification and parity coverage for computed relation paths is ongoing
 
-The current implementation iterates over all candidate objects and runs individual permission checks. This works for direct relations but doesn't efficiently resolve computed relations (e.g., "users who are editors OR owners").
+Current implementation has been expanded, but milestone verification is still tracking named test parity and cross-protocol coverage.
 
 ### Current Implementation Analysis
 
-**What Exists** (`graph_resolver.rs:1313-1452`):
+**Historical Baseline** (pre-#331, retained for context):
 ```rust
 // Current approach: Get all objects, check each
 let candidates = tuple_reader.get_objects_of_type(&store_id, &object_type, max_candidates).await?;
@@ -2233,14 +2233,14 @@ for object_id in candidates {
 Refactor `list_objects` in `graph_resolver.rs` to support computed relations.
 
 **Tests**:
-- [ ] `test_listobjects_returns_direct_relation_objects`
-- [ ] `test_listobjects_resolves_union_relation`
+- [x] `test_listobjects_returns_direct_relation_objects`
+- [x] `test_listobjects_resolves_union_relation`
 - [ ] `test_listobjects_resolves_intersection_relation`
 - [ ] `test_listobjects_resolves_exclusion_relation`
 - [ ] `test_listobjects_resolves_computed_userset`
 - [ ] `test_listobjects_resolves_tuple_to_userset`
-- [ ] `test_listobjects_handles_recursive_relations`
-- [ ] `test_listobjects_respects_depth_limit`
+- [x] `test_listobjects_handles_recursive_relations`
+- [x] `test_listobjects_respects_depth_limit`
 
 **Implementation Approach**:
 ```rust
@@ -2270,12 +2270,12 @@ async fn list_objects_impl(&self, request: &ListObjectsRequest) -> Result<ListOb
 Implement `collect_objects_from_userset` method mirroring `collect_users_from_userset`.
 
 **Tests**:
-- [ ] `test_listobjects_union_returns_objects_from_all_branches`
-- [ ] `test_listobjects_intersection_requires_all_branches`
-- [ ] `test_listobjects_exclusion_removes_denied_objects`
-- [ ] `test_listobjects_empty_union_branch_handled`
-- [ ] `test_listobjects_empty_intersection_returns_empty`
-- [ ] `test_listobjects_nested_computed_relations`
+- [x] `test_listobjects_union_returns_objects_from_all_branches`
+- [x] `test_listobjects_intersection_requires_all_branches`
+- [x] `test_listobjects_exclusion_removes_denied_objects`
+- [x] `test_listobjects_empty_union_branch_handled`
+- [x] `test_listobjects_empty_intersection_returns_empty`
+- [x] `test_listobjects_nested_computed_relations`
 
 **Key Methods to Add**:
 ```rust
@@ -2300,9 +2300,9 @@ Handle `tupleset` relations (e.g., "viewers of parent folder").
 **Tests**:
 - [ ] `test_listobjects_ttu_single_hop`
 - [ ] `test_listobjects_ttu_multi_hop`
-- [ ] `test_listobjects_ttu_with_computed_relation`
-- [ ] `test_listobjects_ttu_no_intermediate_objects`
-- [ ] `test_listobjects_ttu_respects_depth_limit`
+- [x] `test_listobjects_ttu_with_computed_relation`
+- [x] `test_listobjects_ttu_no_intermediate_objects`
+- [x] `test_listobjects_ttu_respects_depth_limit`
 
 **Implementation Pattern**:
 ```rust
@@ -2341,18 +2341,18 @@ Ensure contextual tuples are considered in object collection.
 
 **Tests**:
 - [ ] `test_listobjects_includes_contextual_tuple_objects`
-- [ ] `test_listobjects_contextual_overrides_stored`
+- [x] `test_listobjects_contextual_overrides_stored`
 - [ ] `test_listobjects_contextual_union_with_stored`
-- [ ] `test_listobjects_contextual_exclusion_removes_object`
+- [x] `test_listobjects_contextual_exclusion_removes_object`
 
 #### Section 5: CEL Condition Evaluation (4 tests)
 
 Objects should only be returned if their conditions evaluate to true.
 
 **Tests**:
-- [ ] `test_listobjects_excludes_objects_failing_condition`
-- [ ] `test_listobjects_includes_objects_passing_condition`
-- [ ] `test_listobjects_handles_missing_context_for_condition`
+- [x] `test_listobjects_excludes_objects_failing_condition`
+- [x] `test_listobjects_includes_objects_passing_condition`
+- [x] `test_listobjects_handles_missing_context_for_condition`
 - [ ] `test_listobjects_condition_evaluation_with_object_attributes`
 
 #### Section 6: Performance and Safety (5 tests)
@@ -2360,11 +2360,11 @@ Objects should only be returned if their conditions evaluate to true.
 Ensure DoS protection and performance characteristics.
 
 **Tests**:
-- [ ] `test_listobjects_terminates_on_depth_limit`
-- [ ] `test_listobjects_terminates_on_timeout`
-- [ ] `test_listobjects_truncates_at_max_results`
-- [ ] `test_listobjects_handles_cycles_gracefully`
-- [ ] `test_listobjects_concurrent_requests_isolated`
+- [x] `test_listobjects_terminates_on_depth_limit`
+- [x] `test_listobjects_terminates_on_timeout`
+- [x] `test_listobjects_truncates_at_max_results`
+- [x] `test_listobjects_handles_cycles_gracefully`
+- [x] `test_listobjects_concurrent_requests_isolated`
 
 **Safety Bounds**:
 - Depth limit: 25 (matches Check API)
@@ -2377,13 +2377,13 @@ Ensure DoS protection and performance characteristics.
 Enable and verify integration tests in `listobjects_tests.rs`.
 
 **Tests**:
-- [ ] `test_listobjects_end_to_end_with_complex_model`
+- [x] `test_listobjects_end_to_end_with_complex_model`
 - [ ] `test_listobjects_grpc_parity_with_rest`
 - [ ] `test_listobjects_pagination_consistency`
 
 ### Validation Criteria
 
-- [ ] All 35 new tests pass
+- [ ] All 35 planned tests pass (24/35 test names currently matched in repo)
 - [ ] Existing ListObjects compatibility tests still pass
 - [ ] ListObjects integration tests (currently ignored) enabled and passing
 - [ ] Performance: <100ms p95 latency for models with <1000 objects
