@@ -1687,13 +1687,11 @@ Client ──▶ NATS JetStream ──▶ Storage Consumer ──▶ Database
 
 ---
 
-## Next unfinished phase to verify: Phase 3 (Precomputed Check)
-
-## Phase 3: Precomputed Check (Future)
+## Phase 3: Precomputed Check ✅ COMPLETE (v2.1.0)
 
 **Goal**: Sub-millisecond check latency through on-write precomputation
 
-**Status**: 📋 Proposed
+**Status**: ✅ Complete (PRs #323, #324, #325, #326, #327)
 
 **Key Features**:
 - Valkey/Redis for precomputed results
@@ -1713,7 +1711,7 @@ See [ARCHITECTURE_DECISIONS.md - ADR-013](docs/design/ARCHITECTURE_DECISIONS.md#
 
 **Goal**: Global <10ms check latency through edge deployment
 
-**Status**: 📋 Proposed (requires Phase 2 NATS integration)
+**Status**: 📋 Proposed (leverages completed Phase 2 + Phase 3 foundations)
 
 **Key Features**:
 - NATS JetStream for sync (leverages Phase 2 infrastructure)
@@ -1938,7 +1936,7 @@ Phase 1 completion status:
 - Milestone 1.13: Expand API ✅ COMPLETE
 - Milestone 1.14: ListObjects API ✅ COMPLETE (partial - API validation complete, resolver integration pending)
 - Milestone 1.15: ListUsers API ✅ COMPLETE (22 tests)
-- Milestone 1.16: ListObjects Full Resolver ⏸️ PENDING (~35 tests planned)
+- Milestone 1.16: ListObjects Full Resolver 🟡 IN PROGRESS (implementation landed in #331; verification checklist ongoing)
 
 **Phase 2**: ✅ NATS Async Writes - COMPLETE (~197 tests)
 - Milestone 2.0.1: Core NATS Integration ✅ COMPLETE (35 unit + 22 integration tests)
@@ -2097,7 +2095,7 @@ Implemented full OpenFGA relation definition parsing in `adapters.rs`:
 - Concurrency tests ✅ COMPLETE
 - Performance tests ✅ COMPLETE
 
-**Next**: Milestone 1.16 (ListObjects Full Resolver) or Phase 3 (Precomputed Check) or Phase 4 (Distributed Edge)
+**Next**: Milestone 1.16 (ListObjects Full Resolver verification) or Phase 4 (Distributed Edge)
 
 ---
 
@@ -2140,7 +2138,7 @@ Implemented full OpenFGA relation definition parsing in `adapters.rs`:
 | Write API | ✅ Complete | With conditions support |
 | Read API | ✅ Complete | Pagination support |
 | Expand API | ✅ Complete | Full tree expansion |
-| ListObjects API | 🟡 Partial | API validation complete, full resolver pending (see Milestone 1.16) |
+| ListObjects API | 🟡 In Progress | Full resolver landed (#331); verification checklist and parity follow-up tracked in Milestone 1.16 |
 | ListUsers API | ✅ Complete | 22 tests passing |
 | CEL Conditions | ✅ Complete | Full ABAC support |
 | gRPC API | ✅ Complete | Parity with REST |
@@ -2210,13 +2208,13 @@ The ListObjects API endpoint is functional but currently uses a simplified resol
 - ✅ API validation (user format, relation, object type)
 - ✅ Storage integration (`list_objects_by_type`)
 - ✅ Parallel permission checks on candidates
-- ⚠️ **Missing**: Full computed relation support (union, intersection, exclusion, tuple-to-userset)
+- 🟡 **Follow-up**: Verification and parity coverage for computed relation paths is ongoing
 
-The current implementation iterates over all candidate objects and runs individual permission checks. This works for direct relations but doesn't efficiently resolve computed relations (e.g., "users who are editors OR owners").
+Current implementation has been expanded, but milestone verification is still tracking named test parity and cross-protocol coverage.
 
 ### Current Implementation Analysis
 
-**What Exists** (`graph_resolver.rs:1313-1452`):
+**Historical Baseline** (pre-#331, retained for context):
 ```rust
 // Current approach: Get all objects, check each
 let candidates = tuple_reader.get_objects_of_type(&store_id, &object_type, max_candidates).await?;
