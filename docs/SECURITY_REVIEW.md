@@ -13,9 +13,9 @@ RSFGA demonstrates **strong security engineering** in its core authorization log
 | Severity | Count | Key Areas |
 |----------|-------|-----------|
 | Critical | 4 | No authentication, no TLS, permissive CORS defaults, default credentials in templates |
-| High | 5 | No rate limiting, gRPC reflection default-on, unwrap/expect in prod, unencrypted NATS/Valkey, error info leakage |
-| Medium | 7 | Unauthenticated metrics, K8s RBAC gaps, JSON depth inconsistency, Docker permissions, env var credential exposure, request memory tracking, decompression bombs |
-| Low | 4 | Missing security headers, config file trust, health endpoint exposure, gRPC health check default |
+| High | 6 | No rate limiting, gRPC reflection default-on, unwrap/expect in prod, unencrypted NATS/Valkey, error info leakage, depth tracking asymmetry in ReverseExpand |
+| Medium | 10 | Unauthenticated metrics, K8s RBAC gaps, JSON depth inconsistency, Docker permissions, env var credential exposure, request memory tracking, decompression bombs, unchecked depth increment, concurrent visited set mutations, visited set cloning overhead |
+| Low | 5 | Missing security headers, config file trust, health endpoint exposure, gRPC health check default, timing side-channel in CEL evaluation |
 
 ---
 
@@ -306,6 +306,103 @@ NATS defaults to no authentication. Any NATS client can publish write events, po
 
 ---
 
+## Domain/Resolver Specific Findings
+
+### D1: Depth Increment/Decrement Asymmetry in ReverseExpand
+
+**Severity**: HIGH
+**Category**: State Consistency
+**File**: `crates/rsfga-domain/src/resolver/graph_resolver.rs` (lines 1637-1641)
+
+The ComputedUserset code path mutates the shared `state.depth` directly:
+
+```rust
+state.depth += 1;
+let result = self.reverse_expand_objects(ctx, state, computed_rel, &rel_def.rewrite).await;
+state.depth -= 1;
+```
+
+This contrasts with Union/Intersection branches (lines 1836-1881) which correctly use `state.fork()` to create isolated copies. The asymmetry means:
+
+- ComputedUserset mutations affect the shared state object
+- If ComputedUserset executes during a Union/Intersection branch that later merges, depth tracking becomes inconsistent
+- Could cause incorrect depth limit enforcement or silent result truncation
+
+**Recommendation**: Use the fork pattern consistently. Replace increment/decrement with `let mut computed_state = state.fork(); computed_state.depth = state.depth + 1;` and merge results afterward.
+
+---
+
+### D2: Unchecked Integer Addition in Depth Increment
+
+**Severity**: MEDIUM
+**Category**: Integer Overflow (Defensive)
+**Files**:
+- `crates/rsfga-domain/src/resolver/context.rs:26` - `self.depth + 1`
+- `crates/rsfga-domain/src/resolver/graph_resolver.rs:1637,1842,1895,1958` - various `state.depth + 1`
+
+The depth counter (`u32`) uses unchecked addition. While the depth limit check (`>= 25`) runs before the increment, making overflow impractical in current code, the pattern is fragile. The codebase already uses `saturating_add` at lines 1431 and 1530 for limit counters.
+
+**Recommendation**: Replace `self.depth + 1` with `self.depth.saturating_add(1)` for consistency and defense-in-depth.
+
+---
+
+### D3: Concurrent Visited Set Mutations in ReverseExpand
+
+**Severity**: MEDIUM
+**Category**: Race Condition
+**File**: `crates/rsfga-domain/src/resolver/graph_resolver.rs` (lines 1714-1724, 1733)
+
+Union/Intersection branches share the `visited` set via `Arc` clone:
+
+```rust
+// fork() shares visited via Arc clone
+visited: self.visited.clone(),
+
+// Concurrent branches then mutate:
+state.visited.insert(parent_cycle_key.clone());  // line 1719
+state.visited.remove(&parent_cycle_key);          // line 1724
+```
+
+`HashSet` is not thread-safe. While Tokio's cooperative scheduling within a single thread prevents data races in practice, this relies on implementation details rather than type-system guarantees. If the runtime changes or tasks are dispatched to multiple threads, cycle detection could produce incorrect results.
+
+**Recommendation**: Use `Arc<DashMap<String, ()>>` for the visited set, or ensure fork creates a deep copy rather than sharing.
+
+---
+
+### D4: Visited Set Cloning Overhead (DoS Vector)
+
+**Severity**: MEDIUM
+**Category**: Resource Exhaustion
+**File**: `crates/rsfga-domain/src/resolver/context.rs` (lines 31-38)
+
+Every call to `with_visited()` clones the entire `HashSet`:
+
+```rust
+let mut new_visited = (*self.visited).clone();  // Full clone
+new_visited.insert(key.to_string());
+```
+
+For adversarial models with high branching factor and max depth (25), this creates O(branches^depth) clones of growing sets. While depth and timeout limits provide upper bounds, a carefully crafted model could trigger significant memory allocation within those bounds.
+
+**Recommendation**: Consider a RAII-based `CycleGuard` pattern that inserts on construction and removes on drop, avoiding full clones.
+
+---
+
+### D5: No Timing Attack Mitigation for Condition Evaluation
+
+**Severity**: LOW
+**Category**: Side-Channel
+**File**: `crates/rsfga-domain/src/resolver/graph_resolver.rs` (lines 1195-1309)
+
+CEL condition evaluation timing varies based on condition complexity and context values. An attacker measuring response times could infer:
+- Whether a condition exists on a tuple
+- The complexity of the condition
+- Whether context values satisfy or fail the condition
+
+**Recommendation**: For most authorization use cases this is acceptable. If timing-sensitive, add constant-time response padding or batch evaluation.
+
+---
+
 ## Positive Security Findings (Strengths)
 
 ### Graph Resolver Security: EXCELLENT
@@ -365,19 +462,23 @@ NATS defaults to no authentication. Any NATS client can publish write events, po
 
 ### Short-Term (Next Release)
 
-5. **Fix CORS defaults** (C3) - Replace `Any` with configurable whitelist
-6. **Disable gRPC reflection by default** (H2)
-7. **Replace unwrap/expect in production paths** (H3)
-8. **Enforce TLS for NATS/Valkey** (H4)
-9. **Sanitize all error messages** (H5)
+5. **Fix depth tracking asymmetry in ReverseExpand** (D1) - Use consistent fork pattern
+6. **Fix CORS defaults** (C3) - Replace `Any` with configurable whitelist
+7. **Disable gRPC reflection by default** (H2)
+8. **Replace unwrap/expect in production paths** (H3)
+9. **Enforce TLS for NATS/Valkey** (H4)
+10. **Sanitize all error messages** (H5)
 
 ### Medium-Term (Hardening)
 
-10. **Add security headers** (L1)
-11. **Authenticate metrics endpoint** (M1)
-12. **Add K8s NetworkPolicy and RBAC** (M2)
-13. **Consistent JSON depth validation** (M3)
-14. **Per-request memory tracking** (M6)
+11. **Use saturating_add for depth increments** (D2)
+12. **Fix concurrent visited set mutations** (D3) - Use DashMap or deep copy
+13. **Optimize visited set cloning** (D4) - Consider CycleGuard pattern
+14. **Add security headers** (L1)
+15. **Authenticate metrics endpoint** (M1)
+16. **Add K8s NetworkPolicy and RBAC** (M2)
+17. **Consistent JSON depth validation** (M3)
+18. **Per-request memory tracking** (M6)
 
 ---
 
